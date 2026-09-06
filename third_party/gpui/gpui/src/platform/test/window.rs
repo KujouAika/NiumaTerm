@@ -40,11 +40,16 @@ pub(crate) struct TestWindowState {
 #[derive(Clone)]
 pub struct TestWindow(pub(crate) Rc<Mutex<TestWindowState>>);
 
+// A test window has no platform window behind it, which is exactly what
+// `HandleError::NotSupported` reports. Panicking instead would take down any
+// caller that already handles the absence — on macOS the accessibility
+// hit-test forwarder asks every window for its `NSView` and skips the ones
+// that have none.
 impl HasWindowHandle for TestWindow {
     fn window_handle(
         &self,
     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        unimplemented!("Test Windows are not backed by a real platform window")
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 
@@ -52,7 +57,7 @@ impl HasDisplayHandle for TestWindow {
     fn display_handle(
         &self,
     ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
-        unimplemented!("Test Windows are not backed by a real platform window")
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 
