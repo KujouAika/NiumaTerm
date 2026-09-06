@@ -111,17 +111,15 @@ fn start_with_startup_files(
     }
     let home_value = home.to_string_lossy().into_owned();
 
-    // The integration resolved the user's own directories from this process's
-    // environment; point them at the empty home instead.
-    let mut environment: Vec<(String, String)> = integration
-        .environment
-        .into_iter()
-        .map(|(name, value)| match name.as_str() {
-            "NMT_USER_ZDOTDIR" | "NMT_BASH_USER_RC" => (name, home_value.clone()),
-            _ => (name, value),
-        })
-        .collect();
-    environment.push((String::from("HOME"), home_value));
+    let mut environment = integration.environment;
+    environment.push((String::from("HOME"), home_value.clone()));
+    if shell == "zsh" {
+        // `/usr/bin/login` resets HOME from the password database whatever the
+        // caller passes, so an empty home only isolates zsh if the bootstrap
+        // is pointed at it the way zsh itself would be. `login -p` does keep
+        // ZDOTDIR.
+        environment.push((String::from("ZDOTDIR"), home_value));
+    }
 
     match create_pty_with_env(
         &program,
@@ -131,6 +129,7 @@ fn start_with_startup_files(
         24,
         &environment,
         None,
+        integration.bootstrap.as_deref(),
     ) {
         Ok(pty) => Some(Session {
             pty,
@@ -248,9 +247,16 @@ fn bash_announces_a_user_clear() {
     assert_announces_user_clear("bash");
 }
 
-/// The integration must not cost the user their own configuration.
-fn assert_user_startup_files_are_reached(shell: &str, startup_files: &[(&str, &str)]) {
-    let Some(mut session) = start_with_startup_files(shell, "startup", startup_files) else {
+/// The integration must not cost the user their own configuration: the launch
+/// suppresses zsh's startup files, so the bootstrap has to put every one of
+/// them back.
+#[test]
+fn zsh_still_reads_the_users_startup_files() {
+    let Some(mut session) = start_with_startup_files(
+        "zsh",
+        "startup",
+        &[(".zshrc", "export NMT_TEST_STARTUP=reached\n")],
+    ) else {
         return;
     };
 
@@ -276,26 +282,15 @@ fn assert_user_startup_files_are_reached(shell: &str, startup_files: &[(&str, &s
     }
 
     panic!(
-        "{shell} did not read the user's startup files; saw {}",
+        "zsh did not read the user's startup files; saw {}",
         String::from_utf8_lossy(&session.stream)
     );
 }
 
-#[test]
-fn zsh_still_reads_the_users_startup_files() {
-    assert_user_startup_files_are_reached(
-        "zsh",
-        &[(".zshrc", "export NMT_TEST_STARTUP=reached\n")],
-    );
-}
-
-/// bash's startup files are found through `$HOME`, and `/usr/bin/login` resets
-/// that from the password database no matter what the caller passes — so this
-/// one cannot run through the PTY path, which goes through `login` on macOS.
-/// It runs the generated launch arguments directly instead, which is where the
-/// claim actually lives: the `-lc` hop has to make bash run its profile chain,
-/// and what the profile exported has to survive the `exec` into the shell that
-/// finally reads our rc.
+/// The same for bash, exercised by running the generated launch arguments
+/// directly rather than through the PTY: bash finds its startup files through
+/// `$HOME`, and `/usr/bin/login` — which the macOS PTY path goes through —
+/// resets that from the password database no matter what the caller passes.
 #[test]
 fn bash_still_reads_the_users_startup_files() {
     let Some(bash) = shell_path("bash") else {
@@ -325,6 +320,7 @@ fn bash_still_reads_the_users_startup_files() {
     }
     command
         .env("HOME", &home_value)
+        .env_remove("NMT_TEST_STARTUP")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());

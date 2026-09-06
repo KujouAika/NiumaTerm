@@ -168,12 +168,12 @@ fn powershell_bootstrap_is_passed_as_utf16_encoded_command() {
     );
 }
 
-/// zsh is the only POSIX shell with an integration, and it arrives through
-/// `ZDOTDIR` rather than startup arguments: the launch command the user
-/// configured has to survive untouched.
+/// zsh is handed its integration by being typed at before the shell reads
+/// anything, so the launch carries the bootstrap rather than a startup file
+/// the shell would have to find. The configured launch command survives.
 #[cfg(unix)]
 #[test]
-fn zsh_is_integrated_through_the_environment() {
+fn zsh_is_integrated_through_an_injected_bootstrap() {
     let config = TerminalSessionConfig {
         shell: Some("/bin/zsh".into()),
         ..TerminalSessionConfig::default()
@@ -183,13 +183,11 @@ fn zsh_is_integrated_through_the_environment() {
 
     let integrated = config.with_shell_integration();
 
-    assert!(integrated.args.is_empty());
-    assert!(
-        integrated
-            .environment_overrides
-            .iter()
-            .any(|(name, _)| name == "ZDOTDIR")
-    );
+    assert!(integrated.bootstrap.is_some());
+    assert!(integrated.environment_overrides.is_empty());
+    // The launch has to suppress zsh's own startup files, since the bootstrap
+    // replays them itself.
+    assert!(integrated.args.contains(&String::from("-f")));
 }
 
 /// bash is reached through `--rcfile`, which a login shell ignores, so its
@@ -236,6 +234,7 @@ fn a_shell_without_an_integration_claims_no_trusted_prompt() {
 
         assert!(integrated.args.is_empty(), "{shell}");
         assert!(integrated.environment_overrides.is_empty(), "{shell}");
+        assert!(integrated.bootstrap.is_none(), "{shell}");
     }
 }
 
@@ -256,6 +255,7 @@ fn explicit_args_suppress_the_zsh_integration() {
 
     assert_eq!(integrated.args, ["--no-rcs"]);
     assert!(integrated.environment_overrides.is_empty());
+    assert!(integrated.bootstrap.is_none());
 }
 
 /// Creating a session with a non-existent shell returns a structured

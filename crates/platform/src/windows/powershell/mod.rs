@@ -71,6 +71,7 @@ pub fn prompt_integration(shell: Option<&str>) -> Option<crate::PromptIntegratio
                 .clone(),
         ],
         environment: Vec::new(),
+        bootstrap: None,
     })
 }
 

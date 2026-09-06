@@ -6,6 +6,12 @@
 # turns a session into command blocks with a fixed prompt dock; without the
 # marks the terminal falls back to heuristic prompt sniffing.
 #
+# The terminal starts zsh with NO_RCS, no line editor and HIST_IGNORE_SPACE,
+# then puts one leading-space `source` of this file into the terminal's input
+# queue before the shell exists. So this file owns startup: it restores what
+# those launch flags suppressed, replays the user's own startup files in zsh's
+# order, and installs its hooks last — after everything, which is the point.
+#
 # Deliberately absent, unlike the PowerShell integration: no screen clear at
 # the block boundary and no `?1049l` alternate-screen recovery. The terminal
 # clears its own grid when it freezes a block, and there is no second host-side
@@ -13,12 +19,43 @@
 # wrong under job control: a suspended full-screen program is sitting at a
 # prompt with the alternate screen still its own, and `fg` must find it intact.
 
-[[ -o interactive ]] || return 0
+# The leading space on the `source` line kept it out of history. That option
+# existed for that one line and the decision has already been taken, so the
+# session gets the setting back before the user's own files can have an
+# opinion about it.
+unsetopt histignorespace
 
-# A nested zsh inherits the user's own ZDOTDIR, so it normally never reaches
-# this file; the guard covers a configuration that sources it a second time.
-[[ -n "$NMT_ZSH_INTEGRATION" ]] && return 0
-NMT_ZSH_INTEGRATION=1
+# The line editor was off so the line discipline governed the echo of the
+# bootstrap line. It has to come back before the user's files run: their
+# `bindkey` and `zle -N` calls configure an editor that has to exist.
+setopt zle
+
+# Replay the startup sequence NO_RCS suppressed, in zsh's own order. Only
+# `/etc/zshenv` still ran, so `$ZDOTDIR` already holds whatever it chose, and a
+# user who sets `ZDOTDIR` from their own `.zshenv` is picked up by re-reading
+# it between files. `.zprofile` and `.zlogin` belong to login shells alone.
+#
+# Sourced at the top level rather than from a helper function: a `typeset` or
+# `local` in the user's own files has to reach the shell, not a function scope.
+__nmt_zdotdir=${ZDOTDIR:-$HOME}
+[[ -r $__nmt_zdotdir/.zshenv ]] && source $__nmt_zdotdir/.zshenv
+
+__nmt_zdotdir=${ZDOTDIR:-$HOME}
+if [[ -o login ]]; then
+  [[ -r /etc/zprofile ]] && source /etc/zprofile
+  [[ -r $__nmt_zdotdir/.zprofile ]] && source $__nmt_zdotdir/.zprofile
+  __nmt_zdotdir=${ZDOTDIR:-$HOME}
+fi
+
+[[ -r /etc/zshrc ]] && source /etc/zshrc
+[[ -r $__nmt_zdotdir/.zshrc ]] && source $__nmt_zdotdir/.zshrc
+
+__nmt_zdotdir=${ZDOTDIR:-$HOME}
+if [[ -o login ]]; then
+  [[ -r /etc/zlogin ]] && source /etc/zlogin
+  [[ -r $__nmt_zdotdir/.zlogin ]] && source $__nmt_zdotdir/.zlogin
+fi
+unset __nmt_zdotdir
 
 autoload -Uz add-zsh-hook
 

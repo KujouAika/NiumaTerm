@@ -176,6 +176,13 @@ pub fn default_shell() -> String {
 pub struct PromptIntegration {
     pub args: Vec<String>,
     pub environment: Vec<(String, String)>,
+    /// Bytes to place in the terminal's input queue before the shell starts,
+    /// for a platform that hands the shell its integration by typing at it
+    /// rather than through a startup file the shell would discover. The PTY
+    /// hides them: the launch turns the shell's line editor off so the line
+    /// discipline governs the echo, and the terminal clears `ECHO` for exactly
+    /// this one write.
+    pub bootstrap: Option<String>,
 }
 
 /// The launch adjustments that make `shell` report trusted prompt boundaries,

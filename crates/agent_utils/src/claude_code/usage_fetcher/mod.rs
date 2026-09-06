@@ -298,6 +298,7 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
         40,
         &environment_overrides,
         Some("Claude Usage"),
+        None,
     )
     .map_err(|err| format!("could not start interactive Claude usage session: {err}"))?;
 
