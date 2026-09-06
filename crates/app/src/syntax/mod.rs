@@ -1,18 +1,37 @@
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
+#[cfg(windows)]
+use std::io;
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::PathBuf;
-use std::{io, mem, slice, str};
+use std::{mem, slice, str};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use gpui::SharedString;
 use gpui_component::highlighter::{LanguageConfig, LanguageRegistry};
 use tree_sitter::Parser;
 use tree_sitter_language::LanguageFn;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::HMODULE;
+#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows_sys::s;
 
 use crate::utils::get_exe_dir;
+
+/// The bundle is loaded rather than linked so the parser tables can be dropped
+/// from a build that does not want them, which is why the loader is spelled
+/// out per platform instead of taken from a crate.
+#[cfg(windows)]
+type ModuleHandle = HMODULE;
+#[cfg(unix)]
+type ModuleHandle = *mut c_void;
+
+#[cfg(windows)]
+const BUNDLE_FILE: &str = "tree_sitter.dll";
+#[cfg(target_os = "macos")]
+const BUNDLE_FILE: &str = "libtree_sitter.dylib";
+#[cfg(all(unix, not(target_os = "macos")))]
+const BUNDLE_FILE: &str = "libtree_sitter.so";
 
 const ABI_VERSION: u32 = 1;
 const MAX_LANGUAGES: u32 = 128;
@@ -50,20 +69,20 @@ pub(crate) fn register_languages() -> Result<usize> {
     // into the parser tables for the remainder of the process.
     let abi_version: AbiVersionFn = unsafe {
         mem::transmute::<LoadedFn, AbiVersionFn>(
-            GetProcAddress(module, s!("nmt_tree_sitter_abi_version"))
-                .context("tree_sitter.dll has no ABI version export")?,
+            symbol(module, c"nmt_tree_sitter_abi_version")
+                .with_context(|| format!("{BUNDLE_FILE} has no ABI version export"))?,
         )
     };
     let language_count: LanguageCountFn = unsafe {
         mem::transmute::<LoadedFn, LanguageCountFn>(
-            GetProcAddress(module, s!("nmt_tree_sitter_language_count"))
-                .context("tree_sitter.dll has no language count export")?,
+            symbol(module, c"nmt_tree_sitter_language_count")
+                .with_context(|| format!("{BUNDLE_FILE} has no language count export"))?,
         )
     };
     let language_at: LanguageAtFn = unsafe {
         mem::transmute::<LoadedFn, LanguageAtFn>(
-            GetProcAddress(module, s!("nmt_tree_sitter_language"))
-                .context("tree_sitter.dll has no language export")?,
+            symbol(module, c"nmt_tree_sitter_language")
+                .with_context(|| format!("{BUNDLE_FILE} has no language export"))?,
         )
     };
 
@@ -112,18 +131,75 @@ pub(crate) fn register_languages() -> Result<usize> {
     Ok(registered)
 }
 
-fn load_library() -> Result<(HMODULE, PathBuf)> {
-    let path = get_exe_dir().join("tree_sitter.dll");
+#[cfg(windows)]
+fn load_library() -> Result<(ModuleHandle, PathBuf)> {
+    let path = get_exe_dir().join(BUNDLE_FILE);
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: the name is NUL-terminated and outlives the call.
     let module = unsafe { LoadLibraryW(wide.as_ptr()) };
     if module.is_null() {
         return Err(anyhow!(
-            "cannot load tree_sitter.dll beside NiumaTerm.exe: {}",
+            "cannot load {BUNDLE_FILE} beside the executable: {}",
             io::Error::last_os_error()
         ));
     }
 
     Ok((module, path))
+}
+
+#[cfg(unix)]
+fn load_library() -> Result<(ModuleHandle, PathBuf)> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = get_exe_dir().join(BUNDLE_FILE);
+    let name = CString::new(path.as_os_str().as_bytes()).context("bundle path holds a NUL")?;
+    // `RTLD_LOCAL` keeps the parser symbols out of the global namespace, where
+    // they would otherwise be candidates for every later lookup in the process.
+    // SAFETY: the name is NUL-terminated and outlives the call.
+    let module = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+    if module.is_null() {
+        // `dlopen` reports through `dlerror`, not `errno`.
+        // SAFETY: the pointer is owned by the loader and read before any other
+        // call that could replace it.
+        let reason = unsafe { libc::dlerror() };
+        let reason = if reason.is_null() {
+            String::from("unknown error")
+        } else {
+            unsafe { CStr::from_ptr(reason) }
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        return Err(anyhow!(
+            "cannot load {BUNDLE_FILE} beside the executable: {reason}"
+        ));
+    }
+
+    Ok((module, path))
+}
+
+/// The address of `name` in an already-loaded bundle.
+///
+/// The module is deliberately never unloaded: every registered language keeps
+/// pointers into the parser tables for the remainder of the process.
+#[cfg(windows)]
+fn symbol(module: ModuleHandle, name: &CStr) -> Option<LoadedFn> {
+    // SAFETY: `module` came from `LoadLibraryW` above and `name` is
+    // NUL-terminated.
+    unsafe { GetProcAddress(module, name.as_ptr().cast()) }
+}
+
+#[cfg(unix)]
+fn symbol(module: ModuleHandle, name: &CStr) -> Option<LoadedFn> {
+    // SAFETY: `module` came from `dlopen` above and `name` is NUL-terminated.
+    let address = unsafe { libc::dlsym(module, name.as_ptr()) };
+
+    (!address.is_null()).then(|| {
+        // SAFETY: a non-null `dlsym` result is a code address; the caller
+        // transmutes it to the signature the bundle's ABI version pins.
+        unsafe { mem::transmute::<*mut c_void, LoadedFn>(address) }
+    })
 }
 
 fn config(raw: RawLanguageDescriptor) -> Result<(Vec<SharedString>, LanguageConfig)> {

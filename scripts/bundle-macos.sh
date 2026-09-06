@@ -80,6 +80,15 @@ iconutil --convert icns --output "$app/Contents/Resources/AppIcon.icns" "$iconse
 
 cp "$binary" "$app/Contents/MacOS/NiumaTerm"
 
+# The parser bundle is opened by path at startup, from the directory holding
+# the executable, so it travels beside it rather than in `Resources`.
+bundle_dylib=$(dirname "$binary")/libtree_sitter.dylib
+if [ -f "$bundle_dylib" ]; then
+  cp "$bundle_dylib" "$app/Contents/MacOS/libtree_sitter.dylib"
+else
+  echo "note: no libtree_sitter.dylib beside $binary; syntax highlighting will be limited" >&2
+fi
+
 sed \
   -e "s|@@BUNDLE_ID@@|$identifier|g" \
   -e "s|@@SHORT_VERSION@@|$short_version|g" \

@@ -23,6 +23,7 @@ use nmt_platform::windows::window::show_error_dialog;
 use nmt_version::Version;
 use tracing::warn;
 
+use crate::AWAIT_EXIT_FLAG;
 use crate::ui::AppSettings;
 pub(crate) use crate::update::releases::CheckError;
 use crate::update::releases::{Release, supersedes};
@@ -32,7 +33,6 @@ use crate::window::ShellRegistry;
 /// Hidden argument the instance started by an update is given, naming the
 /// process it replaces. Hidden because nothing but that restart has a reason to
 /// pass it.
-pub(crate) const AWAIT_EXIT_FLAG: &str = "--await-exit";
 
 /// Where a package is unpacked before any of it replaces an installed file.
 const STAGING_DIRECTORY: &str = "update";

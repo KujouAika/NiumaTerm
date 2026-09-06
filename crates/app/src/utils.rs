@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use nmt_platform::windows::environment::data_dir;
+use nmt_platform::environment::data_dir;
 
 /// The NiumaTerm per-user data directory: `%LOCALAPPDATA%\NiumaTerm`, falling back to
 /// `%TEMP%` if `LOCALAPPDATA` is unset or uncreatable.

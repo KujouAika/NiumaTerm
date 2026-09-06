@@ -1,5 +1,3 @@
-use nmt_platform::windows::window::is_foreground_and_not_minimized;
-
 use crate::ui::shell::*;
 
 struct AgentRouteLocation {
@@ -58,7 +56,11 @@ impl Shell {
         }
     }
 
+    /// Whether the user is looking at this exact window, which is what decides
+    /// against posting a desktop notification for something already on screen.
+    #[cfg(windows)]
     pub(super) fn exact_window_active(window: &Window) -> bool {
+        use nmt_platform::window::is_foreground_and_not_minimized;
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
         let Ok(handle) = HasWindowHandle::window_handle(window) else {
@@ -76,6 +78,15 @@ impl Shell {
         // activated -- leaving the bit false until the user clicks or
         // alt-tabs, long after the window is genuinely in front.
         is_foreground_and_not_minimized(handle.hwnd)
+    }
+
+    /// The same question, asked of GPUI. Its activation bit is authoritative
+    /// here: AppKit reports activation on the notifications the backend
+    /// already tracks, so there is no window that is in front while the bit
+    /// still reads false.
+    #[cfg(not(windows))]
+    pub(super) fn exact_window_active(window: &Window) -> bool {
+        window.is_window_active()
     }
 
     pub(super) fn acknowledge_notification(

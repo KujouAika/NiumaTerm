@@ -226,6 +226,9 @@ fn equal_path_matches() {
     assert_eq!(matched(&["C:/A/B"], "C:/A/B"), Some(WorkspaceId(1)));
 }
 
+/// Case folding and backslash separators are equivalences only the Windows
+/// path rules grant; elsewhere these name different directories.
+#[cfg(windows)]
 #[test]
 fn match_is_case_insensitive_and_separator_agnostic() {
     assert_eq!(matched(&["c:\\a\\b\\"], "C:/A/B/C"), Some(WorkspaceId(1)));
@@ -248,6 +251,19 @@ fn tie_on_depth_goes_to_the_earlier_workspace() {
 
 #[test]
 fn exact_match_reuses_the_same_workspace_path() {
+    // A trailing separator is not part of the path on any platform.
+    assert_eq!(
+        exactly_matched(&["C:/A", "C:/work/project/"], "C:/work/project"),
+        Some(WorkspaceId(2))
+    );
+}
+
+/// Backslash separators and case folding are equivalences only the Windows
+/// path rules grant; on a case-sensitive filesystem these name different
+/// directories.
+#[cfg(windows)]
+#[test]
+fn exact_match_reuses_a_windows_spelling_of_the_same_path() {
     assert_eq!(
         exactly_matched(&["C:/A", "c:\\work\\project\\"], "C:/WORK/PROJECT"),
         Some(WorkspaceId(2))
@@ -275,6 +291,12 @@ fn an_additional_directory_makes_its_workspace_eligible() {
         multi_root_matched(&[vec!["C:/X"], vec!["C:/A", "C:/B"]], "C:/B/inner"),
         Some(WorkspaceId(2))
     );
+    assert_eq!(
+        multi_root_exactly_matched(&[vec!["C:/X"], vec!["C:/A", "C:/B"]], "C:/B"),
+        Some(WorkspaceId(2))
+    );
+
+    #[cfg(windows)]
     assert_eq!(
         multi_root_exactly_matched(&[vec!["C:/X"], vec!["C:/A", "C:/B"]], r"c:\b"),
         Some(WorkspaceId(2))
@@ -332,22 +354,39 @@ fn additional_directories_keep_the_order_they_were_added_in() {
 #[test]
 fn an_equivalent_path_spelling_is_rejected_as_a_duplicate() {
     let mut roots = WorkspaceRoots::single("C:/Work/Project".into());
-    assert_eq!(
-        roots.add(r"c:\work\project\\".into()),
-        RootChange::Duplicate
-    );
-    assert_eq!(ordered(&roots), ["C:/Work/Project"]);
+
+    // A `.` component and a trailing separator drop out on any platform.
     assert_eq!(roots.add("C:/Work/Project/.".into()), RootChange::Duplicate);
     assert_eq!(ordered(&roots), ["C:/Work/Project"]);
+    assert_eq!(roots.add("C:/Work/Project/".into()), RootChange::Duplicate);
+    assert_eq!(ordered(&roots), ["C:/Work/Project"]);
+
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            roots.add(r"c:\work\project\\".into()),
+            RootChange::Duplicate
+        );
+        assert_eq!(ordered(&roots), ["C:/Work/Project"]);
+    }
 }
 
 #[test]
 fn a_repeated_entry_in_a_saved_list_is_dropped_once() {
     let roots = WorkspaceRoots::new(
         "C:/A".into(),
-        vec!["C:/B".into(), r"c:\a".into(), "C:/B/".into()],
+        vec!["C:/B".into(), "C:/A/".into(), "C:/B/".into()],
     );
     assert_eq!(ordered(&roots), ["C:/A", "C:/B"]);
+
+    #[cfg(windows)]
+    {
+        let roots = WorkspaceRoots::new(
+            "C:/A".into(),
+            vec!["C:/B".into(), r"c:\a".into(), "C:/B/".into()],
+        );
+        assert_eq!(ordered(&roots), ["C:/A", "C:/B"]);
+    }
 }
 
 #[test]
@@ -363,7 +402,7 @@ fn making_a_directory_primary_preserves_every_other_position() {
         "C:/A".into(),
         vec!["C:/B".into(), "C:/C".into(), "C:/D".into()],
     );
-    assert_eq!(roots.make_primary(r"c:\c"), RootChange::Applied);
+    assert_eq!(roots.make_primary("C:/C"), RootChange::Applied);
     assert_eq!(ordered(&roots), ["C:/C", "C:/A", "C:/B", "C:/D"]);
 }
 

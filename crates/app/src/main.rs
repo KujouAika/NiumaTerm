@@ -1,5 +1,4 @@
-#![cfg(target_os = "windows")]
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::ffi::OsString;
 use std::rc::Rc;
@@ -12,12 +11,15 @@ use gpui::{
     Anchor, AnyWindowHandle, App, Application, Global, KeyBinding, WeakEntity, frame_stats, px,
 };
 use gpui_component::{Theme as ComponentTheme, init as init_components};
-use gpui_windows::WindowsPlatform;
+#[cfg(target_os = "macos")]
+use gpui_macos::MacPlatform as Platform;
+#[cfg(windows)]
+use gpui_windows::WindowsPlatform as Platform;
 use nmt_agent_utils::{AgentEvent, AgentRoute, agent_process};
 use nmt_config::local_state::{self, LocalState};
 use nmt_config::{Config, enable_testing_mode, get, init};
-use nmt_platform::windows::ipc as platform_ipc;
-use nmt_platform::windows::window::show_error_dialog;
+use nmt_platform::ipc as platform_ipc;
+use nmt_platform::window::show_error_dialog;
 use tracing::warn;
 
 mod agent_updates;
@@ -31,6 +33,10 @@ mod remote;
 mod syntax;
 mod tabs;
 mod ui;
+// The updater is built on the Restart Manager and a self-replacing executable,
+// and remote sessions on ConPTY hosting with DPAPI-held keys. Neither has a
+// counterpart here yet.
+#[cfg(windows)]
 mod update;
 mod utils;
 mod window;
@@ -67,7 +73,12 @@ struct StartupFiles {
 
 /// The concrete Windows platform, kept as a gpui global so settings toggles
 /// can reach platform-level knobs (UI thread priority).
-pub(crate) struct PlatformHandle(pub(crate) Rc<WindowsPlatform>);
+/// The flag a freshly installed build is relaunched with, naming the process
+/// it has to outlive. It lives here rather than with the updater because the
+/// command line is parsed on every platform, whether one is built or not.
+pub(crate) const AWAIT_EXIT_FLAG: &str = "--await-exit";
+
+pub(crate) struct PlatformHandle(pub(crate) Rc<Platform>);
 
 impl Global for PlatformHandle {}
 
@@ -79,9 +90,13 @@ fn main() {
         await_exit,
     } = parse_startup_args();
 
+    // Only a build that can replace itself has a predecessor to outlive.
+    #[cfg(windows)]
     if let Some(pid) = await_exit {
         update::await_predecessor(pid);
     }
+    #[cfg(not(windows))]
+    let _ = await_exit;
 
     run_app(url, testing, profiling);
 }
@@ -111,7 +126,7 @@ where
         )
         .arg(
             Arg::new("await-exit")
-                .long(update::AWAIT_EXIT_FLAG.trim_start_matches('-'))
+                .long(AWAIT_EXIT_FLAG.trim_start_matches('-'))
                 .value_name("PID")
                 .value_parser(clap::value_parser!(u32))
                 .hide(true),
@@ -216,8 +231,15 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
         let _ = cli_tx.unbounded_send(ipc::IpcAction::Cli(action));
     }
 
-    let platform = Rc::new(WindowsPlatform::new(false).expect("failed to initialize GPUI Windows"));
+    #[cfg(windows)]
+    let platform = Rc::new(Platform::new(false).expect("failed to initialize GPUI Windows"));
+    #[cfg(target_os = "macos")]
+    let platform = Rc::new(Platform::new(false));
 
+    // The drop hint and the UI-thread priority are Windows-backend controls:
+    // one names the effect shown by the Explorer drag cursor, the other raises
+    // the render and vsync threads against the Windows scheduler.
+    #[cfg(windows)]
     platform.set_file_drop_description(nmt_i18n::i18n("app-drop-paste-path"));
 
     let platform_handle = platform.clone();
@@ -236,6 +258,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
             // about gets installed. Syntax highlighting loads one of those
             // files, which is why this runs before it rather than beside the
             // rest of the update setup below.
+            #[cfg(windows)]
             update::settle_previous_update();
 
             if let Err(error) = syntax::register_languages() {
@@ -259,6 +282,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
             let agent_profiles = cx.global::<AppSettings>().agent_profiles.clone();
             agent_updates::initialize(testing, &agent_profiles, cx);
             input_history::initialize(testing, cx);
+            #[cfg(windows)]
             update::initialize(testing, cx);
 
             // Bring up the remote host service if it was left enabled. Runs on
@@ -276,6 +300,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
 
             // The platform remembers the choice and applies it to the vsync
             // thread when that spawns (after this closure returns).
+            #[cfg(windows)]
             if cx.global::<AppSettings>().prioritize_ui_threads {
                 platform_handle.set_ui_thread_priority(true);
             }
@@ -287,6 +312,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
             cx.observe_global::<AppSettings>(|cx| {
                 let agent_profiles = cx.global::<AppSettings>().agent_profiles.clone();
                 agent_updates::reconcile_profiles(&agent_profiles, cx);
+                #[cfg(windows)]
                 update::settings_changed(cx);
                 let smooth_panels = cx.global::<AppSettings>().smooth_scrolling.panels_enabled();
                 cx.set_smooth_wheel_scrolling(smooth_panels);
@@ -471,6 +497,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
                 AppWindow::open(cx, initial);
             }
             agent_updates::schedule_automatic_checks(cx);
+            #[cfg(windows)]
             update::schedule_automatic_checks(cx);
 
             // Apply CLI actions (argv + forwarded over the IPC pipe) on the

@@ -12,6 +12,7 @@ mod card;
 mod fields;
 mod opacity;
 mod profiles_page;
+#[cfg(windows)]
 mod remote_session_page;
 mod state;
 mod system_page;
@@ -28,9 +29,9 @@ use gpui::AppContext as _;
 use gpui::WindowBackgroundAppearance;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClipboardItem, Div, FileDialogFilter, Global, InteractiveElement as _,
-    IntoElement as _, ParentElement as _, PathPromptOptions, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px, relative,
+    AnyElement, App, Div, FileDialogFilter, Global, InteractiveElement as _, IntoElement as _,
+    ParentElement as _, PathPromptOptions, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, px, relative,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, DialogClose, DialogFooter};
@@ -53,6 +54,7 @@ use nmt_agent_utils::update::{DiscoverySupport, InstallationKey, ProviderKind, U
 #[cfg(test)]
 use nmt_config::CursorShape;
 use nmt_config::appearance::SmoothScrollingMode;
+#[cfg(windows)]
 use nmt_config::remote_session::RemoteSessionConfig;
 use nmt_config::system::{NewlineShortcut, WarnBeforeTerminatingShell};
 use nmt_platform::{
@@ -61,6 +63,9 @@ use nmt_platform::{
 };
 use tracing::warn;
 
+#[cfg(windows)]
+use crate::PlatformHandle;
+#[cfg(windows)]
 use crate::ui::UI_RADIUS;
 use crate::ui::composition::sidebar_surface;
 use crate::ui::settings::about_page::about_page;
@@ -84,13 +89,15 @@ use crate::ui::settings::opacity::{
     window_background_appearance_for,
 };
 use crate::ui::settings::profiles_page::profiles_page;
+#[cfg(windows)]
 pub(crate) use crate::ui::settings::remote_session_page::reconcile_remote_host;
+#[cfg(windows)]
 use crate::ui::settings::remote_session_page::remote_session_page;
 pub(crate) use crate::ui::settings::state::builtin_agent_profile;
 pub use crate::ui::settings::state::{
     AgentProfile, AgentProfileKind, AgentProfileLauncher, AppSettings, CollapseRows,
     DEFAULT_TAB_WIDTH, EnvVar, InputStyle, Language, ModelListStyle, Profile, TabBarStyle,
-    UpdateChannel, WindowBackdrop,
+    WindowBackdrop,
 };
 #[cfg(test)]
 use crate::ui::settings::state::{
@@ -101,7 +108,7 @@ use crate::ui::settings::state::{
 };
 #[cfg(test)]
 use crate::ui::settings::state::{
-    DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, DEFAULT_SHELL, DEFAULT_UI_FONT,
+    DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, DEFAULT_UI_FONT,
 };
 use crate::ui::settings::state::{
     agent_kind_display_label, clamp_git_interval, clamp_tab_width, cursor_shape_from_value,
@@ -121,7 +128,7 @@ use crate::ui::settings::theme::theme_list;
 pub(crate) use crate::ui::settings::theme::{
     apply_ui_theme, apply_window_translucency, watch_themes,
 };
-use crate::{PlatformHandle, agent_updates, ui};
+use crate::{agent_updates, ui};
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
 const APP_INTERNAL_VERSION: &str = env!("NIUMATERM_INTERNAL_VERSION");
@@ -138,7 +145,7 @@ pub fn settings_view(cx: &App) -> Settings {
 
     let sidebar_style = sidebar_surface(cx).border_r_0();
 
-    Settings::new("app-settings")
+    let settings = Settings::new("app-settings")
         .sidebar_width(px(240.0))
         .sidebar_style(&sidebar_style)
         // Each subcategory is its own page; the alternative scrolls the
@@ -153,9 +160,14 @@ pub fn settings_view(cx: &App) -> Settings {
         .page(system_page(shell_integration_mismatched))
         .page(profiles_page(&profiles, &agent_profiles))
         .page(terminal_page())
-        .page(agent_page(&agent_profiles, cx))
-        .page(remote_session_page())
-        .page(about_page())
+        .page(agent_page(&agent_profiles, cx));
+
+    // Remote sessions are hosted by ConPTY and keyed by DPAPI, so the page
+    // that configures them exists only where they do.
+    #[cfg(windows)]
+    let settings = settings.page(remote_session_page());
+
+    settings.page(about_page())
 }
 
 #[cfg(test)]

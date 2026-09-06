@@ -9,6 +9,7 @@ use nmt_app_agent::AgentKind;
 use nmt_config::builtin_themes::{THEMES as BUILTIN_THEMES, get as builtin_theme_source};
 use nmt_config::theme::Theme as ConfigTheme;
 
+use crate::ui::settings::state::default_shell_for_tests;
 use crate::ui::settings::theme::ui_theme_config;
 use crate::ui::settings::*;
 
@@ -196,7 +197,7 @@ fn default_profile_command_resolves_by_name() {
         profiles: vec![
             Profile {
                 name: "PowerShell".into(),
-                shell: DEFAULT_SHELL.into(),
+                shell: default_shell_for_tests(),
                 args: String::new(),
             },
             Profile {
@@ -216,7 +217,7 @@ fn default_profile_command_resolves_by_name() {
     // Dangling name falls back to the first profile.
     settings.default_profile = "Nope".into();
     let (shell, _) = settings.default_profile_command();
-    assert_eq!(shell.as_deref(), Some(DEFAULT_SHELL));
+    assert_eq!(shell.as_deref(), Some(default_shell_for_tests().as_str()));
 
     // Blank shell path: no override, session uses its built-in default.
     settings.profiles[0].shell = "  ".into();
@@ -366,7 +367,7 @@ fn defaults_have_one_powershell_profile() {
     assert_eq!(settings.window_backdrop, WindowBackdrop::Acrylic);
     assert_eq!(settings.profiles.len(), 1);
     assert!(
-        settings.profiles[0].shell == DEFAULT_SHELL
+        settings.profiles[0].shell == default_shell_for_tests()
             || settings.profiles[0].shell.ends_with(r"\pwsh.exe")
     );
     assert_eq!(settings.profiles[0].args, "");

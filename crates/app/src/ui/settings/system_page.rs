@@ -127,6 +127,7 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                         |value, cx| {
                             cx.global_mut::<AppSettings>().prioritize_ui_threads = value;
 
+                            #[cfg(windows)]
                             cx.global::<PlatformHandle>()
                                 .0
                                 .set_ui_thread_priority(value);

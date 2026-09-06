@@ -144,6 +144,7 @@ impl Shell {
     pub(super) fn retire_settings_workspace(&mut self, cx: &mut Context<Self>) {
         cx.global::<AppSettings>().save();
         // Pick up relay URL / token edits made while the entry was open.
+        #[cfg(windows)]
         ui::settings::reconcile_remote_host(cx);
 
         self.settings.retire();
