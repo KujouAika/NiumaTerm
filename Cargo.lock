@@ -2668,7 +2668,7 @@ dependencies = [
  "mach2",
  "metal",
  "num_cpus",
- "objc-rs",
+ "objc",
  "objc2 0.6.4",
  "objc2-metal 0.3.2",
  "parking",
@@ -2898,7 +2898,7 @@ dependencies = [
  "log",
  "mach2",
  "metal",
- "objc-rs",
+ "objc",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -2933,7 +2933,7 @@ dependencies = [
  "ctor",
  "foreign-types",
  "metal",
- "objc-rs",
+ "objc",
 ]
 
 [[package]]
@@ -3990,15 +3990,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "malloc_buf"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f32c8c0575eee8637bf462087c00098fe16d6cb621f1abb6ebab4da414d57fd"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "markdown"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4308,7 +4299,7 @@ dependencies = [
  "libc",
  "mio",
  "miow",
- "objc-rs",
+ "objc",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications",
@@ -4634,7 +4625,7 @@ version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
 dependencies = [
- "malloc_buf 0.0.6",
+ "malloc_buf",
  "objc_exception",
 ]
 
@@ -4647,15 +4638,6 @@ dependencies = [
  "block",
  "objc",
  "objc_id",
-]
-
-[[package]]
-name = "objc-rs"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a9b38a5df34f19b4f55bdbdf42c32f4b147359e7a845fb60b4b74e44399379a"
-dependencies = [
- "malloc_buf 1.0.0",
 ]
 
 [[package]]
