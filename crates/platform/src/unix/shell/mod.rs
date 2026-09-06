@@ -61,15 +61,15 @@ fn zsh_integration() -> Option<PromptIntegration> {
 
 /// bash's hook is `--rcfile`, which it honours only as a non-login shell.
 ///
-/// Where the backend spawns login shells, the launch becomes `-lc` plus an
-/// `exec` into an interactive shell carrying `--rcfile`. The outer shell is
-/// still a login shell, so bash itself runs the profile chain by its own
-/// precedence rules, and the environment that builds survives the `exec`. The
-/// inner shell then reads our rc in place of `~/.bashrc` — which a login shell
-/// would not have read either — so the hop adds the integration without
-/// touching the user's own set of files. Where the backend spawns a plain
-/// interactive shell, `--rcfile` is taken directly and the rc sources the
-/// `~/.bashrc` it stands in for.
+/// Where the backend spawns login shells, the launch becomes an `exec` into an
+/// interactive shell carrying `--rcfile`, purely to shed the login status that
+/// would make bash ignore it. The outer shell is given `--norc --noprofile`
+/// and does nothing else: an `exec` carries the environment across but nothing
+/// else, so a function, alias or trap from the profile chain would be lost if
+/// that chain ran out there. `NMT_BASH_LOGIN` tells the rc to replay it in the
+/// shell the user actually gets. Where the backend spawns a plain interactive
+/// shell, `--rcfile` is taken directly and the rc replays the `~/.bashrc`
+/// sequence it stands in for.
 fn bash_integration(shell: &str) -> Option<PromptIntegration> {
     let directory = bash_directory()?;
     let rc = directory.join(BASH_RC).to_string_lossy().into_owned();
@@ -80,8 +80,12 @@ fn bash_integration(shell: &str) -> Option<PromptIntegration> {
     )];
 
     let args = if SPAWNS_LOGIN_SHELL {
+        environment.push((String::from("NMT_BASH_LOGIN"), String::from("1")));
+
         vec![
-            String::from("-lc"),
+            String::from("--norc"),
+            String::from("--noprofile"),
+            String::from("-c"),
             format!(
                 "exec {} --rcfile {} -i",
                 single_quoted(shell),
@@ -89,13 +93,6 @@ fn bash_integration(shell: &str) -> Option<PromptIntegration> {
             ),
         ]
     } else {
-        environment.push((
-            String::from("NMT_BASH_USER_RC"),
-            environment::home_dir()
-                .map(|home| home.join(".bashrc").to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        ));
-
         vec![String::from("--rcfile"), rc]
     };
 
@@ -110,8 +107,8 @@ fn bash_integration(shell: &str) -> Option<PromptIntegration> {
 ///
 /// The leading space is what the launch's history setting keys on, and the
 /// trailing newline is what submits it. Keeping the payload to one short line
-/// is why the script lives in a file: a shell's canonical input queue is only
-/// guaranteed to hold a few hundred bytes.
+/// is why the script lives in a file: a terminal's canonical input queue is
+/// only guaranteed to hold a few hundred bytes.
 fn bootstrap_line(script: &Path) -> String {
     format!(" source {}\n", single_quoted(&script.to_string_lossy()))
 }

@@ -409,3 +409,112 @@ fn zsh_prompt_mark_does_not_accumulate() {
 fn bash_prompt_mark_does_not_accumulate() {
     assert_the_prompt_mark_does_not_accumulate("bash");
 }
+
+/// bash allows one DEBUG trap, and the integration installs one for `;C`. A
+/// trap the user's own files put there — bash-preexec, atuin — must keep
+/// firing rather than be silently replaced.
+///
+/// Run through the generated launch arguments rather than the PTY for the same
+/// reason as the startup-file case: `/usr/bin/login` resets `$HOME`, so the
+/// files that would install such a trap cannot be placed where bash looks.
+#[test]
+fn bash_keeps_a_debug_trap_the_user_already_installed() {
+    let Some(bash) = shell_path("bash") else {
+        eprintln!("skipping: no bash on this host");
+        return;
+    };
+    let integration = prompt_integration(Some(&bash)).expect("bash is integrated");
+
+    let home = env::temp_dir().join(format!("nmt-bash-debugtrap-{}", id()));
+    fs::create_dir_all(&home).expect("temp home");
+    let trap = "trap 'printf \"USERTRAP[%s]\\n\" \"$BASH_COMMAND\"' DEBUG\n";
+    for name in [".bash_profile", ".bashrc"] {
+        fs::write(home.join(name), trap).expect("startup file");
+    }
+    let home_value = home.to_string_lossy().into_owned();
+
+    let mut command = Command::new(&bash);
+    command.args(&integration.args);
+    for (name, value) in &integration.environment {
+        let value = match name.as_str() {
+            "NMT_BASH_USER_RC" => home.join(".bashrc").to_string_lossy().into_owned(),
+            _ => value.clone(),
+        };
+        command.env(name, value);
+    }
+    command
+        .env("HOME", &home_value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().expect("spawn bash");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"echo probe-command\nexit\n")
+        .expect("write command");
+
+    let output = child.wait_with_output().expect("bash exits");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let _ = fs::remove_dir_all(&home);
+
+    assert!(
+        text.contains("USERTRAP[echo probe-command]"),
+        "the user's DEBUG trap stopped firing; saw {text}"
+    );
+}
+
+/// An `exec` carries the environment across and nothing else, so a profile
+/// chain replayed on the far side of the login hop would hand the user a shell
+/// with their exported variables but none of their functions, aliases or
+/// traps. The chain has to run in the shell they actually get.
+#[test]
+fn bash_keeps_functions_and_aliases_from_the_users_profile() {
+    let Some(bash) = shell_path("bash") else {
+        eprintln!("skipping: no bash on this host");
+        return;
+    };
+    let integration = prompt_integration(Some(&bash)).expect("bash is integrated");
+
+    let home = env::temp_dir().join(format!("nmt-bash-funcs-{}", id()));
+    fs::create_dir_all(&home).expect("temp home");
+    let profile = "nmt_probe_func() { :; }\nalias nmt_probe_alias='true'\n";
+    for name in [".bash_profile", ".bashrc"] {
+        fs::write(home.join(name), profile).expect("startup file");
+    }
+
+    let mut command = Command::new(&bash);
+    command.args(&integration.args);
+    for (name, value) in &integration.environment {
+        command.env(name, value);
+    }
+    command
+        .env("HOME", home.to_string_lossy().into_owned())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().expect("spawn bash");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            b"printf 'func=[%s] alias=[%s]\\n' \"$(type -t nmt_probe_func)\" \
+              \"$(alias nmt_probe_alias >/dev/null 2>&1 && echo yes)\"\nexit\n",
+        )
+        .expect("write command");
+
+    let output = child.wait_with_output().expect("bash exits");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let _ = fs::remove_dir_all(&home);
+
+    assert!(
+        text.contains("func=[function] alias=[yes]"),
+        "the user's functions and aliases did not survive the launch; saw {text}"
+    );
+}
