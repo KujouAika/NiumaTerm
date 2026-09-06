@@ -347,3 +347,69 @@ fn bash_still_reads_the_users_startup_files() {
         "bash did not read the user's startup files; saw {text}"
     );
 }
+
+/// Pressing Enter on an empty line must not cost boundary trust: no command
+/// runs, so the shell's pre-execution hook never fires, and a `;D` arriving
+/// straight after `;B` is an out-of-order lifecycle.
+fn assert_empty_enter_keeps_the_lifecycle_ordered(shell: &str) {
+    let Some(mut session) = start(shell, "empty-enter") else {
+        return;
+    };
+
+    session.read_until(|seen| seen.len() >= 6);
+    session.pty.write_all(b"\n").expect("write empty line");
+
+    let seen = session.read_until(|seen| seen.len() >= 9);
+
+    assert_eq!(
+        &seen[6..9],
+        &["C", "D;0", "A"],
+        "an empty line must still close its command region; saw {seen:?}"
+    );
+}
+
+#[test]
+fn zsh_empty_enter_keeps_the_lifecycle_ordered() {
+    assert_empty_enter_keeps_the_lifecycle_ordered("zsh");
+}
+
+#[test]
+fn bash_empty_enter_keeps_the_lifecycle_ordered() {
+    assert_empty_enter_keeps_the_lifecycle_ordered("bash");
+}
+
+/// The prompt-end mark is re-applied on every prompt, so the strip that
+/// precedes it has to actually match: without it PS1 would grow by one marker
+/// per prompt, and the terminal would see the prompt region close early.
+fn assert_the_prompt_mark_does_not_accumulate(shell: &str) {
+    let Some(mut session) = start(shell, "no-accumulate") else {
+        return;
+    };
+
+    session.read_until(|seen| seen.len() >= 6);
+
+    for _ in 0..4 {
+        session.pty.write_all(b"true\n").expect("write command");
+    }
+
+    // Four commands past the priming six marks: C, D, A, B each.
+    let seen = session.read_until(|seen| seen.len() >= 6 + 4 * 4);
+
+    assert_eq!(
+        &seen[6..],
+        &[
+            "C", "D;0", "A", "B", "C", "D;0", "A", "B", "C", "D;0", "A", "B", "C", "D;0", "A", "B"
+        ],
+        "each prompt must carry exactly one B; saw {seen:?}"
+    );
+}
+
+#[test]
+fn zsh_prompt_mark_does_not_accumulate() {
+    assert_the_prompt_mark_does_not_accumulate("zsh");
+}
+
+#[test]
+fn bash_prompt_mark_does_not_accumulate() {
+    assert_the_prompt_mark_does_not_accumulate("bash");
+}
