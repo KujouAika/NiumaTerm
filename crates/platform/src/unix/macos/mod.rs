@@ -1,10 +1,10 @@
 // From: https://github.com/alacritty/alacritty/blob/04ea367e3baa7e51933e9a595da793b4c8a4aa8f/alacritty/src/macos/proc.rs
 
-use std::ffi::{CStr, CString, IntoStringError};
+use std::ffi::{CStr, CString, IntoStringError, OsStr};
 use std::fmt::{self, Display, Formatter};
 use std::mem::MaybeUninit;
 use std::os::raw::c_int;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{error, io};
 
 use libc::c_void;
@@ -124,7 +124,7 @@ mod sys {
         pub pvi_rdir: vnode_info_path,
     }
 
-    extern "C" {
+    unsafe extern "C" {
         pub fn proc_pidpath(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
 
         pub fn proc_pidinfo(
@@ -143,9 +143,9 @@ pub fn macos_process_name(pid: c_int) -> String {
 
     if pid >= 0 {
         let proc_path = get_proc_path(pid);
-        name = path::Path::new(&proc_path)
+        name = Path::new(&proc_path)
             .file_name()
-            .unwrap_or(ffi::OsStr::new(""))
+            .unwrap_or(OsStr::new(""))
             .to_str()
             .unwrap_or("")
             .to_string();
@@ -181,7 +181,7 @@ fn get_proc_path(pid: i32) -> String {
 pub fn macos_cwd(pid: c_int) -> Result<PathBuf, Error> {
     let mut info = MaybeUninit::<sys::proc_vnodepathinfo>::uninit();
     let info_ptr = info.as_mut_ptr() as *mut c_void;
-    let size = mem::size_of::<sys::proc_vnodepathinfo>() as c_int;
+    let size = size_of::<sys::proc_vnodepathinfo>() as c_int;
 
     let c_str = unsafe {
         let pidinfo_size = sys::proc_pidinfo(pid, sys::PROC_PIDVNODEPATHINFO, 0, info_ptr, size);

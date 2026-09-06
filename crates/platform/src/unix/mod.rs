@@ -9,17 +9,17 @@ mod macos;
 mod notifier;
 mod signals;
 
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::Error;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{self, Command, Stdio};
 use std::sync::Arc;
-use std::{env, io, ptr, str};
+use std::{env, error, io, ptr, str};
 
 #[cfg(target_os = "macos")]
 use macos::*;
@@ -45,7 +45,7 @@ const TIOCSWINSZ: libc::c_ulong = 0x80087467;
 const TIOCSWINSZ: libc::c_ulong = 2148037735;
 
 #[link(name = "util")]
-extern "C" {
+unsafe extern "C" {
     fn forkpty(
         main: *mut libc::c_int,
         name: *mut libc::c_char,
@@ -169,7 +169,7 @@ impl ProcessReadWrite for Pty {
         poll: &Poll,
         token: &mut dyn Iterator<Item = Token>,
         interest: Interest,
-        _waker: &sync::Arc<Waker>,
+        _waker: &Arc<Waker>,
     ) -> io::Result<()> {
         // The pty fd is a real OS readiness source; no `Waker` needed on Unix.
         self.token = token.next().unwrap();
@@ -444,7 +444,7 @@ pub fn create_pty_with_spawn(
             let mut login_cmd = Command::new("/usr/bin/login");
 
             // Check for .hushlogin in home directory
-            let hushlogin_path = path::Path::new(&user.home).join(".hushlogin");
+            let hushlogin_path = Path::new(&user.home).join(".hushlogin");
             let flags = if hushlogin_path.exists() {
                 "-qflp"
             } else {
@@ -949,7 +949,7 @@ pub fn foreground_process_path(
 pub fn spawn_daemon<I, S>(program: &str, args: I, main_fd: RawFd, shell_pid: u32) -> io::Result<()>
 where
     I: IntoIterator<Item = S> + Copy,
-    S: AsRef<ffi::OsStr>,
+    S: AsRef<OsStr>,
 {
     let mut command = Command::new(program);
     command
