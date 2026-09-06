@@ -6,6 +6,19 @@
 # turns a session into command blocks with a fixed prompt dock; without the
 # marks the terminal falls back to heuristic prompt sniffing.
 #
+# The terminal starts bash with `--norc --noprofile` and
+# `HISTCONTROL=ignorespace`, then puts one leading-space `source` of this file
+# into the terminal's input queue before the shell exists. So this file owns
+# startup: it replays the user's own startup files in bash's order and installs
+# its hooks last — after everything, which is the point.
+#
+# Unlike zsh, the injected line cannot be hidden. Suppressing it means starting
+# without a line editor, and bash 3.2 cannot put one back: `set -o emacs` flips
+# the option, but readline was never initialized at startup and the shell stops
+# printing prompts altogether. So readline stays on, readline echoes the line,
+# and the screen is cleared below instead — which also takes the login banner
+# with it.
+#
 # Written for bash 3.2, which is the version macOS ships.
 #
 # Deliberately absent, unlike the PowerShell integration: no screen clear at
@@ -15,15 +28,48 @@
 # wrong under job control: a suspended full-screen program is sitting at a
 # prompt with the alternate screen still its own, and `fg` must find it intact.
 
-case "$-" in
-  *i*) ;;
-  *) return 0 ;;
-esac
+# First, before anything can print: drop the echoed bootstrap line, the prompt
+# it was typed at, and the login banner above them. Scrollback goes too, since
+# the line may have wrapped and there is nothing worth keeping from before the
+# session started.
+printf '\033[H\033[2J\033[3J'
 
-if [ -n "$NMT_BASH_INTEGRATION_LOADED" ]; then
-  return 0
+# The leading space on the `source` line kept it out of history. That setting
+# existed for that one line and the decision has already been taken, so the
+# value the session would otherwise have had is restored before the user's own
+# files can have an opinion about it.
+if [ -n "${NMT_SAVED_HISTCONTROL+x}" ]; then
+  HISTCONTROL=$NMT_SAVED_HISTCONTROL
+  export HISTCONTROL
+else
+  unset HISTCONTROL
 fi
-NMT_BASH_INTEGRATION_LOADED=1
+unset NMT_SAVED_HISTCONTROL
+
+# Replay the startup sequence `--norc --noprofile` suppressed, in bash's order.
+# `shopt -q login_shell` is the shell's own answer, and it is the shell the
+# user actually gets — there is no `exec` between here and them, so functions,
+# aliases and traps defined below reach the session intact.
+#
+# Sourced at the top level rather than from a helper function: a `local` in the
+# user's own files has to reach the shell, not a function scope.
+if shopt -q login_shell; then
+  [ -r /etc/profile ] && . /etc/profile
+  for __nmt_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+    if [ -r "$__nmt_profile" ]; then
+      . "$__nmt_profile"
+      break
+    fi
+  done
+  unset __nmt_profile
+else
+  # `/etc/bash.bashrc` is only in the startup sequence when bash was compiled
+  # with SYS_BASHRC, which Debian and its derivatives do and there is no
+  # efficient way to test for. Sourcing it when it exists matches the systems
+  # that ship one; systems without the file are unaffected.
+  [ -r /etc/bash.bashrc ] && . /etc/bash.bashrc
+  [ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+fi
 
 # Set before the DEBUG trap is installed so the rest of this file, and the
 # first prompt's own hooks, are not mistaken for a user command.

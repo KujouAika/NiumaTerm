@@ -477,15 +477,6 @@ fn require_executable_shell(shell: &str) -> Result<(), Error> {
     })
 }
 
-/// Whether a shell this backend spawns is a login shell.
-///
-/// macOS launches every shell through `/usr/bin/login` with a `-` argv[0] so
-/// the child inherits a login environment; elsewhere the shell is exec'd
-/// directly and is not one. Which startup files a shell reads follows from
-/// this, so anything that has to inject itself into them asks here rather than
-/// re-deriving it from the target.
-pub(crate) const SPAWNS_LOGIN_SHELL: bool = cfg!(target_os = "macos");
-
 /// The initial pixel size a PTY reports. The window has not been laid out
 /// when the shell starts, and `set_winsize` carries the real dimensions from
 /// the first resize onward; zero is the value programs already read as
