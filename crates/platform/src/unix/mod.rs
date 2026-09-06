@@ -41,9 +41,7 @@ use signals::Signals;
 
 pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
 use crate::unix::process::{KillOnCloseJob, ProcessTree};
-pub(crate) use crate::unix::shell::{
-    default_shell, prompt_integration_args, supports_prompt_integration,
-};
+pub(crate) use crate::unix::shell::{default_shell, prompt_integration};
 use crate::{ChildEvent, EventedPty, ProcessReadWrite, Winsize, WinsizeBuilder};
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -823,7 +821,8 @@ fn set_controlling_terminal(fd: libc::c_int) -> Result<(), Error> {
 unsafe fn set_nonblocking(fd: libc::c_int) {
     use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
 
-    let res = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    // SAFETY: the caller guarantees `fd` is a live descriptor this owns.
+    let res = unsafe { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) };
     assert_eq!(res, 0);
 }
 

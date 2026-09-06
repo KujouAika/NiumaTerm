@@ -1,14 +1,9 @@
 use nmt_config::CursorShape;
 use nmt_config::local_state::TabState;
+use nmt_platform::PromptIntegration;
 
 pub(crate) fn default_shell() -> String {
     nmt_platform::default_shell()
-}
-
-/// Whether the platform can inject its OSC 133 integration into a configured
-/// shell. `None` resolves to the platform's default shell.
-pub(crate) fn shell_supports_prompt_integration(shell: Option<&str>) -> bool {
-    nmt_platform::supports_prompt_integration(shell)
 }
 
 /// Local terminal session configuration. `None` and empty fields fall back to
@@ -52,21 +47,32 @@ impl TerminalSessionConfig {
     }
 
     /// Augment a session config so the shell evaluates the bundled OSC 133
-    /// integration at startup. Only applied to a supported shell with no
-    /// caller-supplied args, so explicit args (and shells the platform has no
-    /// integration for) are left untouched.
+    /// integration at startup. Whether that rides on startup arguments or on
+    /// the child environment is the platform's answer, not this layer's.
     pub(crate) fn with_shell_integration(mut self: TerminalSessionConfig) -> TerminalSessionConfig {
-        if !self.has_trusted_prompt_integration() {
+        let Some(integration) = self.prompt_integration() else {
             return self;
-        }
+        };
 
-        self.args = nmt_platform::prompt_integration_args();
+        self.args = integration.args;
+        self.environment_overrides.extend(integration.environment);
 
         self
     }
 
+    /// The launch adjustments the platform's prompt integration needs, or
+    /// `None` when the shell has none. Caller-supplied args are the user's own
+    /// launch command, so a config that carries them is left alone.
+    fn prompt_integration(&self) -> Option<PromptIntegration> {
+        if !self.args.is_empty() {
+            return None;
+        }
+
+        nmt_platform::prompt_integration(self.shell.as_deref())
+    }
+
     pub(crate) fn has_trusted_prompt_integration(&self) -> bool {
-        self.args.is_empty() && shell_supports_prompt_integration(self.shell.as_deref())
+        self.prompt_integration().is_some()
     }
 }
 

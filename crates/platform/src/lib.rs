@@ -168,15 +168,23 @@ pub fn default_shell() -> String {
     platform::default_shell()
 }
 
-/// Whether the bundled OSC 133 prompt integration can be injected into
-/// `shell`, so the terminal may trust the block boundaries it reports.
-/// `None` means the platform default shell.
-pub fn supports_prompt_integration(shell: Option<&str>) -> bool {
-    platform::supports_prompt_integration(shell)
+/// How a shell must be launched so it evaluates the bundled OSC 133 prompt
+/// integration: startup arguments, child-only environment, or both. Which of
+/// the two carries it is the platform's business — PowerShell takes the script
+/// as an argument, zsh is reached through `ZDOTDIR`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptIntegration {
+    pub args: Vec<String>,
+    pub environment: Vec<(String, String)>,
 }
 
-/// The startup arguments that make a shell
-/// [`supports_prompt_integration`] accepts evaluate the bundled integration.
-pub fn prompt_integration_args() -> Vec<String> {
-    platform::prompt_integration_args()
+/// The launch adjustments that make `shell` report trusted prompt boundaries,
+/// or `None` when the platform ships no integration for it. `None` for `shell`
+/// means the platform's default shell.
+///
+/// A platform that has to materialize files does so on the first call, so a
+/// `Some` answer means the launch is ready to go; a failure there reports
+/// `None` rather than a launch that would drop the user's own configuration.
+pub fn prompt_integration(shell: Option<&str>) -> Option<PromptIntegration> {
+    platform::prompt_integration(shell)
 }

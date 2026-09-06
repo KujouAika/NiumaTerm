@@ -1,7 +1,6 @@
 pub(crate) use notifier::{remove, show};
 pub(crate) use powershell::{
-    build_hook_command, default_shell, hook_command_contains, prompt_integration_args,
-    supports_prompt_integration,
+    build_hook_command, default_shell, hook_command_contains, prompt_integration,
 };
 pub use process_exit::wait_for_exit;
 pub use readiness::SoftReady;

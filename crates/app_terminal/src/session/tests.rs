@@ -168,21 +168,69 @@ fn powershell_bootstrap_is_passed_as_utf16_encoded_command() {
     );
 }
 
-/// No POSIX shell integration ships yet, so no configuration may claim a
-/// trusted prompt and `with_shell_integration` must leave the launch command
-/// exactly as configured.
+/// zsh is the only POSIX shell with an integration, and it arrives through
+/// `ZDOTDIR` rather than startup arguments: the launch command the user
+/// configured has to survive untouched.
 #[cfg(unix)]
 #[test]
-fn no_unix_shell_claims_a_trusted_prompt_integration() {
-    for shell in [None, Some("/bin/zsh"), Some("/bin/bash")] {
+fn zsh_is_integrated_through_the_environment() {
+    let config = TerminalSessionConfig {
+        shell: Some("/bin/zsh".into()),
+        ..TerminalSessionConfig::default()
+    };
+
+    assert!(config.has_trusted_prompt_integration());
+
+    let integrated = config.with_shell_integration();
+
+    assert!(integrated.args.is_empty());
+    assert!(
+        integrated
+            .environment_overrides
+            .iter()
+            .any(|(name, _)| name == "ZDOTDIR")
+    );
+}
+
+/// bash has no integration: `--rcfile` is its equivalent hook and a login
+/// shell ignores it, which is how every shell here is launched on macOS.
+/// Claiming a trusted prompt anyway would have the terminal trust boundaries
+/// nothing emits.
+#[cfg(unix)]
+#[test]
+fn a_shell_without_an_integration_claims_no_trusted_prompt() {
+    for shell in ["/bin/bash", "/bin/sh", "/usr/local/bin/fish"] {
         let config = TerminalSessionConfig {
-            shell: shell.map(str::to_owned),
+            shell: Some(shell.into()),
             ..TerminalSessionConfig::default()
         };
 
-        assert!(!config.has_trusted_prompt_integration());
-        assert!(config.with_shell_integration().args.is_empty());
+        assert!(!config.has_trusted_prompt_integration(), "{shell}");
+
+        let integrated = config.with_shell_integration();
+
+        assert!(integrated.args.is_empty(), "{shell}");
+        assert!(integrated.environment_overrides.is_empty(), "{shell}");
     }
+}
+
+/// Caller-supplied args are the user's own launch command; injecting an
+/// integration would replace or contradict it.
+#[cfg(unix)]
+#[test]
+fn explicit_args_suppress_the_zsh_integration() {
+    let config = TerminalSessionConfig {
+        shell: Some("/bin/zsh".into()),
+        args: vec!["--no-rcs".into()],
+        ..TerminalSessionConfig::default()
+    };
+
+    assert!(!config.has_trusted_prompt_integration());
+
+    let integrated = config.with_shell_integration();
+
+    assert_eq!(integrated.args, ["--no-rcs"]);
+    assert!(integrated.environment_overrides.is_empty());
 }
 
 /// Creating a session with a non-existent shell returns a structured
@@ -214,8 +262,9 @@ fn restorable_tab_state_keeps_original_launch_command() {
     assert_eq!(state.shell.as_deref(), Some("pwsh.exe"));
     assert!(state.args.is_empty());
     assert_eq!(state.cwd.as_deref(), Some("C:/Projects/example"));
-    // The contrast only exists where a shell integration is injected; the
-    // restorable state must keep the configured command either way.
+    // PowerShell's integration rewrites the launch args, so the restorable
+    // state has to be the copy taken before it. Elsewhere the shell is not one
+    // with an integration and the args stay empty either way.
     #[cfg(windows)]
     assert!(!integrated.args.is_empty());
     #[cfg(unix)]
