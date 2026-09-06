@@ -333,7 +333,7 @@ tracing-appender = "0.2.5"
 # client handshake is needed; the sockets it opens are loopback, so none of the
 # TLS backends are.
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
-objc = { package = "objc-rs", version = "0.3.1" }
+objc = "0.2"
 memmap2 = "0.9.11"
 url = "2.5.8"
 criterion = { version = "0.8.2", features = ["html_reports"] }
