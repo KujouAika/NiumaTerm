@@ -43,7 +43,7 @@ use crate::unix::hook_command::single_quoted;
 pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
 use crate::unix::process::{KillOnCloseJob, ProcessTree};
 pub(crate) use crate::unix::shell::{default_shell, prompt_integration};
-use crate::{ChildEvent, EventedPty, ProcessReadWrite, Winsize, WinsizeBuilder};
+use crate::{APP_ID, ChildEvent, EventedPty, ProcessReadWrite, Winsize, WinsizeBuilder};
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 const TIOCSWINSZ: libc::c_ulong = 0x5414;
@@ -689,6 +689,12 @@ fn create_pty_with_management(
 
     builder.env("USER", user.user);
     builder.env("HOME", user.home);
+    // Name the terminal to what runs inside it. Startup files branch on this —
+    // macOS `/etc/bashrc` sources `/etc/bashrc_$TERM_PROGRAM` — so inheriting
+    // the value of whichever terminal launched the app would attach that
+    // terminal's machinery to our sessions. Apple's copy, for one, repoints
+    // `HISTFILE` into its own session store.
+    builder.env("TERM_PROGRAM", APP_ID);
     builder.envs(environment_overrides.iter().map(|(k, v)| (k, v)));
 
     unsafe {
