@@ -50,6 +50,9 @@ fn failure_classifier_recognizes_external_locks() {
     );
 }
 
+/// Write an executable stand-in for a vendor CLI. The extension and the
+/// execute bit are what make a script runnable on each platform, so the
+/// caller supplies only the script body for its own shell.
 fn fake_launcher(name: &str, body: &str) -> (PathBuf, PathBuf) {
     let root = env::temp_dir().join(format!(
         "NiumaTerm provider update {} {}",
@@ -57,14 +60,30 @@ fn fake_launcher(name: &str, body: &str) -> (PathBuf, PathBuf) {
         process::id()
     ));
     fs::create_dir_all(&root).unwrap();
+
+    #[cfg(windows)]
     let launcher = root.join(format!("{name}.cmd"));
+    #[cfg(unix)]
+    let launcher = root.join(name);
+
     fs::write(&launcher, body).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     (root, launcher)
 }
 
 #[test]
 fn configured_vendor_runners_pass_only_the_allowlisted_update_argument() {
+    #[cfg(windows)]
     let script = "@echo off\r\n>\"%NMT_UPDATE_LOG%\" echo %*\r\nif \"%1\"==\"update\" exit /b 0\r\nexit /b 9\r\n";
+    #[cfg(unix)]
+    let script =
+        "#!/bin/sh\necho \"$@\" > \"$NMT_UPDATE_LOG\"\n[ \"$1\" = update ] && exit 0\nexit 9\n";
     for (provider, name) in [
         (ProviderKind::Codex, "fake-codex"),
         (ProviderKind::Claude, "fake-claude"),

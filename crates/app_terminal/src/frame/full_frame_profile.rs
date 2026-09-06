@@ -2,6 +2,9 @@ use std::time::{Duration, Instant};
 use std::{fs, hint};
 
 use gpui::{FontRun, Platform, font, px};
+#[cfg(target_os = "macos")]
+use gpui_macos::MacPlatform;
+#[cfg(windows)]
 use gpui_windows::WindowsPlatform;
 use nmt_terminal::ghostty::GhosttyTerminal;
 use nmt_terminal::render_buffer::RenderBuffer;
@@ -81,7 +84,10 @@ fn profile_full_frame_pipeline() {
     }
 
     // 4. shape novel lines with the real DirectWrite text system (no window).
+    #[cfg(windows)]
     let platform = WindowsPlatform::new(false).expect("directwrite platform");
+    #[cfg(target_os = "macos")]
+    let platform = MacPlatform::new(false);
     let pts = platform.text_system();
     let font_id = pts.font_id(&font("Consolas")).expect("Consolas font id");
     let font_size = px(14.0);

@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 use std::{io, sync, time};
 
 use nmt_config::colors::Colors;
-use nmt_platform::windows::conpty_realign::{
+use nmt_platform::conpty_realign::{
     max_cup_row_col, rewrite_conpty_resize_echo_cup_rows, su_realign_count,
 };
 use nmt_platform::{ChildEvent, EventedPty, ProcessReadWrite, WinsizeBuilder};
@@ -428,6 +428,10 @@ fn osc_progress_hides_published_cursor_until_removed() {
     );
 }
 
+/// Drives the read loop's realignment, which `USES_CONPTY` enables only
+/// where ConPTY is the backend; a real PTY never emits the resize echo
+/// this reacts to.
+#[cfg(windows)]
 #[test]
 fn conpty_resize_echo_realigns_machine_pty_read_to_cursor_row() {
     let render_buffer = Arc::new(FairMutex::new(RenderBuffer::new(134, 42)));
@@ -470,6 +474,10 @@ fn conpty_resize_echo_realigns_machine_pty_read_to_cursor_row() {
     );
 }
 
+/// Drives the read loop's realignment, which `USES_CONPTY` enables only
+/// where ConPTY is the backend; a real PTY never emits the resize echo
+/// this reacts to.
+#[cfg(windows)]
 #[test]
 fn conpty_resize_repaint_realigns_clear_without_new_input() {
     let render_buffer = Arc::new(FairMutex::new(RenderBuffer::new(134, 42)));
@@ -581,6 +589,10 @@ fn conpty_resize_repaint_realigns_to_active_cursor_when_scrolled() {
 /// ENGINE's active cursor row (`active_cursor_row()`, independent of the viewport
 /// scroll), so the echo lands on the active prompt row — never on the scrolled-away
 /// history currently in view. ConPTY emits the echo at its own stale CUP row.
+/// Drives the read loop's realignment, which `USES_CONPTY` enables only
+/// where ConPTY is the backend; a real PTY never emits the resize echo
+/// this reacts to.
+#[cfg(windows)]
 #[test]
 fn conpty_resize_echo_routes_to_active_cursor_when_scrolled_typing() {
     let render_buffer = Arc::new(FairMutex::new(RenderBuffer::new(20, 4)));

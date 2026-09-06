@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::{collections, env, fs, process, sync, thread, time};
 
+#[cfg(windows)]
 use base64::engine::general_purpose::STANDARD;
+#[cfg(windows)]
 use nmt_platform::windows::powershell::INTEGRATION_SCRIPT;
 use nmt_terminal::block_store::BlockStore;
 use nmt_terminal::event::{BlockEvent, TerminalEvent};
@@ -112,6 +114,9 @@ fn tokio_runtime() -> Runtime {
         .expect("runtime")
 }
 
+/// Which shells carry a trusted OSC 133 integration is a platform answer, so
+/// the acceptance cases live under the platform that provides the script.
+#[cfg(windows)]
 #[test]
 fn trusted_prompt_integration_requires_injected_powershell_startup() {
     assert!(TerminalSessionConfig::default().has_trusted_prompt_integration());
@@ -142,6 +147,7 @@ fn trusted_prompt_integration_requires_injected_powershell_startup() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn powershell_bootstrap_is_passed_as_utf16_encoded_command() {
     use base64::Engine as _;
@@ -162,12 +168,29 @@ fn powershell_bootstrap_is_passed_as_utf16_encoded_command() {
     );
 }
 
+/// No POSIX shell integration ships yet, so no configuration may claim a
+/// trusted prompt and `with_shell_integration` must leave the launch command
+/// exactly as configured.
+#[cfg(unix)]
+#[test]
+fn no_unix_shell_claims_a_trusted_prompt_integration() {
+    for shell in [None, Some("/bin/zsh"), Some("/bin/bash")] {
+        let config = TerminalSessionConfig {
+            shell: shell.map(str::to_owned),
+            ..TerminalSessionConfig::default()
+        };
+
+        assert!(!config.has_trusted_prompt_integration());
+        assert!(config.with_shell_integration().args.is_empty());
+    }
+}
+
 /// Creating a session with a non-existent shell returns a structured
 /// `PtySpawn` error rather than a bare null so callers retain the failure cause.
 #[test]
 fn bad_shell_returns_structured_error() {
     let config = TerminalSessionConfig {
-        shell: Some("this-shell-does-not-exist-xyz.exe".into()),
+        shell: Some("this-shell-does-not-exist-xyz".into()),
         ..TerminalSessionConfig::default()
     };
     let err = TerminalSession::new_internal(&config, 1, None)
@@ -191,7 +214,12 @@ fn restorable_tab_state_keeps_original_launch_command() {
     assert_eq!(state.shell.as_deref(), Some("pwsh.exe"));
     assert!(state.args.is_empty());
     assert_eq!(state.cwd.as_deref(), Some("C:/Projects/example"));
+    // The contrast only exists where a shell integration is injected; the
+    // restorable state must keep the configured command either way.
+    #[cfg(windows)]
     assert!(!integrated.args.is_empty());
+    #[cfg(unix)]
+    assert!(integrated.args.is_empty());
 }
 
 /// `NiumaTermEventListener` maps user-visible `TerminalEvent`s onto the host-event queue

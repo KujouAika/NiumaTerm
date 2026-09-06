@@ -658,6 +658,7 @@ fn test_shell_no_args() {
     assert_eq!(result.shell.args, Vec::<&str>::new());
 }
 
+#[cfg(target_os = "windows")]
 const EXAMPLE_CONFIG_PATH: &str = "../../assets/config-example.toml";
 
 /// `assets/config-example.toml` documents every key with its built-in
@@ -665,6 +666,11 @@ const EXAMPLE_CONFIG_PATH: &str = "../../assets/config-example.toml";
 /// serialized default: a key added, removed, or renamed on `Config` fails
 /// here instead of leaving the example advertising settings that no longer
 /// exist. Run with `--nocapture` to print the replacement content.
+///
+/// The shipped file records the Windows defaults — shell, editor and font
+/// values differ per platform — so only that host can hold it to them. A key
+/// added anywhere still fails there, which is what this guards.
+#[cfg(target_os = "windows")]
 #[test]
 fn example_config_matches_the_serialized_defaults() {
     let generated = toml::to_string_pretty(&Config::default()).expect("defaults serialize");
