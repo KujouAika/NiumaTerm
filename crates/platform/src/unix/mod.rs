@@ -39,6 +39,7 @@ pub(crate) use notifier::{remove, show};
 use signal_hook::consts as sigconsts;
 use signals::Signals;
 
+use crate::unix::hook_command::single_quoted;
 pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
 use crate::unix::process::{KillOnCloseJob, ProcessTree};
 pub(crate) use crate::unix::shell::{default_shell, prompt_integration};
@@ -472,6 +473,15 @@ fn require_executable_shell(shell: &str) -> Result<(), Error> {
     })
 }
 
+/// Whether a shell this backend spawns is a login shell.
+///
+/// macOS launches every shell through `/usr/bin/login` with a `-` argv[0] so
+/// the child inherits a login environment; elsewhere the shell is exec'd
+/// directly and is not one. Which startup files a shell reads follows from
+/// this, so anything that has to inject itself into them asks here rather than
+/// re-deriving it from the target.
+pub(crate) const SPAWNS_LOGIN_SHELL: bool = cfg!(target_os = "macos");
+
 /// The initial pixel size a PTY reports. The window has not been laid out
 /// when the shell starts, and `set_winsize` carries the real dimensions from
 /// the first resize onward; zero is the value programs already read as
@@ -559,17 +569,21 @@ fn create_pty_with_management(
             // -q: Act as if .hushlogin exists
             login_cmd.args([flags, &user.user]);
 
-            // Build the exec command to replace the intermediate shell with our target shell
-            let exec_cmd = if args.is_empty() {
-                format!("exec -a -{shell_name} {shell_program}")
-            } else {
-                format!(
-                    "exec -a -{} {} {}",
-                    shell_name,
-                    shell_program,
-                    args.join(" ")
-                )
-            };
+            // Build the exec command to replace the intermediate shell with
+            // our target shell. Every interpolated value is a shell word in a
+            // script zsh parses, so a path with a space, or an argument that
+            // is itself a command line, has to arrive quoted rather than be
+            // re-split here.
+            let mut exec_cmd = format!(
+                "exec -a {} {}",
+                single_quoted(&format!("-{shell_name}")),
+                single_quoted(shell_program)
+            );
+
+            for arg in &args {
+                exec_cmd.push(' ');
+                exec_cmd.push_str(&single_quoted(arg));
+            }
 
             // Use /bin/zsh as intermediate shell because it supports 'exec -a'
             login_cmd.args(["/bin/zsh", "-fc", &exec_cmd]);

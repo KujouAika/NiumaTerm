@@ -40,8 +40,15 @@ pub fn build_hook_command(executable: &str, argument: &str) -> io::Result<String
         return Ok(format!("{executable} {argument}"));
     }
 
-    let quoted = executable.replace('\'', r"'\''");
-    Ok(format!("'{quoted}' {argument}"))
+    Ok(format!("{} {argument}", single_quoted(executable)))
+}
+
+/// `value` as one POSIX shell word.
+///
+/// Single quotes suppress every expansion; a literal quote is closed, escaped
+/// and reopened because single quotes do not nest.
+pub(super) fn single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// Whether `command` invokes the binary identified by `marker`.
