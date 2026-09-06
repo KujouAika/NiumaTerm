@@ -19,7 +19,7 @@ use gpui_component::{
     ActiveTheme as _, Icon, IconNamed, IndexPath, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use nmt_i18n::i18n;
-use nmt_platform::windows::process::hidden_cmd_command;
+use nmt_platform::process::hidden_cmd_command;
 use serde::Deserialize;
 use serde_json::from_slice;
 use tracing::warn;

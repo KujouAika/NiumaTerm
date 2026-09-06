@@ -77,6 +77,10 @@ impl TerminalSessionConfig {
         nmt_platform::prompt_integration(self.shell.as_deref())
     }
 
+    /// Whether this launch will carry an integration the terminal can trust
+    /// the block boundaries of. `with_shell_integration` decides for itself;
+    /// this is the same question asked without applying the answer.
+    #[cfg(test)]
     pub(crate) fn has_trusted_prompt_integration(&self) -> bool {
         self.prompt_integration().is_some()
     }

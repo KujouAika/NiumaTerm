@@ -1,71 +1,81 @@
+#[cfg(windows)]
+use nmt_config::UpdateChannel;
 use nmt_i18n::i18n;
 
 use crate::ui::settings::*;
+#[cfg(windows)]
 use crate::update::{self, CheckError, InstallError, Status};
 
 pub(super) fn about_page() -> SettingPage {
+    // One untitled group. A page holding a single group drops its subcategory
+    // entries from the sidebar and stops appending a group name to the page
+    // header, so what the build is and how it updates read as one page instead
+    // of two the user switches between.
+    let group = SettingGroup::new()
+        .item(SettingItem::new(
+            i18n("settings-about-version"),
+            SettingField::render(|_, _, _| Label::new(APP_VERSION).text_sm()),
+        ))
+        .item(SettingItem::new(
+            i18n("settings-about-internal-version"),
+            SettingField::render(|_, _, _| Label::new(APP_INTERNAL_VERSION).text_sm()),
+        ))
+        .item(SettingItem::new(
+            i18n("settings-about-releases"),
+            SettingField::render(|_, _, _| {
+                Button::new("go-to-release-page")
+                    .outline()
+                    .label(i18n("settings-about-release-page"))
+                    .on_click(|_, _, cx: &mut App| cx.open_url(RELEASE_PAGE_URL))
+            }),
+        ));
+
+    // Everything that follows drives the in-place updater, which exists only
+    // where it has been built. The release page above is what remains: a build
+    // that cannot replace itself can still be replaced by hand.
+    #[cfg(windows)]
+    let group = group
+        .item(
+            SettingItem::new(
+                i18n("settings-about-check-updates"),
+                SettingField::switch(
+                    |cx| cx.global::<AppSettings>().check_updates,
+                    |value, cx| {
+                        cx.global_mut::<AppSettings>().check_updates = value;
+                    },
+                ),
+            )
+            .description(i18n("settings-about-check-updates-description")),
+        )
+        .item(SettingItem::new(
+            i18n("settings-about-channel"),
+            SettingField::dropdown(
+                vec![
+                    (
+                        "stable".into(),
+                        i18n("settings-about-channel-stable").into(),
+                    ),
+                    (
+                        "nightly".into(),
+                        i18n("settings-about-channel-nightly").into(),
+                    ),
+                ],
+                |cx| cx.global::<AppSettings>().update_channel.as_str().into(),
+                |value, cx| {
+                    cx.global_mut::<AppSettings>().update_channel =
+                        UpdateChannel::from_value(&value);
+                },
+            )
+            .default_value(SharedString::from("stable")),
+        ))
+        .item(update_check_item());
+
     SettingPage::new(i18n("settings-about-title"))
         .default_open(true)
-        // One untitled group. A page holding a single group drops its
-        // subcategory entries from the sidebar and stops appending a group
-        // name to the page header, so what the build is and how it updates
-        // read as one page instead of two the user switches between.
-        .group(
-            SettingGroup::new()
-                .item(SettingItem::new(
-                    i18n("settings-about-version"),
-                    SettingField::render(|_, _, _| Label::new(APP_VERSION).text_sm()),
-                ))
-                .item(SettingItem::new(
-                    i18n("settings-about-internal-version"),
-                    SettingField::render(|_, _, _| Label::new(APP_INTERNAL_VERSION).text_sm()),
-                ))
-                .item(SettingItem::new(
-                    i18n("settings-about-releases"),
-                    SettingField::render(|_, _, _| {
-                        Button::new("go-to-release-page")
-                            .outline()
-                            .label(i18n("settings-about-release-page"))
-                            .on_click(|_, _, cx: &mut App| cx.open_url(RELEASE_PAGE_URL))
-                    }),
-                ))
-                .item(
-                    SettingItem::new(
-                        i18n("settings-about-check-updates"),
-                        SettingField::switch(
-                            |cx| cx.global::<AppSettings>().check_updates,
-                            |value, cx| {
-                                cx.global_mut::<AppSettings>().check_updates = value;
-                            },
-                        ),
-                    )
-                    .description(i18n("settings-about-check-updates-description")),
-                )
-                .item(SettingItem::new(
-                    i18n("settings-about-channel"),
-                    SettingField::dropdown(
-                        vec![
-                            (
-                                "stable".into(),
-                                i18n("settings-about-channel-stable").into(),
-                            ),
-                            (
-                                "nightly".into(),
-                                i18n("settings-about-channel-nightly").into(),
-                            ),
-                        ],
-                        |cx| cx.global::<AppSettings>().update_channel.as_str().into(),
-                        |value, cx| {
-                            cx.global_mut::<AppSettings>().update_channel =
-                                UpdateChannel::from_value(&value);
-                        },
-                    )
-                    .default_value(SharedString::from("stable")),
-                ))
-                .item(update_check_item()),
-        )
+        .group(group)
 }
 
+#[cfg(windows)]
 fn update_check_item() -> SettingItem {
     SettingItem::render(move |options, _window, cx| {
         let status = update::status(cx);
@@ -132,6 +142,7 @@ fn update_check_item() -> SettingItem {
     })
 }
 
+#[cfg(windows)]
 fn status_text(status: &Status) -> String {
     match status {
         Status::Unknown => i18n("settings-about-not-checked").to_string(),
@@ -167,6 +178,7 @@ fn status_text(status: &Status) -> String {
     }
 }
 
+#[cfg(windows)]
 fn install_error_text(error: &InstallError) -> String {
     match error {
         InstallError::NoPackage => i18n("settings-about-install-no-package"),

@@ -9,6 +9,10 @@ pub mod filesystem;
 pub mod ipc;
 pub mod process;
 pub mod shell;
+pub mod window;
+
+mod process_exit;
+mod shell_integration;
 
 mod hook_command;
 
@@ -42,7 +46,12 @@ use signals::Signals;
 use crate::unix::hook_command::single_quoted;
 pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
 use crate::unix::process::{KillOnCloseJob, ProcessTree};
+pub use crate::unix::process_exit::wait_for_exit;
 pub(crate) use crate::unix::shell::{default_shell, prompt_integration};
+pub use crate::unix::shell_integration::{
+    is_shell_integration_registered, register_shell_integration, set_system_notification_enabled,
+    shell_integration_dll_mismatched, system_notification_enabled, unregister_shell_integration,
+};
 use crate::{APP_ID, ChildEvent, EventedPty, ProcessReadWrite, Winsize, WinsizeBuilder};
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]

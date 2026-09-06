@@ -16,14 +16,17 @@ pub use nmt_config::update::UpdateChannel;
 use nmt_config::update::UpdateConfig;
 use nmt_config::{CursorShape, SettingsPatch, get, save_settings};
 use nmt_i18n::i18n;
-use nmt_platform::windows::powershell;
 use tracing::warn;
 
 use crate::ui::settings::MAX_TAB_WIDTH;
 use crate::ui::settings::theme::load_theme_choices;
 
+/// The shell a freshly seeded profile names, which is the platform's own
+/// default rather than a fixed program.
 #[cfg(test)]
-pub const DEFAULT_SHELL: &str = powershell::LEGACY_SHELL;
+pub fn default_shell_for_tests() -> String {
+    default_shell()
+}
 pub const DEFAULT_FONT_FAMILY: &str = "Consolas";
 pub const DEFAULT_FONT_SIZE: f64 = 14.0;
 pub const DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE: f64 = 13.0;
@@ -251,15 +254,15 @@ pub(super) fn cursor_shape_from_value(value: &str) -> CursorShape {
     }
 }
 
-fn default_shell() -> &'static str {
-    powershell::preferred_shell()
+fn default_shell() -> String {
+    nmt_platform::default_shell()
 }
 
 /// The built-in profile seeded when the config file defines none.
 fn builtin_profile() -> Profile {
     Profile {
         name: "PowerShell".to_string(),
-        shell: default_shell().to_string(),
+        shell: default_shell(),
         args: String::new(),
     }
 }

@@ -6,6 +6,7 @@ use nmt_i18n::i18n;
 
 use crate::ui::shell::*;
 use crate::ui::tab_bar::new_tab_menu;
+#[cfg(windows)]
 use crate::update::check_now;
 
 /// Width the tab strip keeps once the title bar runs out of room: about one
@@ -59,7 +60,6 @@ impl Shell {
             .on_action(cx.listener(Self::on_toggle_git_sidebar))
             .on_action(cx.listener(Self::on_toggle_background_tasks))
             .on_action(cx.listener(Self::on_show_settings))
-            .on_action(cx.listener(Self::on_new_remote_tab))
             .on_action(cx.listener(Self::on_new_agent_tab))
     }
 
@@ -400,7 +400,7 @@ fn app_menu(menu: ModernMenu, shell: &Entity<Shell>, cx: &mut App) -> ModernMenu
     let workspace_shell = shell.clone();
     let settings_shell = shell.clone();
 
-    new_tab_menu(menu, shell, cx)
+    let menu = new_tab_menu(menu, shell, cx)
         .separator()
         .item(i18n("shell-menu-new-window"), move |window, cx| {
             window_shell.update(cx, |this, cx| {
@@ -420,9 +420,15 @@ fn app_menu(menu: ModernMenu, shell: &Entity<Shell>, cx: &mut App) -> ModernMenu
                 this.on_show_settings(&ShowSettings, window, cx);
             });
         })
-        .icon(Icon::new(IconName::Settings))
+        .icon(Icon::new(IconName::Settings));
+
+    // Only a build that can replace itself offers to check.
+    #[cfg(windows)]
+    let menu = menu
         .item(i18n("shell-menu-check-updates"), |_, cx| check_now(cx))
-        .icon(Icon::new(IconName::ArrowDown))
+        .icon(Icon::new(IconName::ArrowDown));
+
+    menu
 }
 
 struct GitIcon;

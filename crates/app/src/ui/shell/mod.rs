@@ -63,7 +63,10 @@ use crate::agent_updates::{
 use crate::agent_usage::AgentUsageView;
 use crate::cli::CliAction;
 use crate::pane_tree::{PaneId, PaneNode, PaneTree, RemoveOutcome, SplitDirection, SplitOutcome};
+#[cfg(windows)]
+use crate::remote;
 use crate::tabs::{CommandOutcome, Tab, TabId, TabManager};
+use crate::ui;
 use crate::ui::background_tasks::BackgroundTasksView;
 use crate::ui::floating_surface;
 use crate::ui::git_sidebar::GitSidebar;
@@ -96,7 +99,6 @@ use crate::workspace::{
     self, ProgressTally, TerminalActivity, WorkspaceId, WorkspaceKind, WorkspaceManager,
     WorkspaceRoots, best_match, exact_match,
 };
-use crate::{remote, ui};
 
 /// A workspace cwd as a shell working directory: `None` for empty or the
 /// legacy `"."` placeholder (shells then start in their default directory).

@@ -2,26 +2,42 @@ use std::env;
 
 use crate::cli::*;
 
+/// An absolute path spelled the way this platform spells one, and the same
+/// path percent-encoded. A Windows literal is a *relative* path on a Unix
+/// host, so the parser would resolve it against the working directory rather
+/// than round-trip it, and the assertion would be about the wrong thing.
+#[cfg(windows)]
+fn absolute(segments: &[&str]) -> PathBuf {
+    PathBuf::from(format!(r"C:\{}", segments.join(r"\")))
+}
+
+#[cfg(unix)]
+fn absolute(segments: &[&str]) -> PathBuf {
+    PathBuf::from(format!("/{}", segments.join("/")))
+}
+
+#[cfg(windows)]
+const ENCODED_A_B: &str = "C%3A%2FA%2FB";
+#[cfg(unix)]
+const ENCODED_A_B: &str = "%2FA%2FB";
+
 #[test]
 fn parses_new_tab() {
-    let action = parse_nmt_url("nmt://action/new_tab?path=C%3A%2FA%2FB").unwrap();
+    let action = parse_nmt_url(&format!("nmt://action/new_tab?path={ENCODED_A_B}")).unwrap();
     assert_eq!(
         action,
         CliAction::NewTab {
-            path: PathBuf::from("C:\\A\\B")
+            path: absolute(&["A", "B"])
         }
     );
 }
 
 #[test]
 fn parses_new_window() {
-    let action = parse_nmt_url("nmt://action/new_window?path=C:/A").unwrap();
-    assert_eq!(
-        action,
-        CliAction::NewWindow {
-            path: PathBuf::from("C:\\A")
-        }
-    );
+    let path = absolute(&["A"]);
+    let action =
+        parse_nmt_url(&format!("nmt://action/new_window?path={}", path.display())).unwrap();
+    assert_eq!(action, CliAction::NewWindow { path });
 }
 
 #[test]
@@ -34,12 +50,16 @@ fn parses_activate() {
 
 #[test]
 fn decodes_spaces_and_cjk() {
-    let action =
-        parse_nmt_url("nmt://action/new_tab?path=C%3A%2FMy%20Dir%2F%E9%A1%B9%E7%9B%AE").unwrap();
+    #[cfg(windows)]
+    let encoded = "C%3A%2FMy%20Dir%2F%E9%A1%B9%E7%9B%AE";
+    #[cfg(unix)]
+    let encoded = "%2FMy%20Dir%2F%E9%A1%B9%E7%9B%AE";
+
+    let action = parse_nmt_url(&format!("nmt://action/new_tab?path={encoded}")).unwrap();
     assert_eq!(
         action,
         CliAction::NewTab {
-            path: PathBuf::from("C:\\My Dir\\项目")
+            path: absolute(&["My Dir", "项目"])
         }
     );
 }
@@ -63,13 +83,13 @@ fn resolves_relative_path_against_cwd() {
     let CliAction::NewTab { path } = action else {
         panic!("expected NewTab");
     };
-    assert_eq!(path, env::current_dir().unwrap().join("sub\\dir"));
+    assert_eq!(path, env::current_dir().unwrap().join("sub").join("dir"));
 }
 
 #[test]
 fn url_round_trips_through_to_url() {
     let action = CliAction::NewWindow {
-        path: PathBuf::from("C:\\My Dir\\项目"),
+        path: absolute(&["My Dir", "项目"]),
     };
     assert_eq!(parse_nmt_url(&action.to_url()).unwrap(), action);
     assert_eq!(

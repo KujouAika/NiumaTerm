@@ -1,5 +1,7 @@
 use std::sync::Arc;
-use std::{collections, env, fs, process, sync, thread, time};
+use std::{collections, sync, time};
+#[cfg(windows)]
+use std::{env, fs, process, thread};
 
 #[cfg(windows)]
 use base64::engine::general_purpose::STANDARD;
@@ -107,6 +109,7 @@ fn remote_session_renders_through_net_pty() {
 }
 
 #[cfg(test)]
+#[cfg(windows)]
 fn tokio_runtime() -> Runtime {
     RuntimeBuilder::new_current_thread()
         .enable_all()
