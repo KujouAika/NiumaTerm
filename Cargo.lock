@@ -4242,6 +4242,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui-component",
+ "gpui_macos",
  "gpui_windows",
  "image",
  "nmt_agent_utils",

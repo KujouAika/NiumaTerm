@@ -50,6 +50,33 @@ pub fn preferred_shell() -> &'static str {
     })
 }
 
+/// The shell launched when configuration names none.
+pub fn default_shell() -> String {
+    DEFAULT_SHELL.to_string()
+}
+
+/// Whether the bundled OSC 133 prompt integration can be injected into
+/// `shell`. `None` resolves to the PowerShell default.
+pub fn supports_prompt_integration(shell: Option<&str>) -> bool {
+    is_shell(shell)
+}
+
+/// The arguments that make PowerShell evaluate the bundled prompt
+/// integration at startup. `-NoExit` keeps the session interactive after the
+/// bootstrap runs, and the script travels UTF-16 Base64 encoded so quoting
+/// rules cannot corrupt it.
+pub fn prompt_integration_args() -> Vec<String> {
+    static ENCODED: OnceLock<String> = OnceLock::new();
+
+    vec![
+        String::from("-NoExit"),
+        String::from("-EncodedCommand"),
+        ENCODED
+            .get_or_init(|| encode_command(INTEGRATION_SCRIPT))
+            .clone(),
+    ]
+}
+
 pub fn build_hook_command(executable: &str, argument: &str) -> io::Result<String> {
     let system_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     build_hook_command_for(executable, argument, &system_root)

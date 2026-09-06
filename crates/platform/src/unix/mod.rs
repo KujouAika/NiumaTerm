@@ -6,7 +6,9 @@ use tracing::info;
 
 pub mod environment;
 pub mod filesystem;
+pub mod ipc;
 pub mod process;
+pub mod shell;
 
 mod hook_command;
 
@@ -33,13 +35,15 @@ use mio::unix::SourceFd;
 use mio::{Interest, Poll, Token, Waker};
 #[cfg(target_os = "macos")]
 pub(crate) use notifier::request_authorization;
-pub(crate) use notifier::{
-    identity_registered, register_identity, remove, show, unregister_identity,
-};
+pub(crate) use notifier::{remove, show};
 use signal_hook::consts as sigconsts;
 use signals::Signals;
 
 pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
+use crate::unix::process::{KillOnCloseJob, ProcessTree};
+pub(crate) use crate::unix::shell::{
+    default_shell, prompt_integration_args, supports_prompt_integration,
+};
 use crate::{ChildEvent, EventedPty, ProcessReadWrite, Winsize, WinsizeBuilder};
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -99,6 +103,18 @@ pub struct Pty {
     token: Token,
     signals_token: Token,
     signals: Signals,
+    /// Present only for a managed PTY. Dropping it signals the shell's
+    /// process group, which ends the descendants a bare `SIGHUP` to the shell
+    /// would leave running.
+    job: Option<KillOnCloseJob>,
+}
+
+impl Pty {
+    /// A view of the shell's process group, or `None` when this PTY does not
+    /// manage its child's descendants.
+    pub fn process_tree(&self) -> Option<ProcessTree> {
+        self.job.as_ref().map(KillOnCloseJob::process_tree)
+    }
 }
 
 impl Deref for Pty {
@@ -387,15 +403,94 @@ impl ShellUser {
 ///
 /// It returns two [`Pty`] along with respective process name [`String`] and process id (`libc::pid_`)
 ///
-pub fn create_pty_with_spawn(
+/// Create a shell PTY with explicit child-only environment overrides.
+///
+/// `starting_title` has no creation-time equivalent here: a Unix PTY carries
+/// no title of its own, and the window title is whatever the child emits
+/// through OSC 0/2.
+pub fn create_pty_with_env(
     shell: &str,
     args: Vec<String>,
     working_directory: &Option<String>,
     columns: u16,
     rows: u16,
-    width: u16,
-    height: u16,
+    environment_overrides: &[(String, String)],
+    _starting_title: Option<&str>,
 ) -> Result<Pty, Error> {
+    create_pty_with_management(
+        shell,
+        args,
+        working_directory,
+        columns,
+        rows,
+        environment_overrides,
+        false,
+    )
+}
+
+/// Create a shell PTY whose entire child process tree is terminated when the
+/// PTY is dropped. Background probes need deterministic cleanup regardless of
+/// the user setting that controls process-tree management for ordinary
+/// terminals.
+pub fn create_managed_pty_with_env(
+    shell: &str,
+    args: Vec<String>,
+    working_directory: &Option<String>,
+    columns: u16,
+    rows: u16,
+    environment_overrides: &[(String, String)],
+    _starting_title: Option<&str>,
+) -> Result<Pty, Error> {
+    let pty = create_pty_with_management(
+        shell,
+        args,
+        working_directory,
+        columns,
+        rows,
+        environment_overrides,
+        true,
+    )?;
+    if pty.process_tree().is_none() {
+        return Err(Error::other(
+            "managed PTY could not contain its child process group",
+        ));
+    }
+    Ok(pty)
+}
+
+/// Fail before spawning when the configured shell does not resolve to an
+/// executable.
+///
+/// macOS launches the shell through `/usr/bin/login`, which always exists, so
+/// an unusable shell would otherwise spawn successfully and die inside the
+/// child where the caller only sees an empty terminal. Checking first keeps
+/// the cause in the spawn result, which is where every platform reports it.
+fn require_executable_shell(shell: &str) -> Result<(), Error> {
+    which::which(shell).map(|_| ()).map_err(|error| {
+        Error::new(
+            io::ErrorKind::NotFound,
+            format!("shell `{shell}` is not an executable program: {error}"),
+        )
+    })
+}
+
+/// The initial pixel size a PTY reports. The window has not been laid out
+/// when the shell starts, and `set_winsize` carries the real dimensions from
+/// the first resize onward; zero is the value programs already read as
+/// "unknown".
+const UNKNOWN_PIXEL_SIZE: u16 = 0;
+
+#[allow(clippy::too_many_arguments)]
+fn create_pty_with_management(
+    shell: &str,
+    args: Vec<String>,
+    working_directory: &Option<String>,
+    columns: u16,
+    rows: u16,
+    environment_overrides: &[(String, String)],
+    manage_process_tree: bool,
+) -> Result<Pty, Error> {
+    let (width, height) = (UNKNOWN_PIXEL_SIZE, UNKNOWN_PIXEL_SIZE);
     #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
     let mut is_controling_terminal = true;
 
@@ -439,6 +534,8 @@ pub fn create_pty_with_spawn(
     if shell.is_empty() {
         shell_program = &user.shell;
     }
+
+    require_executable_shell(shell_program)?;
 
     info!("spawn {:?} {:?}", shell_program, args);
 
@@ -537,6 +634,7 @@ pub fn create_pty_with_spawn(
 
     builder.env("USER", user.user);
     builder.env("HOME", user.home);
+    builder.envs(environment_overrides.iter().map(|(k, v)| (k, v)));
 
     unsafe {
         builder.pre_exec(move || {
@@ -580,6 +678,11 @@ pub fn create_pty_with_spawn(
             }
 
             let ptsname: String = tty_ptsname(main).unwrap_or_else(|_| "".to_string());
+            // `pre_exec` made the child a session leader, so it already leads
+            // its own group and attaching only records it.
+            let job = manage_process_tree
+                .then(|| KillOnCloseJob::attach(&child_process))
+                .transpose()?;
             let child_unix = Child {
                 id: Arc::new(main),
                 ptsname,
@@ -593,6 +696,7 @@ pub fn create_pty_with_spawn(
                 token: Token(0),
                 signals,
                 signals_token: Token(0),
+                job,
             })
         }
         Err(err) => Err(Error::new(
@@ -686,6 +790,9 @@ pub fn create_pty_with_fork(
                 file: unsafe { File::from_raw_fd(main) },
                 token: Token(0),
                 signals_token: Token(0),
+                // `forkpty` leaves no `std::process::Child` to attach to, so
+                // this path never manages the descendant tree.
+                job: None,
             })
         }
         _ => Err(Error::other(format!(
