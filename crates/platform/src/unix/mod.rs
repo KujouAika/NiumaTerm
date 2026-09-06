@@ -415,6 +415,7 @@ pub fn create_pty_with_env(
     rows: u16,
     environment_overrides: &[(String, String)],
     _starting_title: Option<&str>,
+    bootstrap: Option<&str>,
 ) -> Result<Pty, Error> {
     create_pty_with_management(
         shell,
@@ -423,6 +424,7 @@ pub fn create_pty_with_env(
         columns,
         rows,
         environment_overrides,
+        bootstrap,
         false,
     )
 }
@@ -439,6 +441,7 @@ pub fn create_managed_pty_with_env(
     rows: u16,
     environment_overrides: &[(String, String)],
     _starting_title: Option<&str>,
+    bootstrap: Option<&str>,
 ) -> Result<Pty, Error> {
     let pty = create_pty_with_management(
         shell,
@@ -447,6 +450,7 @@ pub fn create_managed_pty_with_env(
         columns,
         rows,
         environment_overrides,
+        bootstrap,
         true,
     )?;
     if pty.process_tree().is_none() {
@@ -488,6 +492,46 @@ pub(crate) const SPAWNS_LOGIN_SHELL: bool = cfg!(target_os = "macos");
 /// "unknown".
 const UNKNOWN_PIXEL_SIZE: u16 = 0;
 
+/// Place `bootstrap` in the new terminal's input queue without it being seen.
+///
+/// The write happens before the child exists, so the bytes simply wait in the
+/// line discipline's queue for the shell's first read. Echo is decided when a
+/// character arrives, not when it is read, so clearing `ECHO` for the duration
+/// of this write is enough to hide it — and the launch turns the shell's own
+/// line editor off, because an editor would otherwise draw the line itself and
+/// never consult `ECHO` at all.
+fn queue_bootstrap(main: libc::c_int, child: libc::c_int, bootstrap: &str) -> Result<(), Error> {
+    let bytes = bootstrap.as_bytes();
+    let mut written = 0;
+
+    while written < bytes.len() {
+        // SAFETY: the slice outlives the call and the length is its remainder.
+        let count = unsafe {
+            libc::write(
+                main,
+                bytes[written..].as_ptr().cast(),
+                bytes.len() - written,
+            )
+        };
+
+        if count < 0 {
+            return Err(Error::last_os_error());
+        }
+
+        written += count as usize;
+    }
+
+    // Hand the session the echo it expects, now that the one write that had to
+    // stay invisible is already in the queue.
+    let restored = create_termp(true);
+    // SAFETY: `child` is the pty's terminal side, open for the whole call.
+    if unsafe { libc::tcsetattr(child, libc::TCSANOW, &restored) } != 0 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_pty_with_management(
     shell: &str,
@@ -496,6 +540,7 @@ fn create_pty_with_management(
     columns: u16,
     rows: u16,
     environment_overrides: &[(String, String)],
+    bootstrap: Option<&str>,
     manage_process_tree: bool,
 ) -> Result<Pty, Error> {
     let (width, height) = (UNKNOWN_PIXEL_SIZE, UNKNOWN_PIXEL_SIZE);
@@ -513,7 +558,10 @@ fn create_pty_with_management(
         ws_xpixel: width as libc::c_ushort,
         ws_ypixel: height as libc::c_ushort,
     };
-    let term = create_termp(true);
+    let mut term = create_termp(true);
+    if bootstrap.is_some() {
+        term.c_lflag &= !libc::ECHO;
+    }
 
     let res = unsafe {
         openpty(
@@ -527,6 +575,10 @@ fn create_pty_with_management(
 
     if res < 0 {
         return Err(Error::other("openpty failed"));
+    }
+
+    if let Some(bootstrap) = bootstrap {
+        queue_bootstrap(main, child, bootstrap)?;
     }
 
     let mut shell_program = shell;

@@ -70,7 +70,16 @@ pub fn create_pty(
     columns: u16,
     rows: u16,
 ) -> Result<Pty, io::Error> {
-    create_pty_with_env(shell, args, working_directory, columns, rows, &[], None)
+    create_pty_with_env(
+        shell,
+        args,
+        working_directory,
+        columns,
+        rows,
+        &[],
+        None,
+        None,
+    )
 }
 
 /// Create a ConPTY shell with explicit child-only environment overrides.
@@ -82,6 +91,9 @@ pub fn create_pty_with_env(
     rows: u16,
     environment_overrides: &[(String, String)],
     starting_title: Option<&str>,
+    // PowerShell takes its integration as a startup argument, so nothing has
+    // to be typed at the shell here.
+    _bootstrap: Option<&str>,
 ) -> Result<Pty, io::Error> {
     create_pty_with_management(
         shell,
@@ -106,6 +118,7 @@ pub fn create_managed_pty_with_env(
     rows: u16,
     environment_overrides: &[(String, String)],
     starting_title: Option<&str>,
+    _bootstrap: Option<&str>,
 ) -> Result<Pty, io::Error> {
     let pty = create_pty_with_management(
         shell,

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::id;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{env, fs, io};
+use std::{fs, io};
 
 use tracing::warn;
 
@@ -39,22 +39,23 @@ pub fn prompt_integration(shell: Option<&str>) -> Option<PromptIntegration> {
     }
 }
 
-/// zsh resolves its whole startup series through `ZDOTDIR`, so pointing it at a
-/// directory of forwarders reaches every one of them: each sources the user's
-/// counterpart, and `.zshrc` adds the integration last.
+/// zsh's own startup files are suppressed with `NO_RCS` and the integration is
+/// typed at the shell instead, so nothing about which files it finds depends on
+/// `ZDOTDIR` — the user's stays untouched and the bootstrap replays their
+/// startup sequence itself. `+Z` turns the line editor off so the line
+/// discipline governs the echo of the bootstrap line, and
+/// `HIST_IGNORE_SPACE` keeps that line, which carries a leading space, out of
+/// the session's history; the bootstrap restores both.
 fn zsh_integration() -> Option<PromptIntegration> {
-    let zdotdir = zsh_directory()?.to_string_lossy().into_owned();
+    let directory = zsh_directory()?;
 
     Some(PromptIntegration {
-        args: Vec::new(),
-        environment: vec![
-            // `ZDOTDIR` is what zsh resolves its startup series through;
-            // `NMT_ZDOTDIR` keeps a stable reference to the same directory
-            // after `.zshrc` hands `ZDOTDIR` back to the user.
-            (String::from("ZDOTDIR"), zdotdir.clone()),
-            (String::from("NMT_ZDOTDIR"), zdotdir.clone()),
-            (String::from("NMT_USER_ZDOTDIR"), user_zdotdir(&zdotdir)),
-        ],
+        args: ["-f", "+Z", "-o", "histignorespace"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        environment: Vec::new(),
+        bootstrap: Some(bootstrap_line(&directory.join(ZSH_HOOKS))),
     })
 }
 
@@ -98,7 +99,21 @@ fn bash_integration(shell: &str) -> Option<PromptIntegration> {
         vec![String::from("--rcfile"), rc]
     };
 
-    Some(PromptIntegration { args, environment })
+    Some(PromptIntegration {
+        args,
+        environment,
+        bootstrap: None,
+    })
+}
+
+/// The line typed at the shell to hand it the integration.
+///
+/// The leading space is what the launch's history setting keys on, and the
+/// trailing newline is what submits it. Keeping the payload to one short line
+/// is why the script lives in a file: a shell's canonical input queue is only
+/// guaranteed to hold a few hundred bytes.
+fn bootstrap_line(script: &Path) -> String {
+    format!(" source {}\n", single_quoted(&script.to_string_lossy()))
 }
 
 /// The configured shell, or the default when none is configured.
@@ -113,38 +128,12 @@ fn shell_name(shell: &str) -> Option<String> {
     Path::new(shell).file_name()?.to_str().map(str::to_owned)
 }
 
-/// The directory zsh should resolve the user's own startup files from.
-///
-/// A non-interactive child of an integrated shell still carries the terminal's
-/// `ZDOTDIR` — `.zshrc` restores it, and `.zshenv` alone does not — so an app
-/// launched from one would otherwise name the integration directory as the
-/// user's and make every forwarder source itself.
-fn user_zdotdir(integration_dir: &str) -> String {
-    env::var("ZDOTDIR")
-        .ok()
-        .filter(|dir| !dir.is_empty() && dir != integration_dir)
-        .or_else(|| environment::home_dir().map(|home| home.to_string_lossy().into_owned()))
-        .unwrap_or_default()
-}
+const ZSH_HOOKS: &str = "nmt-integration.zsh";
 
-const ZSH_FILES: [(&str, &str); 4] = [
-    (
-        ".zshenv",
-        include_str!("../../../../../assets/unix/zsh/.zshenv"),
-    ),
-    (
-        ".zprofile",
-        include_str!("../../../../../assets/unix/zsh/.zprofile"),
-    ),
-    (
-        ".zshrc",
-        include_str!("../../../../../assets/unix/zsh/.zshrc"),
-    ),
-    (
-        "nmt-integration.zsh",
-        include_str!("../../../../../assets/unix/zsh/nmt-integration.zsh"),
-    ),
-];
+const ZSH_FILES: [(&str, &str); 1] = [(
+    ZSH_HOOKS,
+    include_str!("../../../../../assets/unix/zsh/nmt-integration.zsh"),
+)];
 
 const BASH_RC: &str = "bashrc.bash";
 const BASH_HOOKS: &str = "nmt-integration.bash";

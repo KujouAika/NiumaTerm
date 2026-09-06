@@ -235,6 +235,7 @@ impl TerminalSession {
                 rows,
                 &config.environment_overrides,
                 config.starting_title.as_deref(),
+                config.bootstrap.as_deref(),
             )
         } else {
             create_pty_with_env(
@@ -245,13 +246,14 @@ impl TerminalSession {
                 rows,
                 &config.environment_overrides,
                 config.starting_title.as_deref(),
+                config.bootstrap.as_deref(),
             )
         }
         .map_err(|error| {
             error!("session create_pty failed: {error:?}");
             EngineError::new(
                 EngineErrorCode::PtySpawn,
-                format!("failed to start shell '{shell}' via ConPTY: {error}"),
+                format!("failed to start shell '{shell}': {error}"),
             )
         })?;
 

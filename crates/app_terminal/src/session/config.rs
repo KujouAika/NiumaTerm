@@ -30,6 +30,11 @@ pub struct TerminalSessionConfig {
     /// Runtime metadata is deliberately excluded from persisted tab state.
     pub environment_overrides: Vec<(String, String)>,
     pub manage_process_tree: bool,
+    /// Bytes the launch places in the terminal's input queue before the shell
+    /// starts, for a platform whose shell integration is typed at the shell
+    /// rather than found by it. Not part of the restorable tab state: it is a
+    /// property of this launch, not of the command the user configured.
+    pub bootstrap: Option<String>,
 }
 
 impl TerminalSessionConfig {
@@ -56,6 +61,7 @@ impl TerminalSessionConfig {
 
         self.args = integration.args;
         self.environment_overrides.extend(integration.environment);
+        self.bootstrap = integration.bootstrap;
 
         self
     }
@@ -90,6 +96,7 @@ impl Default for TerminalSessionConfig {
             engine_blocks: true,
             environment_overrides: Vec::new(),
             manage_process_tree: false,
+            bootstrap: None,
         }
     }
 }
