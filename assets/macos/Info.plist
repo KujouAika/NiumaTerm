@@ -52,6 +52,10 @@
     directories are reached under this application's identity and macOS asks
     on its behalf. Without these strings the prompt names no reason, and under
     a hardened runtime the access can be refused outright.
+
+    The wording is placeholder copy: it is shown to the user in the permission
+    prompt, so it wants a pass from whoever owns the product's voice before a
+    release carries it.
   -->
   <key>NSDesktopFolderUsageDescription</key>
   <string>NiumaTerm needs access so commands you run can read and write files on your Desktop.</string>
