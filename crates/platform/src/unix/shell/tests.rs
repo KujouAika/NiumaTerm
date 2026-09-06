@@ -1,5 +1,6 @@
 use std::fs;
 
+use crate::unix::SPAWNS_LOGIN_SHELL;
 use crate::unix::shell::{
     BASH_FILES, BASH_HOOKS, BASH_RC, ZSH_FILES, install_files, prompt_integration, resolved_shell,
     shell_name,
@@ -85,7 +86,7 @@ fn bash_is_integrated_through_its_rc_file() {
         .expect("the hooks are named in the environment");
     assert!(hooks.ends_with(BASH_HOOKS));
 
-    if crate::unix::SPAWNS_LOGIN_SHELL {
+    if SPAWNS_LOGIN_SHELL {
         assert_eq!(integration.args[0], "-lc");
         assert!(
             integration.args[1].starts_with("exec '/bin/bash' --rcfile '"),
@@ -116,7 +117,7 @@ fn bash_is_integrated_through_its_rc_file() {
 /// A shell path with a space in it has to survive the `-lc` hop as one word.
 #[test]
 fn an_awkward_bash_path_is_quoted_into_the_login_hop() {
-    if !crate::unix::SPAWNS_LOGIN_SHELL {
+    if !SPAWNS_LOGIN_SHELL {
         return;
     }
 

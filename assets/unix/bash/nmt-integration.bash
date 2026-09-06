@@ -64,10 +64,10 @@ __nmt_prompt_end_mark='\[\033]133;B\007\]'
 # tells bash the sequence occupies no columns, keeping the prompt's width
 # arithmetic correct.
 __nmt_prompt_ready() {
-  case "$PS1" in
-    *"$__nmt_prompt_end_mark"*) ;;
-    *) PS1="$PS1$__nmt_prompt_end_mark" ;;
-  esac
+  # Any earlier copy is stripped first: a framework that rebuilt PS1 around one
+  # would otherwise leave it stranded mid-prompt, ending the prompt region
+  # before the prompt does.
+  PS1="${PS1//"$__nmt_prompt_end_mark"/}$__nmt_prompt_end_mark"
 
   # The prompt is drawn after this hook, so anything the user runs next is
   # theirs.

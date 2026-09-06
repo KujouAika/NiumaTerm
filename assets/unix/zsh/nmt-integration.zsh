@@ -41,7 +41,14 @@ __nmt_precmd() {
     # first command. Emitted here rather than while `.zshrc` runs, where a
     # prompt framework's instant prompt would flag the output.
     printf '\033]133;A\007\033]133;B\007\033]133;C\007'
+  elif [[ -z "$__nmt_command_started" ]]; then
+    # An empty line, or one abandoned with Ctrl-C, runs no command, so
+    # `preexec` never fired and the command region opened by the last `;B` is
+    # still open. Close it here: a `;D` arriving straight after a `;B` is an
+    # out-of-order lifecycle and costs the terminal its boundary trust.
+    printf '\033]133;C\007'
   fi
+  __nmt_command_started=
 
   # `;D` closes the previous command's output region carrying its status,
   # `;A` opens the prompt.
@@ -51,14 +58,17 @@ __nmt_precmd() {
 
   # The prompt ends with `;B`. Re-applied per prompt rather than appended once
   # at load because a prompt framework rebuilds PS1 in its own `precmd`; this
-  # hook is registered last, so it sees the final PS1 for this prompt. `%{%}`
-  # tells zsh the sequence occupies no columns, keeping the prompt's width
-  # arithmetic and right-prompt placement correct.
-  [[ $PS1 == *$__nmt_prompt_end_mark* ]] || PS1="$PS1$__nmt_prompt_end_mark"
+  # hook is registered last, so it sees the final PS1 for this prompt. Any
+  # earlier copy is stripped first: a framework that rebuilt PS1 around one
+  # would otherwise leave it stranded mid-prompt, ending the prompt region
+  # before the prompt does. `%{%}` tells zsh the sequence occupies no columns,
+  # keeping the prompt's width arithmetic and right-prompt placement correct.
+  PS1="${PS1//"$__nmt_prompt_end_mark"/}$__nmt_prompt_end_mark"
 }
 
 # `;C` — command input ends, its output begins.
 __nmt_preexec() {
+  __nmt_command_started=1
   printf '\033]133;C\007'
 }
 
