@@ -18,7 +18,7 @@ set -eu
 profile=release
 binary=
 out=dist
-identifier=${NMT_BUNDLE_ID:-dev.f32y.NiumaTerm}
+identifier=${NMT_BUNDLE_ID:-io.f32.NiumaTerm}
 # The same 512px source the Windows icon was cut from; there is no larger one
 # in the tree, so the 1024px `512x512@2x` slice is left out rather than faked
 # by upscaling.
@@ -44,6 +44,14 @@ cd "$root"
 [ -n "$binary" ] || binary="target/$profile/NiumaTerm"
 if [ ! -x "$binary" ]; then
   echo "no executable at $binary; build it first" >&2
+  exit 1
+fi
+
+# Apple silicon is the only supported target, so a binary without an arm64
+# slice would produce a bundle that cannot run where it is meant to — and
+# nothing later in the assembly would notice.
+if ! lipo -archs "$binary" | tr ' ' '\n' | grep -qx arm64; then
+  echo "$binary is $(lipo -archs "$binary"); an arm64 slice is required" >&2
   exit 1
 fi
 
