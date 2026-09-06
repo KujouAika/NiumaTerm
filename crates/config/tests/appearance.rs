@@ -11,7 +11,12 @@ fn appearance_section_defaults_when_absent() {
     assert!(!config.appearance.agent_pane_use_terminal_background);
     assert!(config.appearance.transparent_main_view);
     assert_eq!(config.appearance.smooth_scrolling, SmoothScrollingMode::All);
-    assert_eq!(config.appearance.agent_transcript_font_family, "Consolas");
+    // Code inside a transcript keeps the terminal's fixed-pitch face, whatever
+    // the platform's is.
+    assert_eq!(
+        config.appearance.agent_transcript_font_family,
+        config.appearance.terminal_font_family
+    );
     assert_eq!(config.appearance.agent_transcript_font_size, 13.0);
     assert!(config.profiles.list.is_empty());
 }

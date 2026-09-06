@@ -6,13 +6,20 @@ use gpui_component::modern_menu::{prewarm_modern_menu, set_default_font};
 
 pub(crate) const UI_RADIUS: Pixels = px(8.0);
 pub(crate) const UI_BORDER_OPACITY: f32 = 0.5;
+/// The Chinese face preferred ahead of the system's own list, chosen per
+/// platform because neither ships the other's: `Microsoft YaHei` resolves to
+/// Helvetica on macOS, which supplies no CJK glyphs at all.
+#[cfg(target_os = "windows")]
 const DEFAULT_CJK_FONT_FAMILY: &str = "Microsoft YaHei";
+#[cfg(not(target_os = "windows"))]
+const DEFAULT_CJK_FONT_FAMILY: &str = "PingFang SC";
 
 static DEFAULT_FONT_FALLBACKS: LazyLock<FontFallbacks> =
     LazyLock::new(|| FontFallbacks::from_fonts(vec![DEFAULT_CJK_FONT_FAMILY.to_string()]));
 
-/// Prefer one Chinese font across application surfaces before DirectWrite
-/// continues through its system list for characters that remain unsupported.
+/// Prefer one Chinese font across application surfaces before the platform's
+/// text system continues through its own list for characters that remain
+/// unsupported.
 pub(crate) fn font_with_default_fallback(family: impl Into<SharedString>) -> Font {
     let mut font = font(family);
 

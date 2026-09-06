@@ -220,12 +220,41 @@ fn default_tab_width() -> f64 {
     120.0
 }
 
+/// The proportional face the interface is drawn in.
+///
+/// Named through GPUI's `.SystemUIFont` token rather than by family wherever
+/// the system face is not a family the font list carries: macOS keeps San
+/// Francisco out of the enumerable families, and asking for a name that is not
+/// installed does not fail — it silently resolves to Helvetica.
+#[cfg(target_os = "windows")]
 fn default_ui_font() -> String {
     "Segoe UI".to_string()
 }
 
+#[cfg(not(target_os = "windows"))]
+fn default_ui_font() -> String {
+    ".SystemUIFont".to_string()
+}
+
+/// The fixed-pitch face the terminal grid is drawn in.
+///
+/// `Menlo` is the monospace face macOS installs and exposes by name. `SF Mono`
+/// ships with the system but, like the UI face, is not resolvable as a family,
+/// and a terminal that silently fell back to Helvetica would draw its grid in
+/// a proportional face.
+#[cfg(target_os = "windows")]
 fn default_terminal_font_family() -> String {
     "Consolas".to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn default_terminal_font_family() -> String {
+    "Menlo".to_string()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn default_terminal_font_family() -> String {
+    "monospace".to_string()
 }
 
 fn default_terminal_font_size() -> f64 {

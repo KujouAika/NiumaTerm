@@ -107,7 +107,7 @@ use crate::ui::settings::state::{
     ui_font_or_default,
 };
 #[cfg(test)]
-use crate::ui::settings::state::{
+pub(crate) use crate::ui::settings::state::{
     DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, DEFAULT_UI_FONT,
 };
 use crate::ui::settings::state::{
