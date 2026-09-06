@@ -1,24 +1,18 @@
-use std::sync::LazyLock;
-
 use nmt_config::CursorShape;
 use nmt_config::local_state::TabState;
-use nmt_platform::windows::powershell;
-
-static ENCODED_POWERSHELL_INTEGRATION: LazyLock<String> =
-    LazyLock::new(|| powershell::encode_command(powershell::INTEGRATION_SCRIPT));
 
 pub(crate) fn default_shell() -> String {
-    powershell::DEFAULT_SHELL.to_string()
+    nmt_platform::default_shell()
 }
 
-/// Whether a configured shell is PowerShell (the only shell we have an OSC 133
-/// integration script for). `None` resolves to the PowerShell default.
-pub(crate) fn shell_is_powershell(shell: Option<&str>) -> bool {
-    powershell::is_shell(shell)
+/// Whether the platform can inject its OSC 133 integration into a configured
+/// shell. `None` resolves to the platform's default shell.
+pub(crate) fn shell_supports_prompt_integration(shell: Option<&str>) -> bool {
+    nmt_platform::supports_prompt_integration(shell)
 }
 
 /// Local terminal session configuration. `None` and empty fields fall back to
-/// defaults (`shell` → `powershell.exe`).
+/// defaults (`shell` → the platform's default shell).
 #[derive(Debug, Clone)]
 pub struct TerminalSessionConfig {
     pub shell: Option<String>,
@@ -37,7 +31,7 @@ pub struct TerminalSessionConfig {
     /// fallback: no freezing, no boundary clears, no block events, intact
     /// scrollback. The GPUI app keeps this enabled and toggles block chrome only.
     pub engine_blocks: bool,
-    /// Child-only values merged into the shell's inherited Windows environment.
+    /// Child-only values merged into the shell's inherited environment.
     /// Runtime metadata is deliberately excluded from persisted tab state.
     pub environment_overrides: Vec<(String, String)>,
     pub manage_process_tree: bool,
@@ -57,25 +51,22 @@ impl TerminalSessionConfig {
         }
     }
 
-    /// Augment a session config so a PowerShell shell evaluates the bundled OSC 133
-    /// integration at startup. Only applied to a PowerShell shell with no caller-supplied
-    /// args, so explicit args (and non-PowerShell shells) are left untouched.
+    /// Augment a session config so the shell evaluates the bundled OSC 133
+    /// integration at startup. Only applied to a supported shell with no
+    /// caller-supplied args, so explicit args (and shells the platform has no
+    /// integration for) are left untouched.
     pub(crate) fn with_shell_integration(mut self: TerminalSessionConfig) -> TerminalSessionConfig {
         if !self.has_trusted_prompt_integration() {
             return self;
         }
 
-        self.args = vec![
-            "-NoExit".to_string(),
-            "-EncodedCommand".to_string(),
-            (*ENCODED_POWERSHELL_INTEGRATION).clone(),
-        ];
+        self.args = nmt_platform::prompt_integration_args();
 
         self
     }
 
     pub(crate) fn has_trusted_prompt_integration(&self) -> bool {
-        self.args.is_empty() && shell_is_powershell(self.shell.as_deref())
+        self.args.is_empty() && shell_supports_prompt_integration(self.shell.as_deref())
     }
 }
 

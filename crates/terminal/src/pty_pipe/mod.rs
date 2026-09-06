@@ -21,7 +21,7 @@ mod marks;
 mod session;
 mod write_queue;
 
-use nmt_platform::windows::conpty_realign::{
+use nmt_platform::conpty_realign::{
     is_conpty_resize_echo_input, is_conpty_resize_repaint, rewrite_conpty_resize_echo_cup_rows,
     su_realign_count,
 };

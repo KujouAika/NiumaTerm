@@ -1,5 +1,8 @@
 pub(crate) use notifier::{remove, show};
-pub(crate) use powershell::{build_hook_command, hook_command_contains};
+pub(crate) use powershell::{
+    build_hook_command, default_shell, hook_command_contains, prompt_integration_args,
+    supports_prompt_integration,
+};
 pub use process_exit::wait_for_exit;
 pub use readiness::SoftReady;
 pub use shell_integration::{
@@ -7,7 +10,6 @@ pub use shell_integration::{
     shell_integration_dll_mismatched, system_notification_enabled, unregister_shell_integration,
 };
 
-pub mod conpty_realign;
 pub mod data_protection;
 pub mod environment;
 pub mod file_version;

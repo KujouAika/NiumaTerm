@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::NativeNotification;
 
 #[cfg(target_os = "macos")]
@@ -110,16 +108,4 @@ pub(crate) use platform::show;
 
 pub(crate) fn remove(_tag: &str, _group: &str) -> Result<(), String> {
     Ok(())
-}
-
-pub(crate) fn register_identity(_exe_path: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-pub(crate) fn unregister_identity() -> Result<(), String> {
-    Ok(())
-}
-
-pub(crate) fn identity_registered() -> bool {
-    true
 }

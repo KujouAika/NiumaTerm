@@ -55,13 +55,14 @@ impl KillOnCloseJob {
         let pid = child.id() as libc::pid_t;
 
         // Idempotent when the command already asked for its own group; the
-        // call is what covers a `Command` built without `process_group`. Once
-        // the child has exec'd the kernel refuses it with `EACCES`, so the
-        // group membership is read back rather than assumed either way.
+        // call is what covers a `Command` built without `process_group`. The
+        // kernel refuses it once the child has exec'd (`EACCES`) or made
+        // itself a session leader (`EPERM`) — both mean the child settled its
+        // own group, so membership is read back rather than assumed.
         // SAFETY: both arguments are plain integers.
         if unsafe { libc::setpgid(pid, pid) } != 0 {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::EACCES) {
+            if !matches!(error.raw_os_error(), Some(libc::EACCES) | Some(libc::EPERM)) {
                 return Err(error);
             }
         }

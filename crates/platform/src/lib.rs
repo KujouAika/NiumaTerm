@@ -5,6 +5,14 @@
 use libc::c_ushort;
 pub use mio::{Events, Interest, Poll, Token, Waker};
 
+/// ConPTY's resize behaviour, recognized from the byte stream alone.
+///
+/// The quirk is Windows-only, and `USES_CONPTY` tells callers when it
+/// applies, but the analysis is plain stream parsing — keeping it out of the
+/// Windows backend lets the shared PTY read loop compile on every platform
+/// without splitting its control flow across `cfg` arms.
+pub mod conpty_realign;
+
 #[cfg(not(windows))]
 mod unix;
 #[cfg(not(windows))]
@@ -153,4 +161,22 @@ pub fn build_hook_command(executable: &str, argument: &str) -> io::Result<String
 /// visible.
 pub fn hook_command_contains(command: &str, marker: &str) -> bool {
     platform::hook_command_contains(command, marker)
+}
+
+/// The shell a terminal launches when configuration names none.
+pub fn default_shell() -> String {
+    platform::default_shell()
+}
+
+/// Whether the bundled OSC 133 prompt integration can be injected into
+/// `shell`, so the terminal may trust the block boundaries it reports.
+/// `None` means the platform default shell.
+pub fn supports_prompt_integration(shell: Option<&str>) -> bool {
+    platform::supports_prompt_integration(shell)
+}
+
+/// The startup arguments that make a shell
+/// [`supports_prompt_integration`] accepts evaluate the bundled integration.
+pub fn prompt_integration_args() -> Vec<String> {
+    platform::prompt_integration_args()
 }
