@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the bundle's Info.plist. `scripts/bundle-macos.sh` substitutes
+  every @@NAME@@ placeholder; nothing else about the file is generated, so what
+  ships is what is reviewed here.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>NiumaTerm</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIdentifier</key>
+  <string>@@BUNDLE_ID@@</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>NiumaTerm</string>
+  <key>CFBundleDisplayName</key>
+  <string>NiumaTerm</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+
+  <!--
+    Both version keys have to be dotted numbers: LaunchServices compares them
+    and an update framework orders releases by them, and neither accepts a
+    label like `nightly-20260821-7567b41`. The label the application itself
+    compares against a release feed is carried separately, so a nightly can
+    still identify itself exactly.
+  -->
+  <key>CFBundleShortVersionString</key>
+  <string>@@SHORT_VERSION@@</string>
+  <key>CFBundleVersion</key>
+  <string>@@SHORT_VERSION@@</string>
+  <key>NMTVersionLabel</key>
+  <string>@@VERSION_LABEL@@</string>
+
+  <key>LSMinimumSystemVersion</key>
+  <string>@@MIN_MACOS@@</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+
+  <!--
+    A terminal reaches whatever the user runs in it, so the protected
+    directories are reached under this application's identity and macOS asks
+    on its behalf. Without these strings the prompt names no reason, and under
+    a hardened runtime the access can be refused outright.
+  -->
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>NiumaTerm needs access so commands you run can read and write files on your Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>NiumaTerm needs access so commands you run can read and write files in your Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>NiumaTerm needs access so commands you run can read and write files in your Downloads.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>NiumaTerm needs access so commands you run can read and write files on removable volumes.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>NiumaTerm needs access so commands you run can read and write files on network volumes.</string>
+</dict>
+</plist>
