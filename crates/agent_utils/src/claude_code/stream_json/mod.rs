@@ -12,7 +12,7 @@
 //! switching into `bypassPermissions` mode).
 
 use std::collections::{HashMap, VecDeque};
-#[cfg(test)]
+#[cfg(all(test, windows))]
 use std::fs;
 use std::process::Command;
 use std::time::Duration;

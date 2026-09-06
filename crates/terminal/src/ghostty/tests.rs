@@ -863,6 +863,11 @@ fn resize_reflow_does_not_duplicate_viewport_content() {
     }
 }
 
+/// The reflow trailing-space trim this asserts is patch 0001 in
+/// `libghostty-vt-sys/patches`, which self-gates to Windows: it exists to undo
+/// ConPTY's full-width line padding, and a real PTY never pads, so upstream
+/// reflow is the correct behaviour everywhere else.
+#[cfg(windows)]
 #[test]
 fn resize_shrink_does_not_double_full_width_padded_lines() {
     // Regression (remove-crosswords resize double-spacing / 错位). ConPTY pads

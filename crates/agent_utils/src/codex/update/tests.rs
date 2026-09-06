@@ -41,7 +41,10 @@ fn doctor_schema_is_validated_and_remediation_is_display_only() {
 
 #[test]
 fn version_fallback_uses_the_same_configured_launcher() {
+    #[cfg(windows)]
     let script = "@echo off\r\nif \"%1\"==\"--version\" (echo configured-cli 9.8.7 & exit /b 0)\r\nexit /b 7\r\n";
+    #[cfg(unix)]
+    let script = "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'configured-cli 9.8.7'; exit 0; fi\nexit 7\n";
     let (root, executable) = fake_launcher("version fallback", script);
     let launcher = AgentCli::new(executable.display().to_string(), []);
 
@@ -54,10 +57,24 @@ fn version_fallback_uses_the_same_configured_launcher() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// Write an executable stand-in for the Codex CLI. The extension and the
+/// execute bit are what make a script runnable on each platform.
 fn fake_launcher(name: &str, body: &str) -> (PathBuf, PathBuf) {
     let root = env::temp_dir().join(format!("NiumaTerm Codex update {} {}", name, process::id()));
     fs::create_dir_all(&root).unwrap();
+
+    #[cfg(windows)]
     let launcher = root.join(format!("{name}.cmd"));
+    #[cfg(unix)]
+    let launcher = root.join(name);
+
     fs::write(&launcher, body).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     (root, launcher)
 }

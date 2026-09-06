@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::thread;
 
 use crate::claude_code::stream_json::*;

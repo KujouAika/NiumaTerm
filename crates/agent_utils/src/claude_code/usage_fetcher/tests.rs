@@ -2,16 +2,18 @@ use crate::claude_code::usage_fetcher::*;
 
 #[test]
 fn credentials_path_prefers_an_explicit_claude_config_dir() {
+    // Built through `join` rather than written out, so the expectation uses
+    // whatever separator the platform's `PathBuf` produces.
+    let config_dir = PathBuf::from("profiles").join("claude");
+    let home = PathBuf::from("home").join("test");
+
     assert_eq!(
-        credentials_path(
-            Some(OsStr::new(r"D:\profiles\claude")),
-            Some(Path::new(r"C:\Users\test")),
-        ),
-        Some(PathBuf::from(r"D:\profiles\claude\.credentials.json"))
+        credentials_path(Some(config_dir.as_os_str()), Some(&home)),
+        Some(config_dir.join(".credentials.json"))
     );
     assert_eq!(
-        credentials_path(None, Some(Path::new(r"C:\Users\test"))),
-        Some(PathBuf::from(r"C:\Users\test\.claude\.credentials.json"))
+        credentials_path(None, Some(&home)),
+        Some(home.join(".claude").join(".credentials.json"))
     );
 }
 

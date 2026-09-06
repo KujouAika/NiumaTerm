@@ -1,19 +1,42 @@
 use crate::launcher::*;
 
-fn cmd_launcher() -> AgentCli {
-    AgentCli::new("cmd.exe", [])
+/// The bounded runner is exercised through a real child process, so each
+/// assertion needs a shell that exists on the host. Only the spelling of the
+/// script differs; every case tests the same runner behaviour.
+#[cfg(windows)]
+const SHELL: &str = "cmd.exe";
+#[cfg(unix)]
+const SHELL: &str = "/bin/sh";
+
+#[cfg(windows)]
+const SHELL_FLAGS: [&str; 2] = ["/D", "/C"];
+#[cfg(unix)]
+const SHELL_FLAGS: [&str; 1] = ["-c"];
+
+fn script(body: &str) -> Vec<String> {
+    SHELL_FLAGS
+        .iter()
+        .copied()
+        .chain([body])
+        .map(str::to_owned)
+        .collect()
+}
+
+fn shell_launcher() -> AgentCli {
+    AgentCli::new(SHELL, [])
 }
 
 #[test]
 fn bounded_runner_retains_suffix_and_redacts_environment_values() {
     let secret = "secret-value-for-test";
-    let launcher = AgentCli::new(
-        "cmd.exe",
-        [("NMT_TEST_SECRET".to_string(), secret.to_string())],
-    );
+    let launcher = AgentCli::new(SHELL, [("NMT_TEST_SECRET".to_string(), secret.to_string())]);
+    #[cfg(windows)]
+    let body = "echo 1234567890%NMT_TEST_SECRET%";
+    #[cfg(unix)]
+    let body = "echo \"1234567890$NMT_TEST_SECRET\"";
     let output = run_bounded(
         &launcher,
-        ["/D", "/C", "echo 1234567890%NMT_TEST_SECRET%"],
+        script(body),
         ProcessLimits::new(Duration::from_secs(3), 20),
     )
     .unwrap();
@@ -25,13 +48,14 @@ fn bounded_runner_retains_suffix_and_redacts_environment_values() {
 
 #[test]
 fn structured_probe_parsing_precedes_diagnostic_redaction() {
-    let launcher = AgentCli::new(
-        "cmd.exe",
-        [("NMT_TEST_VALUE".to_string(), "codex".to_string())],
-    );
+    let launcher = AgentCli::new(SHELL, [("NMT_TEST_VALUE".to_string(), "codex".to_string())]);
+    #[cfg(windows)]
+    let body = "echo {\"codexVersion\":\"1.2.3\"}";
+    #[cfg(unix)]
+    let body = "echo '{\"codexVersion\":\"1.2.3\"}'";
     let output = run_bounded(
         &launcher,
-        ["/D", "/C", "echo {\"codexVersion\":\"1.2.3\"}"],
+        script(body),
         ProcessLimits::new(Duration::from_secs(3), 256),
     )
     .unwrap();
@@ -43,9 +67,13 @@ fn structured_probe_parsing_precedes_diagnostic_redaction() {
 
 #[test]
 fn bounded_runner_times_out_and_reports_bounded_diagnostics() {
+    #[cfg(windows)]
+    let body = "echo before-timeout & ping -n 6 127.0.0.1 >nul";
+    #[cfg(unix)]
+    let body = "echo before-timeout; sleep 6";
     let error = run_bounded(
-        &cmd_launcher(),
-        ["/D", "/C", "echo before-timeout & ping -n 6 127.0.0.1 >nul"],
+        &shell_launcher(),
+        script(body),
         ProcessLimits::new(Duration::from_millis(100), 64),
     )
     .unwrap_err();
