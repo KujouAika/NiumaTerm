@@ -32,8 +32,7 @@ mod platform {
 
             let center = UNUserNotificationCenter::currentNotificationCenter();
             center.requestAuthorizationWithOptions_completionHandler(
-                UNAuthorizationOptions::UNAuthorizationOptionAlert
-                    | UNAuthorizationOptions::UNAuthorizationOptionSound,
+                UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
                 &RcBlock::new(|_ok: Bool, _err: *mut NSError| {}),
             );
         });
