@@ -52,11 +52,16 @@ fn zsh_is_launched_bare_and_handed_its_bootstrap() {
     );
 }
 
-/// bash cannot be handed its integration the same way: hiding the injected
-/// line means launching without a line editor, and bash then drops the
-/// non-printing region of PS1 that carries the prompt-end mark — taking the
-/// whole prompt with it. So bash keeps the `--rcfile` delivery, behind the
-/// login hop that makes bash honour it.
+/// bash cannot be handed its integration the same way: hiding an injected
+/// line means launching without a line editor, and bash 3.2 cannot put the
+/// editor back — `set -o emacs` flips the option, but readline was never
+/// initialized at startup and the shell stops printing prompts entirely. So
+/// bash keeps the `--rcfile` delivery.
+///
+/// Where the launch is a login shell, `--rcfile` is only honoured behind an
+/// `exec`, and the outer shell is given `--norc --noprofile` so the user's
+/// startup chain runs past the `exec` rather than before it — the environment
+/// is all that would have survived otherwise.
 #[test]
 fn bash_is_integrated_through_its_rc_file() {
     let integration = prompt_integration(Some("/bin/bash")).expect("bash is integrated");
@@ -71,17 +76,27 @@ fn bash_is_integrated_through_its_rc_file() {
         .expect("the hooks are named in the environment");
     assert!(hooks.ends_with(BASH_HOOKS));
 
+    let replays_login = integration
+        .environment
+        .iter()
+        .any(|(name, _)| name == "NMT_BASH_LOGIN");
+
     if SPAWNS_LOGIN_SHELL {
-        assert_eq!(integration.args[0], "-lc");
+        assert_eq!(integration.args[..3], ["--norc", "--noprofile", "-c"]);
         assert!(
-            integration.args[1].starts_with("exec '/bin/bash' --rcfile '"),
+            integration.args[3].starts_with("exec '/bin/bash' --rcfile '"),
             "{}",
-            integration.args[1]
+            integration.args[3]
         );
-        assert!(integration.args[1].ends_with(&format!("{BASH_RC}' -i")));
+        assert!(integration.args[3].ends_with(&format!("{BASH_RC}' -i")));
+        assert!(replays_login, "the rc has to be told to replay the profile");
     } else {
         assert_eq!(integration.args[0], "--rcfile");
         assert!(integration.args[1].ends_with(BASH_RC));
+        assert!(
+            !replays_login,
+            "a non-login shell replays `.bashrc` instead"
+        );
     }
 }
 

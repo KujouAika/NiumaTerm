@@ -74,10 +74,25 @@ __nmt_prompt_ready() {
   __nmt_in_prompt=
 }
 
+# A DEBUG trap the user's own files installed — bash-preexec, atuin — is
+# captured here, because bash allows one handler per signal and installing ours
+# would otherwise silently replace theirs. `trap -p` prints the handler wrapped
+# as `trap -- '<command>' DEBUG`; stripping only that wrapper leaves the
+# command with bash's own quoting intact, which is what `eval` re-parses.
+__nmt_previous_debug_trap=$(trap -p DEBUG)
+__nmt_previous_debug_trap=${__nmt_previous_debug_trap#trap -- \'}
+__nmt_previous_debug_trap=${__nmt_previous_debug_trap%\' DEBUG}
+
 # `;C` — command input ends, its output begins. DEBUG fires before every simple
 # command, including the ones the prompt hooks and the command's own pipeline
 # run, so only the first one after a prompt is the user's.
 __nmt_preexec() {
+  # Theirs runs first and unconditionally: it is entitled to every command we
+  # filter out, and it sees `$BASH_COMMAND` as its own trap would have.
+  if [ -n "$__nmt_previous_debug_trap" ]; then
+    eval "$__nmt_previous_debug_trap"
+  fi
+
   if [ -n "$__nmt_in_prompt" ]; then
     return
   fi
