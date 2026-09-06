@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::{env, fs, process};
 
-use nmt_platform::windows::process::exit_status_from_code;
+use nmt_platform::process::exit_status_from_code;
 
 use crate::update::*;
 

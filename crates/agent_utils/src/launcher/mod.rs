@@ -9,7 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use std::{env, fmt, io, thread};
 
-use nmt_platform::windows::process::{KillOnCloseJob, hidden_cmd_command};
+use nmt_platform::process::{KillOnCloseJob, hidden_cmd_command};
 
 use crate::LaunchConfig;
 

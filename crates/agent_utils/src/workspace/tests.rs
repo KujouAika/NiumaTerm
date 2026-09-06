@@ -34,7 +34,19 @@ fn additional_directories_without_a_primary_one_are_dropped() {
 }
 
 #[test]
-fn equivalent_spellings_share_one_input_history_signature() {
+fn redundant_segments_share_one_input_history_signature() {
+    let a = AgentWorkspace::new(Some("C:/A".into()), vec!["C:/B".into(), "C:/C/".into()]);
+    let b = AgentWorkspace::new(Some("C:/A".into()), vec!["C:/B/.".into(), "C:/C".into()]);
+
+    assert_eq!(a.history_signature(), b.history_signature());
+}
+
+/// Backslash separators and case folding are equivalences only the Windows
+/// path rules grant; on a case-sensitive filesystem these are distinct
+/// directories and must keep distinct histories.
+#[cfg(windows)]
+#[test]
+fn windows_spellings_share_one_input_history_signature() {
     let a = AgentWorkspace::new(Some("C:/A".into()), vec!["C:/B".into(), "C:/C/".into()]);
     let b = AgentWorkspace::new(Some("C:/A".into()), vec![r"c:\B\.".into(), r"C:\c".into()]);
 

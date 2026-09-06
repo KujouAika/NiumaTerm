@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time;
 
 use nmt_config::{CursorShape, active_colors};
-use nmt_platform::windows::process::ProcessTree;
+use nmt_platform::process::ProcessTree;
 use nmt_platform::{WinsizeBuilder, create_managed_pty_with_env, create_pty_with_env};
 use nmt_terminal::block_store::BlockStore;
 use nmt_terminal::event::{Msg, MsgSender, ProgressReport};

@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
 
-use nmt_platform::windows::process::KillOnCloseJob;
+use nmt_platform::process::KillOnCloseJob;
 use parking_lot::Mutex;
 
 use crate::deepseek::api::ApiClient;

@@ -5,7 +5,7 @@ use std::fmt::{self, Display, Formatter};
 use std::mem::MaybeUninit;
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
-use std::{error, io};
+use std::{error, io, ptr};
 
 use libc::c_void;
 
@@ -135,7 +135,24 @@ mod sys {
             buffersize: c_int,
         ) -> c_int;
 
+        pub fn proc_listpgrppids(pgrpid: c_int, buffer: *mut c_void, buffersize: c_int) -> c_int;
     }
+}
+
+/// The number of live processes in the process group `pgid`.
+///
+/// `proc_listpgrppids` reports the byte length it would fill when handed a
+/// null buffer, which is the group size without a second call or a guess at
+/// how large the group may grow.
+pub fn process_group_count(pgid: c_int) -> usize {
+    // SAFETY: a null buffer with zero capacity is the documented way to ask
+    // for the required size, and the call only reads the group id.
+    let bytes = unsafe { sys::proc_listpgrppids(pgid, ptr::null_mut(), 0) };
+    if bytes <= 0 {
+        return 0;
+    }
+
+    bytes as usize / size_of::<c_int>()
 }
 
 pub fn macos_process_name(pid: c_int) -> String {
