@@ -7,7 +7,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nmt_platform::windows::process::KillOnCloseJob;
+use nmt_platform::process::KillOnCloseJob;
 use serde_json::Value;
 
 /// A spawned agent CLI with piped stdio, kill-on-close containment, and

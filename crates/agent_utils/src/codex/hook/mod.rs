@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::hook_store::{self, event_commands, is_marked, uninstall_from};
 use crate::{
     AgentEvent, AgentEventInput, AgentEventKind, HookInstallStatus, agent_process,
-    build_windows_hook_command,
+    build_hook_command,
 };
 
 /// Every Codex event that contributes to the pane lifecycle.
@@ -142,7 +142,7 @@ pub fn hook_command() -> io::Result<String> {
         .hook_executable()
         .ok_or_else(|| invalid("NiumaTerm Hook executable path is unavailable"))?;
 
-    build_windows_hook_command(executable, "codex")
+    build_hook_command(executable, "codex")
 }
 
 /// Binds the shared hook store to Codex's event list and entry shape. The

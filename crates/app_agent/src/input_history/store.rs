@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::path::Path;
 
-use nmt_platform::windows::filesystem::replace_file;
+use nmt_platform::filesystem::replace_file;
 use serde::{Deserialize, Serialize};
 
 use crate::input_history::InputHistoryScope;

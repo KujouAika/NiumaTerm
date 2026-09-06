@@ -36,9 +36,7 @@ pub use crate::event::{
     AgentValidationError, RawAgentHookMessage, normalize_body, normalize_title,
 };
 use crate::event::{MAX_ROUTE_BYTES, validate_identity};
-pub use crate::hook_command::{
-    HookInstallStatus, build_windows_hook_command, hook_command_contains,
-};
+pub use crate::hook_command::{HookInstallStatus, build_hook_command, hook_command_contains};
 pub use crate::monitor::{
     ACTIVE_STATE_STALE_AFTER, AgentActivityPolicy, AgentMonitor, AgentNotification, AgentPaneState,
     AgentProjection, COMPLETION_QUIET_WINDOW, MonitorMutation, PendingCompletion,

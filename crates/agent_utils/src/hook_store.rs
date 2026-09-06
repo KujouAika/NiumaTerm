@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use nmt_platform::windows::environment;
+use nmt_platform::environment;
 use serde_json::{Value, from_str, json, to_string_pretty};
 
 use crate::{AGENT_HOOK_EXE_ENV, HookInstallStatus, hook_command_contains};

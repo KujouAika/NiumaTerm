@@ -1,6 +1,4 @@
-pub use nmt_platform::windows::powershell::{
-    build_hook_command as build_windows_hook_command, hook_command_contains,
-};
+pub use nmt_platform::{build_hook_command, hook_command_contains};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookInstallStatus {

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nmt_platform::windows::process::{KillOnCloseJob, hidden_cmd_command};
+use nmt_platform::process::{KillOnCloseJob, hidden_cmd_command};
 use serde_json::{Value, from_str};
 
 use crate::usage::{

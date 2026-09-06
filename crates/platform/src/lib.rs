@@ -134,3 +134,23 @@ pub fn show_notification(notification: &NativeNotification) -> Result<(), String
 pub fn remove_notification(tag: &str, group: &str) -> Result<(), String> {
     platform::remove(tag, group)
 }
+
+/// The command line an agent writes into its hook config to invoke
+/// `executable` with a single `argument`.
+///
+/// Agents run these entries through the platform's shell, so quoting and the
+/// escape a path with spaces needs differ per platform; `argument` must stay
+/// a bare identifier on every platform.
+pub fn build_hook_command(executable: &str, argument: &str) -> io::Result<String> {
+    platform::build_hook_command(executable, argument)
+}
+
+/// Whether `command` — a hook entry read back from an agent's config —
+/// invokes the binary identified by `marker`.
+///
+/// Kept alongside the builder because a platform that encodes the command
+/// (PowerShell's `-EncodedCommand`) has to decode it before the marker is
+/// visible.
+pub fn hook_command_contains(command: &str, marker: &str) -> bool {
+    platform::hook_command_contains(command, marker)
+}

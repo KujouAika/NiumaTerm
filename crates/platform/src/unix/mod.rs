@@ -4,6 +4,12 @@ use dirs::home_dir;
 use libc;
 use tracing::info;
 
+pub mod environment;
+pub mod filesystem;
+pub mod process;
+
+mod hook_command;
+
 #[cfg(target_os = "macos")]
 mod macos;
 mod notifier;
@@ -17,7 +23,7 @@ use std::ops::Deref;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process::{Child as ChildProcess, Command, Stdio};
 use std::sync::Arc;
 use std::{env, error, io, ptr, str};
 
@@ -33,6 +39,7 @@ pub(crate) use notifier::{
 use signal_hook::consts as sigconsts;
 use signals::Signals;
 
+pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
 use crate::{ChildEvent, EventedPty, ProcessReadWrite, Winsize, WinsizeBuilder};
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -504,7 +511,7 @@ pub fn create_pty_with_spawn(
                 ));
             }
 
-            let output = process::Command::new("flatpak-spawn")
+            let output = Command::new("flatpak-spawn")
                 .args(["--host", "sh", "-c", "echo $SHELL"])
                 .output()?;
             let shell = String::from_utf8_lossy(&output.stdout);
@@ -720,7 +727,7 @@ pub struct Child {
     #[allow(dead_code)]
     ptsname: String,
     #[allow(dead_code)]
-    process: Option<process::Child>,
+    process: Option<ChildProcess>,
 }
 
 impl Child {
