@@ -1,15 +1,16 @@
 #![cfg(unix)]
-//! Drives a real zsh through the production PTY path and reads the OSC 133
+//! Drives a real shell through the production PTY path and reads the OSC 133
 //! marks back out of the byte stream.
 //!
 //! The marks only earn boundary trust in a strict `A -> B -> C -> D` order, and
 //! the pieces that produce them are spread across a `precmd` hook, a `preexec`
-//! hook and a `PS1` suffix that a prompt framework may rebuild. Nothing short
-//! of running the shell shows whether they still line up.
+//! hook and a `PS1` suffix that a prompt framework may rebuild — and bash
+//! reaches its own through a login hop that `exec`s a second shell. Nothing
+//! short of running them shows whether the pieces still line up.
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::id;
+use std::process::{Command, Stdio, id};
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
@@ -17,9 +18,10 @@ use nmt_platform::{Pty, create_pty_with_env, prompt_integration};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
-fn zsh_path() -> Option<&'static str> {
-    ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh"]
+fn shell_path(name: &str) -> Option<String> {
+    ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"]
         .into_iter()
+        .map(|dir| format!("{dir}/{name}"))
         .find(|candidate| Path::new(candidate).is_file())
 }
 
@@ -82,43 +84,69 @@ impl Drop for Session {
     }
 }
 
-/// Start zsh with the bundled integration and an empty HOME, so the marks
+/// Start `shell` with the bundled integration and an empty HOME, so the marks
 /// under test are the ones the bundled files emit rather than whatever the
 /// developer's own configuration adds.
-fn start_zsh(label: &str) -> Option<Session> {
-    let zsh = zsh_path()?;
-    let integration = prompt_integration(Some(zsh)).expect("zsh reports an integration");
+fn start(shell: &str, label: &str) -> Option<Session> {
+    start_with_startup_files(shell, label, &[])
+}
 
-    let home = env::temp_dir().join(format!("nmt-zsh-{label}-{}", id()));
+/// `startup_files` are written into the empty home before the shell runs, so a
+/// test can check that the user's own configuration still reaches the session.
+fn start_with_startup_files(
+    shell: &str,
+    label: &str,
+    startup_files: &[(&str, &str)],
+) -> Option<Session> {
+    let Some(program) = shell_path(shell) else {
+        eprintln!("skipping: no {shell} on this host");
+        return None;
+    };
+    let integration = prompt_integration(Some(&program)).expect("the shell reports an integration");
+
+    let home = env::temp_dir().join(format!("nmt-{shell}-{label}-{}", id()));
     fs::create_dir_all(&home).expect("temp home");
+    for (name, contents) in startup_files {
+        fs::write(home.join(name), contents).expect("startup file");
+    }
     let home_value = home.to_string_lossy().into_owned();
 
+    // The integration resolved the user's own directories from this process's
+    // environment; point them at the empty home instead.
     let mut environment: Vec<(String, String)> = integration
         .environment
         .into_iter()
-        .filter(|(name, _)| name != "NMT_USER_ZDOTDIR")
+        .map(|(name, value)| match name.as_str() {
+            "NMT_USER_ZDOTDIR" | "NMT_BASH_USER_RC" => (name, home_value.clone()),
+            _ => (name, value),
+        })
         .collect();
-    environment.push((String::from("NMT_USER_ZDOTDIR"), home_value.clone()));
     environment.push((String::from("HOME"), home_value));
 
-    match create_pty_with_env(zsh, Vec::new(), &None, 80, 24, &environment, None) {
+    match create_pty_with_env(
+        &program,
+        integration.args,
+        &None,
+        80,
+        24,
+        &environment,
+        None,
+    ) {
         Ok(pty) => Some(Session {
             pty,
             home,
             stream: Vec::new(),
         }),
         Err(error) => {
-            eprintln!("skipping: could not spawn zsh: {error:?}");
+            eprintln!("skipping: could not spawn {shell}: {error:?}");
             let _ = fs::remove_dir_all(&home);
             None
         }
     }
 }
 
-#[test]
-fn zsh_reports_an_ordered_prompt_lifecycle() {
-    let Some(mut session) = start_zsh("lifecycle") else {
-        eprintln!("skipping: no zsh on this host");
+fn assert_ordered_lifecycle(shell: &str) {
+    let Some(mut session) = start(shell, "lifecycle") else {
         return;
     };
 
@@ -153,12 +181,20 @@ fn zsh_reports_an_ordered_prompt_lifecycle() {
     );
 }
 
+#[test]
+fn zsh_reports_an_ordered_prompt_lifecycle() {
+    assert_ordered_lifecycle("zsh");
+}
+
+#[test]
+fn bash_reports_an_ordered_prompt_lifecycle() {
+    assert_ordered_lifecycle("bash");
+}
+
 /// The exit code is what a finished command block records, so a failure has to
 /// travel out as its own status rather than a generic zero.
-#[test]
-fn zsh_reports_a_failing_commands_exit_code() {
-    let Some(mut session) = start_zsh("exit-code") else {
-        eprintln!("skipping: no zsh on this host");
+fn assert_reports_failing_exit_code(shell: &str) {
+    let Some(mut session) = start(shell, "exit-code") else {
         return;
     };
 
@@ -173,13 +209,21 @@ fn zsh_reports_a_failing_commands_exit_code() {
     );
 }
 
+#[test]
+fn zsh_reports_a_failing_commands_exit_code() {
+    assert_reports_failing_exit_code("zsh");
+}
+
+#[test]
+fn bash_reports_a_failing_commands_exit_code() {
+    assert_reports_failing_exit_code("bash");
+}
+
 /// A user `clear` has to be announced in band: the terminal's own scrollback
 /// is empty under the block protocol, so nothing else tells it the frozen
 /// blocks should drop.
-#[test]
-fn zsh_announces_a_user_clear() {
-    let Some(mut session) = start_zsh("clear") else {
-        eprintln!("skipping: no zsh on this host");
+fn assert_announces_user_clear(shell: &str) {
+    let Some(mut session) = start(shell, "clear") else {
         return;
     };
 
@@ -191,5 +235,115 @@ fn zsh_announces_a_user_clear() {
     assert!(
         seen.iter().any(|mark| mark == "K"),
         "clear must announce itself before erasing; saw {seen:?}"
+    );
+}
+
+#[test]
+fn zsh_announces_a_user_clear() {
+    assert_announces_user_clear("zsh");
+}
+
+#[test]
+fn bash_announces_a_user_clear() {
+    assert_announces_user_clear("bash");
+}
+
+/// The integration must not cost the user their own configuration.
+fn assert_user_startup_files_are_reached(shell: &str, startup_files: &[(&str, &str)]) {
+    let Some(mut session) = start_with_startup_files(shell, "startup", startup_files) else {
+        return;
+    };
+
+    session.read_until(|seen| seen.len() >= 6);
+    session
+        .pty
+        .write_all(b"printf 'marker=[%s]\\n' \"$NMT_TEST_STARTUP\"\n")
+        .expect("write command");
+
+    let deadline = Instant::now() + DEADLINE;
+    let mut buf = [0u8; 8192];
+    while Instant::now() < deadline {
+        match session.pty.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                session.stream.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&session.stream).contains("marker=[reached]") {
+                    return;
+                }
+            }
+            Err(_) => thread::sleep(Duration::from_millis(20)),
+        }
+    }
+
+    panic!(
+        "{shell} did not read the user's startup files; saw {}",
+        String::from_utf8_lossy(&session.stream)
+    );
+}
+
+#[test]
+fn zsh_still_reads_the_users_startup_files() {
+    assert_user_startup_files_are_reached(
+        "zsh",
+        &[(".zshrc", "export NMT_TEST_STARTUP=reached\n")],
+    );
+}
+
+/// bash's startup files are found through `$HOME`, and `/usr/bin/login` resets
+/// that from the password database no matter what the caller passes — so this
+/// one cannot run through the PTY path, which goes through `login` on macOS.
+/// It runs the generated launch arguments directly instead, which is where the
+/// claim actually lives: the `-lc` hop has to make bash run its profile chain,
+/// and what the profile exported has to survive the `exec` into the shell that
+/// finally reads our rc.
+#[test]
+fn bash_still_reads_the_users_startup_files() {
+    let Some(bash) = shell_path("bash") else {
+        eprintln!("skipping: no bash on this host");
+        return;
+    };
+    let integration = prompt_integration(Some(&bash)).expect("bash is integrated");
+
+    let home = env::temp_dir().join(format!("nmt-bash-startup-{}", id()));
+    fs::create_dir_all(&home).expect("temp home");
+    // Whichever of the two the host's launch shape makes bash read — the
+    // profile chain under the login hop, `.bashrc` otherwise — the marker is
+    // set.
+    for name in [".bash_profile", ".bashrc"] {
+        fs::write(home.join(name), "export NMT_TEST_STARTUP=reached\n").expect("startup file");
+    }
+    let home_value = home.to_string_lossy().into_owned();
+
+    let mut command = Command::new(&bash);
+    command.args(&integration.args);
+    for (name, value) in &integration.environment {
+        let value = match name.as_str() {
+            "NMT_BASH_USER_RC" => home.join(".bashrc").to_string_lossy().into_owned(),
+            _ => value.clone(),
+        };
+        command.env(name, value);
+    }
+    command
+        .env("HOME", &home_value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().expect("spawn bash");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"printf 'marker=[%s]\\n' \"$NMT_TEST_STARTUP\"\nexit\n")
+        .expect("write command");
+
+    let output = child.wait_with_output().expect("bash exits");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let _ = fs::remove_dir_all(&home);
+
+    assert!(
+        text.contains("marker=[reached]"),
+        "bash did not read the user's startup files; saw {text}"
     );
 }

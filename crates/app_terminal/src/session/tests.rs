@@ -192,14 +192,39 @@ fn zsh_is_integrated_through_the_environment() {
     );
 }
 
-/// bash has no integration: `--rcfile` is its equivalent hook and a login
-/// shell ignores it, which is how every shell here is launched on macOS.
-/// Claiming a trusted prompt anyway would have the terminal trust boundaries
-/// nothing emits.
+/// bash is reached through `--rcfile`, which a login shell ignores, so its
+/// integration rides on startup arguments that re-enter an interactive shell.
+/// The restorable launch command is taken before that rewrite.
+#[cfg(unix)]
+#[test]
+fn bash_is_integrated_through_startup_arguments() {
+    let config = TerminalSessionConfig {
+        shell: Some("/bin/bash".into()),
+        ..TerminalSessionConfig::default()
+    };
+
+    assert!(config.has_trusted_prompt_integration());
+
+    let state = config.restorable_tab_state();
+    let integrated = config.with_shell_integration();
+
+    assert!(state.args.is_empty());
+    assert!(!integrated.args.is_empty());
+    assert!(
+        integrated
+            .environment_overrides
+            .iter()
+            .any(|(name, _)| name == "NMT_BASH_INTEGRATION")
+    );
+}
+
+/// A shell the platform has no integration for must be told so. Claiming a
+/// trusted prompt anyway would have the terminal trust boundaries nothing
+/// emits.
 #[cfg(unix)]
 #[test]
 fn a_shell_without_an_integration_claims_no_trusted_prompt() {
-    for shell in ["/bin/bash", "/bin/sh", "/usr/local/bin/fish"] {
+    for shell in ["/bin/sh", "/usr/local/bin/fish", "/usr/bin/tcsh"] {
         let config = TerminalSessionConfig {
             shell: Some(shell.into()),
             ..TerminalSessionConfig::default()
