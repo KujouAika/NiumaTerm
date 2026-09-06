@@ -101,6 +101,16 @@ __nmt_precmd() {
   # before the prompt does. `%{%}` tells zsh the sequence occupies no columns,
   # keeping the prompt's width arithmetic and right-prompt placement correct.
   PS1="${PS1//"$__nmt_prompt_end_mark"/}$__nmt_prompt_end_mark"
+
+  # zsh draws the right prompt after the left one, so its bytes land after the
+  # `;B` above and would be captured as part of the command the user typed.
+  # Closing RPROMPT with a second `;B` re-opens the command region past them:
+  # the terminal clears the echo it has accumulated at every `;B`, so what
+  # survives is what was typed after the whole prompt. Left alone when there is
+  # no right prompt, so an empty one is not conjured into existence.
+  if [[ -n "${RPROMPT-}" ]]; then
+    RPROMPT="${RPROMPT//"$__nmt_prompt_end_mark"/}$__nmt_prompt_end_mark"
+  fi
 }
 
 # `;C` — command input ends, its output begins.

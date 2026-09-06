@@ -611,3 +611,36 @@ fn right_prompt_marker_stays_in_prompt_region() {
         ]
     );
 }
+
+/// zsh draws its right prompt after the left one, so those bytes arrive inside
+/// the `;B`→`;C` echo region and would otherwise be replayed into the captured
+/// command — the integration closes the right prompt with a second `;B`, and
+/// every `;B` clears what the echo has accumulated.
+#[test]
+fn a_right_prompt_stays_out_of_the_captured_command() {
+    let mut s = primed();
+
+    // Left prompt, `;B`, then the right prompt drawn far to the right and the
+    // cursor brought back, closed by the second `;B`; then the typed command.
+    let cmds = feed_commands(
+        &mut s,
+        b"\x1b]133;A\x07LP> \x1b]133;B\x07          \x1b[K\x1b[64CRIGHTPROMPT\x1b[75D\x1b]133;B\x07          true\r\n\x1b]133;C\x07output\r\n\x1b]133;D;0\x07",
+    );
+
+    assert_eq!(cmds.len(), 1, "one command completed");
+    assert_eq!(cmds[0].command, "true");
+}
+
+/// The same mark is what a prompt re-render emits, so repeating it must not
+/// cost boundary trust the way an out-of-order mark does.
+#[test]
+fn a_repeated_command_mark_keeps_boundary_trust() {
+    let mut s = primed();
+
+    feed_commands(
+        &mut s,
+        b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;B\x07\x1b]133;B\x07",
+    );
+
+    assert!(s.boundary_trusted());
+}

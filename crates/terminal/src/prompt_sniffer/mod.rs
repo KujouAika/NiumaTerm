@@ -375,6 +375,7 @@ impl PromptSniffer {
                 | (PromptRegion::None, PromptRegion::Prompt)
                 | (PromptRegion::Prompt, PromptRegion::Prompt)
                 | (PromptRegion::Prompt, PromptRegion::Command)
+                | (PromptRegion::Command, PromptRegion::Command)
                 | (PromptRegion::Command, PromptRegion::Output)
                 | (PromptRegion::Output, PromptRegion::None)
                 | (PromptRegion::Output, PromptRegion::Prompt)
@@ -441,7 +442,13 @@ impl PromptSniffer {
                 self.lifecycle = ShellLifecycleProgress::InPrompt;
                 true
             }
-            (ShellLifecycleProgress::InPrompt, PromptRegion::Command) => {
+            // A re-asserted `;B` is how a shell says the prompt ended again:
+            // zsh's right prompt is drawn after the left one and closes with a
+            // second mark, and any prompt re-render repeats the pair. Each one
+            // clears the echo accumulated so far, which is what keeps a right
+            // prompt out of the captured command.
+            (ShellLifecycleProgress::InPrompt, PromptRegion::Command)
+            | (ShellLifecycleProgress::InCommand, PromptRegion::Command) => {
                 self.lifecycle = ShellLifecycleProgress::InCommand;
                 true
             }

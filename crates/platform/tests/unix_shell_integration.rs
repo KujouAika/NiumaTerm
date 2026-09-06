@@ -120,11 +120,6 @@ fn start_with_startup_files(
         String::from("HISTFILE"),
         home.join("history").to_string_lossy().into_owned(),
     ));
-    // macOS `/etc/bashrc` sources `/etc/bashrc_$TERM_PROGRAM`, and the copy
-    // for Apple's Terminal repoints `HISTFILE` into `~/.bash_sessions`. An
-    // empty value names no such file, which is what isolates these sessions
-    // from whichever terminal the tests were started from.
-    environment.push((String::from("TERM_PROGRAM"), String::new()));
     if shell == "zsh" {
         // `/usr/bin/login` resets HOME from the password database whatever the
         // caller passes, so an empty home only isolates zsh if the bootstrap
@@ -505,4 +500,39 @@ fn assert_the_bootstrap_line_leaves_no_history(shell: &str, write_history: &[u8]
 #[test]
 fn bash_bootstrap_line_leaves_no_history() {
     assert_the_bootstrap_line_leaves_no_history("bash", b"history -w\n");
+}
+
+/// zsh draws its right prompt after the left one, so its bytes arrive inside
+/// the command-echo region. The integration closes it with a second `;B`,
+/// which has to leave the lifecycle ordered — a repeated mark that the
+/// terminal rejected would cost boundary trust on every prompt.
+#[test]
+fn zsh_right_prompt_closes_with_its_own_command_mark() {
+    let Some(mut session) = start_with_startup_files(
+        "zsh",
+        "rprompt",
+        &[(".zshrc", "PS1='LP> '\nRPROMPT='RIGHTPROMPT'\n")],
+    ) else {
+        return;
+    };
+
+    // The prime, the first prompt's `;D`/`;A`, then both `;B`s: the left
+    // prompt's and the right prompt's.
+    let primed = session.read_until(|seen| seen.len() >= 7);
+
+    assert_eq!(
+        &primed[..7],
+        &["A", "B", "C", "D;0", "A", "B", "B"],
+        "the right prompt must close with its own command mark; saw {primed:?}"
+    );
+
+    session.pty.write_all(b"true\n").expect("write command");
+
+    let after = session.read_until(|seen| seen.len() >= 10);
+
+    assert_eq!(
+        &after[7..10],
+        &["C", "D;0", "A"],
+        "the repeated mark must leave the lifecycle ordered; saw {after:?}"
+    );
 }
