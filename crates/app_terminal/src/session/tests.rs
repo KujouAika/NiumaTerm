@@ -190,12 +190,12 @@ fn zsh_is_integrated_through_an_injected_bootstrap() {
     assert!(integrated.args.contains(&String::from("-f")));
 }
 
-/// bash is reached through `--rcfile`, which a login shell ignores, so its
-/// integration rides on startup arguments that re-enter an interactive shell.
-/// The restorable launch command is taken before that rewrite.
+/// bash is handed its integration the same way zsh is, so the same two things
+/// hold: the launch carries a bootstrap, and the configured launch command
+/// survives into the restorable tab state.
 #[cfg(unix)]
 #[test]
-fn bash_is_integrated_through_startup_arguments() {
+fn bash_is_integrated_through_an_injected_bootstrap() {
     let config = TerminalSessionConfig {
         shell: Some("/bin/bash".into()),
         ..TerminalSessionConfig::default()
@@ -207,13 +207,10 @@ fn bash_is_integrated_through_startup_arguments() {
     let integrated = config.with_shell_integration();
 
     assert!(state.args.is_empty());
-    assert!(!integrated.args.is_empty());
-    assert!(
-        integrated
-            .environment_overrides
-            .iter()
-            .any(|(name, _)| name == "NMT_BASH_INTEGRATION")
-    );
+    assert!(integrated.bootstrap.is_some());
+    // The launch has to suppress bash's own startup files, since the bootstrap
+    // replays them itself.
+    assert!(integrated.args.contains(&String::from("--norc")));
 }
 
 /// A shell the platform has no integration for must be told so. Claiming a

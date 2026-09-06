@@ -113,6 +113,18 @@ fn start_with_startup_files(
 
     let mut environment = integration.environment;
     environment.push((String::from("HOME"), home_value.clone()));
+    // The shell inherits this process's `HISTFILE`, which would be the
+    // developer's own; give each session its own so a history assertion sees
+    // only what this session did.
+    environment.push((
+        String::from("HISTFILE"),
+        home.join("history").to_string_lossy().into_owned(),
+    ));
+    // macOS `/etc/bashrc` sources `/etc/bashrc_$TERM_PROGRAM`, and the copy
+    // for Apple's Terminal repoints `HISTFILE` into `~/.bash_sessions`. An
+    // empty value names no such file, which is what isolates these sessions
+    // from whichever terminal the tests were started from.
+    environment.push((String::from("TERM_PROGRAM"), String::new()));
     if shell == "zsh" {
         // `/usr/bin/login` resets HOME from the password database whatever the
         // caller passes, so an empty home only isolates zsh if the bootstrap
@@ -287,60 +299,97 @@ fn zsh_still_reads_the_users_startup_files() {
     );
 }
 
-/// The same for bash, exercised by running the generated launch arguments
-/// directly rather than through the PTY: bash finds its startup files through
-/// `$HOME`, and `/usr/bin/login` — which the macOS PTY path goes through —
-/// resets that from the password database no matter what the caller passes.
-#[test]
-fn bash_still_reads_the_users_startup_files() {
+/// The same for bash. Run without a terminal the shell is not a login shell,
+/// which is the branch a temp home can control: `/usr/bin/login`, which the
+/// macOS PTY path goes through, resets `$HOME` from the password database no
+/// matter what the caller passes.
+fn bash_bootstrap_in_temp_home(label: &str, files: &[(&str, &str)], probe: &str) -> String {
     let Some(bash) = shell_path("bash") else {
         eprintln!("skipping: no bash on this host");
-        return;
+        return String::from("<skipped>");
     };
     let integration = prompt_integration(Some(&bash)).expect("bash is integrated");
+    let bootstrap = integration.bootstrap.expect("bash is bootstrapped");
+    // The injected line is `<space>source '<path>'<newline>`; the script it
+    // names is what a shell without a terminal can be handed directly.
+    let script = bootstrap
+        .trim()
+        .trim_start_matches("source ")
+        .trim_matches('\'')
+        .to_owned();
 
-    let home = env::temp_dir().join(format!("nmt-bash-startup-{}", id()));
+    let home = env::temp_dir().join(format!("nmt-bash-{label}-{}", id()));
     fs::create_dir_all(&home).expect("temp home");
-    // Whichever of the two the host's launch shape makes bash read — the
-    // profile chain under the login hop, `.bashrc` otherwise — the marker is
-    // set.
-    for name in [".bash_profile", ".bashrc"] {
-        fs::write(home.join(name), "export NMT_TEST_STARTUP=reached\n").expect("startup file");
+    for (name, contents) in files {
+        fs::write(home.join(name), contents).expect("startup file");
     }
-    let home_value = home.to_string_lossy().into_owned();
 
-    let mut command = Command::new(&bash);
-    command.args(&integration.args);
-    for (name, value) in &integration.environment {
-        let value = match name.as_str() {
-            "NMT_BASH_USER_RC" => home.join(".bashrc").to_string_lossy().into_owned(),
-            _ => value.clone(),
-        };
-        command.env(name, value);
-    }
-    command
-        .env("HOME", &home_value)
+    let output = Command::new(&bash)
+        .args(["--norc", "--noprofile", "-c"])
+        .arg(format!("source '{script}'; {probe}"))
+        .env("HOME", home.to_string_lossy().into_owned())
         .env_remove("NMT_TEST_STARTUP")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    let mut child = command.spawn().expect("spawn bash");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(b"printf 'marker=[%s]\\n' \"$NMT_TEST_STARTUP\"\nexit\n")
-        .expect("write command");
-
-    let output = child.wait_with_output().expect("bash exits");
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .expect("run bash");
 
     let _ = fs::remove_dir_all(&home);
 
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn bash_still_reads_the_users_startup_files() {
+    let text = bash_bootstrap_in_temp_home(
+        "startup",
+        &[(".bashrc", "export NMT_TEST_STARTUP=reached\n")],
+        "printf 'marker=[%s]\\n' \"$NMT_TEST_STARTUP\"",
+    );
+
     assert!(
-        text.contains("marker=[reached]"),
+        text.contains("marker=[reached]") || text == "<skipped>",
         "bash did not read the user's startup files; saw {text}"
+    );
+}
+
+/// The user's shell has to end up with everything their files defined, not
+/// just what an `export` would have carried.
+#[test]
+fn bash_keeps_functions_and_aliases_from_the_users_startup_files() {
+    let text = bash_bootstrap_in_temp_home(
+        "funcs",
+        &[(
+            ".bashrc",
+            "nmt_probe_func() { :; }\nalias nmt_probe_alias='true'\n",
+        )],
+        "printf 'func=[%s] alias=[%s]\\n' \"$(type -t nmt_probe_func)\" \
+         \"$(alias nmt_probe_alias >/dev/null 2>&1 && echo yes)\"",
+    );
+
+    assert!(
+        text.contains("func=[function] alias=[yes]") || text == "<skipped>",
+        "the user's functions and aliases did not survive the launch; saw {text}"
+    );
+}
+
+/// bash allows one DEBUG trap, and the integration installs one for `;C`. A
+/// trap the user's own files put there — bash-preexec, atuin — must keep
+/// firing rather than be silently replaced.
+#[test]
+fn bash_keeps_a_debug_trap_the_user_already_installed() {
+    let text = bash_bootstrap_in_temp_home(
+        "debugtrap",
+        &[(
+            ".bashrc",
+            "trap 'printf \"USERTRAP[%s]\\n\" \"$BASH_COMMAND\"' DEBUG\n",
+        )],
+        "echo probe-command",
+    );
+
+    assert!(
+        text.contains("USERTRAP[echo probe-command]") || text == "<skipped>",
+        "the user's DEBUG trap stopped firing; saw {text}"
     );
 }
 
@@ -410,111 +459,50 @@ fn bash_prompt_mark_does_not_accumulate() {
     assert_the_prompt_mark_does_not_accumulate("bash");
 }
 
-/// bash allows one DEBUG trap, and the integration installs one for `;C`. A
-/// trap the user's own files put there — bash-preexec, atuin — must keep
-/// firing rather than be silently replaced.
+/// The line the terminal types at the shell must not end up in the user's
+/// history. It carries a leading space and the launch sets the shell's
+/// ignore-space setting for exactly that; the bootstrap then puts the setting
+/// back, so nothing but that one line is affected.
 ///
-/// Run through the generated launch arguments rather than the PTY for the same
-/// reason as the startup-file case: `/usr/bin/login` resets `$HOME`, so the
-/// files that would install such a trap cannot be placed where bash looks.
-#[test]
-fn bash_keeps_a_debug_trap_the_user_already_installed() {
-    let Some(bash) = shell_path("bash") else {
-        eprintln!("skipping: no bash on this host");
+/// Checked against the history file the session writes rather than the byte
+/// stream: on bash the injected line is echoed by readline — cleared from the
+/// screen, not from the stream — so the stream is the wrong thing to look at.
+///
+/// Only bash is covered end to end. zsh writes no history file unless
+/// `SAVEHIST` is set from a startup file, and arranging that inside a session
+/// whose startup files the launch deliberately suppresses ends up pinning the
+/// arrangement rather than the behaviour. The zsh side is covered by the unit
+/// test that pins `-o histignorespace` into the launch.
+fn assert_the_bootstrap_line_leaves_no_history(shell: &str, write_history: &[u8]) {
+    let Some(mut session) = start(shell, "history") else {
         return;
     };
-    let integration = prompt_integration(Some(&bash)).expect("bash is integrated");
+    let history_file = session.home.join("history");
 
-    let home = env::temp_dir().join(format!("nmt-bash-debugtrap-{}", id()));
-    fs::create_dir_all(&home).expect("temp home");
-    let trap = "trap 'printf \"USERTRAP[%s]\\n\" \"$BASH_COMMAND\"' DEBUG\n";
-    for name in [".bash_profile", ".bashrc"] {
-        fs::write(home.join(name), trap).expect("startup file");
-    }
-    let home_value = home.to_string_lossy().into_owned();
+    session.read_until(|seen| seen.len() >= 6);
+    // The entry lingers until a later command is entered, so one has to be.
+    session.pty.write_all(b"true\n").expect("write command");
+    session.read_until(|seen| seen.len() >= 10);
+    session
+        .pty
+        .write_all(write_history)
+        .expect("write history flush");
+    session.read_until(|seen| seen.len() >= 14);
 
-    let mut command = Command::new(&bash);
-    command.args(&integration.args);
-    for (name, value) in &integration.environment {
-        let value = match name.as_str() {
-            "NMT_BASH_USER_RC" => home.join(".bashrc").to_string_lossy().into_owned(),
-            _ => value.clone(),
-        };
-        command.env(name, value);
-    }
-    command
-        .env("HOME", &home_value)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    let mut child = command.spawn().expect("spawn bash");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(b"echo probe-command\nexit\n")
-        .expect("write command");
-
-    let output = child.wait_with_output().expect("bash exits");
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-
-    let _ = fs::remove_dir_all(&home);
+    let written = fs::read_to_string(&history_file)
+        .unwrap_or_else(|error| panic!("the session wrote no history file: {error}"));
 
     assert!(
-        text.contains("USERTRAP[echo probe-command]"),
-        "the user's DEBUG trap stopped firing; saw {text}"
+        written.contains("true"),
+        "the history file holds nothing this session ran: {written}"
+    );
+    assert!(
+        !written.contains("nmt-integration"),
+        "the bootstrap line reached the session history: {written}"
     );
 }
 
-/// An `exec` carries the environment across and nothing else, so a profile
-/// chain replayed on the far side of the login hop would hand the user a shell
-/// with their exported variables but none of their functions, aliases or
-/// traps. The chain has to run in the shell they actually get.
 #[test]
-fn bash_keeps_functions_and_aliases_from_the_users_profile() {
-    let Some(bash) = shell_path("bash") else {
-        eprintln!("skipping: no bash on this host");
-        return;
-    };
-    let integration = prompt_integration(Some(&bash)).expect("bash is integrated");
-
-    let home = env::temp_dir().join(format!("nmt-bash-funcs-{}", id()));
-    fs::create_dir_all(&home).expect("temp home");
-    let profile = "nmt_probe_func() { :; }\nalias nmt_probe_alias='true'\n";
-    for name in [".bash_profile", ".bashrc"] {
-        fs::write(home.join(name), profile).expect("startup file");
-    }
-
-    let mut command = Command::new(&bash);
-    command.args(&integration.args);
-    for (name, value) in &integration.environment {
-        command.env(name, value);
-    }
-    command
-        .env("HOME", home.to_string_lossy().into_owned())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    let mut child = command.spawn().expect("spawn bash");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(
-            b"printf 'func=[%s] alias=[%s]\\n' \"$(type -t nmt_probe_func)\" \
-              \"$(alias nmt_probe_alias >/dev/null 2>&1 && echo yes)\"\nexit\n",
-        )
-        .expect("write command");
-
-    let output = child.wait_with_output().expect("bash exits");
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-
-    let _ = fs::remove_dir_all(&home);
-
-    assert!(
-        text.contains("func=[function] alias=[yes]"),
-        "the user's functions and aliases did not survive the launch; saw {text}"
-    );
+fn bash_bootstrap_line_leaves_no_history() {
+    assert_the_bootstrap_line_leaves_no_history("bash", b"history -w\n");
 }

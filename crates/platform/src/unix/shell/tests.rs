@@ -1,8 +1,7 @@
 use std::fs;
 
-use crate::unix::SPAWNS_LOGIN_SHELL;
 use crate::unix::shell::{
-    BASH_FILES, BASH_HOOKS, BASH_RC, ZSH_FILES, ZSH_HOOKS, install_files, prompt_integration,
+    BASH_FILES, BASH_HOOKS, ZSH_FILES, ZSH_HOOKS, install_files, prompt_integration,
     resolved_shell, shell_name,
 };
 
@@ -52,52 +51,33 @@ fn zsh_is_launched_bare_and_handed_its_bootstrap() {
     );
 }
 
-/// bash cannot be handed its integration the same way: hiding an injected
-/// line means launching without a line editor, and bash 3.2 cannot put the
-/// editor back — `set -o emacs` flips the option, but readline was never
-/// initialized at startup and the shell stops printing prompts entirely. So
-/// bash keeps the `--rcfile` delivery.
-///
-/// Where the launch is a login shell, `--rcfile` is only honoured behind an
-/// `exec`, and the outer shell is given `--norc --noprofile` so the user's
-/// startup chain runs past the `exec` rather than before it — the environment
-/// is all that would have survived otherwise.
+/// bash is handed its integration the same way. The launch suppresses its own
+/// startup files, which the bootstrap replays, and `HISTCONTROL` keeps the
+/// injected line out of the session's history — the one thing that has to
+/// travel in the environment, since it has no command-line form.
 #[test]
-fn bash_is_integrated_through_its_rc_file() {
+fn bash_is_launched_bare_and_handed_its_bootstrap() {
     let integration = prompt_integration(Some("/bin/bash")).expect("bash is integrated");
 
-    assert!(integration.bootstrap.is_none());
+    assert_eq!(integration.args, ["--norc", "--noprofile"]);
 
-    let hooks = integration
-        .environment
-        .iter()
-        .find(|(name, _)| name == "NMT_BASH_INTEGRATION")
-        .map(|(_, value)| value.clone())
-        .expect("the hooks are named in the environment");
-    assert!(hooks.ends_with(BASH_HOOKS));
+    let bootstrap = integration.bootstrap.expect("bash is bootstrapped");
+    assert!(bootstrap.starts_with(" source '"), "{bootstrap:?}");
+    assert!(
+        bootstrap.ends_with(&format!("{BASH_HOOKS}'\n")),
+        "{bootstrap:?}"
+    );
 
-    let replays_login = integration
-        .environment
-        .iter()
-        .any(|(name, _)| name == "NMT_BASH_LOGIN");
+    assert!(
+        integration
+            .environment
+            .iter()
+            .any(|(name, value)| name == "HISTCONTROL" && value == "ignorespace")
+    );
 
-    if SPAWNS_LOGIN_SHELL {
-        assert_eq!(integration.args[..3], ["--norc", "--noprofile", "-c"]);
-        assert!(
-            integration.args[3].starts_with("exec '/bin/bash' --rcfile '"),
-            "{}",
-            integration.args[3]
-        );
-        assert!(integration.args[3].ends_with(&format!("{BASH_RC}' -i")));
-        assert!(replays_login, "the rc has to be told to replay the profile");
-    } else {
-        assert_eq!(integration.args[0], "--rcfile");
-        assert!(integration.args[1].ends_with(BASH_RC));
-        assert!(
-            !replays_login,
-            "a non-login shell replays `.bashrc` instead"
-        );
-    }
+    // No line editor is turned off: bash 3.2 cannot turn one back on, so the
+    // echo is cleared by the bootstrap rather than suppressed at the launch.
+    assert!(!integration.args.iter().any(|arg| arg == "--noediting"));
 }
 
 /// The leading space is what keeps the injected line out of the session's

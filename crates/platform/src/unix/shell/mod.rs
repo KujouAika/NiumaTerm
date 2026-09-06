@@ -2,13 +2,13 @@ use std::path::{Path, PathBuf};
 use std::process::id;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{fs, io};
+use std::{env, fs, io};
 
 use tracing::warn;
 
 use crate::PromptIntegration;
 use crate::unix::hook_command::single_quoted;
-use crate::unix::{SPAWNS_LOGIN_SHELL, ShellUser, environment, filesystem};
+use crate::unix::{ShellUser, environment, filesystem};
 
 /// The shell launched when configuration names none.
 ///
@@ -34,7 +34,7 @@ pub fn prompt_integration(shell: Option<&str>) -> Option<PromptIntegration> {
 
     match shell_name(&shell)?.as_str() {
         "zsh" => zsh_integration(),
-        "bash" => bash_integration(&shell),
+        "bash" => bash_integration(),
         _ => None,
     }
 }
@@ -59,47 +59,31 @@ fn zsh_integration() -> Option<PromptIntegration> {
     })
 }
 
-/// bash's hook is `--rcfile`, which it honours only as a non-login shell.
+/// bash is handed its integration the same way, and for the same reason
+/// nothing about which files it reads depends on `--rcfile` any more — which
+/// matters, because bash ignores that flag as a login shell, and the macOS
+/// launch is one.
 ///
-/// Where the backend spawns login shells, the launch becomes an `exec` into an
-/// interactive shell carrying `--rcfile`, purely to shed the login status that
-/// would make bash ignore it. The outer shell is given `--norc --noprofile`
-/// and does nothing else: an `exec` carries the environment across but nothing
-/// else, so a function, alias or trap from the profile chain would be lost if
-/// that chain ran out there. `NMT_BASH_LOGIN` tells the rc to replay it in the
-/// shell the user actually gets. Where the backend spawns a plain interactive
-/// shell, `--rcfile` is taken directly and the rc replays the `~/.bashrc`
-/// sequence it stands in for.
-fn bash_integration(shell: &str) -> Option<PromptIntegration> {
+/// The one difference from zsh is that the injected line cannot be hidden.
+/// Suppressing the echo means starting without a line editor, and bash 3.2
+/// cannot put one back: `set -o emacs` flips the option, but readline was
+/// never initialized at startup and the shell stops printing prompts
+/// altogether. So readline stays on and the bootstrap clears the screen
+/// instead. `HISTCONTROL` still keeps the line out of the session's history;
+/// it has no command-line form, so it travels in the environment with the
+/// value it displaced, and the bootstrap puts that back.
+fn bash_integration() -> Option<PromptIntegration> {
     let directory = bash_directory()?;
-    let rc = directory.join(BASH_RC).to_string_lossy().into_owned();
 
-    let mut environment = vec![(
-        String::from("NMT_BASH_INTEGRATION"),
-        directory.join(BASH_HOOKS).to_string_lossy().into_owned(),
-    )];
-
-    let args = if SPAWNS_LOGIN_SHELL {
-        environment.push((String::from("NMT_BASH_LOGIN"), String::from("1")));
-
-        vec![
-            String::from("--norc"),
-            String::from("--noprofile"),
-            String::from("-c"),
-            format!(
-                "exec {} --rcfile {} -i",
-                single_quoted(shell),
-                single_quoted(&rc)
-            ),
-        ]
-    } else {
-        vec![String::from("--rcfile"), rc]
-    };
+    let mut environment = vec![(String::from("HISTCONTROL"), String::from("ignorespace"))];
+    if let Ok(saved) = env::var("HISTCONTROL") {
+        environment.push((String::from("NMT_SAVED_HISTCONTROL"), saved));
+    }
 
     Some(PromptIntegration {
-        args,
+        args: vec![String::from("--norc"), String::from("--noprofile")],
         environment,
-        bootstrap: None,
+        bootstrap: Some(bootstrap_line(&directory.join(BASH_HOOKS))),
     })
 }
 
@@ -132,19 +116,12 @@ const ZSH_FILES: [(&str, &str); 1] = [(
     include_str!("../../../../../assets/unix/zsh/nmt-integration.zsh"),
 )];
 
-const BASH_RC: &str = "bashrc.bash";
 const BASH_HOOKS: &str = "nmt-integration.bash";
 
-const BASH_FILES: [(&str, &str); 2] = [
-    (
-        BASH_RC,
-        include_str!("../../../../../assets/unix/bash/bashrc.bash"),
-    ),
-    (
-        BASH_HOOKS,
-        include_str!("../../../../../assets/unix/bash/nmt-integration.bash"),
-    ),
-];
+const BASH_FILES: [(&str, &str); 1] = [(
+    BASH_HOOKS,
+    include_str!("../../../../../assets/unix/bash/nmt-integration.bash"),
+)];
 
 fn zsh_directory() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
