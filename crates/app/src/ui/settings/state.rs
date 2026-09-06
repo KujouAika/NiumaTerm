@@ -27,12 +27,24 @@ use crate::ui::settings::theme::load_theme_choices;
 pub fn default_shell_for_tests() -> String {
     default_shell()
 }
+/// The fixed-pitch face the terminal grid falls back to, and the proportional
+/// one the interface does. Both mirror the configuration defaults; see
+/// `nmt_config::appearance` for why macOS names its system face through a
+/// token rather than by family.
+#[cfg(target_os = "windows")]
 pub const DEFAULT_FONT_FAMILY: &str = "Consolas";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
+#[cfg(all(unix, not(target_os = "macos")))]
+pub const DEFAULT_FONT_FAMILY: &str = "monospace";
 pub const DEFAULT_FONT_SIZE: f64 = 14.0;
 pub const DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE: f64 = 13.0;
 pub const DEFAULT_LINE_HEIGHT: f64 = 1.0;
 pub(super) const DEFAULT_BACKGROUND_IMAGE_OPACITY: f64 = 0.3;
+#[cfg(target_os = "windows")]
 pub const DEFAULT_UI_FONT: &str = "Segoe UI";
+#[cfg(not(target_os = "windows"))]
+pub const DEFAULT_UI_FONT: &str = ".SystemUIFont";
 pub const DEFAULT_TAB_WIDTH: f64 = 120.0;
 
 /// The app-wide settings model, stored as a gpui global.

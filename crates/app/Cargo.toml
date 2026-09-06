@@ -82,3 +82,6 @@ gpui_macos.workspace = true
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tokio.workspace = true
+# The same font source GPUI's text system selects families through, so a
+# default face can be checked against what the host actually has.
+font-kit.workspace = true

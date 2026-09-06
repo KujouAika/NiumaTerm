@@ -292,6 +292,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "font-kit",
  "futures",
  "gpui",
  "gpui-component",

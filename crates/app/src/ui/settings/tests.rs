@@ -69,14 +69,14 @@ fn terminal_font_metrics_clamp_to_allowed_range() {
 fn agent_transcript_font_has_first_party_defaults() {
     let settings = AppSettings::default();
 
-    assert_eq!(settings.agent_transcript_font_family, "Consolas");
+    assert_eq!(settings.agent_transcript_font_family, DEFAULT_FONT_FAMILY);
     assert_eq!(
         settings.agent_transcript_font_size,
         DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE
     );
     assert_eq!(
         settings.appearance_config().agent_transcript_font_family,
-        "Consolas"
+        DEFAULT_FONT_FAMILY
     );
     assert_eq!(
         settings.appearance_config().agent_transcript_font_size,
