@@ -53,9 +53,13 @@ pub(crate) use crate::ui::settings::{
     install_agent_settings, install_terminal_settings, main_view_background_opacity, watch_themes,
     window_background_appearance,
 };
+// Remote sessions connect to a Windows host, so only the Windows key table
+// names the action that opens one.
+#[cfg(windows)]
+pub(crate) use crate::ui::shell::NewRemoteTab;
 pub(crate) use crate::ui::shell::{
-    CloseTab, NewAgentTab, NewRemoteTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace,
-    PrevTab, PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, Shell,
+    CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
+    PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, Shell,
     ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, TabSurface, ToggleSidebar,
 };
 
