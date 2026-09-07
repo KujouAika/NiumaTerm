@@ -5,10 +5,8 @@ mod platform {
     use std::sync::Once;
 
     use block2::RcBlock;
-    use objc::runtime::Object;
-    use objc::{class, msg_send, sel, sel_impl};
     use objc2::runtime::Bool;
-    use objc2_foundation::{NSError, NSString};
+    use objc2_foundation::{NSBundle, NSError, NSString};
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
         UNUserNotificationCenter,
@@ -16,18 +14,20 @@ mod platform {
 
     use super::NativeNotification;
 
-    pub(crate) fn request_authorization() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| unsafe {
-            let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
-            if bundle.is_null() {
-                return;
-            }
-            let bundle_id: *mut Object = msg_send![bundle, bundleIdentifier];
-            if bundle_id.is_null() {
-                return;
-            }
+    /// User notifications are delivered on behalf of a bundle identifier, so a
+    /// binary run outside an application bundle has nothing to post them as and
+    /// asking would raise rather than return an error.
+    fn is_bundled() -> bool {
+        NSBundle::mainBundle().bundleIdentifier().is_some()
+    }
 
+    pub(crate) fn request_authorization() {
+        if !is_bundled() {
+            return;
+        }
+
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
             let center = UNUserNotificationCenter::currentNotificationCenter();
             center.requestAuthorizationWithOptions_completionHandler(
                 UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
@@ -37,28 +37,22 @@ mod platform {
     }
 
     pub(crate) fn show(notification: &NativeNotification) -> Result<(), String> {
-        unsafe {
-            let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
-            if bundle.is_null() {
-                return Ok(());
-            }
-            let bundle_id: *mut Object = msg_send![bundle, bundleIdentifier];
-            if bundle_id.is_null() {
-                return Ok(());
-            }
-
-            let center = UNUserNotificationCenter::currentNotificationCenter();
-            let content = UNMutableNotificationContent::new();
-            content.setTitle(&NSString::from_str(&notification.title));
-            content.setBody(&NSString::from_str(&notification.body));
-            let identifier = NSString::from_str("rio-notification");
-            let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-                &identifier,
-                &content,
-                None,
-            );
-            center.addNotificationRequest_withCompletionHandler(&request, None);
+        if !is_bundled() {
+            return Ok(());
         }
+
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(&notification.title));
+        content.setBody(&NSString::from_str(&notification.body));
+        let identifier = NSString::from_str("rio-notification");
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &identifier,
+            &content,
+            None,
+        );
+        center.addNotificationRequest_withCompletionHandler(&request, None);
+
         Ok(())
     }
 }
