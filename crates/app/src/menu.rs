@@ -17,11 +17,11 @@
 use gpui::{App, Menu, MenuItem, SystemMenuType, Window, actions};
 use nmt_i18n::i18n;
 
-use crate::sparkle;
 use crate::ui::{
     CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
     PrevWorkspace, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, ToggleSidebar,
 };
+use crate::{open_window_without_a_source, sparkle};
 
 actions!(
     NiumaTerm,
@@ -52,6 +52,11 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &Hide, cx: &mut App| cx.hide());
     cx.on_action(|_: &HideOthers, cx: &mut App| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx: &mut App| cx.unhide_other_apps());
+    // NewWindow is answered by the shell, and a focused window stops the action
+    // there, so this runs only when no window can take it. Without it the item
+    // and the Command-N equivalent macOS reserves for it are dead once the last
+    // window closes, which is exactly when a new window is what is wanted.
+    cx.on_action(|_: &NewWindow, cx: &mut App| open_window_without_a_source(cx));
     // The window commands act on the window the menu bar belongs to, which is
     // the active one; the menu is disabled outright when there is none.
     cx.on_action(|_: &Minimize, cx: &mut App| with_active_window(cx, Window::minimize_window));

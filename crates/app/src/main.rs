@@ -558,11 +558,24 @@ fn reopen_after_last_window_closed(cx: &mut App) {
     // popup window and reuses it for the life of the process, so GPUI always
     // has a window even when the last terminal window is gone. The registry
     // holds exactly the terminal windows and is pruned as each one closes.
-    if !cx.global::<ShellRegistry>().0.is_empty() {
+    if cx.global::<ShellRegistry>().0.is_empty() {
+        open_window_without_a_source(cx);
+    } else {
         foreground_last_active(cx);
-        return;
     }
+}
 
+/// Open a window for a command that has no window to open one from: the Dock
+/// answer above, and `NewWindow` when no focused window is there to handle it.
+///
+/// Closing the last window leaves its registry entry behind so the quit hook
+/// can still write out its geometry. With no shell left, that entry is the
+/// stale one, and consuming it both reopens where the user left off and keeps
+/// the new window from being recorded beside an entry whose window no longer
+/// exists, which would otherwise restore two windows on the next launch. While
+/// a window is still open — minimized, and so unfocused — every entry belongs
+/// to a live window, and a default window is opened instead.
+pub(crate) fn open_window_without_a_source(cx: &mut App) {
     let mut initial = AppWindow {
         bounds: None,
         session: None,
@@ -570,14 +583,10 @@ fn reopen_after_last_window_closed(cx: &mut App) {
         initial_cwd: None,
     };
 
-    // Closing the last window leaves its registry entry behind so the quit hook
-    // can still write out its geometry. Consuming that entry reopens where the
-    // user left off and keeps the reopened window from being recorded next to
-    // an entry whose window no longer exists, which would otherwise restore two
-    // windows on the next launch.
-    if let Some((_, remembered)) = mem::take(&mut cx.global_mut::<WindowRegistry>().0)
-        .into_iter()
-        .next()
+    if cx.global::<ShellRegistry>().0.is_empty()
+        && let Some((_, remembered)) = mem::take(&mut cx.global_mut::<WindowRegistry>().0)
+            .into_iter()
+            .next()
     {
         initial.bounds = remembered.bounds;
         initial.sidebar_width = remembered.sidebar_width;
