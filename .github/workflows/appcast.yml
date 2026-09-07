@@ -28,26 +28,35 @@ on:
         type: string
         required: true
 
+# The feed lives as the single asset of a release under a fixed tag. Sparkle
+# needs one HTTPS address that never moves, because the address is stamped into
+# every build that ships and an installation only ever asks the one it was built
+# with. What makes the file trustworthy is the signature over the archive it
+# names, not where it was served from, so a plain static asset is enough.
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FEED_TAG: appcast
     steps:
-      # The generator lives on the source branch and the feed on gh-pages, so
-      # both are checked out side by side rather than switching branches under
-      # a working tree.
       - uses: actions/checkout@v5
-        with:
-          path: src
-      - uses: actions/checkout@v5
-        with:
-          ref: gh-pages
-          path: pages
+
+      - name: Fetch the current feed
+        run: |
+          # Absent until the first publish, and the generator starts a new
+          # document in that case. Asking whether the release exists first keeps
+          # that apart from a download that actually failed.
+          if gh release view "$FEED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$FEED_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern appcast.xml --dir .
+          fi
 
       - run: |
-          python3 src/scripts/update-appcast.py \
-            --appcast pages/appcast.xml \
+          python3 scripts/update-appcast.py \
+            --appcast appcast.xml \
             --label "$LABEL" \
             --bundle-version "$BUNDLE_VERSION" \
             --channel "$CHANNEL" \
@@ -63,14 +72,15 @@ jobs:
           LENGTH: ${{ inputs.length }}
           SIGNATURE: ${{ inputs.signature }}
 
-      - working-directory: pages
-        env:
-          LABEL: ${{ inputs.label }}
+      - name: Publish the feed
         run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add appcast.xml
-          # Rebuilding a revision regenerates an identical document, and git
-          # commit fails on an empty change rather than succeeding quietly.
-          git diff --cached --quiet || git commit -m "chore: publish $LABEL"
-          git push
+          # Marked a prerelease so it never becomes the repository's "Latest
+          # release": it holds a document, not a build anyone downloads.
+          gh release view "$FEED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$FEED_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Update feed" \
+              --prerelease \
+              --notes "The Sparkle appcast for macOS builds. Replaced by CI on every release; not a build."
+
+          gh release upload "$FEED_TAG" appcast.xml \
+            --repo "$GITHUB_REPOSITORY" --clobber
