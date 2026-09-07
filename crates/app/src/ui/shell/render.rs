@@ -15,8 +15,10 @@ use crate::update::check_now;
 pub(super) const TAB_STRIP_MIN_WIDTH: f32 = 120.0;
 
 /// The bar is taller than the Fluent standard strip because it carries
-/// controls and a session heading rather than a title alone.
-const TITLE_BAR_HEIGHT: f32 = 44.0;
+/// controls and a session heading rather than a title alone. Window creation
+/// reads it to re-anchor the macOS close/minimize/zoom buttons, which AppKit
+/// would otherwise center in its own, shorter strip.
+pub(crate) const TITLE_BAR_HEIGHT: f32 = 44.0;
 /// A leading-zone control: square, and spaced tightly enough that the group
 /// reads as one cluster rather than as separate buttons.
 const TITLE_BAR_BUTTON: f32 = 26.0;

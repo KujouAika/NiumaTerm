@@ -87,6 +87,10 @@ use crate::ui::shell::close::{should_confirm_close, should_confirm_tab_close};
 pub(super) use crate::ui::shell::inline_rename::{InlineRename, InlineRenameStyle};
 use crate::ui::shell::panels::RightPanelController;
 pub(super) use crate::ui::shell::rename::InlineRenameSession;
+// Only the macOS backend re-anchors its window buttons against the bar's
+// height; the other backends draw their controls inside the bar itself.
+#[cfg(target_os = "macos")]
+pub(crate) use crate::ui::shell::render::TITLE_BAR_HEIGHT;
 use crate::ui::shell::settings_workspace::SettingsSurface;
 pub(super) use crate::ui::shell::tab_presentation::pending_tab_icon;
 pub(crate) use crate::ui::shell::tab_surface::TabSurface;
