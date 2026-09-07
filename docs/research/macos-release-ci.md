@@ -12,7 +12,7 @@
 | Path | Role |
 | --- | --- |
 | `.github/workflows/macos-package.yml` | Build → bundle → embed Sparkle → sign → notarize → archive. Reusable, plus `workflow_dispatch` so the signing path can be rehearsed |
-| `.github/workflows/appcast.yml` | Publishes one release into the feed on `gh-pages` |
+| `.github/workflows/appcast.yml` | Publishes one release into the feed asset |
 | `scripts/update-appcast.py` | Renders and trims the appcast document |
 
 built on top of two files the macOS port already owns:
@@ -83,18 +83,24 @@ up somewhere durable, and delete it from the working directory. Sparkle refuses
 an update that drops the public key an installed copy carries, so losing the
 private half ends the update path for everyone already on macOS.
 
-### 2.4 The `gh-pages` branch
+### 2.4 Where the feed lives
 
-```sh
-git switch --orphan gh-pages
-git commit --allow-empty -m "chore: start the appcast branch"
-git push -u origin gh-pages
+Nothing to set up. The feed is the single asset of a prerelease under the fixed
+tag `appcast`, and `appcast.yml` creates that release the first time it runs.
+It lands at
+
+```text
+https://github.com/f32y/NiumaTerm/releases/download/appcast/appcast.xml
 ```
 
-Settings → Pages → Source: *Deploy from a branch* → `gh-pages` / `/`. The feed
-lands at `https://f32y.github.io/NiumaTerm/appcast.xml`, which is the URL
-`macos-package.yml` stamps as `SUFeedURL`. An orphan branch keeps a daily
-nightly commit out of `main`'s history, and the pre-commit hooks never see it.
+which is the URL `macos-package.yml` stamps as `SUFeedURL`, derived there from
+`github.repository` so a fork points at its own feed. The release is marked a
+prerelease so it never becomes the repository's "Latest release": it holds a
+document, not a build anyone downloads.
+
+This address cannot change once a build carrying it has shipped. An
+installation only ever asks the URL it was built with, so moving the feed
+strands every copy already out there.
 
 ### 2.5 Repository secrets and variables
 
@@ -310,8 +316,9 @@ Check, in order:
 2. **Stapling** — `stapler validate` passes *in the job*.
 3. **The archive** — download the published zip on a different Mac, unpack,
    launch. Nothing beyond the ordinary first-run dialog.
-4. **The feed** — `curl https://f32y.github.io/NiumaTerm/appcast.xml` returns
-   the document and its enclosure URL downloads.
+4. **The feed** — `curl -L` against
+   `https://github.com/f32y/NiumaTerm/releases/download/appcast/appcast.xml`
+   returns the document, and its enclosure URL downloads.
 5. **The update** — install the test build, publish a second tag, let the app
    find it. This is the only step that exercises Sparkle end to end, and the
    only one that catches a `CFBundleVersion` that failed to increase.

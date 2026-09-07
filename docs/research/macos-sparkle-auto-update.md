@@ -209,10 +209,20 @@ The archives stay on GitHub Releases; only the XML needs a home.
 | Fixed release tag | `gh release upload --clobber appcast appcast.xml` | Stable URL, no new hosting, but an opaque place for a document people will want to read |
 | Cloudflare Worker | The repo already deploys `niumaterm-relay` via `wrangler.toml` | Renders the appcast from the Releases API, so GitHub Releases stays the single source of truth. Needs a GitHub token in a Worker secret (unauthenticated `api.github.com` is 60 req/h per IP, and a Worker's egress IPs are shared) plus Cache API use, and puts a live service in the update path. |
 
-**Recommendation: GitHub Pages.** The Worker is the more elegant model and
-becomes worth it if release notes rendering or phased rollout ever move
-server-side, but for "publish one XML file" it adds a token, a cache policy and
-an outage mode for no gain.
+**Chosen: the fixed release tag.** The feed is the single asset of a
+prerelease under the tag `appcast`, replaced with `gh release upload
+--clobber`. It needs no site, no second branch and no token beyond the one the
+release job already has, and it serves from the same CDN as the archives it
+points at. Pages is the better home for a document meant to be read, which this
+one is not. The Worker is the more elegant model and becomes worth it if
+release notes rendering or phased rollout ever move server-side, but for
+"publish one XML file" it adds a token, a cache policy and an outage mode for
+no gain.
+
+Whichever is chosen has to be decided before the first published build. The
+address is stamped into every build that ships and an installation only ever
+asks the one it was built with, so moving the feed later strands everything
+already installed.
 
 Building the file: `bin/generate_appcast` wants a directory holding every
 archive so it can also emit delta updates, which means downloading the last N
@@ -525,7 +535,8 @@ A new `.github/workflows/macos-package.yml`, mirroring `windows-package.yml`:
 3. Import the certificate (§6), sign inside-out, notarize, staple.
 4. `ditto -c -k --sequesterRsrc --keepParent` and `sign_update`.
 5. `gh release create` / `upload` the archive.
-6. Render the appcast `<item>` and push it to `gh-pages`.
+6. Render the appcast `<item>` and replace the feed asset under the fixed
+   `appcast` tag.
 
 Steps 1–2 also serve the nightly workflow, which today only builds Windows.
 
