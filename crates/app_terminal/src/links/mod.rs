@@ -20,6 +20,20 @@ pub(super) struct LinkHit {
 /// able to launch arbitrary protocol handlers.
 const URL_SCHEMES: [&str; 4] = ["https://", "http://", "file://", "mailto:"];
 
+/// Whether a click held down the modifier that follows a link.
+///
+/// macOS reserves Control-click for the secondary click, so a Control-click on
+/// a link would open a context menu at the same time; there the modifier is
+/// Command, which is also what its browsers and editors follow links on.
+pub(crate) fn follows_link(modifiers: Modifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    let modifier_held = modifiers.platform && !modifiers.control;
+    #[cfg(not(target_os = "macos"))]
+    let modifier_held = modifiers.control && !modifiers.platform;
+
+    modifier_held && !modifiers.alt && !modifiers.shift
+}
+
 fn open_allowed(url: &str) -> bool {
     URL_SCHEMES
         .iter()
@@ -145,7 +159,7 @@ impl TerminalPane {
             .content_bounds
             .is_some_and(|bounds| bounds.contains(&position));
 
-        let hit = (inside && modifiers.control && !modifiers.alt && !modifiers.shift)
+        let hit = (inside && follows_link(modifiers))
             .then(|| self.link_at_position(position, cx))
             .flatten();
 

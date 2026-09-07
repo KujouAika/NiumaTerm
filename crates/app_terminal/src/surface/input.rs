@@ -1,6 +1,9 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalKeyAction {
     Write(Vec<u8>),
+    /// Copy the selection, or write `bytes` when there is nothing selected.
+    /// A chord that carries no byte for the shell leaves `bytes` empty and so
+    /// does nothing when there is nothing to copy.
     CopyOrWrite(Vec<u8>),
     Paste,
     Ignore,
