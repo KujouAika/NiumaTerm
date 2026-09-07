@@ -12,7 +12,7 @@ use gpui::{
 use crate::menu::{PopupMenu, PopupMenuItem};
 use crate::root::Root;
 
-use super::NativeMenuItem;
+use super::{NativeMenuActivation, NativeMenuItem};
 
 /// Overlay held by [`Root`] that renders the active fallback popup menu, if any.
 pub(crate) struct FallbackMenuOverlay {
@@ -79,23 +79,29 @@ fn build_popup(
                     label,
                     disabled,
                     checked,
-                    icon: Some(icon),
-                    action: Some(action),
-                } => menu.item(
-                    PopupMenuItem::new(label)
-                        .icon(*icon)
-                        .action(action)
+                    icon,
+                    activation: Some(activation),
+                } => {
+                    let mut row = PopupMenuItem::new(label)
                         .disabled(disabled)
-                        .checked(checked),
-                ),
+                        .checked(checked);
+                    if let Some(icon) = icon {
+                        row = row.icon(*icon);
+                    }
+                    // A drawn row carries either an action it dispatches or a
+                    // click handler it calls, so the two activations map onto
+                    // different builders rather than one.
+                    row = match activation {
+                        NativeMenuActivation::Action(action) => row.action(action),
+                        NativeMenuActivation::Handler(handler) => {
+                            row.on_click(move |_, window, cx| handler(window, cx))
+                        }
+                    };
+                    menu.item(row)
+                }
                 NativeMenuItem::Item {
-                    label,
-                    disabled,
-                    checked,
-                    icon: None,
-                    action: Some(action),
-                } => menu.menu_with_check_and_disabled(label, checked, action, disabled),
-                NativeMenuItem::Item { action: None, .. } => menu,
+                    activation: None, ..
+                } => menu,
                 NativeMenuItem::Submenu {
                     label,
                     disabled,

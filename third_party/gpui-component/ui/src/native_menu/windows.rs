@@ -2,7 +2,7 @@
 
 use std::{ffi::c_void, sync::Arc};
 
-use gpui::{Action, App, AssetSource, ImageFormat, Pixels, Point, SharedString, Window};
+use gpui::{App, AssetSource, ImageFormat, Pixels, Point, SharedString, Window};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{GlobalFree, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -24,14 +24,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
-use super::{NativeMenuItem, resolve_icon_image};
+use super::{NativeMenuActivation, NativeMenuItem, resolve_icon_image};
 
 /// Side length (in **logical pixels**) menu item images are scaled to. The
 /// physical bitmap size is this multiplied by the window's scale factor (see
 /// [`show`]), so images stay sharp on the HiDPI displays.
 const MENU_IMAGE_SIZE: u32 = 16;
 
-/// Show a native popup menu and dispatch the selected item's action.
+/// Show a native popup menu and carry out the selected item's activation.
 ///
 /// The Win32 tracking loop (`TrackPopupMenuEx`) blocks, so — like macOS — it is
 /// run from a foreground task to avoid re-entering GPUI while it is borrowed.
@@ -57,7 +57,7 @@ pub(super) fn show(
     let handle = Window::window_handle(window);
 
     cx.spawn(async move |cx| {
-        let Some(action) = run_menu(
+        let Some(activation) = run_menu(
             hwnd,
             &items,
             asset_source.as_ref(),
@@ -69,15 +69,15 @@ pub(super) fn show(
         };
         cx.update(move |app| {
             let _ = handle.update(app, move |_, window, app| {
-                window.dispatch_action(action, app);
+                activation.perform(window, app);
             });
         });
     })
     .detach();
 }
 
-/// Build the menu (recursively, including submenus), show it, and return the
-/// selected item's action.
+/// Build the menu (recursively, including submenus), show it, and return what
+/// the selected item does.
 fn run_menu(
     hwnd: isize,
     items: &[NativeMenuItem],
@@ -85,7 +85,7 @@ fn run_menu(
     client_x: i32,
     client_y: i32,
     image_px: u32,
-) -> Option<Box<dyn Action>> {
+) -> Option<NativeMenuActivation> {
     let hwnd = HWND(hwnd as *mut c_void);
 
     // SAFETY: Win32 menu calls on a live window owned by the calling (main)
@@ -94,11 +94,17 @@ fn run_menu(
         // Start GDI+ so item images can be loaded into bitmaps. If it fails, the menu is still
         // built (images are skipped).
         let gdiplus = GdiplusSession::start();
-        let mut actions: Vec<&Box<dyn Action>> = Vec::new();
+        let mut activations: Vec<&NativeMenuActivation> = Vec::new();
 
         // Bitmaps attached to menu items must outlive the menu; freed below.
         let mut bitmaps: Vec<HBITMAP> = Vec::new();
-        let menu = build_menu(items, asset_source, &mut actions, &mut bitmaps, image_px)?;
+        let menu = build_menu(
+            items,
+            asset_source,
+            &mut activations,
+            &mut bitmaps,
+            image_px,
+        )?;
 
         let mut point = POINT {
             x: client_x,
@@ -125,18 +131,19 @@ fn run_menu(
         let _ = SetCapture(hwnd);
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
 
-        // Ids are 1-based (0 means "no selection"); map back to `actions`.
+        // Ids are 1-based (0 means "no selection"); map back to `activations`.
         match selected.0 {
-            id if id > 0 => actions
+            id if id > 0 => activations
                 .get((id - 1) as usize)
-                .map(|action| action.boxed_clone()),
+                .map(|activation| (*activation).clone()),
             _ => None,
         }
     }
 }
 
 /// Recursively create an `HMENU`. Each actionable leaf gets a 1-based id equal
-/// to its index in `actions` plus one, so the returned id maps back to its action.
+/// to its index in `activations` plus one, so the returned id maps back to what
+/// the item does.
 ///
 /// Any bitmaps created for item images are pushed onto `bitmaps`; the caller
 /// must free them after destroying the menu with `DeleteObject`. Item images
@@ -147,7 +154,7 @@ fn run_menu(
 unsafe fn build_menu<'a>(
     items: &'a [NativeMenuItem],
     asset_source: &dyn AssetSource,
-    actions: &mut Vec<&'a Box<dyn Action>>,
+    activations: &mut Vec<&'a NativeMenuActivation>,
     bitmaps: &mut Vec<HBITMAP>,
     image_px: u32,
 ) -> Option<HMENU> {
@@ -167,7 +174,7 @@ unsafe fn build_menu<'a>(
                 disabled,
                 checked,
                 icon,
-                action,
+                activation,
             } => {
                 let mut flags = MF_STRING;
                 if *disabled {
@@ -178,10 +185,10 @@ unsafe fn build_menu<'a>(
                 }
                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
                 // Actionable, enabled items get an id; others use 0.
-                let id = match action {
-                    Some(action) if !*disabled => {
-                        actions.push(action);
-                        actions.len()
+                let id = match activation {
+                    Some(activation) if !*disabled => {
+                        activations.push(activation);
+                        activations.len()
                     }
                     _ => 0,
                 };
@@ -208,7 +215,7 @@ unsafe fn build_menu<'a>(
                 items,
             } => {
                 let Some(submenu) =
-                    (unsafe { build_menu(items, asset_source, actions, bitmaps, image_px) })
+                    (unsafe { build_menu(items, asset_source, activations, bitmaps, image_px) })
                 else {
                     continue;
                 };

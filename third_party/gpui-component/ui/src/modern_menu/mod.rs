@@ -576,26 +576,31 @@ fn first_selectable(entries: &[Entry]) -> Option<usize> {
     entries.iter().position(Entry::selectable)
 }
 
-/// Append `item` to a native menu, dropping it if it carries a closure rather
-/// than an action.
+/// Append `item` to a native menu, keeping both kinds of activation: the native
+/// menu runs a closure against the owner window the same way the drawn flyout
+/// does, so a menu built from handlers survives the translation.
 #[cfg(not(target_os = "windows"))]
 fn push_native(
     native: crate::native_menu::NativeMenu,
     item: Item,
 ) -> crate::native_menu::NativeMenu {
-    let Activation::Action(action) = item.activation else {
-        log::warn!(
-            "modern menu item {:?} carries a closure, which a native menu cannot dispatch",
-            item.label
-        );
-        return native;
-    };
-
-    match item.icon {
-        Some(icon) => {
+    match (item.activation, item.icon) {
+        (Activation::Action(action), Some(icon)) => {
             native.menu_with_icon_disabled(item.label, icon, item.disabled, action.boxed_clone())
         }
-        None => native.menu_with_disabled(item.label, item.disabled, action.boxed_clone()),
+        (Activation::Action(action), None) => {
+            native.menu_with_disabled(item.label, item.disabled, action.boxed_clone())
+        }
+        (Activation::Handler(handler), Some(icon)) => {
+            native.item_with_icon_disabled(item.label, icon, item.disabled, move |window, cx| {
+                handler(window, cx)
+            })
+        }
+        (Activation::Handler(handler), None) => {
+            native.item_with_disabled(item.label, item.disabled, move |window, cx| {
+                handler(window, cx)
+            })
+        }
     }
 }
 
