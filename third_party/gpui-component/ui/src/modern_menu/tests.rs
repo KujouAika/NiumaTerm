@@ -302,3 +302,23 @@ fn a_submenu_row_carries_its_own_entries() {
         "a submenu settles its own separators as any menu does"
     );
 }
+
+/// Every menu that reaches a platform without the drawn flyout is translated
+/// into a native one, and most of this application's menus carry closures
+/// rather than actions: dropping those would leave the menu with nothing in it,
+/// which is shown as no menu at all.
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn a_native_menu_keeps_the_rows_whose_command_is_a_closure() {
+    let menu = ModernMenu::new()
+        .item("plain", |_, _| {})
+        .icon(crate::IconName::Settings)
+        .submenu("more", |menu| menu.item("nested", |_, _| {}));
+
+    let native = crate::modern_menu::native_menu(normalize_separators(menu.entries));
+
+    assert!(
+        !native.is_empty(),
+        "an icon row and a submenu built from closures both survive"
+    );
+}

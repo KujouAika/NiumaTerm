@@ -29,6 +29,7 @@ use gpui::AssetSource;
 use gpui::{Action, App, Pixels, Point, SharedString, Window};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::{Image, ImageFormat};
+use std::rc::Rc;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::{path::Path, sync::Arc};
 
@@ -42,6 +43,42 @@ mod windows;
 mod fallback;
 pub(crate) use fallback::FallbackMenuOverlay;
 
+/// What selecting an item does.
+///
+/// Both are carried out against the window the menu was opened from, once the
+/// platform's tracking loop has returned: an action has to reach the handlers
+/// registered on that window's element tree, and a closure was written for that
+/// same window.
+pub enum NativeMenuActivation {
+    /// Dispatched with [`Window::dispatch_action`].
+    Action(Box<dyn Action>),
+    /// Called with the window the menu was opened from.
+    ///
+    /// Shared rather than owned because the selected item is read out of a menu
+    /// that is still borrowed while the platform reports the choice.
+    Handler(Rc<dyn Fn(&mut Window, &mut App)>),
+}
+
+impl Clone for NativeMenuActivation {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Action(action) => Self::Action(action.boxed_clone()),
+            Self::Handler(handler) => Self::Handler(handler.clone()),
+        }
+    }
+}
+
+impl NativeMenuActivation {
+    /// Carry the choice out against `window`.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    pub(super) fn perform(self, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Action(action) => window.dispatch_action(action, cx),
+            Self::Handler(handler) => handler(window, cx),
+        }
+    }
+}
+
 enum NativeMenuItem {
     Separator,
     Item {
@@ -50,8 +87,8 @@ enum NativeMenuItem {
         checked: bool,
         /// Icon shown next to the label.
         icon: Option<Box<Icon>>,
-        /// Action dispatched when the item is selected.
-        action: Option<Box<dyn Action>>,
+        /// What selecting the item does; `None` for an inert row.
+        activation: Option<NativeMenuActivation>,
     },
     Submenu {
         label: SharedString,
@@ -77,7 +114,59 @@ impl NativeMenu {
 
     /// Append a clickable item that dispatches `action` when selected.
     pub fn menu(self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
-        self.menu_with(label, false, false, None, Some(action))
+        self.menu_with(
+            label,
+            false,
+            false,
+            None,
+            Some(NativeMenuActivation::Action(action)),
+        )
+    }
+
+    /// Append a clickable item that runs `handler` when selected.
+    ///
+    /// For a command that has no action of its own — one built from the state
+    /// the menu was opened over, which no registered handler could read back.
+    pub fn item(
+        self,
+        label: impl Into<SharedString>,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.item_with_disabled(label, false, handler)
+    }
+
+    /// Append a handler item, controlling its `disabled` state.
+    pub fn item_with_disabled(
+        self,
+        label: impl Into<SharedString>,
+        disabled: bool,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.menu_with(
+            label,
+            disabled,
+            false,
+            None,
+            Some(NativeMenuActivation::Handler(Rc::new(handler))),
+        )
+    }
+
+    /// Append a handler item showing `icon` next to its label, controlling its
+    /// `disabled` state. Same icon behavior as [`Self::menu_with_icon`].
+    pub fn item_with_icon_disabled(
+        self,
+        label: impl Into<SharedString>,
+        icon: impl Into<Icon>,
+        disabled: bool,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.menu_with(
+            label,
+            disabled,
+            false,
+            Some(icon.into()),
+            Some(NativeMenuActivation::Handler(Rc::new(handler))),
+        )
     }
 
     /// Append an item, controlling its `disabled` state.
@@ -87,7 +176,13 @@ impl NativeMenu {
         disabled: bool,
         action: Box<dyn Action>,
     ) -> Self {
-        self.menu_with(label, disabled, false, None, Some(action))
+        self.menu_with(
+            label,
+            disabled,
+            false,
+            None,
+            Some(NativeMenuActivation::Action(action)),
+        )
     }
 
     /// Append an item, controlling its `checked` state (a check mark is shown).
@@ -97,7 +192,13 @@ impl NativeMenu {
         checked: bool,
         action: Box<dyn Action>,
     ) -> Self {
-        self.menu_with(label, false, checked, None, Some(action))
+        self.menu_with(
+            label,
+            false,
+            checked,
+            None,
+            Some(NativeMenuActivation::Action(action)),
+        )
     }
 
     /// Append an item showing `icon` next to its label.
@@ -118,7 +219,13 @@ impl NativeMenu {
         icon: impl Into<Icon>,
         action: Box<dyn Action>,
     ) -> Self {
-        self.menu_with(label, false, false, Some(icon.into()), Some(action))
+        self.menu_with(
+            label,
+            false,
+            false,
+            Some(icon.into()),
+            Some(NativeMenuActivation::Action(action)),
+        )
     }
 
     /// Append an item showing `icon` next to its label, controlling its `disabled` state.
@@ -132,7 +239,13 @@ impl NativeMenu {
         disabled: bool,
         action: Box<dyn Action>,
     ) -> Self {
-        self.menu_with(label, disabled, false, Some(icon.into()), Some(action))
+        self.menu_with(
+            label,
+            disabled,
+            false,
+            Some(icon.into()),
+            Some(NativeMenuActivation::Action(action)),
+        )
     }
 
     /// Add Menu Item with Icon and disabled state.
@@ -154,14 +267,14 @@ impl NativeMenu {
         disabled: bool,
         checked: bool,
         icon: Option<Icon>,
-        action: Option<Box<dyn Action>>,
+        activation: Option<NativeMenuActivation>,
     ) -> Self {
         self.items.push(NativeMenuItem::Item {
             label: label.into(),
             disabled,
             checked,
             icon: icon.map(Box::new),
-            action,
+            activation,
         });
         self
     }
@@ -316,7 +429,7 @@ impl From<gpui::Menu> for NativeMenu {
                     disabled,
                     checked,
                     icon: None,
-                    action: Some(action),
+                    activation: Some(NativeMenuActivation::Action(action)),
                 }),
                 gpui::MenuItem::Submenu(submenu) => native.items.push(NativeMenuItem::Submenu {
                     label: submenu.name.clone(),
@@ -351,7 +464,7 @@ mod tests {
             disabled,
             checked,
             icon: Some(icon),
-            action: Some(_),
+            activation: Some(_),
         } = &menu.items[0]
         else {
             panic!("expected an actionable item with an icon");
@@ -378,7 +491,7 @@ mod tests {
             disabled,
             checked,
             icon: Some(icon),
-            action: Some(_),
+            activation: Some(_),
         } = &menu.items[0]
         else {
             panic!("expected a disabled actionable item with an icon");
