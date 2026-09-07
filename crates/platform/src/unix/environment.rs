@@ -19,7 +19,16 @@ pub fn data_dir() -> PathBuf {
 
 #[cfg(target_os = "macos")]
 fn base_data_dir() -> Option<PathBuf> {
-    home_dir().map(|home| home.join("Library").join("Application Support"))
+    home_dir().map(|home| application_support_dir(&home))
+}
+
+/// Where macOS puts the files one application owns. Configuration is kept here
+/// too rather than in an XDG directory: Finder hides dot-directories, Migration
+/// Assistant and Time Machine both carry this one to a new machine, and no
+/// other Mac application looks in `~/.config`.
+#[cfg(target_os = "macos")]
+fn application_support_dir(home: &Path) -> PathBuf {
+    home.join("Library").join("Application Support")
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -36,6 +45,14 @@ pub fn home_dir() -> Option<PathBuf> {
         .filter(|home| !home.as_os_str().is_empty())
 }
 
+/// Shares the data directory: on macOS the two are one place, so a single
+/// installation is one directory rather than a pair that can drift apart.
+#[cfg(target_os = "macos")]
+pub fn config_dir(home: &Path) -> PathBuf {
+    application_support_dir(home).join(APP_ID)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn config_dir(home: &Path) -> PathBuf {
     home.join(".config").join(APP_ID)
 }
