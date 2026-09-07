@@ -14,6 +14,7 @@
 | `.github/workflows/macos-package.yml` | Build → bundle → embed Sparkle → sign → notarize → archive. Reusable, plus `workflow_dispatch` so the signing path can be rehearsed |
 | `.github/workflows/appcast.yml` | Publishes one release into the feed asset |
 | `scripts/update-appcast.py` | Renders and trims the appcast document |
+| `scripts/release-macos-local.sh` | The same build → sign → notarize → staple walk on a developer's own Mac, reading its credentials from the login keychain |
 
 built on top of two files the macOS port already owns:
 
@@ -313,6 +314,16 @@ existing download step widened to the same pattern.
 Do this on a throwaway tag before a real release depends on it. Signing and
 notarization cannot be exercised any other way, and `macos-package.yml` accepts
 a manual dispatch for exactly this.
+
+`scripts/release-macos-local.sh` walks the same steps on a developer's machine,
+which is the faster way to find out that a nested Mach-O went unsigned or that
+a certificate is not where it was thought to be: the answer arrives in minutes
+instead of after a push. It reads the identity from the login keychain and the
+notary key from a `notarytool store-credentials` profile, and it leaves the
+update metadata alone unless `STAMP_FEED=1` asks for it, so the image it builds
+cannot be mistaken for something to update from. It does not produce the
+Sparkle archive or its EdDSA signature; publishing stays with CI, and the
+private key stays where it is.
 
 Check, in order:
 
