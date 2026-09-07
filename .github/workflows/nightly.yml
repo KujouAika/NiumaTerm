@@ -87,6 +87,12 @@ jobs:
   appcast:
     needs: [name, package-macos, release]
     uses: ./.github/workflows/appcast.yml
+    # A called workflow may not request more than the calling job was
+    # granted, and a job that names no permissions gets the repository
+    # default, which is read-only. `publish` replaces the feed asset, so the
+    # grant has to be made here rather than left to the default.
+    permissions:
+      contents: write
     with:
       label: ${{ needs.name.outputs.tag }}
       bundle-version: ${{ needs.package-macos.outputs.bundle-version }}
