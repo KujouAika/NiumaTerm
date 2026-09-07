@@ -915,19 +915,6 @@ diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
 index 63960dde2..02c47db99 100644
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
-@@ -1546,9 +1546,9 @@ const ReflowCursor = struct {
-                 const trailing_cell = cells[cols_len - 1];
-                 const trailing_trimmable = trailing_cell.isEmpty() or
-                     (builtin.os.tag == .windows and
--                    trailing_cell.content_tag == .codepoint and
--                    trailing_cell.content.codepoint == ' ' and
--                    trailing_cell.wide == .narrow);
-+                        trailing_cell.content_tag == .codepoint and
-+                        trailing_cell.content.codepoint == ' ' and
-+                        trailing_cell.wide == .narrow);
-                 if (!trailing_trimmable) break;
-                 cols_len -= 1;
-             }
 @@ -2703,6 +2703,34 @@ fn resizeWithoutReflowGrowCols(
      self.destroyNode(chunk.node);
  }

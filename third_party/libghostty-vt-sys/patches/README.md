@@ -5,8 +5,9 @@ every `*.patch` in this directory (sorted by filename) with `git apply` before t
 zig build. Bump `GHOSTTY_PATCH_VERSION` in `build.rs` whenever a patch changes so a
 cached clone is re-fetched and re-patched.
 
-Patches 0001–0002 are gated `comptime builtin.os.tag == .windows` (Windows/ConPTY-only
-quirks; macOS/Linux stay byte-for-byte upstream for those).
+Patch 0002 is gated `comptime builtin.os.tag == .windows` (a ConPTY-only quirk;
+macOS/Linux stay byte-for-byte upstream for it). Patch 0001 applies everywhere, with
+one extra Windows-only tier inside it.
 
 Former patch 0003 (headless OSC 7 pwd storage) was retired at Ghostty `53bd14fe`:
 upstream `StreamTerminal.Handler.reportPwd` now calls `Terminal.setPwd` itself.
@@ -18,23 +19,39 @@ any conflicts, regenerate the `.patch` (`git -C <ghostty-src> diff > ...`), and 
 `GHOSTTY_PATCH_VERSION`. A patch that no longer applies fails the build with a clear
 message.
 
-## 0001-win-reflow-trim-trailing-default-spaces.patch
+## 0001-reflow-trim-trailing-blank-spaces.patch
 
-`PageList.reflowRow` trims trailing cells only when `Cell.isEmpty()` (codepoint 0,
-i.e. never written). ConPTY pads every line with **explicit** U+0020 space glyphs out
-to the console width, which count as written content — so a column shrink wraps that
-padding onto a new row and every line becomes line+blank (~doubling scrollback and
-desyncing ConPTY's cursor rows from the grid). The patch extends the trailing trim to
-also drop **all** trailing narrow U+0020 spaces on Windows — **style-blind**, matching
-conhost's `ROW::MeasureRight` (`GetLastNonSpaceColumn`). (It originally kept bg-colored
-trailing spaces via a `hasStyling()` guard, but that diverged from conhost: a
-styled-padded line wrapped in ghostty while conhost trimmed it flat, re-opening the
-resize residual. The guard was dropped; the tradeoff is that a colored trailing
-background is trimmed on reflow — exactly as conhost/WT do.) The existing
-cursor/tracked-pin handling already widens `cols_len` to cover a pin in the padding, so
-a prompt cursor in the trailing run is preserved; only non-wrapped rows are trimmed, so
-soft-wrapped content is untouched. Regression:
-`ghostty.rs::reflow_styled_trailing_matches_conhost`. See `CONTEXT.md` → ConPTY resize.
+Upstream `PageList.reflowRow` says it trims "non-semantic rightmost blanks" but asks
+`Cell.isEmpty()`, which is true only for cells that were **never written**. Programs pad
+with real U+0020 space glyphs all the time: ConPTY pads every line out to the console
+width, and a zsh prompt that draws a right prompt pads the whole prompt row. Those
+cells count as content, so a column shrink wraps the padding onto a new row — every
+line becomes line+blank (~doubling scrollback, and on Windows desyncing ConPTY's cursor
+rows from the grid), and a padded prompt row is pushed down one row per resize step,
+which is what leaves a trail of stale prompts behind a window drag.
+
+The patch replaces the predicate with `trailingBlank`, in two tiers:
+
+- **Everywhere**: a trailing narrow U+0020 is trimmed when nothing about it can be told
+  apart from a never-written cell — default background, no inverse, underline,
+  strikethrough or overline, and no hyperlink. A space carries no glyph, so its
+  foreground colour, boldness, italics and blink are unobservable and do not disqualify
+  it. This tier cannot lose information by construction.
+- **Windows only**: trailing narrow spaces are trimmed **style-blind**, matching
+  conhost's `ROW::MeasureRight` (`GetLastNonSpaceColumn`). ConPTY's viewport-relative
+  cursor arithmetic is read against this grid, so it has to match conhost cell for cell;
+  a styled-padded line that wrapped here while conhost trimmed it flat re-opened the
+  resize residual. The tradeoff is that a colored trailing background is trimmed on
+  reflow — exactly as conhost/WT do.
+
+The existing cursor/tracked-pin handling already widens `cols_len` to cover a pin in the
+padding, so a prompt cursor in the trailing run is preserved; only non-wrapped rows are
+trimmed, so soft-wrapped content is untouched. Regressions:
+`ghostty.rs::resize_shrink_does_not_double_full_width_padded_lines` and
+`resize_shrink_keeps_a_padded_prompt_row_in_place` on every platform,
+`reflow_styled_trailing_matches_conhost` (Windows) and
+`reflow_styled_trailing_survives_reflow` (elsewhere) for the tier split.
+See `CONTEXT.md` → ConPTY resize.
 
 ## 0002-win-grow-preserve-cursor-y.patch
 

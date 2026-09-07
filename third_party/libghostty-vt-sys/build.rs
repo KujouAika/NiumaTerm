@@ -10,7 +10,7 @@ const GHOSTTY_COMMIT: &str = "53bd14fecfd68c6c0ab64d37b5943247299e2b40";
 /// [`patch_ghostty_source`] changes so a cached clone is re-fetched and re-patched.
 /// Folded into the fetch stamp alongside `GHOSTTY_COMMIT`.
 const GHOSTTY_PATCH_VERSION: &str =
-    "win-reflow-trim-styled-v6-grow-cursor-y-v2-kitty-screen-pos-v2-blockset-v4-base53bd14f";
+    "reflow-trim-blank-v8-grow-cursor-y-v2-kitty-screen-pos-v2-blockset-v4-base53bd14f";
 const PREBUILT_ENV: &str = "NMT_USE_PREBUILT_LIBGHOSTTY";
 
 /// Locate an LLVM binutils tool (`llvm-objcopy` / `llvm-nm`) on Windows.
