@@ -36,9 +36,12 @@ mod remote;
 mod syntax;
 mod tabs;
 mod ui;
-// The updater is built on the Restart Manager and a self-replacing executable,
-// and remote sessions on ConPTY hosting with DPAPI-held keys. Neither has a
-// counterpart here yet.
+// Updating is the one thing with a real implementation on both systems, but no
+// shared code: Windows replaces files under the Restart Manager, macOS hands a
+// signed bundle to Sparkle. Remote sessions, hosted on ConPTY with DPAPI-held
+// keys, still have no counterpart here.
+#[cfg(target_os = "macos")]
+mod sparkle;
 #[cfg(windows)]
 mod update;
 mod utils;
@@ -279,6 +282,8 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
             input_history::initialize(testing, cx);
             #[cfg(windows)]
             update::initialize(testing, cx);
+            #[cfg(target_os = "macos")]
+            sparkle::initialize(testing, cx);
 
             // Bring up the remote host service if it was left enabled. Runs on
             // its own runtime thread; failures only log.
@@ -309,6 +314,8 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
                 agent_updates::reconcile_profiles(&agent_profiles, cx);
                 #[cfg(windows)]
                 update::settings_changed(cx);
+                #[cfg(target_os = "macos")]
+                sparkle::settings_changed(cx);
                 let smooth_panels = cx.global::<AppSettings>().smooth_scrolling.panels_enabled();
                 cx.set_smooth_wheel_scrolling(smooth_panels);
 

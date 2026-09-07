@@ -24,6 +24,7 @@ members = [
     "crates/shell_extension",
     "crates/terminal",
     "crates/tree_sitter_bundle",
+    "crates/sparkle",
     
     "third_party/libghostty-vt-sys",
 
@@ -85,6 +86,7 @@ nmt_platform = { path = "crates/platform" }
 nmt_remote_net = { path = "crates/remote_net" }
 nmt_remote_session_hub = { path = "crates/remote_session_hub" }
 nmt_terminal = { path = "crates/terminal" }
+nmt_sparkle = { path = "crates/sparkle" }
 
 # Agent profile credential encryption. The aes-gcm `getrandom` default
 # feature provides the operating-system random source used for nonces.
@@ -422,6 +424,8 @@ objc2-app-kit = { version = "0.3.2", features = [
 objc2-foundation = { version = "0.3.2", features = [
     "NSArray",
     "NSAttributedString",
+    "NSBundle",
+    "NSError",
     "NSData",
     "NSDictionary",
     "NSDistributedNotificationCenter",

@@ -78,6 +78,7 @@ nmt_remote_net.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos.workspace = true
+nmt_sparkle.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

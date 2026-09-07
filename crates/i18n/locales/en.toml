@@ -989,6 +989,7 @@
 "agent-question-send-pending" = "Wait for the question submission to finish before sending another message."
 
 # macOS menu bar
+"menu-check-for-updates" = "Check for Updates..."
 "menu-settings" = "Settings..."
 "menu-services" = "Services"
 "menu-hide" = "Hide NiumaTerm"

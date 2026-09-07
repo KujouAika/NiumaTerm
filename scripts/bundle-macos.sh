@@ -89,6 +89,24 @@ else
   echo "note: no libtree_sitter.dylib beside $binary; syntax highlighting will be limited" >&2
 fi
 
+# The executable is linked against Sparkle and will not launch without it. The
+# loader is told to look in `@executable_path` and in `Contents/Frameworks`; the
+# build leaves a copy beside the binary for the first, and this puts it where the
+# second finds it.
+framework=$(dirname "$binary")/Sparkle.framework
+if [ ! -d "$framework" ]; then
+  echo "no Sparkle.framework beside $binary; build first" >&2
+  exit 1
+fi
+mkdir -p "$app/Contents/Frameworks"
+# ditto rather than cp -R: a framework's Versions/Current symlinks are part of
+# what its code signature seals, and a copy that resolves them will not load.
+ditto "$framework" "$app/Contents/Frameworks/Sparkle.framework"
+# The XPC services let a sandboxed host reach the network and the installer
+# through separate processes. A terminal emulator cannot be sandboxed, so they
+# would only add two more bundles to sign.
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+
 sed \
   -e "s|@@BUNDLE_ID@@|$identifier|g" \
   -e "s|@@SHORT_VERSION@@|$short_version|g" \

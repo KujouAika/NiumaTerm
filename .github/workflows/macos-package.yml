@@ -110,7 +110,10 @@ jobs:
       - name: Bundle
         run: ./scripts/bundle-macos.sh --profile release --out dist
 
-      - name: Embed Sparkle
+      # Only the tools. The framework that ships is the one the build linked
+      # against, so its version is pinned in crates/sparkle/build.rs alone and
+      # the two cannot disagree.
+      - name: Fetch the Sparkle tools
         run: |
           archive="$RUNNER_TEMP/Sparkle-$SPARKLE_VERSION.tar.xz"
           curl -fsSL -o "$archive" \
@@ -121,19 +124,6 @@ jobs:
           mkdir -p "$sparkle"
           tar -xJf "$archive" -C "$sparkle"
           echo "SPARKLE_DIR=$sparkle" >> "$GITHUB_ENV"
-
-          frameworks=dist/NiumaTerm.app/Contents/Frameworks
-          mkdir -p "$frameworks"
-          # ditto rather than cp -R: the framework's signature seals its
-          # Versions/Current symlinks, and a copy that resolves them produces a
-          # bundle that will not load.
-          ditto "$sparkle/Sparkle.framework" "$frameworks/Sparkle.framework"
-
-          # The XPC services let a sandboxed host reach the network and the
-          # installer through separate processes. A terminal emulator cannot be
-          # sandboxed, so they would only add two more bundles to sign and a
-          # pair of mach-lookup entitlements to carry.
-          rm -rf "$frameworks/Sparkle.framework/Versions/B/XPCServices"
 
       # Where an update comes from and which key signs it are properties of a
       # published build, not of any bundle: a locally assembled app has no

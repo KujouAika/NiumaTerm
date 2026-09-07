@@ -17,6 +17,7 @@
 use gpui::{App, Menu, MenuItem, SystemMenuType, Window, actions};
 use nmt_i18n::i18n;
 
+use crate::sparkle;
 use crate::ui::{
     CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
     PrevWorkspace, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, ToggleSidebar,
@@ -37,6 +38,8 @@ actions!(
         Minimize,
         /// Toggle the active window between its standard and zoomed size.
         Zoom,
+        /// Ask the updater to look for a newer release now.
+        CheckForUpdates,
     ]
 );
 
@@ -53,6 +56,13 @@ pub(crate) fn install(cx: &mut App) {
     // the active one; the menu is disabled outright when there is none.
     cx.on_action(|_: &Minimize, cx: &mut App| with_active_window(cx, Window::minimize_window));
     cx.on_action(|_: &Zoom, cx: &mut App| with_active_window(cx, Window::zoom_window));
+    // Disabled rather than absent while a check runs, and for a build with no
+    // updater, so the item stays where a user learned to look for it.
+    cx.on_action(|_: &CheckForUpdates, cx: &mut App| {
+        if sparkle::can_check(cx) {
+            sparkle::check_now(cx);
+        }
+    });
 
     refresh(cx);
 }
@@ -82,6 +92,8 @@ fn menus() -> Vec<Menu> {
         // Named for the application because macOS shows the first menu's name
         // in bold as the application menu.
         Menu::new("NiumaTerm").items([
+            MenuItem::action(i18n("menu-check-for-updates"), CheckForUpdates),
+            MenuItem::separator(),
             MenuItem::action(i18n("menu-settings"), ShowSettings),
             MenuItem::separator(),
             MenuItem::os_submenu(i18n("menu-services"), SystemMenuType::Services),
