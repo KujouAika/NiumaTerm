@@ -57,6 +57,8 @@ pub(crate) use crate::ui::settings::{
 // names the action that opens one.
 #[cfg(windows)]
 pub(crate) use crate::ui::shell::NewRemoteTab;
+#[cfg(target_os = "macos")]
+pub(crate) use crate::ui::shell::TITLE_BAR_HEIGHT;
 pub(crate) use crate::ui::shell::{
     CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
     PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, Shell,

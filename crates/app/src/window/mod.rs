@@ -9,6 +9,42 @@ use nmt_i18n::i18n;
 
 use crate::ui::{self, Shell};
 
+/// Height of a macOS close/minimize/zoom button, measured from the frame
+/// AppKit gives the standard window buttons. Their vertical inset is applied
+/// symmetrically from the top of the window, so half the leftover space
+/// centers them.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_HEIGHT: f32 = 14.0;
+/// Distance from the window's leading edge to the close button, matching the
+/// inset AppKit uses by default. The drawn title bar reserves room for the
+/// group ahead of its own leading controls.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_INSET_X: f32 = 9.0;
+
+/// Titlebar setup for a shell window. macOS keeps drawing its own window
+/// buttons over the transparent titlebar, and AppKit centers them in a 32px
+/// strip; this bar is taller, so the buttons are re-anchored to its middle to
+/// line up with the controls the bar draws itself. Windows and Linux draw
+/// their controls as part of the bar and need no such adjustment.
+fn titlebar_options() -> TitlebarOptions {
+    #[allow(unused_mut)]
+    let mut titlebar = TitlebarOptions {
+        title: Some(i18n("app-window-title").into()),
+        appears_transparent: true,
+        ..Default::default()
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        titlebar.traffic_light_position = Some(point(
+            px(TRAFFIC_LIGHT_INSET_X),
+            px((ui::TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_HEIGHT) / 2.0),
+        ));
+    }
+
+    titlebar
+}
+
 /// One terminal window's runtime state: last-known geometry (stashed by the
 /// shell's bounds observer) and the current session snapshot (stashed on
 /// workspace/tab changes). Flushed to `local_state.toml` on quit.
@@ -139,11 +175,7 @@ impl AppWindow {
                 // Borderless: the app draws its own titlebar (gpui-component
                 // `TitleBar`); the Windows backend routes controls/drag/resize.
                 window_decorations: Some(WindowDecorations::Client),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(i18n("app-window-title").into()),
-                    appears_transparent: true,
-                    ..Default::default()
-                }),
+                titlebar: Some(titlebar_options()),
                 window_background: ui::window_background_appearance(cx),
                 window_appearance_override: Some(selected_window_appearance(cx)),
                 window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
