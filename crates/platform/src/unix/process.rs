@@ -1,11 +1,13 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 #[cfg(not(target_os = "macos"))]
 use std::fs;
-use std::io;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, ExitStatus};
 use std::sync::{Arc, Weak};
+use std::{env, io};
 
+#[cfg(target_os = "macos")]
+use crate::unix::macos::login_shell;
 #[cfg(target_os = "macos")]
 use crate::unix::macos::process_group_count;
 
@@ -26,8 +28,50 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 /// Windows needs a `cmd.exe` hop so `PATHEXT` resolves the `.cmd` shims that
 /// Node-based tools install; `execvp` already searches `PATH` for a bare name,
 /// so the extra hop would only add a process that swallows signals.
+///
+/// The child carries the environment a GUI launch did not inherit, PATH
+/// included. A bare name is resolved against the child's own PATH rather than
+/// against this process's, so setting it here is what lets a tool installed
+/// under the user's home directory be found at all.
+#[cfg(target_os = "macos")]
+pub fn hidden_cmd_command(executable: impl AsRef<OsStr>) -> Command {
+    let mut command = hidden_command(executable);
+    command.envs(
+        login_shell::missing_variables()
+            .iter()
+            .map(|(name, value)| (name, value)),
+    );
+    command
+}
+
+/// Run `executable` through the shell lookup rules of the platform.
+///
+/// `execvp` already searches `PATH` for a bare name, so nothing needs to be
+/// added on top of it.
+#[cfg(not(target_os = "macos"))]
 pub fn hidden_cmd_command(executable: impl AsRef<OsStr>) -> Command {
     hidden_command(executable)
+}
+
+/// The value `name` carries in a child started by [`hidden_cmd_command`].
+///
+/// A caller that resolves an executable itself rather than leaving it to the
+/// spawn has to search the same PATH the spawn would, or it reports a tool as
+/// missing that the spawn would have found.
+#[cfg(target_os = "macos")]
+pub fn launch_env_var(name: &str) -> Option<OsString> {
+    login_shell::missing_variables()
+        .iter()
+        .find(|(candidate, _)| candidate == name)
+        .map(|(_, value)| OsString::from(value))
+        .or_else(|| env::var_os(name))
+}
+
+/// The value `name` carries in a child started by [`hidden_cmd_command`],
+/// which inherits this process's environment unchanged.
+#[cfg(not(target_os = "macos"))]
+pub fn launch_env_var(name: &str) -> Option<OsString> {
+    env::var_os(name)
 }
 
 /// Build the status a process that exited with `code` would report.
