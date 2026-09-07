@@ -20,13 +20,75 @@
 
 #![cfg(target_os = "macos")]
 
+use std::cell::Cell;
 use std::error::Error;
 use std::{fmt, ptr};
 
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{MainThreadMarker, msg_send};
-use objc2_foundation::{NSBundle, NSError, ns_string};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol};
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
+use objc2_foundation::{NSBundle, NSError, NSSet, NSString, ns_string};
+
+#[cfg(test)]
+mod tests;
+
+/// Which published channel this build follows.
+///
+/// Sparkle always searches the default channel on top of whatever is allowed
+/// here, and an updater cannot exclude itself from it. A build on nightly
+/// therefore also sees stable releases, which is the wanted behaviour: the
+/// versions are ordered by release time, so a stable release is only offered to
+/// a nightly user when it was cut after the nightly they are running.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Channel {
+    /// The default channel, which carries no channel name at all.
+    #[default]
+    Stable,
+    Nightly,
+}
+
+/// The channels to allow beyond the default one.
+fn allowed_channels(channel: Channel) -> Retained<NSSet<NSString>> {
+    match channel {
+        Channel::Stable => NSSet::new(),
+        Channel::Nightly => NSSet::from_retained_slice(&[NSString::from_str("nightly")]),
+    }
+}
+
+struct DelegateState {
+    channel: Cell<Channel>,
+}
+
+define_class!(
+    // Sparkle asks whether the delegate answers each selector rather than
+    // requiring it to declare the protocol, so implementing the one method that
+    // matters is the whole conformance needed.
+    #[unsafe(super(NSObject))]
+    #[name = "NmtSparkleUpdaterDelegate"]
+    #[ivars = DelegateState]
+    struct UpdaterDelegate;
+
+    impl UpdaterDelegate {
+        #[unsafe(method_id(allowedChannelsForUpdater:))]
+        fn allowed_channels_for_updater(
+            &self,
+            _updater: *mut AnyObject,
+        ) -> Retained<NSSet<NSString>> {
+            allowed_channels(self.ivars().channel.get())
+        }
+    }
+);
+
+unsafe impl NSObjectProtocol for UpdaterDelegate {}
+
+impl UpdaterDelegate {
+    fn new(channel: Channel) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(DelegateState {
+            channel: Cell::new(channel),
+        });
+        unsafe { msg_send![super(this), init] }
+    }
+}
 
 /// Why the updater is not running.
 #[derive(Debug)]
@@ -70,11 +132,14 @@ pub struct Updater {
     /// costs one object for the lifetime of the process; assuming the other way
     /// round and being wrong costs a use-after-free during an update check.
     _user_driver: Retained<AnyObject>,
+    /// The updater references its delegate weakly and says so, so this is the
+    /// only thing keeping it alive.
+    delegate: Retained<UpdaterDelegate>,
 }
 
 impl Updater {
     /// Bring the updater up, or report why it stayed down.
-    pub fn start() -> Result<Self, StartError> {
+    pub fn start(channel: Channel) -> Result<Self, StartError> {
         MainThreadMarker::new().ok_or(StartError::NotMainThread)?;
 
         let bundle = NSBundle::mainBundle();
@@ -86,13 +151,30 @@ impl Updater {
         }
 
         let user_driver = standard_user_driver(&bundle)?;
-        let updater = updater_for(&bundle, &user_driver)?;
+        let delegate = UpdaterDelegate::new(channel);
+        let updater = updater_for(&bundle, &user_driver, &delegate)?;
         start_updater(&updater)?;
 
         Ok(Self {
             updater,
             _user_driver: user_driver,
+            delegate,
         })
+    }
+
+    /// Follow a different channel from now on.
+    ///
+    /// Sparkle asks the delegate once per check, so a change would otherwise
+    /// take effect no sooner than the next scheduled one. Restarting the cycle
+    /// brings that forward; doing it on every settings write instead of only on
+    /// a real change would restart the cycle for edits that have nothing to do
+    /// with updates.
+    pub fn set_channel(&self, channel: Channel) {
+        if self.delegate.ivars().channel.replace(channel) == channel {
+            return;
+        }
+
+        unsafe { msg_send![&*self.updater, resetUpdateCycle] }
     }
 
     /// Check now, on the user's behalf, showing Sparkle's own progress and
@@ -138,6 +220,7 @@ fn standard_user_driver(bundle: &NSBundle) -> Result<Retained<AnyObject>, StartE
 fn updater_for(
     bundle: &NSBundle,
     user_driver: &AnyObject,
+    delegate: &UpdaterDelegate,
 ) -> Result<Retained<AnyObject>, StartError> {
     // The host bundle is the one being updated and the application bundle is the
     // one to relaunch. They differ only when updating a plug-in.
@@ -148,7 +231,7 @@ fn updater_for(
             initWithHostBundle: bundle,
             applicationBundle: bundle,
             userDriver: user_driver,
-            delegate: ptr::null::<AnyObject>(),
+            delegate: delegate,
         ]
     };
     unsafe { Retained::from_raw(updater) }.ok_or(StartError::InitFailed("SPUUpdater"))

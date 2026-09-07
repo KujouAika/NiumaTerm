@@ -60,8 +60,10 @@ fn main() {
         profile_dir.display()
     );
     println!("cargo:rustc-link-lib=framework=Sparkle");
-    // The rpaths that make those resolve are emitted by the application crate,
-    // which is the only one that knows the bundle layout it builds.
+    // The application crate emits the rpaths a packaged app needs, since it is
+    // the one that knows the bundle layout. This crate's own test executables
+    // run out of deps/, where the copy above sits.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
 }
 
 /// Download and unpack the pinned release, reusing an earlier unpack.
