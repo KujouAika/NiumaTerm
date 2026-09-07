@@ -7,9 +7,7 @@ use std::{env, path, process, time};
 use clap::{Arg, ArgAction, Command as ClapCommand};
 use futures::StreamExt as _;
 use futures::channel::mpsc::unbounded;
-use gpui::{
-    Anchor, AnyWindowHandle, App, Application, Global, KeyBinding, WeakEntity, frame_stats, px,
-};
+use gpui::{Anchor, AnyWindowHandle, App, Application, Global, WeakEntity, frame_stats, px};
 use gpui_component::{Theme as ComponentTheme, init as init_components};
 #[cfg(target_os = "macos")]
 use gpui_macos::MacPlatform as Platform;
@@ -26,7 +24,12 @@ mod agent_updates;
 mod agent_usage;
 mod cli;
 mod ipc;
+mod keymap;
 mod logging;
+// The menu bar is a macOS surface: on Windows the same commands live in the
+// title bar's menu button and nothing draws a bar above the window.
+#[cfg(target_os = "macos")]
+mod menu;
 mod pane_tree;
 #[cfg(windows)]
 mod remote;
@@ -43,17 +46,9 @@ mod window;
 mod workspace;
 
 use nmt_app_agent::{AgentThreadDefaults, input_history};
-use nmt_app_terminal::view::{
-    CopyBlockCommand, CopyBlockOutput, NextBlock, PreviousBlock, RerunBlock, SendShiftTab, SendTab,
-};
 
 use crate::cli::CliAction;
-use crate::ui::{
-    AppAssets, AppSettings, CloseTab, NewAgentTab, NewRemoteTab, NewTab, NewWindow, NewWorkspace,
-    NextTab, NextWorkspace, PrevTab, PrevWorkspace, ResizePaneDown, ResizePaneLeft,
-    ResizePaneRight, ResizePaneUp, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp,
-    ToggleSidebar,
-};
+use crate::ui::{AppAssets, AppSettings};
 use crate::window::{
     AppWindow, LastActiveWindow, ShellRegistry, WindowRegistry, selected_window_appearance,
 };
@@ -330,6 +325,10 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
                 if language_changed {
                     nmt_i18n::set_language(language.as_str());
                     gpui_component::set_locale(language.as_str());
+                    // AppKit holds the strings the bar was built from, so it
+                    // keeps the previous language until it is rebuilt.
+                    #[cfg(target_os = "macos")]
+                    menu::refresh(cx);
                 }
 
                 let background = ui::window_background_appearance(cx);
@@ -358,44 +357,12 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
             })
             .detach();
 
-            cx.bind_keys([
-                KeyBinding::new("ctrl-shift-t", NewTab, Some("Shell")),
-                KeyBinding::new("ctrl-shift-w", CloseTab, Some("Shell")),
-                KeyBinding::new("ctrl-tab", NextTab, Some("Shell")),
-                KeyBinding::new("ctrl-shift-tab", PrevTab, Some("Shell")),
-                KeyBinding::new("ctrl-shift-n", NewWorkspace, Some("Shell")),
-                KeyBinding::new("ctrl-alt-n", NewWindow, Some("Shell")),
-                KeyBinding::new("ctrl-pagedown", NextWorkspace, Some("Shell")),
-                KeyBinding::new("ctrl-pageup", PrevWorkspace, Some("Shell")),
-                KeyBinding::new("ctrl-shift-b", ToggleSidebar, Some("Shell")),
-                KeyBinding::new("ctrl-,", ShowSettings, Some("Shell")),
-                KeyBinding::new("ctrl-shift-r", NewRemoteTab, Some("Shell")),
-                KeyBinding::new("ctrl-shift-a", NewAgentTab, Some("Shell")),
-                // Split-pane creation and keyboard resize. These consume the
-                // xterm `\x1b[1;7A..D` / `\x1b[1;4A..D` arrow sequences before
-                // the terminal encodes them (accepted conflict, see the
-                // terminal-split-panes change).
-                KeyBinding::new("ctrl-alt-up", SplitUp, Some("Shell")),
-                KeyBinding::new("ctrl-alt-down", SplitDown, Some("Shell")),
-                KeyBinding::new("ctrl-alt-left", SplitLeft, Some("Shell")),
-                KeyBinding::new("ctrl-alt-right", SplitRight, Some("Shell")),
-                KeyBinding::new("alt-shift-up", ResizePaneUp, Some("Shell")),
-                KeyBinding::new("alt-shift-down", ResizePaneDown, Some("Shell")),
-                KeyBinding::new("alt-shift-left", ResizePaneLeft, Some("Shell")),
-                KeyBinding::new("alt-shift-right", ResizePaneRight, Some("Shell")),
-                // Tab/Shift-Tab go to the shell (completion) while the
-                // terminal is focused. The deeper `Terminal` context wins over
-                // `Root`'s tab → focus-traversal binding, which would
-                // otherwise consume the key before the pane ever saw it.
-                KeyBinding::new("tab", SendTab, Some("Terminal")),
-                KeyBinding::new("shift-tab", SendShiftTab, Some("Terminal")),
-                // Command-block navigation and actions on the selected block.
-                KeyBinding::new("ctrl-shift-up", PreviousBlock, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-down", NextBlock, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-y", CopyBlockCommand, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-o", CopyBlockOutput, Some("Terminal")),
-                KeyBinding::new("ctrl-shift-r", RerunBlock, Some("Terminal")),
-            ]);
+            keymap::bind(cx);
+
+            // The bar shows each command's shortcut, so it is built once the
+            // bindings above are registered.
+            #[cfg(target_os = "macos")]
+            menu::install(cx);
 
             // Restore local state; first run centers and starts one default tab.
             let remembered_state = startup_files.remembered_state.clone();

@@ -74,11 +74,13 @@ use crate::ui::git_status::{GitStatusModel, GitStatusView};
 use crate::ui::persistence::{default_session, materialize_active_tab, restore_session};
 use crate::ui::right_panel::{RightPanel, RightPanelKind};
 use crate::ui::settings::{AgentProfile, AppSettings, TabBarStyle};
+#[cfg(windows)]
+pub(crate) use crate::ui::shell::actions::NewRemoteTab;
 pub(crate) use crate::ui::shell::actions::{
-    CloseTab, NewAgentTab, NewRemoteTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace,
-    PrevTab, PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
-    ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, ToggleBackgroundTasks,
-    ToggleGitSidebar, ToggleSidebar, ToggleWorkflows,
+    CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
+    PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, ShowSettings,
+    SplitDown, SplitLeft, SplitRight, SplitUp, ToggleBackgroundTasks, ToggleGitSidebar,
+    ToggleSidebar, ToggleWorkflows,
 };
 #[cfg(test)]
 use crate::ui::shell::close::{should_confirm_close, should_confirm_tab_close};
