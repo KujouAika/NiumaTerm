@@ -1,3 +1,10 @@
+// An in-process COM server that Explorer loads to put NiumaTerm on the shell
+// context menu. Its exports are the entry points Explorer looks for in such a
+// DLL, and nothing outside the Windows shell loads them, so off Windows the
+// crate builds to an empty library. Dropping it from the workspace instead
+// would take it out of the bare `cargo build` that produces the Windows
+// release.
+#![cfg(windows)]
 #![allow(non_snake_case)]
 
 use std::ffi;
