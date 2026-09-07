@@ -9,6 +9,8 @@ use std::{error, io, ptr};
 
 use libc::c_void;
 
+pub(crate) mod login_shell;
+
 /// Error during working directory retrieval.
 #[derive(Debug)]
 pub enum Error {

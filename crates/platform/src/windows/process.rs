@@ -3,7 +3,7 @@ use std::os::windows::io::AsRawHandle as _;
 use std::os::windows::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, ExitStatus};
 use std::sync::{Arc, Weak};
-use std::{ffi, io, mem, ptr};
+use std::{env, ffi, io, mem, ptr};
 
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_MORE_DATA, GetLastError, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
@@ -25,6 +25,14 @@ pub fn hidden_cmd_command(executable: impl AsRef<OsStr>) -> Command {
     command.args([OsStr::new("/D"), OsStr::new("/C")]);
     command.arg(executable);
     command
+}
+
+/// The value `name` carries in a child started by [`hidden_cmd_command`].
+///
+/// A Windows GUI process is started with the user's full environment, so a
+/// child sees the same values this process does.
+pub fn launch_env_var(name: &str) -> Option<ffi::OsString> {
+    env::var_os(name)
 }
 
 pub fn exit_status_from_code(code: u32) -> ExitStatus {

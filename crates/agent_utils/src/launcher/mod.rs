@@ -9,7 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use std::{env, fmt, io, thread};
 
-use nmt_platform::process::{KillOnCloseJob, hidden_cmd_command};
+use nmt_platform::process::{KillOnCloseJob, hidden_cmd_command, launch_env_var};
 
 use crate::LaunchConfig;
 
@@ -76,13 +76,15 @@ impl AgentCli {
         &self.environment
     }
 
+    /// The value `target` has for this launcher: its own configuration first,
+    /// then whatever a child started by [`AgentCli::command`] would inherit.
     pub fn effective_env_os(&self, target: &str) -> Option<OsString> {
         self.environment
             .iter()
             .rev()
             .find(|(name, _)| name.eq_ignore_ascii_case(target))
             .map(|(_, value)| OsString::from(value))
-            .or_else(|| env::var_os(target))
+            .or_else(|| launch_env_var(target))
     }
 
     /// Resolve the launcher for installation identity without changing how it
