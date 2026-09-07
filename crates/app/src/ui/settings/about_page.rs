@@ -1,7 +1,9 @@
-#[cfg(windows)]
-use nmt_config::UpdateChannel;
+#[cfg(any(windows, target_os = "macos"))]
+use nmt_config::update::UpdateChannel;
 use nmt_i18n::i18n;
 
+#[cfg(target_os = "macos")]
+use crate::sparkle;
 use crate::ui::settings::*;
 #[cfg(windows)]
 use crate::update::{self, CheckError, InstallError, Status};
@@ -30,10 +32,10 @@ pub(super) fn about_page() -> SettingPage {
             }),
         ));
 
-    // Everything that follows drives the in-place updater, which exists only
-    // where it has been built. The release page above is what remains: a build
-    // that cannot replace itself can still be replaced by hand.
-    #[cfg(windows)]
+    // Everything that follows drives an updater, and only some builds have one.
+    // The release page above is what remains: a build that cannot replace
+    // itself can still be replaced by hand.
+    #[cfg(any(windows, target_os = "macos"))]
     let group = group
         .item(
             SettingItem::new(
@@ -73,6 +75,25 @@ pub(super) fn about_page() -> SettingPage {
     SettingPage::new(i18n("settings-about-title"))
         .default_open(true)
         .group(group)
+}
+
+/// Sparkle owns the whole state machine of a check and draws its own progress
+/// and result windows, so there is no status for this row to report the way the
+/// Windows one does. What is left is the button, and whether it can be pressed:
+/// `can_check` is false while a check is already running and for a build with no
+/// updater at all.
+#[cfg(target_os = "macos")]
+fn update_check_item() -> SettingItem {
+    SettingItem::new(
+        i18n("settings-about-check-for-updates"),
+        SettingField::render(|options, _window, cx| {
+            Button::new("app-update-check")
+                .outline()
+                .label(i18n("settings-about-check-button"))
+                .disabled(options.disabled || !sparkle::can_check(cx))
+                .on_click(|_, _, cx: &mut App| sparkle::check_now(cx))
+        }),
+    )
 }
 
 #[cfg(windows)]
