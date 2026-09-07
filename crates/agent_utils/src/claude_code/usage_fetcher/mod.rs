@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use std::{env, fmt, thread};
 
+use nmt_platform::process::launch_env_var;
+#[cfg(not(windows))]
+use nmt_platform::shell::default_shell;
 use nmt_platform::{ChildEvent, EventedPty as _, ProcessReadWrite as _};
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
@@ -30,9 +33,24 @@ const CLI_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_OUTPUT_BYTES: u64 = 128 * 1024;
 const MAX_CLI_OUTPUT_BYTES: usize = 100 * 1024;
 const MAX_CREDENTIALS_BYTES: u64 = 128 * 1024;
+/// The CLI the interactive fallback runs. This fetch belongs to no single tab,
+/// so the launcher a profile configures is out of reach here and the published
+/// name is what the shell is asked to resolve.
+const CLI_EXECUTABLE: &str = "claude";
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 const CLAUDE_CODE_USER_AGENT: &str = "claude-code/2.1.0";
+/// Wording that identifies the folder-trust prompt, with the spaces taken out.
+/// The prompt reaches its layout by moving the cursor between words instead of
+/// printing the spaces between them, so once the control sequences are gone its
+/// words sit directly against each other.
+const TRUST_PROMPT_MARKERS: &[&str] = &["doyoutrust", "trustthefiles", "safetycheck"];
+
+/// The answer to it. The prompt is a list whose highlighted entry declines and
+/// ends the session, so confirming without moving the selection first is a
+/// refusal: the affirmative entry is one step down.
+const TRUST_PROMPT_ANSWER: &[u8] = b"\x1b[B\r";
+
 const CLI_STOP_MARKERS: &[&str] = &[
     "current week (all models)",
     "current week (opus)",
@@ -281,18 +299,53 @@ fn supplement_from_cli(usage: UsageSnapshot, cancelled: &AtomicBool) -> UsageSna
     }
 }
 
+/// The shell and arguments that put the CLI on a PTY.
+///
+/// Windows installs the CLI as a `.cmd` shim, which only `cmd.exe` resolves,
+/// because applying `PATHEXT` to a bare name is a shell rule rather than a
+/// kernel one. A Unix shell finds the name on PATH by itself, and `exec`
+/// leaves the CLI as the terminal's own child instead of putting a shell in
+/// front of it that would only relay signals and its exit status.
+#[cfg(windows)]
+fn interactive_launch() -> (String, Vec<String>) {
+    (
+        "cmd.exe".to_string(),
+        vec![
+            "/D".to_string(),
+            "/C".to_string(),
+            CLI_EXECUTABLE.to_string(),
+        ],
+    )
+}
+
+#[cfg(not(windows))]
+fn interactive_launch() -> (String, Vec<String>) {
+    (
+        default_shell(),
+        vec!["-c".to_string(), format!("exec {CLI_EXECUTABLE}")],
+    )
+}
+
 fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchError> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(UsageFetchError::Cancelled);
     }
 
     let working_directory = Some(env::temp_dir().to_string_lossy().into_owned());
-    let environment_overrides = vec![("TERM".to_string(), "xterm-256color".to_string())];
+    let mut environment_overrides = vec![("TERM".to_string(), "xterm-256color".to_string())];
+    // The same PATH every other CLI spawn in this application uses. A GUI
+    // launch inherits neither the user's PATH nor a shell that would rebuild
+    // it, and this session's shell is not an interactive one, so the startup
+    // file most users put their PATH in is never read on its behalf.
+    if let Some(path) = launch_env_var("PATH") {
+        environment_overrides.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+    }
+    let (shell, shell_arguments) = interactive_launch();
     // A real terminal is required because current Claude versions render
     // subscription limits only through the interactive `/usage` panel.
     let mut pty = nmt_platform::create_managed_pty_with_env(
-        "cmd.exe",
-        vec!["/D".to_string(), "/C".to_string(), "claude".to_string()],
+        &shell,
+        shell_arguments,
         &working_directory,
         120,
         40,
@@ -328,12 +381,12 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
         let clean = strip_terminal_sequences(&String::from_utf8_lossy(&output));
         let lower = clean.to_ascii_lowercase();
 
-        if !trust_accepted
-            && ["do you trust", "trust the files", "safety check"]
-                .iter()
-                .any(|prompt| lower.contains(prompt))
-        {
-            write_pty(&mut pty, b"y\r", "Claude trust prompt response")?;
+        if !trust_accepted && is_trust_prompt(&lower) {
+            write_pty(
+                &mut pty,
+                TRUST_PROMPT_ANSWER,
+                "Claude trust prompt response",
+            )?;
             trust_accepted = true;
         }
 
@@ -382,12 +435,29 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
     }
 }
 
+/// Whether the session is sitting on the folder-trust prompt.
+///
+/// `panel` is the output with its control sequences already stripped and
+/// lowercased; the remaining whitespace goes too, because the prompt's own
+/// spacing never reaches the stream.
+fn is_trust_prompt(panel: &str) -> bool {
+    let condensed: String = panel.chars().filter(|ch| !ch.is_whitespace()).collect();
+    TRUST_PROMPT_MARKERS
+        .iter()
+        .any(|marker| condensed.contains(marker))
+}
+
 fn drain_pty_output(pty: &mut nmt_platform::Pty, output: &mut Vec<u8>) -> Result<bool, String> {
     let mut buffer = [0u8; 8 * 1024];
     loop {
         match pty.reader().read(&mut buffer) {
             Ok(0) => return Ok(false),
             Ok(read) => append_bounded(output, &buffer[..read], MAX_CLI_OUTPUT_BYTES),
+            // A Unix PTY is read without blocking, so an empty one answers
+            // with `EAGAIN` rather than a zero-length read. The panel takes
+            // seconds to render and is polled the whole time, so most of these
+            // reads find nothing yet; the caller's next pass will look again.
+            Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(false),
             Err(err) if err.kind() == ErrorKind::BrokenPipe => return Ok(true),
             Err(err) => return Err(format!("failed to read Claude usage panel: {err}")),
         }

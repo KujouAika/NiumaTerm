@@ -168,3 +168,23 @@ fn a_cancelled_request_reports_cancellation_not_failure() {
         "expected Cancelled, got {error:?}"
     );
 }
+
+/// The prompt as the CLI actually renders it: cursor moves carry the layout,
+/// so stripping them leaves the words with nothing between them. Matching on
+/// the spelled-out wording finds nothing here and the session then answers the
+/// prompt's default, which declines and exits.
+#[test]
+fn the_trust_prompt_is_recognized_through_its_cursor_driven_layout() {
+    let rendered = strip_terminal_sequences(concat!(
+        "\u{1b}[2GQuick\u{1b}[8Gsafety\u{1b}[15Gcheck:\u{1b}[22GIs\u{1b}[25Gthis",
+        "\u{1b}[30Ga\u{1b}[32Gproject\u{1b}[40Gyou\u{1b}[44Gcreated?"
+    ));
+
+    assert!(!rendered.to_ascii_lowercase().contains("safety check"));
+    assert!(is_trust_prompt(&rendered.to_ascii_lowercase()));
+}
+
+#[test]
+fn the_usage_panel_is_not_taken_for_the_trust_prompt() {
+    assert!(!is_trust_prompt("current session 5% used"));
+}
