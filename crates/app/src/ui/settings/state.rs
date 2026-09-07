@@ -164,12 +164,16 @@ pub struct AppSettings {
     /// Shared token the relay requires from hosts on registration.
     pub remote_access_token: SharedString,
     /// Most recently generated pairing code, shown until the dialog closes.
-    /// Ephemeral: never persisted.
+    /// Ephemeral: never persisted. Carried only where the remote-session page
+    /// that reads it is built, which is the platform that can host a session.
+    #[cfg(windows)]
     pub remote_pairing_code: Option<String>,
     /// Client-side: pairing code being entered to pair with a remote host.
     /// Ephemeral.
+    #[cfg(windows)]
     pub remote_pairing_input: SharedString,
     /// Client-side: last pairing attempt result message. Ephemeral.
+    #[cfg(windows)]
     pub remote_client_status: Option<String>,
 }
 
@@ -229,8 +233,11 @@ impl Default for AppSettings {
             remote_host_enabled: false,
             remote_relay_url: SharedString::default(),
             remote_access_token: SharedString::default(),
+            #[cfg(windows)]
             remote_pairing_code: None,
+            #[cfg(windows)]
             remote_pairing_input: SharedString::default(),
+            #[cfg(windows)]
             remote_client_status: None,
         }
     }
@@ -521,8 +528,11 @@ impl AppSettings {
             remote_host_enabled: config.remote_session.host_enabled,
             remote_relay_url: config.remote_session.relay_url.clone().into(),
             remote_access_token: config.remote_session.access_token.clone().into(),
+            #[cfg(windows)]
             remote_pairing_code: None,
+            #[cfg(windows)]
             remote_pairing_input: SharedString::default(),
+            #[cfg(windows)]
             remote_client_status: None,
         }
     }

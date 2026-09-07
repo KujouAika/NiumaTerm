@@ -7,7 +7,9 @@ use std::{env, mem, path, process, time};
 use clap::{Arg, ArgAction, Command as ClapCommand};
 use futures::StreamExt as _;
 use futures::channel::mpsc::unbounded;
-use gpui::{Anchor, AnyWindowHandle, App, Application, Global, WeakEntity, frame_stats, px};
+#[cfg(windows)]
+use gpui::Global;
+use gpui::{Anchor, AnyWindowHandle, App, Application, WeakEntity, frame_stats, px};
 use gpui_component::{Theme as ComponentTheme, init as init_components};
 #[cfg(target_os = "macos")]
 use gpui_macos::MacPlatform as Platform;
@@ -69,15 +71,18 @@ struct StartupFiles {
     remembered_state: LocalState,
 }
 
-/// The concrete Windows platform, kept as a gpui global so settings toggles
-/// can reach platform-level knobs (UI thread priority).
 /// The flag a freshly installed build is relaunched with, naming the process
 /// it has to outlive. It lives here rather than with the updater because the
 /// command line is parsed on every platform, whether one is built or not.
 pub(crate) const AWAIT_EXIT_FLAG: &str = "--await-exit";
 
+/// The concrete Windows platform, kept as a gpui global so settings toggles
+/// can reach platform-level knobs (UI thread priority). The one knob behind it
+/// is Windows-only, and so is the handle: elsewhere nothing would read it.
+#[cfg(windows)]
 pub(crate) struct PlatformHandle(pub(crate) Rc<Platform>);
 
+#[cfg(windows)]
 impl Global for PlatformHandle {}
 
 fn main() {
@@ -240,6 +245,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
     #[cfg(windows)]
     platform.set_file_drop_description(nmt_i18n::i18n("app-drop-paste-path"));
 
+    #[cfg(windows)]
     let platform_handle = platform.clone();
 
     let app = Application::with_platform(platform)
@@ -310,6 +316,7 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
             platform_handle.set_ui_thread_priority(true);
         }
 
+        #[cfg(windows)]
         cx.set_global(PlatformHandle(platform_handle));
 
         // Keep live behavior in sync on any settings change. Persistence is

@@ -1,7 +1,6 @@
 #![cfg(unix)]
 
 use dirs::home_dir;
-use libc;
 use tracing::info;
 
 pub mod environment;
@@ -373,29 +372,19 @@ impl ShellUser {
         let mut buf = [0; 1024];
         let pw = get_pw_entry(&mut buf);
 
-        let user = match env::var("USER") {
-            Ok(user) => user,
-            Err(_) => match pw {
-                Ok(ref pw) => pw.name.to_owned(),
-                Err(err) => return Err(err),
-            },
-        };
-
-        let home = match env::var("HOME") {
-            Ok(home) => home,
-            Err(_) => match pw {
-                Ok(ref pw) => pw.dir.to_owned(),
-                Err(err) => return Err(err),
-            },
-        };
-
-        #[allow(unused_mut)]
-        let mut shell = match env::var("SHELL") {
-            Ok(env_shell) => env_shell,
-            Err(_) => match pw {
-                Ok(ref pw) => pw.shell.to_owned(),
-                Err(err) => return Err(err),
-            },
+        // The passwd entry only fills in what the environment does not carry,
+        // so a session that exports all three never has to read it and a
+        // failed read is reported only when something is actually missing.
+        let (user, home, shell) = match (env::var("USER"), env::var("HOME"), env::var("SHELL")) {
+            (Ok(user), Ok(home), Ok(shell)) => (user, home, shell),
+            (user, home, shell) => {
+                let pw = pw?;
+                (
+                    user.unwrap_or_else(|_| pw.name.to_owned()),
+                    home.unwrap_or_else(|_| pw.dir.to_owned()),
+                    shell.unwrap_or_else(|_| pw.shell.to_owned()),
+                )
+            }
         };
 
         Ok(Self { user, home, shell })
@@ -416,6 +405,11 @@ impl ShellUser {
 /// `starting_title` has no creation-time equivalent here: a Unix PTY carries
 /// no title of its own, and the window title is whatever the child emits
 /// through OSC 0/2.
+// The parameter list is the shared PTY creation surface: the Windows backend
+// declares the same one and callers hand it straight through, so its length is
+// decided by that shared signature rather than by anything this function does
+// with the values.
+#[allow(clippy::too_many_arguments)]
 pub fn create_pty_with_env(
     shell: &str,
     args: Vec<String>,
@@ -442,6 +436,11 @@ pub fn create_pty_with_env(
 /// PTY is dropped. Background probes need deterministic cleanup regardless of
 /// the user setting that controls process-tree management for ordinary
 /// terminals.
+// The parameter list is the shared PTY creation surface: the Windows backend
+// declares the same one and callers hand it straight through, so its length is
+// decided by that shared signature rather than by anything this function does
+// with the values.
+#[allow(clippy::too_many_arguments)]
 pub fn create_managed_pty_with_env(
     shell: &str,
     args: Vec<String>,

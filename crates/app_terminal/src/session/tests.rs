@@ -10,6 +10,7 @@ use nmt_platform::windows::powershell::INTEGRATION_SCRIPT;
 use nmt_terminal::block_store::BlockStore;
 use nmt_terminal::event::{BlockEvent, TerminalEvent};
 use parking_lot::Mutex;
+#[cfg(windows)]
 use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 
 use crate::error::EngineErrorCode;

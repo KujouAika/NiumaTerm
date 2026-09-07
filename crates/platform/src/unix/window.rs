@@ -16,13 +16,11 @@ pub fn show_error_dialog(title: &str, message: &str) {
         return;
     };
 
-    // SAFETY: every argument is an owned `NSString`, and the alert is run on
-    // the main thread the marker proves this is.
-    unsafe {
-        let alert = NSAlert::new(main_thread);
-        alert.setAlertStyle(NSAlertStyle::Critical);
-        alert.setMessageText(&NSString::from_str(title));
-        alert.setInformativeText(&NSString::from_str(message));
-        alert.runModal();
-    }
+    // `MainThreadMarker` is what makes these calls safe to state: AppKit
+    // requires the main thread, and holding one is the proof of it.
+    let alert = NSAlert::new(main_thread);
+    alert.setAlertStyle(NSAlertStyle::Critical);
+    alert.setMessageText(&NSString::from_str(title));
+    alert.setInformativeText(&NSString::from_str(message));
+    alert.runModal();
 }

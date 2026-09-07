@@ -4,8 +4,8 @@
 // crate builds to an empty library. Dropping it from the workspace instead
 // would take it out of the bare `cargo build` that produces the Windows
 // release.
-#![cfg(windows)]
 #![allow(non_snake_case)]
+#![cfg(windows)]
 
 use std::ffi;
 

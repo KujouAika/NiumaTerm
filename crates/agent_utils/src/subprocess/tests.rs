@@ -11,7 +11,7 @@ fn stdout_close_callback_follows_the_last_json_message() {
     // child it spawns, which on Unix requires a command that leads its own
     // process group.
     #[cfg(windows)]
-    let mut command = {
+    let command = {
         let mut command = hidden_command("powershell.exe");
         command.args([
             "-NoLogo",
@@ -23,7 +23,7 @@ fn stdout_close_callback_follows_the_last_json_message() {
         command
     };
     #[cfg(unix)]
-    let mut command = {
+    let command = {
         let mut command = hidden_command("/bin/sh");
         command.args(["-c", "echo '{\"ready\":true}'"]);
         command
