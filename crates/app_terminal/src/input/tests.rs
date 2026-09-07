@@ -181,6 +181,7 @@ fn plain_text_defers_to_ime_but_special_keys_do_not() {
     assert!(!should_defer_to_ime(&key("left", None)));
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn copy_paste_shortcuts_are_actions_not_pty_bytes() {
     let copy = modified("c", Some("c"), Modifiers::control());
@@ -197,6 +198,7 @@ fn copy_paste_shortcuts_are_actions_not_pty_bytes() {
     assert_eq!(pty_bytes_for_key(&copy, NewlineShortcut::CtrlEnter), None);
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn ctrl_shift_copy_paste_are_no_longer_app_shortcuts() {
     let copy = modified("c", Some("c"), Modifiers::control_shift());
@@ -209,5 +211,35 @@ fn ctrl_shift_copy_paste_are_no_longer_app_shortcuts() {
     assert_eq!(
         key_action(&paste, NewlineShortcut::CtrlEnter),
         TerminalKeyAction::Ignore
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn command_copy_paste_are_actions_not_pty_bytes() {
+    // AppKit reports no committed character for a Command or Control chord.
+    let copy = modified("c", None, Modifiers::command());
+    let paste = modified("v", None, Modifiers::command());
+
+    assert_eq!(
+        key_action(&copy, NewlineShortcut::CtrlEnter),
+        TerminalKeyAction::CopyOrWrite(Vec::new()),
+        "Command-C copies, and has no byte to send when nothing is selected"
+    );
+    assert_eq!(
+        key_action(&paste, NewlineShortcut::CtrlEnter),
+        TerminalKeyAction::Paste
+    );
+    assert_eq!(pty_bytes_for_key(&copy, NewlineShortcut::CtrlEnter), None);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn control_c_stays_the_interrupt_byte_beside_command_c() {
+    let interrupt = modified("c", None, Modifiers::control());
+
+    assert_eq!(
+        pty_bytes_for_key(&interrupt, NewlineShortcut::CtrlEnter),
+        Some(vec![0x03])
     );
 }

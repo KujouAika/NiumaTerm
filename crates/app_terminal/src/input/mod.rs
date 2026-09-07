@@ -39,14 +39,8 @@ pub(crate) fn key_action(
         return action;
     }
 
-    if is_clipboard_shortcut(event, "c") {
-        return TerminalKeyAction::CopyOrWrite(vec![0x03]);
-    }
-    if is_clipboard_shortcut(event, "v") {
-        return TerminalKeyAction::Paste;
-    }
-    if is_old_clipboard_shortcut(event) {
-        return TerminalKeyAction::Ignore;
+    if let Some(action) = clipboard_action(event) {
+        return action;
     }
 
     let input = key_input(event);
@@ -147,20 +141,51 @@ fn fallback_text(event: &Keystroke) -> Option<&str> {
     })
 }
 
-fn is_clipboard_shortcut(event: &Keystroke, key: &str) -> bool {
-    event.modifiers.control
-        && !event.modifiers.shift
-        && !event.modifiers.alt
-        && !event.modifiers.platform
-        && event.key.eq_ignore_ascii_case(key)
+/// The chords the surface answers itself instead of encoding for the shell.
+///
+/// Ctrl-C is both the copy chord and the interrupt byte here, so it copies a
+/// selection when there is one and sends ETX when there is not. Ctrl-Shift-C
+/// and Ctrl-Shift-V were the chords before that: they are swallowed rather than
+/// encoded, so the habit of reaching for them does nothing instead of writing
+/// an escape sequence into the command line.
+#[cfg(not(target_os = "macos"))]
+fn clipboard_action(event: &Keystroke) -> Option<TerminalKeyAction> {
+    if !event.modifiers.control || event.modifiers.alt || event.modifiers.platform {
+        return None;
+    }
+
+    match (
+        event.modifiers.shift,
+        event.key.to_ascii_lowercase().as_str(),
+    ) {
+        (false, "c") => Some(TerminalKeyAction::CopyOrWrite(vec![0x03])),
+        (false, "v") => Some(TerminalKeyAction::Paste),
+        (true, "c" | "v") => Some(TerminalKeyAction::Ignore),
+        _ => None,
+    }
 }
 
-fn is_old_clipboard_shortcut(event: &Keystroke) -> bool {
-    event.modifiers.control
-        && event.modifiers.shift
-        && !event.modifiers.alt
-        && !event.modifiers.platform
-        && matches!(event.key.to_ascii_lowercase().as_str(), "c" | "v")
+/// Command-C and Command-V, which is where macOS puts the clipboard.
+///
+/// Control keeps its terminal meaning on this platform, so Ctrl-C is the
+/// interrupt byte and nothing else. That leaves Command-C with no byte to fall
+/// back to, which is why it carries none: with nothing selected it copies
+/// nothing rather than interrupting the running program.
+#[cfg(target_os = "macos")]
+fn clipboard_action(event: &Keystroke) -> Option<TerminalKeyAction> {
+    if !event.modifiers.platform
+        || event.modifiers.control
+        || event.modifiers.alt
+        || event.modifiers.shift
+    {
+        return None;
+    }
+
+    match event.key.to_ascii_lowercase().as_str() {
+        "c" => Some(TerminalKeyAction::CopyOrWrite(Vec::new())),
+        "v" => Some(TerminalKeyAction::Paste),
+        _ => None,
+    }
 }
 
 pub(crate) fn modifiers_state(modifiers: Modifiers) -> ModifiersState {

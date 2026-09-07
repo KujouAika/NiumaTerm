@@ -44,7 +44,7 @@ use crate::frame::{
 use crate::layout::{
     bottom_anchor_offsets, frame_content_rows, live_frame_text, row_y_offset, terminal_row_at_y,
 };
-use crate::links::LinkHover;
+use crate::links::{LinkHover, follows_link};
 use crate::scrollbar::{scrollbar_element, scrollbar_offset_for_thumb};
 use crate::session::{HostEvent, InFlightBlock};
 use crate::settings::TerminalSettings;

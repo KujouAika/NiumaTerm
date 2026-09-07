@@ -158,16 +158,14 @@ impl TerminalPane {
 
         self.frozen_drag.set_origin(None);
 
-        // Ctrl+left-click opens the URL under the pointer (OSC 8 target or
-        // URL-shaped text). It wins over selection and mouse reporting so
+        // A modified left-click opens the URL under the pointer (OSC 8 target
+        // or URL-shaped text). It wins over selection and mouse reporting so
         // links stay clickable inside TUIs, matching common terminal behavior.
         if event.button == MouseButton::Left
-            && event.modifiers.control
-            && !event.modifiers.alt
-            && !event.modifiers.shift
+            && follows_link(event.modifiers)
             && let Some(link) = self.link_at_position(event.position, cx)
         {
-            info!(url = link.url, "ctrl+click open url");
+            info!(url = link.url, "modified click open url");
             cx.open_url(&link.url);
             return;
         }
