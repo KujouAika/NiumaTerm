@@ -1117,13 +1117,16 @@ mod tests {
         assert_eq!(window_selected_text(cx).trim(), "Hello world");
 
         cx.write_to_clipboard(ClipboardItem::new_string("old clipboard".to_string()));
-        cx.simulate_keystrokes("ctrl-c");
+        // The clipboard chord is Command on macOS and Control everywhere else,
+        // which is what `secondary` spells; naming one of them here would test
+        // a chord that is bound on only one platform.
+        cx.simulate_keystrokes("secondary-c");
         assert_eq!(
             cx.read_from_clipboard().and_then(|item| item.text()),
             Some("Hello world".to_string())
         );
 
-        cx.simulate_keystrokes("ctrl-v");
+        cx.simulate_keystrokes("secondary-v");
         let composer_text =
             chat.read_with(cx, |chat, cx| chat.composer.read(cx).text().to_string());
         assert_eq!(composer_text, "Hello world");
