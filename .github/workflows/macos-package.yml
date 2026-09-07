@@ -1,0 +1,273 @@
+name: macOS package
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build
+        type: string
+        required: true
+      version:
+        description: Version label used in the package and artifact name
+        type: string
+        required: true
+  # Standalone runs exist so the signing and notarization path can be rehearsed
+  # against a throwaway tag; neither step can be exercised any other way.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build
+        type: string
+        required: true
+      version:
+        description: Version label, for example v1.2.9
+        type: string
+        required: true
+
+jobs:
+  package:
+    # Pinned rather than macos-latest: that label moved to macos-26 in July
+    # 2026, and a signing pipeline should not change host OS without a commit
+    # saying so.
+    runs-on: macos-26
+    outputs:
+      artifact: ${{ steps.names.outputs.artifact }}
+      asset: ${{ steps.names.outputs.asset }}
+      bundle-version: ${{ steps.names.outputs.bundle }}
+      ed-signature: ${{ steps.sparkle-sign.outputs.signature }}
+      length: ${{ steps.sparkle-sign.outputs.length }}
+
+    env:
+      SPARKLE_VERSION: 2.9.6
+      SPARKLE_SHA256: 52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192
+      SPARKLE_FEED_URL: https://f32y.github.io/NiumaTerm/appcast.xml
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          # The committer timestamp below and nmt_version's crate_revision both
+          # read history, which a shallow checkout does not carry.
+          fetch-depth: 0
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          # Every release bumps the workspace version, which rewrites
+          # Cargo.lock and therefore the exact key; the prefix restores the
+          # previous build's target/ instead of starting from empty.
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      # Sparkle refuses an update whose EdDSA signature it cannot check against
+      # the key the installed copy carries, so a build that shipped without the
+      # key would be unupdatable forever. Fail here rather than discover it
+      # after a release.
+      - name: Check the update key is configured
+        env:
+          NMT_SPARKLE_PUBLIC_ED_KEY: ${{ vars.NMT_SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          if [ -z "$NMT_SPARKLE_PUBLIC_ED_KEY" ]; then
+            echo "repository variable NMT_SPARKLE_PUBLIC_ED_KEY is unset;" >&2
+            echo "run Sparkle's bin/generate_keys and store the printed public key" >&2
+            exit 1
+          fi
+
+      - id: names
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          artifact="NiumaTerm-macos-arm64-$VERSION"
+          {
+            echo "artifact=$artifact"
+            echo "asset=$artifact.zip"
+            # Sparkle orders releases with SUStandardVersionComparator, which
+            # reads numbers only. The committer timestamp is the one value that
+            # increases monotonically across both publishing channels and every
+            # branch, so a nightly and a release stay comparable.
+            echo "bundle=$(git show -s --format=%ct HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      # `shell_extension` is an Explorer context-menu DLL and is in
+      # default-members, so a bare `cargo build` fails here; name the packages.
+      - name: Build
+        env:
+          NIUMATERM_VERSION: ${{ inputs.version }}
+          # Must match `min_macos` in scripts/bundle-macos.sh, which is what
+          # LSMinimumSystemVersion ends up saying: a binary built for a newer
+          # system than the bundle advertises fails at launch, not at build.
+          MACOSX_DEPLOYMENT_TARGET: '13.0'
+        run: cargo build --release --locked -p app -p nmt_tree_sitter_bundle
+
+      - name: Bundle
+        run: ./scripts/bundle-macos.sh --profile release --out dist
+
+      - name: Embed Sparkle
+        run: |
+          archive="$RUNNER_TEMP/Sparkle-$SPARKLE_VERSION.tar.xz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+          echo "$SPARKLE_SHA256  $archive" | shasum -a 256 -c
+
+          sparkle="$RUNNER_TEMP/sparkle"
+          mkdir -p "$sparkle"
+          tar -xJf "$archive" -C "$sparkle"
+          echo "SPARKLE_DIR=$sparkle" >> "$GITHUB_ENV"
+
+          frameworks=dist/NiumaTerm.app/Contents/Frameworks
+          mkdir -p "$frameworks"
+          # ditto rather than cp -R: the framework's signature seals its
+          # Versions/Current symlinks, and a copy that resolves them produces a
+          # bundle that will not load.
+          ditto "$sparkle/Sparkle.framework" "$frameworks/Sparkle.framework"
+
+          # The XPC services let a sandboxed host reach the network and the
+          # installer through separate processes. A terminal emulator cannot be
+          # sandboxed, so they would only add two more bundles to sign and a
+          # pair of mach-lookup entitlements to carry.
+          rm -rf "$frameworks/Sparkle.framework/Versions/B/XPCServices"
+
+      # Where an update comes from and which key signs it are properties of a
+      # published build, not of any bundle: a locally assembled app has no
+      # business pointing at the live feed. So they are stamped here rather
+      # than in assets/macos/Info.plist.
+      - name: Stamp distribution metadata
+        env:
+          NMT_SPARKLE_PUBLIC_ED_KEY: ${{ vars.NMT_SPARKLE_PUBLIC_ED_KEY }}
+          BUNDLE_VERSION: ${{ steps.names.outputs.bundle }}
+        run: |
+          plist=dist/NiumaTerm.app/Contents/Info.plist
+
+          plutil -replace CFBundleVersion -string "$BUNDLE_VERSION" "$plist"
+          plutil -replace SUFeedURL -string "$SPARKLE_FEED_URL" "$plist"
+          plutil -replace SUPublicEDKey -string "$NMT_SPARKLE_PUBLIC_ED_KEY" "$plist"
+          # NiumaTerm asks about automatic checks in its own settings; without
+          # this key Sparkle asks again with its own dialog on first launch.
+          plutil -replace SUEnableAutomaticChecks -bool true "$plist"
+          # Six hours, matching the Windows updater's CHECK_INTERVAL.
+          plutil -replace SUScheduledCheckInterval -integer 21600 "$plist"
+
+          plutil -lint "$plist"
+
+      - name: Import signing certificate
+        env:
+          NMT_MACOS_CERT_P12: ${{ secrets.NMT_MACOS_CERT_P12 }}
+          NMT_MACOS_CERT_PASSWORD: ${{ secrets.NMT_MACOS_CERT_PASSWORD }}
+          NMT_MACOS_KEYCHAIN_PASSWORD: ${{ secrets.NMT_MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+          security create-keychain -p "$NMT_MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          # The default 300 s auto-lock fires while notarization is still
+          # running, and the next codesign then blocks on an unlock prompt that
+          # never appears on a headless runner.
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$NMT_MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | sed 's/["[:space:]]//g')
+
+          echo "$NMT_MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$NMT_MACOS_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm "$RUNNER_TEMP/cert.p12"
+          # Without this the imported key keeps an ACL only a UI prompt can
+          # satisfy, and codesign hangs with no output.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$NMT_MACOS_KEYCHAIN_PASSWORD" "$keychain" > /dev/null
+
+          security find-identity -v -p codesigning "$keychain"
+
+      # Inside-out, and never --deep: --deep rewrites nested signatures that are
+      # already correct and drops the entitlements they were signed with.
+      # --options runtime and --timestamp are both notarization requirements.
+      #
+      # No entitlements file: the hardened runtime with no exceptions is what
+      # this app needs. It spawns shells rather than loading plug-ins, and every
+      # Mach-O it opens is signed by the same team below.
+      - name: Sign
+        env:
+          IDENTITY: ${{ secrets.NMT_MACOS_SIGN_IDENTITY }}
+        run: |
+          app=dist/NiumaTerm.app
+          fw="$app/Contents/Frameworks/Sparkle.framework"
+          sign() { codesign --force --options runtime --timestamp --sign "$IDENTITY" "$@"; }
+
+          # crates/app/src/syntax opens this with dlopen at runtime. Under the
+          # hardened runtime, library validation accepts a dlopened Mach-O only
+          # when it carries the host's Team ID, so it is signed here rather than
+          # excused with a disable-library-validation entitlement — which would
+          # also stop enforcing the same check on the framework.
+          sign "$app/Contents/MacOS/libtree_sitter.dylib"
+          sign "$fw/Versions/B/Autoupdate"
+          sign "$fw/Versions/B/Updater.app"
+          sign "$fw"
+          sign "$app"
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+      - name: Notarize and staple
+        env:
+          NMT_AC_API_KEY_P8: ${{ secrets.NMT_AC_API_KEY_P8 }}
+          NMT_AC_API_KEY_ID: ${{ secrets.NMT_AC_API_KEY_ID }}
+          NMT_AC_API_ISSUER_ID: ${{ secrets.NMT_AC_API_ISSUER_ID }}
+        run: |
+          app=dist/NiumaTerm.app
+          echo "$NMT_AC_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/api_key.p8"
+
+          # The notary service does not accept a .app; it takes a UDIF image, a
+          # signed flat package, or a zip. This archive is a throwaway: the
+          # ticket is stapled to the bundle, and the distributed archive is
+          # rebuilt from the stapled bundle below, because a zip cannot be
+          # stapled at all.
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/api_key.p8" \
+            --key-id "$NMT_AC_API_KEY_ID" \
+            --issuer "$NMT_AC_API_ISSUER_ID" \
+            --wait --timeout 30m --no-progress
+          rm "$RUNNER_TEMP/api_key.p8"
+
+          xcrun stapler staple "$app"
+          # Validating here rather than after download is what distinguishes a
+          # stapled bundle from one whose ticket is merely findable online; the
+          # difference only shows on a machine that is offline at first launch.
+          xcrun stapler validate "$app"
+          spctl -a -t exec -vvv "$app"
+
+      - id: sparkle-sign
+        name: Archive and sign for Sparkle
+        env:
+          NMT_SPARKLE_ED_PRIVATE_KEY: ${{ secrets.NMT_SPARKLE_ED_PRIVATE_KEY }}
+          ASSET: ${{ steps.names.outputs.asset }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/NiumaTerm.app "dist/$ASSET"
+
+          # --ed-key-file rather than -s: a key passed as an argument is
+          # readable from the process list for as long as the tool runs.
+          printf '%s' "$NMT_SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/ed.key"
+          signature=$("$SPARKLE_DIR/bin/sign_update" \
+            --ed-key-file "$RUNNER_TEMP/ed.key" -p "dist/$ASSET")
+          rm "$RUNNER_TEMP/ed.key"
+
+          test -n "$signature"
+          {
+            echo "signature=$signature"
+            echo "length=$(wc -c < "dist/$ASSET" | tr -d ' ')"
+          } >> "$GITHUB_OUTPUT"
+
+      - if: always()
+        run: security delete-keychain "$KEYCHAIN" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.artifact }}
+          path: dist/${{ steps.names.outputs.asset }}

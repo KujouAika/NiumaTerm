@@ -1,0 +1,76 @@
+name: Appcast
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: Release tag, which is also the version label
+        type: string
+        required: true
+      bundle-version:
+        description: The CFBundleVersion the published build carries
+        type: string
+        required: true
+      channel:
+        description: Sparkle channel; empty for stable
+        type: string
+        required: true
+      asset:
+        description: File name of the published macOS archive
+        type: string
+        required: true
+      length:
+        description: Size of that archive in bytes
+        type: string
+        required: true
+      signature:
+        description: Its EdDSA signature
+        type: string
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The generator lives on the source branch and the feed on gh-pages, so
+      # both are checked out side by side rather than switching branches under
+      # a working tree.
+      - uses: actions/checkout@v5
+        with:
+          path: src
+      - uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: pages
+
+      - run: |
+          python3 src/scripts/update-appcast.py \
+            --appcast pages/appcast.xml \
+            --label "$LABEL" \
+            --bundle-version "$BUNDLE_VERSION" \
+            --channel "$CHANNEL" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$LABEL/$ASSET" \
+            --page-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$LABEL" \
+            --length "$LENGTH" \
+            --signature "$SIGNATURE"
+        env:
+          LABEL: ${{ inputs.label }}
+          BUNDLE_VERSION: ${{ inputs.bundle-version }}
+          CHANNEL: ${{ inputs.channel }}
+          ASSET: ${{ inputs.asset }}
+          LENGTH: ${{ inputs.length }}
+          SIGNATURE: ${{ inputs.signature }}
+
+      - working-directory: pages
+        env:
+          LABEL: ${{ inputs.label }}
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add appcast.xml
+          # Rebuilding a revision regenerates an identical document, and git
+          # commit fails on an empty change rather than succeeding quietly.
+          git diff --cached --quiet || git commit -m "chore: publish $LABEL"
+          git push
