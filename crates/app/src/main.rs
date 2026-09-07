@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::rc::Rc;
-use std::{env, path, process, time};
+use std::{env, mem, path, process, time};
 
 use clap::{Arg, ArgAction, Command as ClapCommand};
 use futures::StreamExt as _;
@@ -242,252 +242,260 @@ fn run_app(argv_url: Option<String>, testing: bool, profiling: bool) {
 
     let platform_handle = platform.clone();
 
-    Application::with_platform(platform)
+    let app = Application::with_platform(platform)
         // Serve project icons + gpui-component's embedded icons so `svg().path()`
         // resolves both.
-        .with_assets(AppAssets)
-        .run(move |cx: &mut App| {
-            // Initialize gpui-component (theme, root, component globals) before any
-            // component renders. Themes without `[colors.ui]` retain the dark default.
-            init_components(cx);
-            // An update is performed by the instance it replaces, so this
-            // startup is where the files that instance renamed aside are
-            // finally removable and where a package file it was too old to know
-            // about gets installed. Syntax highlighting loads one of those
-            // files, which is why this runs before it rather than beside the
-            // rest of the update setup below.
-            #[cfg(windows)]
-            update::settle_previous_update();
+        .with_assets(AppAssets);
 
-            if let Err(error) = syntax::register_languages() {
-                warn!("syntax highlighting is limited to built-in languages: {error}");
-            }
+    // Installed on the builder because the handler lives on the platform, which
+    // only the builder owns; the app context handed to `run` cannot reach it.
+    app.on_reopen(reopen_after_last_window_closed);
 
-            // The component library localizes its own chrome (dialog buttons,
-            // search placeholders) through a separate catalog; keep it on the
-            // app language.
-            gpui_component::set_locale(get().appearance.language.as_str());
+    app.run(move |cx: &mut App| {
+        // Initialize gpui-component (theme, root, component globals) before any
+        // component renders. Themes without `[colors.ui]` retain the dark default.
+        init_components(cx);
+        // An update is performed by the instance it replaces, so this
+        // startup is where the files that instance renamed aside are
+        // finally removable and where a package file it was too old to know
+        // about gets installed. Syntax highlighting loads one of those
+        // files, which is why this runs before it rather than beside the
+        // rest of the update setup below.
+        #[cfg(windows)]
+        update::settle_previous_update();
 
-            ui::apply_ui_theme(get().ui_theme.as_ref(), cx);
+        if let Err(error) = syntax::register_languages() {
+            warn!("syntax highlighting is limited to built-in languages: {error}");
+        }
 
-            let notification = &mut ComponentTheme::global_mut(cx).notification;
-            notification.placement = Anchor::TopCenter;
-            notification.margins.top = px(16.);
+        // The component library localizes its own chrome (dialog buttons,
+        // search placeholders) through a separate catalog; keep it on the
+        // app language.
+        gpui_component::set_locale(get().appearance.language.as_str());
 
-            cx.set_global(AppSettings::load());
-            ui::install_terminal_settings(cx);
-            ui::install_agent_settings(cx);
+        ui::apply_ui_theme(get().ui_theme.as_ref(), cx);
+
+        let notification = &mut ComponentTheme::global_mut(cx).notification;
+        notification.placement = Anchor::TopCenter;
+        notification.margins.top = px(16.);
+
+        cx.set_global(AppSettings::load());
+        ui::install_terminal_settings(cx);
+        ui::install_agent_settings(cx);
+        let agent_profiles = cx.global::<AppSettings>().agent_profiles.clone();
+        agent_updates::initialize(testing, &agent_profiles, cx);
+        input_history::initialize(testing, cx);
+        #[cfg(windows)]
+        update::initialize(testing, cx);
+        #[cfg(target_os = "macos")]
+        sparkle::initialize(testing, cx);
+
+        // Bring up the remote host service if it was left enabled. Runs on
+        // its own runtime thread; failures only log.
+        #[cfg(windows)]
+        remote::reconcile(&nmt_config::get().remote_session);
+
+        ui::apply_window_translucency(cx);
+
+        // Terminal and agent scrolling are their own elements carrying
+        // their own switch; this one covers every container that scrolls
+        // through a plain scroll handle, which is the rest of the app.
+        let smooth_panels = cx.global::<AppSettings>().smooth_scrolling.panels_enabled();
+        cx.set_smooth_wheel_scrolling(smooth_panels);
+
+        // The platform remembers the choice and applies it to the vsync
+        // thread when that spawns (after this closure returns).
+        #[cfg(windows)]
+        if cx.global::<AppSettings>().prioritize_ui_threads {
+            platform_handle.set_ui_thread_priority(true);
+        }
+
+        cx.set_global(PlatformHandle(platform_handle));
+
+        // Keep live behavior in sync on any settings change. Persistence is
+        // deferred to when the settings dialog closes (see Shell::on_show_settings).
+        cx.observe_global::<AppSettings>(|cx| {
             let agent_profiles = cx.global::<AppSettings>().agent_profiles.clone();
-            agent_updates::initialize(testing, &agent_profiles, cx);
-            input_history::initialize(testing, cx);
+            agent_updates::reconcile_profiles(&agent_profiles, cx);
             #[cfg(windows)]
-            update::initialize(testing, cx);
+            update::settings_changed(cx);
             #[cfg(target_os = "macos")]
-            sparkle::initialize(testing, cx);
-
-            // Bring up the remote host service if it was left enabled. Runs on
-            // its own runtime thread; failures only log.
-            #[cfg(windows)]
-            remote::reconcile(&nmt_config::get().remote_session);
-
-            ui::apply_window_translucency(cx);
-
-            // Terminal and agent scrolling are their own elements carrying
-            // their own switch; this one covers every container that scrolls
-            // through a plain scroll handle, which is the rest of the app.
+            sparkle::settings_changed(cx);
             let smooth_panels = cx.global::<AppSettings>().smooth_scrolling.panels_enabled();
             cx.set_smooth_wheel_scrolling(smooth_panels);
 
-            // The platform remembers the choice and applies it to the vsync
-            // thread when that spawns (after this closure returns).
-            #[cfg(windows)]
-            if cx.global::<AppSettings>().prioritize_ui_threads {
-                platform_handle.set_ui_thread_priority(true);
+            // Opacity changes retint the theme and switch each window
+            // between acrylic composition and opaque presentation.
+            ui::apply_window_translucency(cx);
+
+            // The component-library locale doubles as the change detector:
+            // the observer fires on every settings edit (including theme
+            // filter keystrokes), and only a real language switch should
+            // pay for a full re-render of every window.
+            let language = cx.global::<AppSettings>().language;
+            let language_changed = &*gpui_component::locale() != language.as_str();
+            if language_changed {
+                nmt_i18n::set_language(language.as_str());
+                gpui_component::set_locale(language.as_str());
+                // AppKit holds the strings the bar was built from, so it
+                // keeps the previous language until it is rebuilt.
+                #[cfg(target_os = "macos")]
+                menu::refresh(cx);
             }
 
-            cx.set_global(PlatformHandle(platform_handle));
+            let background = ui::window_background_appearance(cx);
+            let appearance = selected_window_appearance(cx);
 
-            // Keep live behavior in sync on any settings change. Persistence is
-            // deferred to when the settings dialog closes (see Shell::on_show_settings).
-            cx.observe_global::<AppSettings>(|cx| {
-                let agent_profiles = cx.global::<AppSettings>().agent_profiles.clone();
-                agent_updates::reconcile_profiles(&agent_profiles, cx);
-                #[cfg(windows)]
-                update::settings_changed(cx);
-                #[cfg(target_os = "macos")]
-                sparkle::settings_changed(cx);
-                let smooth_panels = cx.global::<AppSettings>().smooth_scrolling.panels_enabled();
-                cx.set_smooth_wheel_scrolling(smooth_panels);
+            let handles: Vec<_> = cx
+                .global::<ShellRegistry>()
+                .0
+                .iter()
+                .map(|entry| entry.handle)
+                .collect();
 
-                // Opacity changes retint the theme and switch each window
-                // between acrylic composition and opaque presentation.
-                ui::apply_window_translucency(cx);
+            for handle in handles {
+                handle
+                    .update(cx, |_, window, cx| {
+                        window.set_background_appearance(background);
+                        window.set_appearance_override(Some(appearance), cx);
+                        if language_changed {
+                            window.refresh();
+                        }
+                    })
+                    .ok();
+            }
 
-                // The component-library locale doubles as the change detector:
-                // the observer fires on every settings edit (including theme
-                // filter keystrokes), and only a real language switch should
-                // pay for a full re-render of every window.
-                let language = cx.global::<AppSettings>().language;
-                let language_changed = &*gpui_component::locale() != language.as_str();
-                if language_changed {
-                    nmt_i18n::set_language(language.as_str());
-                    gpui_component::set_locale(language.as_str());
-                    // AppKit holds the strings the bar was built from, so it
-                    // keeps the previous language until it is rebuilt.
-                    #[cfg(target_os = "macos")]
-                    menu::refresh(cx);
-                }
+            cx.refresh_windows();
+        })
+        .detach();
 
-                let background = ui::window_background_appearance(cx);
-                let appearance = selected_window_appearance(cx);
+        keymap::bind(cx);
 
-                let handles: Vec<_> = cx
-                    .global::<ShellRegistry>()
-                    .0
-                    .iter()
-                    .map(|entry| entry.handle)
-                    .collect();
+        // The bar shows each command's shortcut, so it is built once the
+        // bindings above are registered.
+        #[cfg(target_os = "macos")]
+        menu::install(cx);
 
-                for handle in handles {
-                    handle
-                        .update(cx, |_, window, cx| {
-                            window.set_background_appearance(background);
-                            window.set_appearance_override(Some(appearance), cx);
-                            if language_changed {
-                                window.refresh();
-                            }
-                        })
-                        .ok();
-                }
+        // Restore local state; first run centers and starts one default tab.
+        let remembered_state = startup_files.remembered_state.clone();
 
-                cx.refresh_windows();
-            })
-            .detach();
+        let restore_session = cx.global::<AppSettings>().restore_last_session_when_opening;
 
-            keymap::bind(cx);
+        let mut initials: Vec<AppWindow> = if restore_session {
+            remembered_state
+                .windows
+                .iter()
+                .map(|w| AppWindow::from_local_state(w, true))
+                .collect()
+        } else {
+            // Restore disabled: one window, first remembered geometry.
+            let first = remembered_state
+                .windows
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            vec![AppWindow::from_local_state(&first, false)]
+        };
 
-            // The bar shows each command's shortcut, so it is built once the
-            // bindings above are registered.
-            #[cfg(target_os = "macos")]
-            menu::install(cx);
+        if initials.is_empty() {
+            initials.push(AppWindow {
+                bounds: None,
+                session: None,
+                sidebar_width: None,
+                initial_cwd: None,
+            });
+        }
 
-            // Restore local state; first run centers and starts one default tab.
-            let remembered_state = startup_files.remembered_state.clone();
-
-            let restore_session = cx.global::<AppSettings>().restore_last_session_when_opening;
-
-            let mut initials: Vec<AppWindow> = if restore_session {
-                remembered_state
-                    .windows
-                    .iter()
-                    .map(|w| AppWindow::from_local_state(w, true))
-                    .collect()
-            } else {
-                // Restore disabled: one window, first remembered geometry.
-                let first = remembered_state
-                    .windows
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
-                vec![AppWindow::from_local_state(&first, false)]
+        // Restore disabled with saved sessions: rewrite the file without
+        // them now, so a crash before quit can't resurrect them.
+        if !restore_session && remembered_state.windows.iter().any(|w| w.session.is_some()) {
+            let clean = LocalState {
+                windows: initials.iter().map(|w| w.to_local_state(false)).collect(),
+                agent_defaults: remembered_state.agent_defaults.clone(),
             };
 
-            if initials.is_empty() {
-                initials.push(AppWindow {
-                    bounds: None,
-                    session: None,
-                    sidebar_width: None,
-                    initial_cwd: None,
+            if let Err(err) = local_state::save(&clean) {
+                warn!("failed to clear sessions from local_state.toml: {err}");
+            }
+        }
+
+        cx.set_global(WindowRegistry(Vec::new()));
+        cx.set_global(ShellRegistry(Vec::new()));
+        cx.set_global(LastActiveWindow(None));
+        cx.set_global(AgentThreadDefaults::from_local_state(
+            &remembered_state.agent_defaults,
+        ));
+
+        // A closed window is discarded — except the last one, whose
+        // geometry and session the quit hook still has to write out. On
+        // Windows that quit is immediate; on macOS the process stays alive,
+        // and `reopen_after_last_window_closed` consumes the entry if the
+        // user comes back through the Dock first.
+        cx.on_window_closed(|cx, window_id| {
+            if cx.any_window_keeps_app_alive() {
+                cx.global_mut::<WindowRegistry>().remove(window_id);
+            }
+            cx.global_mut::<ShellRegistry>().remove(window_id);
+            let last_active = cx.global_mut::<LastActiveWindow>();
+            if last_active.0 == Some(window_id) {
+                last_active.0 = None;
+            }
+        })
+        .detach();
+
+        cx.on_app_quit(|cx| {
+            if let Err(error) = input_history::flush(cx) {
+                warn!("failed to flush Agent input history: {error}");
+            }
+
+            // Settings edits live in the global until something writes
+            // them out. Closing the settings surface does that, and so
+            // does quitting with it still open.
+            cx.global::<AppSettings>().save();
+
+            let save_session = cx.global::<AppSettings>().restore_last_session_when_opening;
+
+            let state = LocalState {
+                windows: cx
+                    .global::<WindowRegistry>()
+                    .0
+                    .iter()
+                    .map(|(_, w)| w.to_local_state(save_session))
+                    .collect(),
+                agent_defaults: cx.global::<AgentThreadDefaults>().to_local_state(),
+            };
+
+            if !state.windows.is_empty()
+                && let Err(err) = local_state::save(&state)
+            {
+                warn!("failed to save local_state.toml: {err}");
+            }
+
+            async {}
+        })
+        .detach();
+
+        for initial in initials {
+            AppWindow::open(cx, initial);
+        }
+        agent_updates::schedule_automatic_checks(cx);
+        #[cfg(windows)]
+        update::schedule_automatic_checks(cx);
+
+        // Apply CLI actions (argv + forwarded over the IPC pipe) on the
+        // foreground; windows above exist before the first poll.
+        cx.spawn(async move |cx| {
+            while let Some(action) = cli_rx.next().await {
+                cx.update(|cx| match action {
+                    ipc::IpcAction::Cli(action) => dispatch_cli_action(action, cx),
+                    ipc::IpcAction::Agent(event) => dispatch_agent_event(event, cx),
                 });
             }
+        })
+        .detach();
 
-            // Restore disabled with saved sessions: rewrite the file without
-            // them now, so a crash before quit can't resurrect them.
-            if !restore_session && remembered_state.windows.iter().any(|w| w.session.is_some()) {
-                let clean = LocalState {
-                    windows: initials.iter().map(|w| w.to_local_state(false)).collect(),
-                    agent_defaults: remembered_state.agent_defaults.clone(),
-                };
-
-                if let Err(err) = local_state::save(&clean) {
-                    warn!("failed to clear sessions from local_state.toml: {err}");
-                }
-            }
-
-            cx.set_global(WindowRegistry(Vec::new()));
-            cx.set_global(ShellRegistry(Vec::new()));
-            cx.set_global(LastActiveWindow(None));
-            cx.set_global(AgentThreadDefaults::from_local_state(
-                &remembered_state.agent_defaults,
-            ));
-
-            // A closed window is discarded — except the last one: GPUI's
-            // LastWindowClosed quit follows, and the quit hook saves it.
-            cx.on_window_closed(|cx, window_id| {
-                if cx.any_window_keeps_app_alive() {
-                    cx.global_mut::<WindowRegistry>().remove(window_id);
-                }
-                cx.global_mut::<ShellRegistry>().remove(window_id);
-                let last_active = cx.global_mut::<LastActiveWindow>();
-                if last_active.0 == Some(window_id) {
-                    last_active.0 = None;
-                }
-            })
-            .detach();
-
-            cx.on_app_quit(|cx| {
-                if let Err(error) = input_history::flush(cx) {
-                    warn!("failed to flush Agent input history: {error}");
-                }
-
-                // Settings edits live in the global until something writes
-                // them out. Closing the settings surface does that, and so
-                // does quitting with it still open.
-                cx.global::<AppSettings>().save();
-
-                let save_session = cx.global::<AppSettings>().restore_last_session_when_opening;
-
-                let state = LocalState {
-                    windows: cx
-                        .global::<WindowRegistry>()
-                        .0
-                        .iter()
-                        .map(|(_, w)| w.to_local_state(save_session))
-                        .collect(),
-                    agent_defaults: cx.global::<AgentThreadDefaults>().to_local_state(),
-                };
-
-                if !state.windows.is_empty()
-                    && let Err(err) = local_state::save(&state)
-                {
-                    warn!("failed to save local_state.toml: {err}");
-                }
-
-                async {}
-            })
-            .detach();
-
-            for initial in initials {
-                AppWindow::open(cx, initial);
-            }
-            agent_updates::schedule_automatic_checks(cx);
-            #[cfg(windows)]
-            update::schedule_automatic_checks(cx);
-
-            // Apply CLI actions (argv + forwarded over the IPC pipe) on the
-            // foreground; windows above exist before the first poll.
-            cx.spawn(async move |cx| {
-                while let Some(action) = cli_rx.next().await {
-                    cx.update(|cx| match action {
-                        ipc::IpcAction::Cli(action) => dispatch_cli_action(action, cx),
-                        ipc::IpcAction::Agent(event) => dispatch_agent_event(event, cx),
-                    });
-                }
-            })
-            .detach();
-
-            cx.activate(true);
-        });
+        cx.activate(true);
+    });
 }
 
 fn load_startup_files_or_exit() -> StartupFiles {
@@ -536,6 +544,49 @@ fn foreground_last_active(cx: &mut App) {
     if let Some((handle, _)) = last_active_shell(cx) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
     }
+}
+
+/// Answer a click on the Dock icon that arrives with nothing on screen.
+///
+/// macOS keeps the process running once the last window closes, so the icon
+/// stays in the Dock and AppKit routes the click here; with no handler the
+/// click does nothing and quitting is the only way back into a running app.
+/// AppKit also asks when every window is merely minimized or hidden, so an
+/// existing window is brought forward rather than joined by a second one.
+fn reopen_after_last_window_closed(cx: &mut App) {
+    // The shell registry, not GPUI's window list: the menu layer builds one
+    // popup window and reuses it for the life of the process, so GPUI always
+    // has a window even when the last terminal window is gone. The registry
+    // holds exactly the terminal windows and is pruned as each one closes.
+    if !cx.global::<ShellRegistry>().0.is_empty() {
+        foreground_last_active(cx);
+        return;
+    }
+
+    let mut initial = AppWindow {
+        bounds: None,
+        session: None,
+        sidebar_width: None,
+        initial_cwd: None,
+    };
+
+    // Closing the last window leaves its registry entry behind so the quit hook
+    // can still write out its geometry. Consuming that entry reopens where the
+    // user left off and keeps the reopened window from being recorded next to
+    // an entry whose window no longer exists, which would otherwise restore two
+    // windows on the next launch.
+    if let Some((_, remembered)) = mem::take(&mut cx.global_mut::<WindowRegistry>().0)
+        .into_iter()
+        .next()
+    {
+        initial.bounds = remembered.bounds;
+        initial.sidebar_width = remembered.sidebar_width;
+        if cx.global::<AppSettings>().restore_last_session_when_opening {
+            initial.session = remembered.session;
+        }
+    }
+
+    AppWindow::open(cx, initial);
 }
 
 /// Apply one `nmt://` action: validate the target
