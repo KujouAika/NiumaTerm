@@ -864,19 +864,18 @@ fn resize_reflow_does_not_duplicate_viewport_content() {
 }
 
 /// The reflow trailing-space trim this asserts is patch 0001 in
-/// `libghostty-vt-sys/patches`, which self-gates to Windows: it exists to undo
-/// ConPTY's full-width line padding, and a real PTY never pads, so upstream
-/// reflow is the correct behaviour everywhere else.
-#[cfg(windows)]
+/// `libghostty-vt-sys/patches`. It applies on every platform: upstream trims a
+/// trailing cell only when it was never written, and both of this application's
+/// producers write real spaces into the padding — ConPTY pads every line out to
+/// the console width, and a zsh prompt drawing a right prompt pads the prompt
+/// row.
 #[test]
 fn resize_shrink_does_not_double_full_width_padded_lines() {
-    // Regression (remove-crosswords resize double-spacing / 错位). ConPTY pads
-    // every line with trailing spaces out to the full console width. Without the
-    // reflow trailing-space trim (vendored ghostty patch in
-    // `libghostty-vt-sys/build.rs`), a column shrink wrapped that padding onto a
-    // new row — each line became line+blank, ~doubling sb.total, which desynced
-    // ConPTY's absolute cursor rows from the grid (input landed on history rows).
-    // With the patch, padded lines must stay flat across a shrink, like plain
+    // Regression (remove-crosswords resize double-spacing / 错位). Without the
+    // reflow trailing-space trim, a column shrink wrapped that padding onto a
+    // new row — each line became line+blank, ~doubling sb.total, which on
+    // Windows desynced ConPTY's absolute cursor rows from the grid (input landed
+    // on history rows). Padded lines must stay flat across a shrink, like plain
     // unpadded lines.
     let cols = 80u16;
 
@@ -920,6 +919,49 @@ fn resize_shrink_does_not_double_full_width_padded_lines() {
     );
 }
 
+/// The symptom the trim actually prevents, which the scrollback total above
+/// only measures indirectly: when a padded row gains a wrapped remainder,
+/// everything below it moves down one row per resize step. A shell redraws its
+/// prompt at the moved cursor and the previous one stays on screen, so dragging
+/// a window edge leaves a trail of stale prompts behind it.
+#[test]
+fn resize_shrink_keeps_a_padded_prompt_row_in_place() {
+    let cols = 119u16;
+    let rows = 39u16;
+    let mut t = GhosttyTerminal::new(cols, rows, 1000).unwrap();
+
+    // A two-line zsh prompt as it actually reaches the engine: the first row
+    // carries the working directory and is padded with written spaces out to the
+    // width, which is how the right prompt gets placed; the second row is where
+    // the cursor waits for input.
+    let padding = " ".repeat(cols as usize - 2);
+    t.write_vt(format!("~{padding}\r\n> ").as_bytes());
+
+    let before = t.snapshot().unwrap();
+    assert_eq!(
+        before.cursor().row.0,
+        1,
+        "the input row starts directly under the padded row"
+    );
+
+    // Column counts from one drag of a window edge.
+    for width in [111u16, 106, 102, 98] {
+        t.resize(width, rows, 8, 14).unwrap();
+
+        let snap = t.snapshot().unwrap();
+        assert_eq!(
+            snap.cursor().row.0,
+            1,
+            "shrinking to {width} columns moved the input row"
+        );
+        assert!(
+            line_text(&snap, 1).starts_with('>'),
+            "shrinking to {width} columns moved the prompt off row 1: {:?}",
+            line_text(&snap, 1)
+        );
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn grapheme_cluster_2027_enabled_matches_conhost() {
@@ -954,10 +996,9 @@ fn reflow_styled_trailing_matches_conhost() {
     // hasStyling guard). A line padded with bg-colored trailing spaces must stay
     // FLAT on a column shrink (like default padding), not wrap into blank rows.
     //
-    // Repro of the bug for later work: this patch is Windows-gated, so on macOS/Linux
-    // the styled variant still doubles; or `git revert` the styled-trim commit; or
-    // run `reflow_styled_trailing_probe -- --ignored --nocapture` and compare
-    // `styled` across platforms (41->41 on Windows, 41->81 elsewhere).
+    // The style-blind tier is Windows-only on purpose: trimming a background
+    // color is an observable change, and only matching conhost justifies it.
+    // `reflow_keeps_colored_trailing_padding` pins the other side of that split.
     let cols = 80u16;
     let build = |styled: bool| {
         let mut t = GhosttyTerminal::new(cols, 24, 8000).unwrap();
@@ -985,6 +1026,48 @@ fn reflow_styled_trailing_matches_conhost() {
         styled_after <= styled_before + 2,
         "bg-colored trailing spaces must stay flat on shrink (0001 style-blind trim), \
          got {styled_before}->{styled_after} (81 means the hasStyling guard regressed)"
+    );
+}
+
+/// The other side of the 0001 tier split, off Windows. The trim drops trailing
+/// spaces that render exactly like a cell nobody wrote, which is the whole of
+/// what a shell's prompt padding is; a trailing run carrying a background color
+/// is on screen, so it is content and reflows like any other content. Only
+/// matching conhost justifies trimming it, and that reason exists on Windows
+/// alone -- see `reflow_styled_trailing_matches_conhost`.
+#[cfg(not(windows))]
+#[test]
+fn reflow_keeps_colored_trailing_padding() {
+    let cols = 80u16;
+    let build = |styled: bool| {
+        let mut t = GhosttyTerminal::new(cols, 24, 8000).unwrap();
+        for i in 0..40 {
+            let body = format!("line{i:02}");
+            let pad = " ".repeat(cols as usize - body.len());
+            let line = if styled {
+                format!("{body}\x1b[41m{pad}\x1b[0m\r\n")
+            } else {
+                format!("{body}{pad}\r\n")
+            };
+            t.write_vt(line.as_bytes());
+        }
+        let before = t.snapshot().unwrap().scrollbar().total;
+        t.resize(40, 24, 10, 20).unwrap();
+        (before, t.snapshot().unwrap().scrollbar().total)
+    };
+
+    let (default_before, default_after) = build(false);
+    let (styled_before, styled_after) = build(true);
+
+    assert!(
+        default_after <= default_before + 2,
+        "default-styled padding renders like an unwritten cell and must be \
+         trimmed on shrink: {default_before}->{default_after}"
+    );
+    assert!(
+        styled_after > styled_before + 2,
+        "a background-colored trailing run is visible content and must reflow \
+         rather than be trimmed: {styled_before}->{styled_after}"
     );
 }
 

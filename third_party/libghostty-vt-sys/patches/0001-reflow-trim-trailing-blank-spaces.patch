@@ -1,0 +1,58 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 79aa96f18..c54ff7845 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -1491,6 +1491,44 @@ fn resizeCols(
+     }
+ }
+ 
++/// Whether a trailing cell is a non-semantic blank: nothing about it can be
++/// told apart on screen from a cell that was never written, so carrying it
++/// through a column reflow costs a row and preserves nothing.
++///
++/// `Cell.isEmpty` answers this only for cells that were never written, but
++/// programs pad with real U+0020 spaces all the time -- ConPTY pads every line
++/// out to the console width, and a zsh prompt drawing a right prompt pads the
++/// whole prompt row. On a column shrink that padding wraps onto a new row, which
++/// pushes the prompt down one row per resize step; the shell then redraws at the
++/// moved cursor and its previous prompt stays on screen.
++///
++/// A space carries no glyph, so its foreground color, boldness, italics and
++/// blink are unobservable and do not disqualify it. A background color, inverse
++/// video, an underline, a strikethrough, an overline or a hyperlink all are
++/// observable, so a space carrying any of those is content and is kept.
++fn trailingBlank(page: *const Page, cell: pagepkg.Cell) bool {
++    if (cell.isEmpty()) return true;
++
++    if (cell.content_tag != .codepoint or
++        cell.content.codepoint != ' ' or
++        cell.wide != .narrow) return false;
++
++    // conhost's `ROW::MeasureRight` (`GetLastNonSpaceColumn`) trims style-blind,
++    // and ConPTY's viewport-relative cursor arithmetic is read against this
++    // grid, so on Windows the grid has to match it cell for cell.
++    if (comptime builtin.os.tag == .windows) return true;
++
++    if (cell.hyperlink) return false;
++    if (cell.style_id == stylepkg.default_id) return true;
++
++    const style = page.styles.get(page.memory, cell.style_id);
++    return style.bg_color == .none and
++        !style.flags.inverse and
++        style.flags.underline == .none and
++        !style.flags.strikethrough and
++        !style.flags.overline;
++}
++
+ // We use a cursor to track where we are in the src/dst. This is very
+ // similar to Screen.Cursor, so see that for docs on individual fields.
+ // We don't use a Screen because we don't need all the same data and we
+@@ -1543,7 +1581,7 @@ const ReflowCursor = struct {
+         var cols_len = src_page.size.cols;
+         if (!src_row.wrap) {
+             while (cols_len > 0) {
+-                if (!cells[cols_len - 1].isEmpty()) break;
++                if (!trailingBlank(src_page, cells[cols_len - 1])) break;
+                 cols_len -= 1;
+             }
+ 
