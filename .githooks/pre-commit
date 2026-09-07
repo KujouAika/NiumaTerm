@@ -17,7 +17,11 @@ collect_added_comment_lines() {
                 code = file !~ protected && file ~ code_path
                 next
             }
-            code && /^\+[[:space:]]*(\/\/[/!]?|#|\/\*|\*|<!--)/ { print file ": " $0 }
+            # An unescaped '/' inside a bracket expression closes the regex
+            # literal in awk implementations that lex '/.../' before parsing
+            # it, so the doc-comment markers are left off: '//' already
+            # matches '///' and '//!' because nothing anchors the end.
+            code && /^\+[[:space:]]*(\/\/|#|\/\*|\*|<!--)/ { print file ": " $0 }
         '
 }
 

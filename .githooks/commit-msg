@@ -88,7 +88,9 @@ EOF
     exit 1
 fi
 
-subject=$(sed -n '/^#/!{/./{p;q;}}' "$msg_file")
+# The ';' before the outer brace is required by sed implementations that
+# accept only one command per '}' terminator; GNU sed accepts it too.
+subject=$(sed -n '/^#/!{/./{p;q;};}' "$msg_file")
 
 # 60/80 rule: keep the subject under 60 chars and wrap body lines at 80.
 # Trailer-shaped lines (Key: value) are exempt from the body wrap, matching
