@@ -6,7 +6,7 @@
 | Date | 2026-09-06 |
 | Scope | How the macOS build of NiumaTerm can self-update, and what Sparkle costs to adopt |
 | Depends on | The `feature/macos` port reaching a launchable `crates/app` |
-| Decided | Developer ID is available; the nightly channel ships on macOS too |
+| Decided | Developer ID is available; the nightly channel ships on macOS too; arm64 only |
 
 ## 1. What exists today
 
@@ -182,10 +182,10 @@ For NiumaTerm it would look like:
       <sparkle:channel>nightly</sparkle:channel>
       <sparkle:version>1788901234</sparkle:version>
       <sparkle:shortVersionString>nightly-20260906-9ff7517</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>11.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/f32y/NiumaTerm/releases/tag/nightly-20260906</link>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <link>https://github.com/f32y/NiumaTerm/releases/tag/nightly-20260906-9ff7517</link>
       <enclosure
-        url="https://github.com/f32y/NiumaTerm/releases/download/nightly-20260906/NiumaTerm-macos-universal.dmg"
+        url="https://github.com/f32y/NiumaTerm/releases/download/nightly-20260906-9ff7517/NiumaTerm-macos-arm64-nightly-20260906-9ff7517.zip"
         type="application/octet-stream"
         length="48213377"
         sparkle:edSignature="B4s2…=="/>
@@ -408,7 +408,7 @@ xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 spctl -a -t exec -vvv "$APP"
 
-ditto -c -k --sequesterRsrc --keepParent "$APP" NiumaTerm-macos-universal.zip
+ditto -c -k --sequesterRsrc --keepParent "$APP" NiumaTerm-macos-arm64-v1.2.9.zip
 ```
 
 So the sequence is sign → zip → notarize → **staple the `.app`** → re-zip →
@@ -425,7 +425,7 @@ build it from the stapled `.app`, submit the DMG, and staple the DMG itself.
 
 ```sh
 echo "$NMT_SPARKLE_ED_PRIVATE_KEY" > ed.key
-./bin/sign_update --ed-key-file ed.key NiumaTerm-macos-universal.zip
+./bin/sign_update --ed-key-file ed.key NiumaTerm-macos-arm64-v1.2.9.zip
 rm ed.key
 ```
 
@@ -527,8 +527,8 @@ the application menu, which is where a macOS user looks first.
 
 A new `.github/workflows/macos-package.yml`, mirroring `windows-package.yml`:
 
-1. Build `aarch64-apple-darwin` and `x86_64-apple-darwin`; `lipo -create` the
-   binary and `libtree_sitter.dylib` into universal Mach-Os.
+1. Build `aarch64-apple-darwin`. Apple silicon is the only supported target,
+   so there is no second slice and no `lipo` step.
 2. `scripts/bundle-mac.sh` assembles the `.app`, embeds `Sparkle.framework`,
    deletes its `XPCServices/`, and renders `Info.plist` from `nmt_version`
    output plus the HEAD committer timestamp.

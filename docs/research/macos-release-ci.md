@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Workflows and generator committed; not yet called from `release.yml` or `nightly.yml` |
+| Status | Called from `release.yml` and `nightly.yml`; arm64 only |
 | Date | 2026-09-06 |
 | Scope | Building, signing, notarizing and publishing `NiumaTerm.app`, and keeping the Sparkle appcast current |
 | Companion | [`macos-sparkle-auto-update.md`](./macos-sparkle-auto-update.md) — why each step is shaped this way |
@@ -130,10 +130,15 @@ installed copy look like a different application.
 
 ## 3. How the packaging job is put together
 
-`macos-package.yml` builds arm64 only, which is what `bundle-macos.sh` already
-requires: it rejects a binary with no arm64 slice. That also removes the
-x86_64 cross-compilation question — `libghostty-vt-sys` can target
-`x86_64-macos-none` through Zig, but nothing needs it yet.
+Apple silicon is the only supported target. `macos-package.yml` builds
+`aarch64-apple-darwin` alone, `bundle-macos.sh` rejects a binary with no arm64
+slice, and the published artifacts say `arm64` in their names, so an Intel Mac
+is told what it is looking at rather than handed something that will not run.
+
+Shipping a second slice is not planned. `libghostty-vt-sys` can target
+`x86_64-macos-none` through Zig, so the door is not nailed shut, but every
+artifact, the bundle script's check and the artifact names would have to change
+together.
 
 Two details of this repository shape the build step:
 
@@ -346,8 +351,6 @@ Then delete the tag, the releases, and the appcast items.
   notarization of its own: build it from the stapled `.app`, submit the image,
   staple the image.
 - **Delta updates**, which need `BinaryDelta` and retained old archives.
-- **An x86_64 slice.** `bundle-macos.sh` requires arm64 and says Apple silicon
-  is the only supported target; revisit both together.
 - **A `niumaterm` CLI on `PATH`.** Windows gets it from the installer.
 - **Folding the Sparkle keys into `assets/macos/Info.plist`.** They are stamped
   by the job today. If a locally bundled app ever needs to check for updates,
