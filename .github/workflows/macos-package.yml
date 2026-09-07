@@ -49,6 +49,7 @@ jobs:
     outputs:
       artifact: ${{ steps.names.outputs.artifact }}
       asset: ${{ steps.names.outputs.asset }}
+      dmg: ${{ steps.names.outputs.dmg }}
       bundle-version: ${{ steps.names.outputs.bundle }}
       ed-signature: ${{ steps.sparkle-sign.outputs.signature }}
       length: ${{ steps.sparkle-sign.outputs.length }}
@@ -105,6 +106,7 @@ jobs:
           {
             echo "artifact=$artifact"
             echo "asset=$artifact.zip"
+            echo "dmg=$artifact.dmg"
             # Sparkle orders releases with SUStandardVersionComparator, which
             # reads numbers only. The committer timestamp is the one value that
             # increases monotonically across both publishing channels and every
@@ -249,6 +251,37 @@ jobs:
           xcrun stapler validate "$app"
           spctl -a -t exec -vvv "$app"
 
+      # Built from the stapled bundle, because whatever reaches a user has to
+      # carry the ticket rather than merely be findable online. A disk image can
+      # be stapled and a zip cannot, so this one gets its own submission instead
+      # of inheriting the app's.
+      - name: Build and notarize the disk image
+        env:
+          NMT_MACOS_SIGN_IDENTITY: ${{ secrets.NMT_MACOS_SIGN_IDENTITY }}
+          NMT_AC_API_KEY_P8: ${{ secrets.NMT_AC_API_KEY_P8 }}
+          NMT_AC_API_KEY_ID: ${{ secrets.NMT_AC_API_KEY_ID }}
+          NMT_AC_API_ISSUER_ID: ${{ secrets.NMT_AC_API_ISSUER_ID }}
+          DMG: ${{ steps.names.outputs.dmg }}
+        run: |
+          # The window layout comes from a recorded .DS_Store: writing one needs
+          # Finder, and driving Finder needs an automation grant no runner can
+          # approve.
+          ./scripts/make-dmg.sh dist/NiumaTerm.app "dist/$DMG"
+
+          codesign --force --timestamp --sign "$NMT_MACOS_SIGN_IDENTITY" "dist/$DMG"
+
+          echo "$NMT_AC_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/api_key.p8"
+          xcrun notarytool submit "dist/$DMG" \
+            --key "$RUNNER_TEMP/api_key.p8" \
+            --key-id "$NMT_AC_API_KEY_ID" \
+            --issuer "$NMT_AC_API_ISSUER_ID" \
+            --wait --timeout 30m --no-progress
+          rm "$RUNNER_TEMP/api_key.p8"
+
+          xcrun stapler staple "dist/$DMG"
+          xcrun stapler validate "dist/$DMG"
+          spctl -a -t open --context context:primary-signature -vvv "dist/$DMG"
+
       - id: sparkle-sign
         name: Archive and sign for Sparkle
         env:
@@ -276,4 +309,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.names.outputs.artifact }}
-          path: dist/${{ steps.names.outputs.asset }}
+          # The archive Sparkle downloads and the image a person downloads.
+          path: |
+            dist/${{ steps.names.outputs.asset }}
+            dist/${{ steps.names.outputs.dmg }}
