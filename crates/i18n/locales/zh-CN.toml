@@ -988,6 +988,7 @@
 "agent-question-send-pending" = "请等待问题回答提交完成，再发送其他消息。"
 
 # macOS 菜单栏
+"menu-check-for-updates" = "检查更新..."
 "menu-settings" = "设置..."
 "menu-services" = "服务"
 "menu-hide" = "隐藏 NiumaTerm"
