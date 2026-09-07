@@ -7,11 +7,17 @@
 //!
 //! The check interval and whether Sparkle may ask about automatic checks on
 //! first launch are stamped into the packaged bundle, so they are not repeated
-//! here; only the setting a user can change while the application runs is
-//! mirrored.
+//! here. What is mirrored is what a user can change while the application runs:
+//! whether to check at all, and which channel to follow.
+//!
+//! There is no relaunch hook. Sparkle sends the running application a quit event
+//! before it installs, so the application terminates through AppKit and its own
+//! quit handler writes out the window state and settings on the way; a hook
+//! would only write the same files a second time.
 
 use gpui::{App, Global};
-use nmt_sparkle::{StartError, Updater};
+use nmt_config::update::UpdateChannel;
+use nmt_sparkle::{Channel, StartError, Updater};
 use tracing::{info, warn};
 
 use crate::ui::AppSettings;
@@ -35,9 +41,12 @@ pub(crate) fn initialize(testing: bool, cx: &mut App) {
         return;
     }
 
-    match Updater::start() {
+    let settings = cx.global::<AppSettings>();
+    let (enabled, channel) = (settings.check_updates, channel(settings));
+
+    match Updater::start(channel) {
         Ok(updater) => {
-            updater.set_automatic_checks(cx.global::<AppSettings>().check_updates);
+            updater.set_automatic_checks(enabled);
             cx.set_global(AppUpdate(updater));
         }
         // A build assembled locally names no feed. That is the intended state
@@ -49,11 +58,22 @@ pub(crate) fn initialize(testing: bool, cx: &mut App) {
     }
 }
 
-/// Mirror the application's own setting onto Sparkle's schedule.
+/// Mirror the application's own settings onto Sparkle.
 pub(crate) fn settings_changed(cx: &mut App) {
-    let enabled = cx.global::<AppSettings>().check_updates;
+    let settings = cx.global::<AppSettings>();
+    let (enabled, channel) = (settings.check_updates, channel(settings));
+
     if let Some(update) = cx.try_global::<AppUpdate>() {
         update.0.set_automatic_checks(enabled);
+        update.0.set_channel(channel);
+    }
+}
+
+/// The channel the user has chosen, in the terms Sparkle understands.
+fn channel(settings: &AppSettings) -> Channel {
+    match settings.update_channel {
+        UpdateChannel::Stable => Channel::Stable,
+        UpdateChannel::Nightly => Channel::Nightly,
     }
 }
 
