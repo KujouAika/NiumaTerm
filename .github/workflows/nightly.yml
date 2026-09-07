@@ -26,10 +26,20 @@ jobs:
       ref: ${{ github.sha }}
       version: ${{ needs.name.outputs.tag }}
 
+  package-macos:
+    needs: name
+    uses: ./.github/workflows/macos-package.yml
+    with:
+      ref: ${{ github.sha }}
+      version: ${{ needs.name.outputs.tag }}
+    # Signing and notarization need the certificate and App Store Connect
+    # secrets, which a called workflow does not inherit on its own.
+    secrets: inherit
+
   # Tagging runs after the build so a nightly tag only ever marks a revision
   # that actually produced a package.
   tag:
-    needs: [name, package]
+    needs: [name, package, package-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -45,7 +55,7 @@ jobs:
           TAG: ${{ needs.name.outputs.tag }}
 
   release:
-    needs: [name, tag]
+    needs: [name, tag, package-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -53,6 +63,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: NiumaTerm-windows-x86_64-${{ needs.name.outputs.tag }}
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package-macos.outputs.artifact }}
           path: dist
       # A second run on the same revision reuses the tag, and gh refuses to
       # create a release for a tag that already has one; dropping the old
@@ -67,3 +81,16 @@ jobs:
             --title "$TAG" \
             --prerelease \
             --notes "Automated nightly build of $GITHUB_SHA."
+
+  # After the release, because the feed entry points at an asset that has to be
+  # downloadable by the time an updater reads it.
+  appcast:
+    needs: [name, package-macos, release]
+    uses: ./.github/workflows/appcast.yml
+    with:
+      label: ${{ needs.name.outputs.tag }}
+      bundle-version: ${{ needs.package-macos.outputs.bundle-version }}
+      channel: nightly
+      asset: ${{ needs.package-macos.outputs.asset }}
+      length: ${{ needs.package-macos.outputs.length }}
+      signature: ${{ needs.package-macos.outputs.ed-signature }}

@@ -19,8 +19,17 @@ jobs:
       ref: ${{ inputs.tag || github.ref_name }}
       version: ${{ inputs.tag || github.ref_name }}
 
+  package-macos:
+    uses: ./.github/workflows/macos-package.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+      version: ${{ inputs.tag || github.ref_name }}
+    # Signing and notarization need the certificate and App Store Connect
+    # secrets, which a called workflow does not inherit on its own.
+    secrets: inherit
+
   release:
-    needs: package
+    needs: [package, package-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -28,6 +37,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: NiumaTerm-windows-x86_64-${{ inputs.tag || github.ref_name }}
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package-macos.outputs.artifact }}
           path: dist
       # The tag already exists on the remote, so the release just attaches to
       # it; --repo stands in for a checkout this job has no other use for.
@@ -39,3 +52,17 @@ jobs:
           --repo "$GITHUB_REPOSITORY"
           --title "$TAG"
           --generate-notes
+
+  # After the release, because the feed entry points at an asset that has to be
+  # downloadable by the time an updater reads it. A release carries no channel
+  # name: the default channel is the one every installation sees.
+  appcast:
+    needs: [package-macos, release]
+    uses: ./.github/workflows/appcast.yml
+    with:
+      label: ${{ inputs.tag || github.ref_name }}
+      bundle-version: ${{ needs.package-macos.outputs.bundle-version }}
+      channel: ''
+      asset: ${{ needs.package-macos.outputs.asset }}
+      length: ${{ needs.package-macos.outputs.length }}
+      signature: ${{ needs.package-macos.outputs.ed-signature }}

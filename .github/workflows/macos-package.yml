@@ -11,6 +11,22 @@ on:
         description: Version label used in the package and artifact name
         type: string
         required: true
+    outputs:
+      artifact:
+        description: Name of the uploaded build artifact
+        value: ${{ jobs.package.outputs.artifact }}
+      asset:
+        description: File name of the archive inside that artifact
+        value: ${{ jobs.package.outputs.asset }}
+      bundle-version:
+        description: The CFBundleVersion the build carries
+        value: ${{ jobs.package.outputs.bundle-version }}
+      length:
+        description: Size of the archive in bytes
+        value: ${{ jobs.package.outputs.length }}
+      ed-signature:
+        description: EdDSA signature over the archive
+        value: ${{ jobs.package.outputs.ed-signature }}
   # Standalone runs exist so the signing and notarization path can be rehearsed
   # against a throwaway tag; neither step can be exercised any other way.
   workflow_dispatch:
