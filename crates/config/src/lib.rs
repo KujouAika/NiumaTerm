@@ -18,7 +18,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::{env, fs, io, mem};
 
+#[cfg(not(target_os = "macos"))]
 use dirs::home_dir;
+#[cfg(target_os = "macos")]
+use nmt_platform::environment::data_dir as macos_application_support_dir;
 #[cfg(target_os = "windows")]
 use nmt_platform::windows::environment::config_dir as windows_config_dir;
 use serde::{Deserialize, Serialize};
@@ -112,17 +115,23 @@ fn selected_config_dir(path: PathBuf) -> PathBuf {
 
 /// Home directory with a temp-dir fallback: a session without a resolvable
 /// home (stripped-down service accounts) gets per-boot config instead of a
-/// startup panic.
+/// startup panic. macOS resolves its directory through the platform crate,
+/// which applies the same fallback itself.
+#[cfg(not(target_os = "macos"))]
 fn home_dir_or_temp() -> PathBuf {
     home_dir().unwrap_or_else(env::temp_dir)
 }
 
+/// macOS keeps everything one application owns in a single Application Support
+/// directory, so configuration shares the directory that already holds the
+/// logs and the installed shell integration rather than sitting in an XDG
+/// location Finder hides and no other Mac application uses.
 #[cfg(target_os = "macos")]
 #[inline]
 fn base_config_dir_path() -> PathBuf {
     env::var("NMT_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or(home_dir_or_temp().join(".config").join("NiumaTerm"))
+        .unwrap_or_else(|_| macos_application_support_dir())
 }
 
 #[cfg(target_os = "windows")]
