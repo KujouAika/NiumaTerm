@@ -232,6 +232,28 @@ impl ProcessReadWrite for Pty {
     }
 }
 
+/// The terminal type a session announces to its child.
+///
+/// It is stated rather than inherited, because neither way of starting the
+/// application supplies a usable one. Started from another terminal, the
+/// environment names that terminal rather than this one. Started from Finder or
+/// the Dock, it names nothing at all: launchd exports no `TERM`, and
+/// `/usr/bin/login` substitutes `network` for the missing value even under
+/// `-p`. No terminfo entry by that name exists, so the shell concludes it
+/// cannot address the cursor and reprints its prompt wherever the cursor
+/// happens to sit instead of redrawing it in place. Every window resize then
+/// leaves another copy of the prompt behind.
+///
+/// `xterm-256color` is the entry every system carries and describes what this
+/// emulator does; `xterm` covers a terminfo database old enough to lack it.
+fn terminal_type() -> &'static str {
+    if terminfo_exists("xterm-256color") {
+        "xterm-256color"
+    } else {
+        "xterm"
+    }
+}
+
 // From alacritty: https://github.com/alacritty/alacritty/blob/2df8f860b960d7c96efaf4f059fe2fbbdce82bcc/alacritty_terminal/src/tty/mod.rs#L83
 /// Check if a terminfo entry exists on the system.
 pub fn terminfo_exists(terminfo: &str) -> bool {
@@ -703,6 +725,12 @@ fn create_pty_with_management(
     // terminal's machinery to our sessions. Apple's copy, for one, repoints
     // `HISTFILE` into its own session store.
     builder.env("TERM_PROGRAM", APP_ID);
+    builder.env("TERM", terminal_type());
+    // Announced rather than inherited for the same reason as `TERM`: the
+    // Windows backend declares it on every session it creates, so a Unix child
+    // that only sees it when some outer terminal happened to export it would
+    // pick a color depth from how the application was started.
+    builder.env("COLORTERM", "truecolor");
     builder.envs(environment_overrides.iter().map(|(k, v)| (k, v)));
 
     unsafe {

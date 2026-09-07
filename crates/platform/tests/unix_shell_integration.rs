@@ -14,7 +14,7 @@ use std::process::{Command, Stdio, id};
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
-use nmt_platform::{Pty, create_pty_with_env, prompt_integration};
+use nmt_platform::{Pty, create_pty_with_env, prompt_integration, terminfo_exists};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
@@ -74,6 +74,26 @@ impl Session {
         }
 
         marks(&self.stream)
+    }
+
+    /// Read until `needle` appears anywhere in the session, or the deadline
+    /// passes. Reports whether it arrived.
+    fn read_text_until(&mut self, needle: &str) -> bool {
+        let mut buf = [0u8; 8192];
+        let deadline = Instant::now() + DEADLINE;
+
+        while Instant::now() < deadline {
+            if String::from_utf8_lossy(&self.stream).contains(needle) {
+                return true;
+            }
+            match self.pty.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => self.stream.extend_from_slice(&buf[..n]),
+                Err(_) => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+
+        String::from_utf8_lossy(&self.stream).contains(needle)
     }
 }
 
@@ -534,5 +554,38 @@ fn zsh_right_prompt_closes_with_its_own_command_mark() {
         &after[7..10],
         &["C", "D;0", "A"],
         "the repeated mark must leave the lifecycle ordered; saw {after:?}"
+    );
+}
+
+/// A session states which terminal it is rather than passing on whatever
+/// started the application. Started from Finder or the Dock there is nothing to
+/// pass on, and `/usr/bin/login` fills the gap with `network`, a name no
+/// terminfo database carries; the shell then decides it cannot address the
+/// cursor and reprints its prompt instead of redrawing it in place.
+///
+/// The angle brackets separate the answer from the echo of the command that
+/// asks for it, which carries the format string rather than the value.
+#[test]
+fn a_session_tells_its_shell_which_terminal_it_is() {
+    let Some(mut session) = start("zsh", "term") else {
+        return;
+    };
+    session.read_until(|seen| seen.len() >= 6);
+
+    session
+        .pty
+        .write_all(b"printf '<%s>\\n' \"$TERM\"\n")
+        .expect("write command");
+
+    let expected = if terminfo_exists("xterm-256color") {
+        "<xterm-256color>"
+    } else {
+        "<xterm>"
+    };
+
+    assert!(
+        session.read_text_until(expected),
+        "the shell reported no {expected}; the session showed {}",
+        String::from_utf8_lossy(&session.stream)
     );
 }
