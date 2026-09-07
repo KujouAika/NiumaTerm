@@ -64,6 +64,7 @@ use nmt_platform::{
 use tracing::warn;
 
 #[cfg(windows)]
+#[cfg(windows)]
 use crate::PlatformHandle;
 #[cfg(windows)]
 use crate::ui::UI_RADIUS;
