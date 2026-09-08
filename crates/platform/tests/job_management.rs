@@ -19,6 +19,7 @@ fn managed_pty_controls_shell_process_tree() {
         24,
         &[],
         Some("managed test"),
+        None,
     )
     .expect("failed to create managed ConPTY");
     assert!(

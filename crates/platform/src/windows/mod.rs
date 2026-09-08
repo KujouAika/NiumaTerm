@@ -83,6 +83,11 @@ pub fn create_pty(
 }
 
 /// Create a ConPTY shell with explicit child-only environment overrides.
+// The parameter list is the shared PTY creation surface: the Unix backend
+// declares the same one and callers hand it straight through, so its length is
+// decided by that shared signature rather than by anything this function does
+// with the values.
+#[allow(clippy::too_many_arguments)]
 pub fn create_pty_with_env(
     shell: &str,
     args: Vec<String>,
@@ -110,6 +115,11 @@ pub fn create_pty_with_env(
 /// Create a ConPTY whose entire child process tree is terminated when the PTY
 /// is dropped. Background probes need deterministic cleanup regardless of the
 /// user setting that controls process-tree management for ordinary terminals.
+// The parameter list is the shared PTY creation surface: the Unix backend
+// declares the same one and callers hand it straight through, so its length is
+// decided by that shared signature rather than by anything this function does
+// with the values.
+#[allow(clippy::too_many_arguments)]
 pub fn create_managed_pty_with_env(
     shell: &str,
     args: Vec<String>,

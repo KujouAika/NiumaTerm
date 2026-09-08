@@ -308,6 +308,7 @@ impl RemoteSessionHub {
                 options.rows,
                 &options.environment_overrides,
                 options.starting_title.as_deref(),
+                None,
             )
         } else {
             create_pty_with_env(
@@ -318,6 +319,7 @@ impl RemoteSessionHub {
                 options.rows,
                 &options.environment_overrides,
                 options.starting_title.as_deref(),
+                None,
             )
         }
         .map_err(HubError::Spawn)?;

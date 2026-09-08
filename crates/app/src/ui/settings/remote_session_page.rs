@@ -1,3 +1,4 @@
+use gpui::ClipboardItem;
 use nmt_i18n::i18n;
 
 use crate::remote::reconcile as reconcile_remote_session;
