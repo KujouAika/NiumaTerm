@@ -57,7 +57,7 @@ fn drive_conpty(script: &str) -> Vec<u8> {
 fn drive_conpty_with_title(script: &str, title: Option<&str>) -> Vec<u8> {
     let encoded = b64(&utf16le(script));
     let cmdline = format!("powershell -NoProfile -NonInteractive -EncodedCommand {encoded}");
-    let mut pty = create_pty_with_env(&cmdline, Vec::new(), &None, 80, 24, &[], title)
+    let mut pty = create_pty_with_env(&cmdline, Vec::new(), &None, 80, 24, &[], title, None)
         .expect("failed to create ConPTY");
 
     let mut collected: Vec<u8> = Vec::new();
