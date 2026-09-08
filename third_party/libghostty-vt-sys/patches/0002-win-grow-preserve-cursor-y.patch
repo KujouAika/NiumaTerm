@@ -1,6 +1,8 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 759209ad4..b298dd4dd 100644
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
-@@ -2132,7 +2132,17 @@
+@@ -2894,7 +2894,17 @@ fn resizeWithoutReflow(self: *PageList, opts: Resize) Allocator.Error!void {
                  // In other words, we don't want to "pull down" scrollback.
                  // This is purely a UX feature.
                  if (opts.cursor) |cursor| cursor: {
@@ -20,7 +22,7 @@
                      // Cursor is not at the bottom, so we just grow our
                      // rows and we're done. Cursor does NOT change for this
 diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
-index 5ca5d957c..71fd90da5 100644
+index 208e276a2..8f9fddbe3 100644
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
 @@ -1,6 +1,7 @@
@@ -31,7 +33,7 @@ index 5ca5d957c..71fd90da5 100644
  const build_options = @import("terminal_options");
  const Allocator = std.mem.Allocator;
  const assert = @import("../quirks.zig").inlineAssert;
-@@ -6534,6 +6535,18 @@ test "Screen: resize (no reflow) less cols" {
+@@ -7152,6 +7153,18 @@ test "Screen: resize (no reflow) less cols" {
  }
  
  test "Screen: resize (no reflow) more rows with scrollback cursor end" {
@@ -49,8 +51,8 @@ index 5ca5d957c..71fd90da5 100644
 +
      const testing = std.testing;
      const alloc = testing.allocator;
- 
-@@ -6594,6 +6607,14 @@ test "Screen: resize (no reflow) less rows with empty trailing" {
+     const io = testing.io;
+@@ -7215,6 +7228,14 @@ test "Screen: resize (no reflow) less rows with empty trailing" {
  }
  
  test "Screen: resize (no reflow) more rows with soft wrapping" {
@@ -64,4 +66,4 @@ index 5ca5d957c..71fd90da5 100644
 +
      const testing = std.testing;
      const alloc = testing.allocator;
- 
+     const io = testing.io;

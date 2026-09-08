@@ -122,6 +122,11 @@ function Copy-StrippedArchive {
         try {
             Invoke-Checked $ar @("x", $Source)
             foreach ($name in $names) {
+                # Zig bundles the import libraries it was asked to link
+                # (ntdll, kernel32) as archive members. They are not object
+                # files, carry no debug info, and llvm-objcopy rejects them,
+                # so they are repacked untouched.
+                if ([System.IO.Path]::GetExtension($name) -notin @(".obj", ".o")) { continue }
                 Invoke-Checked $objcopy @("--strip-debug", $name)
             }
             Invoke-Checked $ar (@("rcs", $Destination) + $names)

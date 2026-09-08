@@ -1,8 +1,8 @@
 diff --git a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
-index 9bace3a3c..b976cd93f 100644
+index 99cee60ac..5741fceae 100644
 --- a/include/ghostty/vt/kitty_graphics.h
 +++ b/include/ghostty/vt/kitty_graphics.h
-@@ -714,6 +714,33 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_viewport_pos(
+@@ -810,6 +810,33 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_viewport_pos(
      int32_t* out_col,
      int32_t* out_row);
  
@@ -37,22 +37,22 @@ index 9bace3a3c..b976cd93f 100644
   * Get the resolved source rectangle for the current placement.
   *
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 6d4406e88..80bbb8f24 100644
+index 162798894..af669b516 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -277,6 +277,7 @@ comptime {
-         @export(&c.kitty_graphics_placement_pixel_size, .{ .name = "ghostty_kitty_graphics_placement_pixel_size" });
-         @export(&c.kitty_graphics_placement_grid_size, .{ .name = "ghostty_kitty_graphics_placement_grid_size" });
-         @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
-+        @export(&c.kitty_graphics_placement_screen_pos, .{ .name = "ghostty_kitty_graphics_placement_screen_pos" });
-         @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
-         @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
-         @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
+@@ -397,6 +397,7 @@ comptime {
+             @export(&c.kitty_graphics_placement_pixel_size, .{ .name = "ghostty_kitty_graphics_placement_pixel_size" });
+             @export(&c.kitty_graphics_placement_grid_size, .{ .name = "ghostty_kitty_graphics_placement_grid_size" });
+             @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
++            @export(&c.kitty_graphics_placement_screen_pos, .{ .name = "ghostty_kitty_graphics_placement_screen_pos" });
+             @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
+             @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
+         }
 diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
-index d50b8c4c2..5c47b0022 100644
+index 2bd5e8620..39832f225 100644
 --- a/src/terminal/c/kitty_graphics.zig
 +++ b/src/terminal/c/kitty_graphics.zig
-@@ -495,6 +495,42 @@ pub fn placement_viewport_pos(
+@@ -505,6 +505,70 @@ pub fn placement_viewport_pos(
      return .success;
  }
  
@@ -78,16 +78,44 @@ index d50b8c4c2..5c47b0022 100644
 +    const iter = iter_ orelse return .invalid_value;
 +    const entry = iter.entry orelse return .invalid_value;
 +
-+    const pin = switch (entry.value_ptr.location) {
-+        .pin => |pin| pin,
++    // A relative placement carries no position of its own: it hangs off a
++    // parent chain whose root supplies the origin and whose links supply the
++    // accumulated offset. A chain rooted at a virtual placement resolves only
++    // against placeholder cells on screen, which this coordinate-space
++    // question cannot answer.
++    const origin: struct {
++        pin: *const PageList.Pin,
++        col_offset: i32 = 0,
++        row_offset: i32 = 0,
++    } = switch (entry.value_ptr.location) {
++        .pin => |pin| .{ .pin = pin },
 +        .virtual => return .no_value,
++        .relative => |rel| origin: {
++            const storage = &wrapper.terminal.screens.active.kitty_images;
++            const chain = storage.resolveChain(rel) orelse return .no_value;
++            switch (chain.root.location) {
++                .pin => |root_pin| break :origin .{
++                    .pin = root_pin,
++                    .col_offset = chain.horizontal_offset,
++                    .row_offset = chain.vertical_offset,
++                },
++                .virtual => return .no_value,
++                .relative => unreachable, // resolveChain roots are never relative
++            }
++        },
 +    };
 +
 +    const pages = &wrapper.terminal.screens.active.pages;
-+    const pt = pages.pointFromPin(.screen, pin.*) orelse return .no_value;
++    const pt = pages.pointFromPin(.screen, origin.pin.*) orelse return .no_value;
 +
-+    out_col.* = @intCast(pt.screen.x);
-+    out_row.* = @intCast(pt.screen.y);
++    // Screen coordinates are unsigned, so a chain offset that lands above or
++    // left of the screen origin has no answer in this space.
++    const col = @as(i32, @intCast(pt.screen.x)) +| origin.col_offset;
++    const row = @as(i32, @intCast(pt.screen.y)) +| origin.row_offset;
++    if (col < 0 or row < 0) return .no_value;
++
++    out_col.* = @intCast(col);
++    out_row.* = @intCast(row);
 +
 +    return .success;
 +}
@@ -96,10 +124,10 @@ index d50b8c4c2..5c47b0022 100644
      iter_: PlacementIterator,
      image_: ImageHandle,
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index 648bdbe51..eceaa1cbb 100644
+index 45b4dc47f..9811ebb0a 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -24,6 +24,7 @@ pub const kitty_graphics_placement_rect = kitty_graphics.placement_rect;
+@@ -26,6 +26,7 @@ pub const kitty_graphics_placement_rect = kitty_graphics.placement_rect;
  pub const kitty_graphics_placement_pixel_size = kitty_graphics.placement_pixel_size;
  pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_size;
  pub const kitty_graphics_placement_viewport_pos = kitty_graphics.placement_viewport_pos;

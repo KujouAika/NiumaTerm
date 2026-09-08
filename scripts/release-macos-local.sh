@@ -45,15 +45,15 @@ cd "$root"
 # Ghostty's build refuses anything but the version its `build.zig.zon` names,
 # and says so only once the Zig build is already running. A keg-only Homebrew
 # install is not on PATH by itself, so it is looked for by name.
-zig_version=0.15.2
+zig_version=0.16.0
 if ! zig version 2>/dev/null | grep -qx "$zig_version"; then
-  keg=/opt/homebrew/opt/zig@0.15/bin
+  keg=/opt/homebrew/opt/zig@0.16/bin
   if [ -x "$keg/zig" ]; then
     PATH="$keg:$PATH"
     export PATH
   else
     echo "zig $zig_version is required and was not found" >&2
-    echo "install it with: brew install zig@0.15" >&2
+    echo "install it with: brew install zig@0.16" >&2
     exit 1
   fi
 fi
