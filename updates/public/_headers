@@ -1,0 +1,6 @@
+# Sparkle refetches the feed every six hours (SUScheduledCheckInterval in
+# macos-package.yml). Five minutes keeps a fresh release visible almost
+# immediately without making the edge re-fetch on every client check.
+/appcast.xml
+  Cache-Control: public, max-age=300
+  Content-Type: application/rss+xml; charset=utf-8

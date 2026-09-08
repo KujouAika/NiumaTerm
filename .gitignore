@@ -40,3 +40,6 @@ node_modules
 
 # wrangler local dev state
 .wrangler/
+
+# Rendered by the appcast workflow into the site Worker asset directory.
+updates/public/appcast.xml
