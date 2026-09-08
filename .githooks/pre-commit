@@ -11,10 +11,10 @@ collect_staged_code_files() {
 
 collect_added_comment_lines() {
     git diff --cached --diff-filter=ACMR -U0 |
-        awk -v protected="$protected_paths" -v code_path="$code_file_pattern" '
+        awk -v protected="$protected_paths" -v code_path="$code_file_pattern"             -v generated="$generated_paths" '
             /^\+\+\+ b\// {
                 file = substr($0, 7)
-                code = file !~ protected && file ~ code_path
+                code = file !~ protected && file !~ generated && file ~ code_path
                 next
             }
             # An unescaped '/' inside a bracket expression closes the regex
@@ -94,7 +94,11 @@ EOF
 
 check_no_ai_slop_marker() {
     slop_markers='ponytail|seam|fact|parity|envelope|wire|contract'
-    slop=$(git diff --cached --diff-filter=ACMR -U0 | grep -nE '^\+' | grep -Eiw "$slop_markers" || true)
+    slop=$(git diff --cached --diff-filter=ACMR -U0 |
+        awk -v generated="$generated_paths" '
+            /^\+\+\+ b\// { file = substr($0, 7); vendored = file ~ generated; next }
+            !vendored && /^\+/ { print file ": " $0 }
+        ' | grep -Eiw "$slop_markers" || true)
     if [ -z "$slop" ]; then
         return 0
     fi
@@ -252,6 +256,12 @@ EOF
 
 branch=$(git symbolic-ref --quiet --short HEAD || true)
 protected_paths='^([.]agents|[.]claude|[.]codex|[.]scratch|openspec|spec|docs/adr|docs/agents|docs/superpowers)(/|$)'
+# Vendored upstream headers and bindgen output carry whatever prose their source
+# wrote, and editing those words out would make the checked-in copy disagree with
+# the library it was generated from. The marker and comment-rationale checks read
+# hand-written content only, so they skip these paths; the patches under
+# third_party stay covered because we write those.
+generated_paths='^third_party/[^/]+/(prebuilt/|src/bindings[.]rs$)'
 code_file_pattern='(^|/)(Cargo[.](toml|lock)|build[.]rs)$|[.](rs|zig|c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm|swift|py|sh|bash|zsh|ps1|js|jsx|ts|tsx|css|scss|html|wgsl|hlsl|metal)$'
 staged_files=$(git diff --cached --name-only --diff-filter=ACMRD)
 protected_files=$(printf '%s\n' "$staged_files" | grep -E "$protected_paths" || true)
