@@ -20,6 +20,12 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// one from being written to disk in full before anything notices.
 const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// What the Windows packaging job names its archive, up to the version it
+/// appends. A release carries the macOS archive too and both end in `.zip`, so
+/// matching on the extension alone would let the order the assets arrive in
+/// decide which system's build an installation downloads.
+const PACKAGE_NAME_PREFIX: &str = "NiumaTerm-windows-x86_64-";
+
 /// Unpack `release`'s package into `staging`, and answer with the directory the
 /// files ended up in.
 ///
@@ -62,9 +68,11 @@ pub(crate) fn stage(release: &Release, staging: &Path) -> Result<PathBuf, Instal
 /// package without one cannot be checked, and installing an unchecked package
 /// is the thing the checksum exists to prevent.
 fn package_assets(assets: &[Asset]) -> Option<(&Asset, &Asset)> {
-    let package = assets
-        .iter()
-        .find(|asset| asset.name.ends_with(".zip") && asset.url.starts_with(DOWNLOAD_URL_PREFIX))?;
+    let package = assets.iter().find(|asset| {
+        asset.name.starts_with(PACKAGE_NAME_PREFIX)
+            && asset.name.ends_with(".zip")
+            && asset.url.starts_with(DOWNLOAD_URL_PREFIX)
+    })?;
     let expected = format!("{}.sha256", package.name);
     let checksum = assets
         .iter()
