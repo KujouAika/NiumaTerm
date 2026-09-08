@@ -97,10 +97,11 @@ jobs:
       # profile never ends up republished here. Drafts are dropped because the
       # tag of an unannounced version has no business on a public address.
       #
-      # Archive URLs are rebuilt on the caching front. The digest beside each
-      # one keeps its GitHub address, which is where the updater pins it:
-      # substituting an archive then still means matching a digest published on
-      # a host that substitution does not reach.
+      # Asset URLs are rebuilt on the caching front, the digest along with the
+      # archive it describes. Leaving the digest on GitHub would keep an update
+      # dependent on reaching GitHub, which is the condition that front exists
+      # to work around: the archive would arrive in seconds and the check behind
+      # it would time out.
       - name: Render the Windows manifests
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,15 +111,7 @@ jobs:
                 tag_name, html_url, draft, prerelease, published_at,
                 assets: [
                   .assets[]
-                  | {
-                      name,
-                      browser_download_url: (
-                        if (.name | endswith(".zip"))
-                        then "\($base)/\($release.tag_name)/\(.name)"
-                        else .browser_download_url
-                        end
-                      )
-                    }
+                  | { name, browser_download_url: "\($base)/\($release.tag_name)/\(.name)" }
                 ]
               }
         run: |

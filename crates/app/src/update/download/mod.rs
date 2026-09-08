@@ -10,9 +10,7 @@ use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
 use crate::update::InstallError;
-use crate::update::releases::{
-    Asset, CHECKSUM_URL_PREFIX, DOWNLOAD_URL_PREFIX, Release, user_agent,
-};
+use crate::update::releases::{Asset, DOWNLOAD_URL_PREFIX, Release, user_agent};
 
 /// Long enough for a package on a slow connection, short enough that a stalled
 /// transfer does not leave the About page reporting an install forever.
@@ -70,7 +68,7 @@ fn package_assets(assets: &[Asset]) -> Option<(&Asset, &Asset)> {
     let expected = format!("{}.sha256", package.name);
     let checksum = assets
         .iter()
-        .find(|asset| asset.name == expected && asset.url.starts_with(CHECKSUM_URL_PREFIX))?;
+        .find(|asset| asset.name == expected && asset.url.starts_with(DOWNLOAD_URL_PREFIX))?;
 
     Some((package, checksum))
 }
