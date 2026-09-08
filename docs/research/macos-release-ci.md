@@ -126,7 +126,14 @@ place a build is published.
 
 Nothing about the signature changes: Sparkle checks the EdDSA signature in the
 item against `SUPublicEDKey` in the bundle, so where the bytes were served from
-does not enter into whether they are accepted.
+stays out of whether they are accepted.
+
+The Windows updater has no such signature; its archive is checked against a
+digest published beside it, and that digest is served through the same front.
+Keeping the digest on GitHub would leave an update dependent on reaching GitHub,
+which is the condition the front exists to work around. What it costs is that
+this host alone can serve an archive together with a digest matching it, so the
+two no longer corroborate each other.
 
 One label under the apex also keeps the hostname inside the free `*.f32.io`
 certificate Cloudflare issues for the zone; a deeper name would need a paid

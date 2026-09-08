@@ -10,8 +10,7 @@ fn asset(name: &str, url: &str) -> Asset {
     }
 }
 
-/// The two are published on different hosts: the archive through the caching
-/// front, the digest straight from the release it belongs to.
+/// Both come through the caching front, under the tag they were published for.
 fn published(name: &str) -> Vec<Asset> {
     vec![
         asset(
@@ -20,7 +19,7 @@ fn published(name: &str) -> Vec<Asset> {
         ),
         asset(
             &format!("{name}.sha256"),
-            &format!("https://github.com/f32y/NiumaTerm/releases/download/v1.3.0/{name}.sha256"),
+            &format!("https://niumaterm-downloads.f32.io/v1.3.0/{name}.sha256"),
         ),
     ]
 }
@@ -64,14 +63,12 @@ fn a_package_hosted_somewhere_else_is_refused() {
 }
 
 #[test]
-fn a_checksum_from_the_archive_host_is_refused() {
-    // Reading both from one host would put replacing an installer within reach
-    // of whoever runs it: the substituted archive would come with the digest it
-    // is checked against.
+fn a_checksum_hosted_somewhere_else_is_refused() {
+    // The digest decides whether the archive is installed, so a manifest that
+    // moves it off the pinned host is the case this rejects: whoever could name
+    // where it comes from would be naming the answer.
     let mut assets = published("NiumaTerm-windows-x86_64-v1.3.0.zip");
-    assets[1].url =
-        "https://niumaterm-downloads.f32.io/v1.3.0/NiumaTerm-windows-x86_64-v1.3.0.zip.sha256"
-            .to_owned();
+    assets[1].url = "https://example.invalid/NiumaTerm-windows-x86_64-v1.3.0.zip.sha256".to_owned();
 
     assert!(package_assets(&assets).is_none());
 }
