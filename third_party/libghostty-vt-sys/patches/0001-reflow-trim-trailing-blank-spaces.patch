@@ -1,8 +1,8 @@
 diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
-index 79aa96f18..c54ff7845 100644
+index 746a6cf8c..759209ad4 100644
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
-@@ -1491,6 +1491,44 @@ fn resizeCols(
+@@ -1546,6 +1546,44 @@ fn resizeCols(
      }
  }
  
@@ -25,7 +25,7 @@ index 79aa96f18..c54ff7845 100644
 +    if (cell.isEmpty()) return true;
 +
 +    if (cell.content_tag != .codepoint or
-+        cell.content.codepoint != ' ' or
++        cell.content.codepoint.data != ' ' or
 +        cell.wide != .narrow) return false;
 +
 +    // conhost's `ROW::MeasureRight` (`GetLastNonSpaceColumn`) trims style-blind,
@@ -47,7 +47,7 @@ index 79aa96f18..c54ff7845 100644
  // We use a cursor to track where we are in the src/dst. This is very
  // similar to Screen.Cursor, so see that for docs on individual fields.
  // We don't use a Screen because we don't need all the same data and we
-@@ -1543,7 +1581,7 @@ const ReflowCursor = struct {
+@@ -1632,7 +1670,7 @@ const ReflowCursor = struct {
          var cols_len = src_page.size.cols;
          if (!src_row.wrap) {
              while (cols_len > 0) {

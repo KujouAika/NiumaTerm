@@ -26,7 +26,7 @@ cargo run --bin NiumaTerm
 
 If you want to build libghostty-vt on your machine:
 
-1. Install Zig toolchain `v0.15.2` (https://ziglang.org/download/) and add zig compiler to your PATH environment variable.
+1. Install Zig toolchain `v0.16.0` (https://ziglang.org/download/) and add zig compiler to your PATH environment variable.
 2. Make sure both `llvm-objcopy` and `llvm-nm` are in your PATH environment variable because compiling libghostty-vt requires them. Currently libghostty-vt's Zig simdutf dependency conflicts with rioterm's Rust dependency. This problem will be solved in future version.
 3. Perform a normal `cargo run --bin NiumaTerm`.
 

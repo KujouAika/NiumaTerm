@@ -9,15 +9,15 @@ struct Terminal(vt::Terminal);
 impl Terminal {
     fn new(cols: u16, rows: u16, scrollback_bytes: usize) -> Self {
         let mut raw = ptr::null_mut();
+        let result = unsafe { vt::ghostty_terminal_new(ptr::null(), &mut raw, cols, rows) };
+        assert_eq!(result, vt::Result::SUCCESS);
+        // Scrollback is an option on a live terminal now, not a construction
+        // parameter.
         let result = unsafe {
-            vt::ghostty_terminal_new(
-                ptr::null(),
-                &mut raw,
-                vt::TerminalOptions {
-                    cols,
-                    rows,
-                    max_scrollback: scrollback_bytes,
-                },
+            vt::ghostty_terminal_set(
+                raw,
+                vt::TerminalOption::SCROLLBACK_MAX_BYTES,
+                (&scrollback_bytes as *const usize).cast(),
             )
         };
         assert_eq!(result, vt::Result::SUCCESS);

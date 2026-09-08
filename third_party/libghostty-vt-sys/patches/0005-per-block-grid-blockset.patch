@@ -1,15 +1,15 @@
 diff --git a/include/ghostty/vt.h b/include/ghostty/vt.h
-index 5606f1690..3386fcd64 100644
+index cfa1017e7..966afedb8 100644
 --- a/include/ghostty/vt.h
 +++ b/include/ghostty/vt.h
-@@ -140,6 +140,7 @@ extern "C" {
+@@ -152,6 +152,7 @@ extern "C" {
  #include <ghostty/vt/terminal.h>
  #include <ghostty/vt/grid_ref.h>
  #include <ghostty/vt/grid_ref_tracked.h>
 +#include <ghostty/vt/block.h>
+ #include <ghostty/vt/io.h>
  #include <ghostty/vt/osc.h>
  #include <ghostty/vt/sgr.h>
- #include <ghostty/vt/style.h>
 diff --git a/include/ghostty/vt/block.h b/include/ghostty/vt/block.h
 new file mode 100644
 index 000000000..b3a64dc2e
@@ -459,13 +459,13 @@ index 000000000..b3a64dc2e
 +
 +#endif /* GHOSTTY_VT_BLOCK_H */
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
-index 26ee0c0b8..ebd07754d 100644
+index db5420d2f..6fd6356e9 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -887,6 +887,15 @@ typedef enum GHOSTTY_ENUM_TYPED {
-    * Input type: GhosttyTerminalClipboardWriteFn
+@@ -1545,6 +1545,15 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    * Input type: size_t*
     */
-   GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE = 26,
+   GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES = 39,
 +
 +  /**
 +   * Byte budget for finished command blocks (`const size_t *`). Oldest
@@ -474,48 +474,48 @@ index 26ee0c0b8..ebd07754d 100644
 +   * unlimited; NULL resets the default (~200k rows at 80 columns).
 +   * Enforced immediately on set. See block.h.
 +   */
-+  GHOSTTY_TERMINAL_OPT_BLOCK_BUDGET_BYTES = 27,
++  GHOSTTY_TERMINAL_OPT_BLOCK_BUDGET_BYTES = 40,
    GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalOption;
  
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index e5761e827..64a31723b 100644
+index af669b516..7a63ddf98 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -289,6 +289,27 @@ comptime {
-         @export(&c.terminal_grid_ref, .{ .name = "ghostty_terminal_grid_ref" });
-         @export(&c.terminal_grid_ref_track, .{ .name = "ghostty_terminal_grid_ref_track" });
-         @export(&c.terminal_point_from_grid_ref, .{ .name = "ghostty_terminal_point_from_grid_ref" });
-+        @export(&c.terminal_finish_block, .{ .name = "ghostty_terminal_finish_block" });
-+        @export(&c.terminal_clear_blocks, .{ .name = "ghostty_terminal_clear_blocks" });
-+        @export(&c.terminal_remove_block, .{ .name = "ghostty_terminal_remove_block" });
-+        @export(&c.terminal_block_count, .{ .name = "ghostty_terminal_block_count" });
-+        @export(&c.terminal_block_at, .{ .name = "ghostty_terminal_block_at" });
-+        @export(&c.terminal_block_row_count, .{ .name = "ghostty_terminal_block_row_count" });
-+        @export(&c.terminal_block_cols, .{ .name = "ghostty_terminal_block_cols" });
-+        @export(&c.terminal_block_bytes, .{ .name = "ghostty_terminal_block_bytes" });
-+        @export(&c.terminal_blocks_bytes, .{ .name = "ghostty_terminal_blocks_bytes" });
-+        @export(&c.terminal_reflow_block, .{ .name = "ghostty_terminal_reflow_block" });
-+        @export(&c.terminal_block_acquire, .{ .name = "ghostty_terminal_block_acquire" });
-+        @export(&c.block_ref_release, .{ .name = "ghostty_block_ref_release" });
-+        @export(&c.block_ref_handle, .{ .name = "ghostty_block_ref_handle" });
-+        @export(&c.block_ref_row_count, .{ .name = "ghostty_block_ref_row_count" });
-+        @export(&c.block_ref_cols, .{ .name = "ghostty_block_ref_cols" });
-+        @export(&c.block_ref_bytes, .{ .name = "ghostty_block_ref_bytes" });
-+        @export(&c.block_ref_grid_ref, .{ .name = "ghostty_block_ref_grid_ref" });
-+        @export(&c.block_ref_kitty_graphics, .{ .name = "ghostty_block_ref_kitty_graphics" });
-+        @export(&c.block_ref_placement_pos, .{ .name = "ghostty_block_ref_placement_pos" });
-+        @export(&c.block_ref_format_alloc, .{ .name = "ghostty_block_ref_format_alloc" });
-+        @export(&c.terminal_block_grid_ref, .{ .name = "ghostty_terminal_block_grid_ref" });
-         @export(&c.kitty_graphics_get, .{ .name = "ghostty_kitty_graphics_get" });
-         @export(&c.kitty_graphics_image, .{ .name = "ghostty_kitty_graphics_image" });
-         @export(&c.kitty_graphics_image_get, .{ .name = "ghostty_kitty_graphics_image_get" });
+@@ -364,6 +364,27 @@ comptime {
+         if (features.grid_introspection or features.selection) {
+             @export(&c.terminal_grid_ref, .{ .name = "ghostty_terminal_grid_ref" });
+             @export(&c.terminal_point_from_grid_ref, .{ .name = "ghostty_terminal_point_from_grid_ref" });
++            @export(&c.terminal_finish_block, .{ .name = "ghostty_terminal_finish_block" });
++            @export(&c.terminal_clear_blocks, .{ .name = "ghostty_terminal_clear_blocks" });
++            @export(&c.terminal_remove_block, .{ .name = "ghostty_terminal_remove_block" });
++            @export(&c.terminal_block_count, .{ .name = "ghostty_terminal_block_count" });
++            @export(&c.terminal_block_at, .{ .name = "ghostty_terminal_block_at" });
++            @export(&c.terminal_block_row_count, .{ .name = "ghostty_terminal_block_row_count" });
++            @export(&c.terminal_block_cols, .{ .name = "ghostty_terminal_block_cols" });
++            @export(&c.terminal_block_bytes, .{ .name = "ghostty_terminal_block_bytes" });
++            @export(&c.terminal_blocks_bytes, .{ .name = "ghostty_terminal_blocks_bytes" });
++            @export(&c.terminal_reflow_block, .{ .name = "ghostty_terminal_reflow_block" });
++            @export(&c.terminal_block_acquire, .{ .name = "ghostty_terminal_block_acquire" });
++            @export(&c.block_ref_release, .{ .name = "ghostty_block_ref_release" });
++            @export(&c.block_ref_handle, .{ .name = "ghostty_block_ref_handle" });
++            @export(&c.block_ref_row_count, .{ .name = "ghostty_block_ref_row_count" });
++            @export(&c.block_ref_cols, .{ .name = "ghostty_block_ref_cols" });
++            @export(&c.block_ref_bytes, .{ .name = "ghostty_block_ref_bytes" });
++            @export(&c.block_ref_grid_ref, .{ .name = "ghostty_block_ref_grid_ref" });
++            @export(&c.block_ref_kitty_graphics, .{ .name = "ghostty_block_ref_kitty_graphics" });
++            @export(&c.block_ref_placement_pos, .{ .name = "ghostty_block_ref_placement_pos" });
++            @export(&c.block_ref_format_alloc, .{ .name = "ghostty_block_ref_format_alloc" });
++            @export(&c.terminal_block_grid_ref, .{ .name = "ghostty_terminal_block_grid_ref" });
+         }
+         if (features.grid_introspection) {
+             @export(&c.terminal_grid_ref_track, .{ .name = "ghostty_terminal_grid_ref_track" });
 diff --git a/src/terminal/BlockSet.zig b/src/terminal/BlockSet.zig
 new file mode 100644
-index 000000000..1c70b1d34
+index 000000000..695e9bccf
 --- /dev/null
 +++ b/src/terminal/BlockSet.zig
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,400 @@
 +/// A BlockSet holds the finished command blocks of a terminal. Each block
 +/// is a frozen Screen (PageList + per-screen Kitty image storage) whose
 +/// ownership was moved out of the ScreenSet by Terminal.finishBlock. A
@@ -627,12 +627,12 @@ index 000000000..1c70b1d34
 +    /// block if it was detached and this was the last reference.
 +    pub fn release(self: *Block) void {
 +        const set = self.owner;
-+        set.mutex.lock();
++        set.mutex.lockUncancelable(set.io);
 +        assert(self.refs > 0);
 +        self.refs -= 1;
 +        const free = self.detached and self.refs == 0;
-+        if (self.refs == 0) set.drained.broadcast();
-+        set.mutex.unlock();
++        if (self.refs == 0) set.drained.broadcast(set.io);
++        set.mutex.unlock(set.io);
 +        if (free) self.destroy();
 +    }
 +};
@@ -643,13 +643,18 @@ index 000000000..1c70b1d34
 +entries: std.AutoArrayHashMapUnmanaged(u64, *Block) = .empty,
 +next_id: u64 = 1,
 +
++/// The Io implementation backing `mutex` and `drained`. Held on the set
++/// because a reader's `release` can run on any thread with no terminal in
++/// hand, and blocking there still has to reach the same futex machinery.
++io: std.Io,
++
 +/// Guards map mutation vs. reader acquire, and every Block's
 +/// refs/writing/detached fields.
-+mutex: std.Thread.Mutex = .{},
++mutex: std.Io.Mutex = .init,
 +
 +/// Signaled whenever a block's refcount drops to zero; the reflow drain
 +/// waits on it.
-+drained: std.Thread.Condition = .{},
++drained: std.Io.Condition = .init,
 +
 +/// Byte budget for the page storage of all finished blocks combined.
 +/// Oldest blocks are evicted (images released with them) when the total
@@ -693,8 +698,8 @@ index 000000000..1c70b1d34
 +        .trailing_blanks = opts.trailing_blanks,
 +    };
 +
-+    self.mutex.lock();
-+    defer self.mutex.unlock();
++    self.mutex.lockUncancelable(self.io);
++    defer self.mutex.unlock(self.io);
 +    try self.entries.putNoClobber(alloc, block.id, block);
 +    self.next_id += 1;
 +    return block.handle();
@@ -717,8 +722,8 @@ index 000000000..1c70b1d34
 +/// The returned pointer and everything reachable from it (screen, pages,
 +/// image storage) stays valid and immutable until `Block.release`.
 +pub fn acquire(self: *BlockSet, handle: Handle) ?*Block {
-+    self.mutex.lock();
-+    defer self.mutex.unlock();
++    self.mutex.lockUncancelable(self.io);
++    defer self.mutex.unlock(self.io);
 +    const block = self.entries.get(handle.id) orelse return null;
 +    if (block.writing) return null;
 +    block.refs += 1;
@@ -728,17 +733,17 @@ index 000000000..1c70b1d34
 +/// Writer thread. Mark a block as being rewritten and wait for all reader
 +/// references to drain. New acquires are refused until `endWrite`.
 +pub fn beginWrite(self: *BlockSet, block: *Block) void {
-+    self.mutex.lock();
-+    defer self.mutex.unlock();
++    self.mutex.lockUncancelable(self.io);
++    defer self.mutex.unlock(self.io);
 +    assert(!block.writing);
 +    block.writing = true;
-+    while (block.refs > 0) self.drained.wait(&self.mutex);
++    while (block.refs > 0) self.drained.waitUncancelable(self.io, &self.mutex);
 +}
 +
 +/// Writer thread. Re-open a block for readers after `beginWrite`.
 +pub fn endWrite(self: *BlockSet, block: *Block) void {
-+    self.mutex.lock();
-+    defer self.mutex.unlock();
++    self.mutex.lockUncancelable(self.io);
++    defer self.mutex.unlock(self.io);
 +    assert(block.writing);
 +    block.writing = false;
 +}
@@ -748,17 +753,17 @@ index 000000000..1c70b1d34
 +/// Returns false if the handle is stale.
 +pub fn remove(self: *BlockSet, alloc: Allocator, handle: Handle) bool {
 +    _ = alloc;
-+    self.mutex.lock();
++    self.mutex.lockUncancelable(self.io);
 +    // O(count) to preserve oldest-first order; eviction removes index 0.
 +    const block = self.entries.get(handle.id) orelse {
-+        self.mutex.unlock();
++        self.mutex.unlock(self.io);
 +        return false;
 +    };
 +    const removed = self.entries.orderedRemove(handle.id);
 +    assert(removed);
 +    block.detached = true;
 +    const free = block.refs == 0;
-+    self.mutex.unlock();
++    self.mutex.unlock(self.io);
 +    if (free) block.destroy();
 +    return true;
 +}
@@ -767,8 +772,8 @@ index 000000000..1c70b1d34
 +/// references are held).
 +pub fn clear(self: *BlockSet, alloc: Allocator) void {
 +    _ = alloc;
-+    self.mutex.lock();
-+    defer self.mutex.unlock();
++    self.mutex.lockUncancelable(self.io);
++    defer self.mutex.unlock(self.io);
 +    // destroy() takes no locks, so freeing under the mutex is safe; clear
 +    // is a rare user action, the extra hold time doesn't matter.
 +    for (self.entries.values()) |block| {
@@ -820,15 +825,15 @@ index 000000000..1c70b1d34
 +
 +test "BlockSet lifecycle and stale handles" {
 +    const alloc = testing.allocator;
-+    var set: BlockSet = .{};
++    var set: BlockSet = .{ .io = testing.io };
 +    defer set.deinit(alloc);
 +
 +    const s1 = try alloc.create(Screen);
-+    s1.* = try .init(alloc, .default);
++    s1.* = try .init(testing.io, alloc, .default);
 +    const h1 = try set.append(alloc, .{ .screen = s1, .rows = 3 });
 +
 +    const s2 = try alloc.create(Screen);
-+    s2.* = try .init(alloc, .default);
++    s2.* = try .init(testing.io, alloc, .default);
 +    const h2 = try set.append(alloc, .{ .screen = s2, .rows = 5 });
 +
 +    try testing.expectEqual(@as(usize, 2), set.count());
@@ -849,7 +854,7 @@ index 000000000..1c70b1d34
 +
 +    // Ids are never reused after removal.
 +    const s3 = try alloc.create(Screen);
-+    s3.* = try .init(alloc, .default);
++    s3.* = try .init(testing.io, alloc, .default);
 +    const h3 = try set.append(alloc, .{ .screen = s3, .rows = 1 });
 +    try testing.expect(h3.id != h1.id);
 +    try testing.expect(set.get(h1) == null);
@@ -861,11 +866,11 @@ index 000000000..1c70b1d34
 +
 +test "BlockSet acquire defers destruction past remove and clear" {
 +    const alloc = testing.allocator;
-+    var set: BlockSet = .{};
++    var set: BlockSet = .{ .io = testing.io };
 +    defer set.deinit(alloc);
 +
 +    const s1 = try alloc.create(Screen);
-+    s1.* = try .init(alloc, .default);
++    s1.* = try .init(testing.io, alloc, .default);
 +    const h1 = try set.append(alloc, .{ .screen = s1, .rows = 1 });
 +
 +    const ref = set.acquire(h1).?;
@@ -886,7 +891,7 @@ index 000000000..1c70b1d34
 +
 +    // Same via clear.
 +    const s2 = try alloc.create(Screen);
-+    s2.* = try .init(alloc, .default);
++    s2.* = try .init(testing.io, alloc, .default);
 +    const h2 = try set.append(alloc, .{ .screen = s2, .rows = 2 });
 +    const ref3 = set.acquire(h2).?;
 +    set.clear(alloc);
@@ -897,11 +902,11 @@ index 000000000..1c70b1d34
 +
 +test "BlockSet acquire is refused while writing" {
 +    const alloc = testing.allocator;
-+    var set: BlockSet = .{};
++    var set: BlockSet = .{ .io = testing.io };
 +    defer set.deinit(alloc);
 +
 +    const s1 = try alloc.create(Screen);
-+    s1.* = try .init(alloc, .default);
++    s1.* = try .init(testing.io, alloc, .default);
 +    const h1 = try set.append(alloc, .{ .screen = s1, .rows = 1 });
 +
 +    const block = set.getPtr(h1).?;
@@ -912,10 +917,10 @@ index 000000000..1c70b1d34
 +    ref.release();
 +}
 diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
-index 63960dde2..02c47db99 100644
+index b298dd4dd..a1d6b3658 100644
 --- a/src/terminal/PageList.zig
 +++ b/src/terminal/PageList.zig
-@@ -2703,6 +2703,34 @@ fn resizeWithoutReflowGrowCols(
+@@ -3169,6 +3169,34 @@ fn resizeWithoutReflowGrowCols(
      self.destroyNode(chunk.node);
  }
  
@@ -951,10 +956,10 @@ index 63960dde2..02c47db99 100644
  /// is used to limit our traversal in the case of large scrollback.
  fn trailingBlankLines(
 diff --git a/src/terminal/ScreenSet.zig b/src/terminal/ScreenSet.zig
-index 4d3689e3b..62737774e 100644
+index 28fced985..95566f1d2 100644
 --- a/src/terminal/ScreenSet.zig
 +++ b/src/terminal/ScreenSet.zig
-@@ -99,6 +99,21 @@ pub fn remove(
+@@ -101,6 +101,21 @@ pub fn remove(
      }
  }
  
@@ -977,7 +982,7 @@ index 4d3689e3b..62737774e 100644
  /// screen is initialized.
  pub fn switchTo(self: *ScreenSet, key: Key) void {
 diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
-index 089201276..dc1f302e7 100644
+index e9cc3b8e6..d1481662c 100644
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
 @@ -4,6 +4,7 @@
@@ -988,7 +993,7 @@ index 089201276..dc1f302e7 100644
  const build_options = @import("terminal_options");
  const lib = @import("lib.zig");
  const assert = @import("../quirks.zig").inlineAssert;
-@@ -33,6 +34,7 @@ const style = @import("style.zig");
+@@ -35,6 +36,7 @@ const style = @import("style.zig");
  const PageList = @import("PageList.zig");
  const Screen = @import("Screen.zig");
  const ScreenSet = @import("ScreenSet.zig");
@@ -996,17 +1001,17 @@ index 089201276..dc1f302e7 100644
  const Page = pagepkg.Page;
  const Cell = pagepkg.Cell;
  const Row = pagepkg.Row;
-@@ -45,6 +47,9 @@ const TABSTOP_INTERVAL = 8;
+@@ -47,6 +49,9 @@ const TABSTOP_INTERVAL = 8;
  /// The set of screens behind this terminal (e.g. primary vs alternate).
  screens: ScreenSet,
  
 +/// Finished command blocks (frozen primary screens). See finishBlock.
-+blocks: BlockSet = .{},
++blocks: BlockSet,
 +
  /// Whether we're currently writing to the status line (DECSASD and DECSSDT).
  /// We don't support a status line currently so we just black hole this
  /// data so that it doesn't mess up our main display.
-@@ -264,6 +269,10 @@ pub const Options = struct {
+@@ -305,6 +310,10 @@ pub const Options = struct {
          kitty.graphics.LoadingImage.Limits
      else
          void = if (build_options.kitty_graphics) .direct else {},
@@ -1017,25 +1022,25 @@ index 089201276..dc1f302e7 100644
  };
  
  /// Initialize a new terminal.
-@@ -287,6 +296,7 @@ pub fn init(
+@@ -330,6 +339,7 @@ pub fn init(
          .cols = cols,
          .rows = rows,
          .screens = screen_set,
-+        .blocks = .{ .budget_bytes = opts.block_budget_bytes },
++        .blocks = .{ .io = io_impl, .budget_bytes = opts.block_budget_bytes },
          .tabstops = try .init(alloc, cols, TABSTOP_INTERVAL),
          .scrolling_region = .{
              .top = 0,
-@@ -306,6 +316,7 @@ pub fn init(
+@@ -355,6 +365,7 @@ pub fn init(
  
  pub fn deinit(self: *Terminal, alloc: Allocator) void {
      self.tabstops.deinit(alloc);
 +    self.blocks.deinit(alloc);
      self.screens.deinit(alloc);
+     self.colors.palette.deinit(alloc);
      self.pwd.deinit(alloc);
-     self.title.deinit(alloc);
-@@ -3570,6 +3581,21 @@ pub fn resize(
-         .reflow = false,
-     });
+@@ -4169,6 +4180,21 @@ pub fn resize(
+         new_tabstops = null;
+     }
  
 +    // Reflow every finished block eagerly so readers never observe mixed
 +    // widths after a resize. This keeps the reader contract deterministic.
@@ -1044,7 +1049,7 @@ index 089201276..dc1f302e7 100644
 +    var block_i: usize = 0;
 +    while (block_i < self.blocks.count()) {
 +        const handle = self.blocks.at(block_i).?;
-+        if (self.reflowBlock(handle, cols)) |_| {
++        if (self.reflowBlock(handle, opts.cols)) |_| {
 +            block_i += 1;
 +        } else |err| {
 +            log.warn("dropping block that failed reflow id={} err={}", .{ handle.id, err });
@@ -1055,7 +1060,7 @@ index 089201276..dc1f302e7 100644
      // Whenever we resize we just mark it as a screen clear
      self.flags.dirty.clear = true;
  
-@@ -3882,6 +3908,200 @@ pub fn plainStringUnwrapped(self: *Terminal, alloc: Allocator) ![]const u8 {
+@@ -4907,6 +4933,208 @@ pub fn plainStringUnwrapped(self: *Terminal, alloc: Allocator) ![]const u8 {
  /// This will attempt to free the existing screen memory but if that fails
  /// this will reuse the existing memory. In the latter case, memory may
  /// be wasted (since its unused) but it isn't leaked.
@@ -1126,6 +1131,10 @@ index 089201276..dc1f302e7 100644
 +    }
 +};
 +
++fn explicitLimit(value: usize) ?usize {
++    return if (value == std.math.maxInt(usize)) null else value;
++}
++
 +/// Finish the current command block: freeze the primary screen into the
 +/// block set as an O(1) ownership move and continue on a fresh primary
 +/// screen with the writer state carried over.
@@ -1181,10 +1190,14 @@ index 089201276..dc1f302e7 100644
 +    // so failure leaves the terminal untouched.
 +    const new_screen = try alloc.create(Screen);
 +    errdefer alloc.destroy(new_screen);
-+    new_screen.* = try Screen.init(alloc, .{
++    new_screen.* = try Screen.init(old.io, alloc, .{
 +        .cols = self.cols,
 +        .rows = self.rows,
-+        .max_scrollback = old.pages.explicit_max_size,
++        // Carry the old screen's configured scrollback limits, not the
++        // effective ones: the minimums are recomputed from the new screen's
++        // own dimensions. maxInt is how an unset limit is stored.
++        .max_scrollback_bytes = explicitLimit(old.pages.limits.bytes.explicit),
++        .max_scrollback_lines = explicitLimit(old.pages.limits.lines.explicit),
 +        .kitty_image_storage_limit = if (comptime build_options.kitty_graphics)
 +            old.kitty_images.total_limit
 +        else
@@ -1256,7 +1269,7 @@ index 089201276..dc1f302e7 100644
  pub fn fullReset(self: *Terminal) void {
      // Ensure we're back on primary screen
      self.screens.switchTo(.primary);
-@@ -3890,6 +4110,11 @@ pub fn fullReset(self: *Terminal) void {
+@@ -4915,6 +5143,11 @@ pub fn fullReset(self: *Terminal) void {
          .alternate,
      );
  
@@ -1268,13 +1281,13 @@ index 089201276..dc1f302e7 100644
      // Reset our screens
      self.screens.active.reset();
  
-@@ -13711,6 +13936,416 @@ test "Terminal: cursorIsAtPrompt alternate screen" {
-     try testing.expect(!t.cursorIsAtPrompt());
+@@ -15609,6 +15842,414 @@ test "Terminal: cursor defaults do not override explicit cursor" {
+     try testing.expect(!t.modes.get(.cursor_blinking));
  }
  
 +test "Terminal: finishBlock moves content and continues on empty primary" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    try t.printString("hello\nworld");
@@ -1310,7 +1323,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock empty screen is a no-op" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    try testing.expectEqual(@as(?BlockSet.Handle, null), try t.finishBlock());
@@ -1323,7 +1336,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock keeps intentional trailing newlines" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // Output ends with two newlines: the blank row before the cursor is
@@ -1336,7 +1349,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock truncates blank rows after cursor" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // Print then move the cursor back up: rows below the cursor with no
@@ -1348,7 +1361,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock carries continuation state" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    try t.setAttribute(.{ .bold = {} });
@@ -1375,7 +1388,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock carries saved cursor (DECSC/DECRC across boundary)" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // Save a styled cursor at (col 4, row 3), then output and finish.
@@ -1397,7 +1410,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock continues DECSET modes and protected mode" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 5, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 5, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // DECAWM off + origin mode on (terminal-global), ISO protected mode
@@ -1420,7 +1433,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock continues charset shift state and kitty keyboard" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // G1 = DEC special, GL shifted to G1 (SO), plus a pushed kitty
@@ -1443,7 +1456,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock rejected on alternate screen" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    try t.printString("hello");
@@ -1457,7 +1470,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: resize reflows finished blocks and bumps generation" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // Soft-wraps at 10 cols into "0123456789" + "ABC".
@@ -1466,7 +1479,7 @@ index 089201276..dc1f302e7 100644
 +    try testing.expectEqual(@as(usize, 2), t.blocks.get(handle).?.rows);
 +
 +    // Shrink: block rewraps independently to 5 cols.
-+    try t.resize(alloc, 5, 5);
++    try t.resize(alloc, .{ .cols = 5, .rows = 5 });
 +    {
 +        const entry = t.blocks.get(handle).?;
 +        try testing.expectEqual(@as(usize, 3), entry.rows);
@@ -1481,7 +1494,7 @@ index 089201276..dc1f302e7 100644
 +    }
 +
 +    // Grow past the content width: unwraps back to one row.
-+    try t.resize(alloc, 20, 5);
++    try t.resize(alloc, .{ .cols = 20, .rows = 5 });
 +    {
 +        const entry = t.blocks.get(handle).?;
 +        try testing.expectEqual(@as(usize, 1), entry.rows);
@@ -1497,7 +1510,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: block reflow preserves intentional trailing blank rows" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // One content row plus one intentional trailing newline.
@@ -1505,14 +1518,14 @@ index 089201276..dc1f302e7 100644
 +    const handle = (try t.finishBlock()).?;
 +    try testing.expectEqual(@as(usize, 2), t.blocks.get(handle).?.rows);
 +
-+    try t.resize(alloc, 8, 5);
++    try t.resize(alloc, .{ .cols = 8, .rows = 5 });
 +    try testing.expectEqual(@as(usize, 2), t.blocks.get(handle).?.rows);
 +}
 +
 +test "Terminal: block reflow trims trailing spaces (0001, windows)" {
 +    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    // ConPTY-style explicit space padding to the full width is trimmed on
@@ -1521,7 +1534,7 @@ index 089201276..dc1f302e7 100644
 +    try t.printString("abc       ");
 +    const handle = (try t.finishBlock()).?;
 +
-+    try t.resize(alloc, 5, 5);
++    try t.resize(alloc, .{ .cols = 5, .rows = 5 });
 +    const entry = t.blocks.get(handle).?;
 +    try testing.expectEqual(@as(usize, 1), entry.rows);
 +    const str = try entry.screen.dumpStringAlloc(alloc, .{ .screen = .{} });
@@ -1531,7 +1544,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: reflowBlock is a stale-handle no-op and width no-op" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    try t.printString("hello");
@@ -1549,16 +1562,14 @@ index 089201276..dc1f302e7 100644
 +    if (comptime builtin.single_threaded) return error.SkipZigTest;
 +
 +    // Reader threads release references, which can destroy blocks
-+    // (deallocate) off the writer thread; the allocator must be
-+    // thread-safe.
-+    var tsa: std.heap.ThreadSafeAllocator = .{
-+        .child_allocator = testing.allocator,
-+    };
-+    const alloc = tsa.allocator();
++    // (deallocate) off the writer thread. The testing allocator is a
++    // DebugAllocator, which locks internally unless the build is
++    // single-threaded, so it can serve both sides directly.
++    const alloc = testing.allocator;
 +
 +    // A small budget keeps eviction churning while the writer finishes
 +    // blocks, so readers constantly race detach-and-deferred-destroy.
-+    var t = try init(alloc, .{
++    var t = try init(testing.io, alloc, .{
 +        .cols = 20,
 +        .rows = 5,
 +        .block_budget_bytes = 4 * 1024 * 1024,
@@ -1617,7 +1628,7 @@ index 089201276..dc1f302e7 100644
 +
 +        if (i % 25 == 24) {
 +            cols = if (cols == 20) 24 else 20;
-+            try t.resize(alloc, cols, 5);
++            try t.resize(alloc, .{ .cols = cols, .rows = 5 });
 +        }
 +        if (i % 40 == 39) {
 +            // Remove the latest block while readers may hold it.
@@ -1633,7 +1644,7 @@ index 089201276..dc1f302e7 100644
 +    const alloc = testing.allocator;
 +    // A 1-byte budget: any second block pushes the total over, so only
 +    // the newest block ever survives (the newest is never evicted).
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5, .block_budget_bytes = 1 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5, .block_budget_bytes = 1 });
 +    defer t.deinit(alloc);
 +
 +    try t.printString("one");
@@ -1656,7 +1667,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock unlimited budget keeps all blocks" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5, .block_budget_bytes = 0 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5, .block_budget_bytes = 0 });
 +    defer t.deinit(alloc);
 +
 +    for (0..3) |_| {
@@ -1669,7 +1680,7 @@ index 089201276..dc1f302e7 100644
 +
 +test "Terminal: finishBlock blocks survive fullReset (stream RIS)" {
 +    const alloc = testing.allocator;
-+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
++    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
 +    defer t.deinit(alloc);
 +
 +    try t.printString("hello");
@@ -1683,14 +1694,14 @@ index 089201276..dc1f302e7 100644
 +}
 +
  test "Terminal: fullReset with a non-empty pen" {
-     var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+     var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
      defer t.deinit(testing.allocator);
 diff --git a/src/terminal/c/block.zig b/src/terminal/c/block.zig
 new file mode 100644
-index 000000000..1448d21be
+index 000000000..9952474ad
 --- /dev/null
 +++ b/src/terminal/c/block.zig
-@@ -0,0 +1,597 @@
+@@ -0,0 +1,626 @@
 +//! C API for finished command blocks.
 +//!
 +//! Thread contract: every `ghostty_terminal_*` function in this file is a
@@ -1707,6 +1718,7 @@ index 000000000..1448d21be
 +const lib = @import("../lib.zig");
 +const CAllocator = lib.alloc.Allocator;
 +const size = @import("../size.zig");
++const PageList = @import("../PageList.zig");
 +const formatterpkg = @import("../formatter.zig");
 +const Selection = @import("../Selection.zig");
 +const grid_ref_c = @import("grid_ref.zig");
@@ -1980,14 +1992,42 @@ index 000000000..1448d21be
 +    const iter = iter_ orelse return .invalid_value;
 +    const entry = iter.entry orelse return .invalid_value;
 +
-+    const pin = switch (entry.value_ptr.location) {
-+        .pin => |pin| pin,
++    // Relative placements resolve through the frozen storage of this block,
++    // whose parent chain was frozen with it; the root supplies the origin and
++    // the chain supplies the offset.
++    const origin: struct {
++        pin: *const PageList.Pin,
++        col_offset: i32 = 0,
++        row_offset: i32 = 0,
++    } = switch (entry.value_ptr.location) {
++        .pin => |pin| .{ .pin = pin },
 +        .virtual => return .no_value,
++        .relative => |rel| origin: {
++            const chain = block.screen.kitty_images.resolveChain(rel) orelse
++                return .no_value;
++            switch (chain.root.location) {
++                .pin => |root_pin| break :origin .{
++                    .pin = root_pin,
++                    .col_offset = chain.horizontal_offset,
++                    .row_offset = chain.vertical_offset,
++                },
++                .virtual => return .no_value,
++                .relative => unreachable, // resolveChain roots are never relative
++            }
++        },
 +    };
 +
-+    const pt = block.screen.pages.pointFromPin(.screen, pin.*) orelse return .no_value;
-+    if (out_col) |out| out.* = @intCast(pt.screen.x);
-+    if (out_row) |out| out.* = @intCast(pt.screen.y);
++    const pt = block.screen.pages.pointFromPin(.screen, origin.pin.*) orelse
++        return .no_value;
++
++    // Block rows and columns are unsigned, so an offset that lands before the
++    // block's origin has no answer in this space.
++    const col = @as(i32, @intCast(pt.screen.x)) +| origin.col_offset;
++    const row = @as(i32, @intCast(pt.screen.y)) +| origin.row_offset;
++    if (col < 0 or row < 0) return .no_value;
++
++    if (out_col) |out| out.* = @intCast(col);
++    if (out_row) |out| out.* = @intCast(row);
 +    return .success;
 +}
 +
@@ -2289,10 +2329,10 @@ index 000000000..1448d21be
 +    try testing.expectEqual(Result.no_value, kitty_gfx_c.placement_screen_pos(iter, t, &col, &row));
 +}
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index a976b7952..73043631e 100644
+index 9811ebb0a..46060dff9 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -215,6 +215,29 @@ pub const terminal_grid_ref = terminal.grid_ref;
+@@ -229,6 +229,29 @@ pub const terminal_grid_ref = terminal.grid_ref;
  pub const terminal_grid_ref_track = terminal.grid_ref_track;
  pub const terminal_point_from_grid_ref = terminal.point_from_grid_ref;
  
@@ -2319,31 +2359,30 @@ index a976b7952..73043631e 100644
 +pub const block_ref_format_alloc = block.block_ref_format_alloc;
 +pub const terminal_block_grid_ref = block.block_grid_ref;
 +
- pub const type_json = types.get_json;
- 
- pub const unicode_codepoint_width = unicode.codepoint_width;
+ pub const snapshot_encode = snapshot.encode;
+ pub const snapshot_encode_buf = snapshot.encode_buf;
+ pub const snapshot_encode_alloc = snapshot.encode_alloc;
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
-index 1c3b9f0c5..398ca1d1d 100644
+index 04c3e242b..3e2289298 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -437,6 +437,7 @@ pub const Option = enum(c_int) {
-     glyph_protocol = 24,
-     pwd_changed = 25,
-     clipboard_write = 26,
-+    block_budget_bytes = 27,
+@@ -1208,6 +1208,7 @@ pub const Option = enum(c_int) {
+     terminfo_name = 37,
+     clipboard_read = 38,
+     clipboard_write_max_bytes = 39,
++    block_budget_bytes = 40,
  
      /// Input type expected for setting the option.
      pub fn InType(comptime self: Option) type {
-@@ -461,7 +462,7 @@ pub const Option = enum(c_int) {
-             .kitty_image_medium_shared_mem,
-             .glyph_protocol,
-             => ?*const bool,
--            .apc_max_bytes, .apc_max_bytes_kitty => ?*const usize,
-+            .apc_max_bytes, .apc_max_bytes_kitty, .block_budget_bytes => ?*const usize,
+@@ -1244,6 +1245,7 @@ pub const Option = enum(c_int) {
+             .continuation_max_bytes,
+             .unknown_max_bytes,
+             .clipboard_write_max_bytes,
++            .block_budget_bytes,
+             => ?*const usize,
              .selection => ?*const selection_c.CSelection,
              .default_cursor_style => ?*const TerminalCursorStyle,
-             .default_cursor_blink => ?*const bool,
-@@ -579,6 +580,15 @@ fn setTyped(
+@@ -1426,6 +1428,15 @@ fn setTyped(
              wrapper.stream.handler.apc_handler.enable(.glyph, enabled);
              if (!enabled) wrapper.terminal.glyph_glossary.clearAndFree(wrapper.terminal.gpa());
          },
@@ -2359,7 +2398,7 @@ index 1c3b9f0c5..398ca1d1d 100644
          .selection => {
              if (value) |ptr| {
                  const sel = ptr.toZig() orelse return .invalid_value;
-@@ -685,6 +695,11 @@ pub fn resize(
+@@ -1535,6 +1546,11 @@ pub fn resize(
  
  pub fn reset(terminal_: Terminal) callconv(lib.calling_conv) void {
      const t: *ZigTerminal = (terminal_ orelse return).terminal;

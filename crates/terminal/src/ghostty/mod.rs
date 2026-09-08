@@ -11,14 +11,14 @@ use libghostty_vt_sys::{
     KittyGraphics as VtKittyGraphics, PointCoordinate as VtPointCoordinate, PointTag as VtPointTag,
     Result as VtResult, String as VtString, Terminal as VtTerminal,
     TerminalCursorStyle as VtTerminalCursorStyle, TerminalData as VtTerminalData,
-    TerminalOption as VtTerminalOption, TerminalOptions as VtTerminalOptions,
+    TerminalModeConfig as VtTerminalModeConfig, TerminalOption as VtTerminalOption,
     TerminalScrollViewport as VtTerminalScrollViewport,
     TerminalScrollViewportTag as VtTerminalScrollViewportTag,
     TerminalScrollViewportValue as VtTerminalScrollViewportValue,
     TerminalScrollbar as VtTerminalScrollbar, ghostty_kitty_graphics_image, ghostty_terminal_free,
-    ghostty_terminal_get, ghostty_terminal_mode_get, ghostty_terminal_new,
-    ghostty_terminal_point_from_grid_ref, ghostty_terminal_resize,
-    ghostty_terminal_scroll_viewport, ghostty_terminal_set, ghostty_terminal_vt_write,
+    ghostty_terminal_get, ghostty_terminal_new, ghostty_terminal_point_from_grid_ref,
+    ghostty_terminal_resize, ghostty_terminal_scroll_viewport, ghostty_terminal_set,
+    ghostty_terminal_vt_write,
 };
 #[cfg(test)]
 use libghostty_vt_sys::{
@@ -128,13 +128,23 @@ impl GhosttyTerminal {
 
         let mut terminal = ptr::null_mut();
 
-        let options = VtTerminalOptions {
-            cols,
-            rows,
-            max_scrollback,
-        };
+        Error::from_code(unsafe { ghostty_terminal_new(ptr::null(), &mut terminal, cols, rows) })?;
 
-        Error::from_code(unsafe { ghostty_terminal_new(ptr::null(), &mut terminal, options) })?;
+        // A new terminal starts on the engine's own scrollback default, so the
+        // caller's budget has to be applied before any output reaches it. A
+        // rejected budget is the caller's error, as it was when the budget was
+        // a construction parameter, so the half-built terminal is released.
+        let scrollback = unsafe {
+            ghostty_terminal_set(
+                terminal,
+                VtTerminalOption::SCROLLBACK_MAX_BYTES,
+                (&max_scrollback as *const usize).cast(),
+            )
+        };
+        if let Err(err) = Error::from_code(scrollback) {
+            unsafe { ghostty_terminal_free(terminal) };
+            return Err(err);
+        }
 
         // The reader frees its own handles when it goes out of scope, so the
         // failure paths below only have to release the terminal.
@@ -386,11 +396,22 @@ impl GhosttyTerminal {
     /// Read the current value of a VT mode (identifiers in [`mode`]). Returns
     /// `false` for unknown/unset modes.
     pub fn mode(&self, id: u16) -> bool {
-        let mut value = false;
+        // The mode identifier goes in and its value comes back out through the
+        // same config struct, so it is both the input and the output here.
+        let mut config = VtTerminalModeConfig {
+            mode: id,
+            value: false,
+        };
 
-        let ok = unsafe { ghostty_terminal_mode_get(self.terminal, id, &mut value as *mut bool) };
+        let ok = unsafe {
+            ghostty_terminal_get(
+                self.terminal,
+                VtTerminalData::MODE,
+                (&mut config as *mut VtTerminalModeConfig).cast(),
+            )
+        };
 
-        ok == VtResult::SUCCESS && value
+        ok == VtResult::SUCCESS && config.value
     }
 
     /// The active kitty keyboard protocol flags, mapped to terminal `Mode` bits. These
