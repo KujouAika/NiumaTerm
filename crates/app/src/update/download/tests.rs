@@ -34,6 +34,30 @@ fn the_package_is_taken_with_the_checksum_published_for_it() {
 }
 
 #[test]
+fn the_archive_built_for_another_system_is_passed_over() {
+    // A release carries both systems' archives and both end in `.zip`, so
+    // without the name to go on, the order they arrive in would decide which
+    // one an installation downloads. They are listed here in the order that
+    // gets it wrong.
+    let mut assets = vec![
+        asset(
+            "NiumaTerm-macos-arm64-v1.3.0.zip",
+            "https://niumaterm-downloads.f32.io/v1.3.0/NiumaTerm-macos-arm64-v1.3.0.zip",
+        ),
+        asset(
+            "NiumaTerm-macos-arm64-v1.3.0.zip.sha256",
+            "https://niumaterm-downloads.f32.io/v1.3.0/NiumaTerm-macos-arm64-v1.3.0.zip.sha256",
+        ),
+    ];
+    assets.extend(published("NiumaTerm-windows-x86_64-v1.3.0.zip"));
+
+    let (package, checksum) = package_assets(&assets).expect("the windows package");
+
+    assert_eq!(package.name, "NiumaTerm-windows-x86_64-v1.3.0.zip");
+    assert_eq!(checksum.name, "NiumaTerm-windows-x86_64-v1.3.0.zip.sha256");
+}
+
+#[test]
 fn a_package_without_its_own_checksum_is_not_installable() {
     let mut assets = published("NiumaTerm-windows-x86_64-v1.3.0.zip");
     // A checksum for some other file is not one for this package.
