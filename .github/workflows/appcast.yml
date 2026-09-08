@@ -27,36 +27,46 @@ on:
         description: Its EdDSA signature
         type: string
         required: true
+    secrets:
+      cloudflare-api-token:
+        description: Token with Workers Scripts edit rights on the account
+        required: true
 
-# The feed lives as the single asset of a release under a fixed tag. Sparkle
-# needs one HTTPS address that never moves, because the address is stamped into
-# every build that ships and an installation only ever asks the one it was built
-# with. What makes the file trustworthy is the signature over the archive it
-# names, not where it was served from, so a plain static asset is enough.
+# The feed is served from https://niumaterm-updates.f32.io/appcast.xml by the
+# niumaterm-updates Worker. Sparkle needs one HTTPS address that never moves, because the address
+# is stamped into every build that ships and an installation only ever asks the
+# one it was built with. What makes the file trustworthy is the EdDSA signature
+# over the archive it names, so a static asset behind that address is enough.
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     env:
-      GH_TOKEN: ${{ github.token }}
-      FEED_TAG: appcast
+      FEED_URL: https://niumaterm-updates.f32.io/appcast.xml
+      # A Workers assets deploy replaces the whole set, so the rendered feed has
+      # to be placed in the asset directory rather than kept in source control.
+      FEED_PATH: updates/public/appcast.xml
     steps:
       - uses: actions/checkout@v5
 
       - name: Fetch the current feed
         run: |
-          # Absent until the first publish, and the generator starts a new
-          # document in that case. Asking whether the release exists first keeps
-          # that apart from a download that actually failed.
-          if gh release view "$FEED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release download "$FEED_TAG" --repo "$GITHUB_REPOSITORY" \
-              --pattern appcast.xml --dir .
-          fi
+          # 404 is the state before the first publish, and the generator starts
+          # a new document from it. Any other status is a real failure: taking
+          # one for "absent" would silently drop the published history and ship
+          # a feed holding only the release this run adds.
+          status=$(curl -sS -o "$FEED_PATH" -w '%{http_code}' "$FEED_URL")
+          case "$status" in
+            200) ;;
+            404) rm -f "$FEED_PATH" ;;
+            *)
+              echo "unexpected status $status from $FEED_URL" >&2
+              exit 1
+              ;;
+          esac
 
       - run: |
           python3 scripts/update-appcast.py \
-            --appcast appcast.xml \
+            --appcast "$FEED_PATH" \
             --label "$LABEL" \
             --bundle-version "$BUNDLE_VERSION" \
             --channel "$CHANNEL" \
@@ -72,15 +82,14 @@ jobs:
           LENGTH: ${{ inputs.length }}
           SIGNATURE: ${{ inputs.signature }}
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
       - name: Publish the feed
         run: |
-          # Marked a prerelease so it never becomes the repository's "Latest
-          # release": it holds a document, not a build anyone downloads.
-          gh release view "$FEED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
-            gh release create "$FEED_TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "Update feed" \
-              --prerelease \
-              --notes "The Sparkle appcast for macOS builds. Replaced by CI on every release; not a build."
-
-          gh release upload "$FEED_TAG" appcast.xml \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          npm ci
+          npx wrangler deploy -c updates/wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.cloudflare-api-token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

@@ -12,8 +12,9 @@
 | Path | Role |
 | --- | --- |
 | `.github/workflows/macos-package.yml` | Build → bundle → embed Sparkle → sign → notarize → archive. Reusable, plus `workflow_dispatch` so the signing path can be rehearsed |
-| `.github/workflows/appcast.yml` | Publishes one release into the feed asset |
+| `.github/workflows/appcast.yml` | Renders one release into the feed and deploys it |
 | `scripts/update-appcast.py` | Renders and trims the appcast document |
+| `updates/wrangler.toml` | The Worker that serves the feed at `https://niumaterm-updates.f32.io/appcast.xml` |
 | `scripts/release-macos-local.sh` | The same build → sign → notarize → staple walk on a developer's own Mac, reading its credentials from the login keychain |
 
 built on top of two files the macOS port already owns:
@@ -86,18 +87,32 @@ private half ends the update path for everyone already on macOS.
 
 ### 2.4 Where the feed lives
 
-Nothing to set up. The feed is the single asset of a prerelease under the fixed
-tag `appcast`, and `appcast.yml` creates that release the first time it runs.
-It lands at
+The feed is served by `niumaterm-updates`, a Cloudflare Worker holding nothing
+but static assets, configured in `updates/wrangler.toml` and bound to
+`niumaterm-updates.f32.io`. It lands at
 
 ```text
-https://github.com/f32y/NiumaTerm/releases/download/appcast/appcast.xml
+https://niumaterm-updates.f32.io/appcast.xml
 ```
 
-which is the URL `macos-package.yml` stamps as `SUFeedURL`, derived there from
-`github.repository` so a fork points at its own feed. The release is marked a
-prerelease so it never becomes the repository's "Latest release": it holds a
-document, not a build anyone downloads.
+which is the URL `macos-package.yml` stamps as `SUFeedURL`. `appcast.yml`
+fetches that address, prepends the run's item, and redeploys the Worker, so the
+served document is also the store the next run reads.
+
+The Worker is deliberately separate from the relay Worker at the repository
+root: deploying a Worker restarts it and drops every hibernating Durable Object
+WebSocket, so publishing a feed from the relay would disconnect all live remote
+sessions on each release and on every nightly.
+
+A deploy replaces the whole asset set. That is why the feed carries its own
+hostname, leaving `f32.io` free for anything published on a different schedule,
+and why `updates/public/appcast.xml` is git-ignored and written only by the
+workflow. Deploying this Worker by hand therefore serves whatever that directory
+happens to hold; re-running the appcast job restores the published document.
+
+One label under the apex also keeps the hostname inside the free `*.f32.io`
+certificate Cloudflare issues for the zone; a deeper name would need a paid
+wildcard.
 
 This address cannot change once a build carrying it has shipped. An
 installation only ever asks the URL it was built with, so moving the feed
@@ -117,10 +132,12 @@ Settings → Secrets and variables → Actions.
 | `NMT_AC_API_KEY_ID` | the 10-character Key ID |
 | `NMT_AC_API_ISSUER_ID` | the issuer UUID |
 | `NMT_SPARKLE_ED_PRIVATE_KEY` | contents of `ed.key` |
+| `CLOUDFLARE_API_TOKEN` | token scoped to Workers Scripts: Edit, for deploying the feed |
 
 | Variable | Value |
 | --- | --- |
 | `NMT_SPARKLE_PUBLIC_ED_KEY` | the public key `generate_keys` printed |
+| `CLOUDFLARE_ACCOUNT_ID` | the account owning `niumaterm-updates`; not a credential on its own |
 
 ### 2.6 Bundle identifier
 
@@ -333,13 +350,13 @@ Check, in order:
 3. **The archive** — download the published zip on a different Mac, unpack,
    launch. Nothing beyond the ordinary first-run dialog.
 4. **The feed** — `curl -L` against
-   `https://github.com/f32y/NiumaTerm/releases/download/appcast/appcast.xml`
-   returns the document, and its enclosure URL downloads.
+   `https://niumaterm-updates.f32.io/appcast.xml` returns the document, and its
+   enclosure URL downloads.
 5. **The update** — install the test build, publish a second tag, let the app
    find it. This is the only step that exercises Sparkle end to end, and the
    only one that catches a `CFBundleVersion` that failed to increase.
 
-Then delete the tag, the releases, and the appcast items.
+Then delete the tag and the releases, and drop the test items from the feed.
 
 ## 8. Where this fails, and what it looks like
 

@@ -1,0 +1,26 @@
+# Static host for NiumaTerm's update metadata: the Sparkle appcast today, and
+# the Windows release manifest if that moves off the GitHub API.
+#
+# Deliberately separate from the relay Worker at the repository root. Deploying
+# a Worker restarts it and drops every hibernating Durable Object WebSocket, so
+# folding this in would disconnect all live remote sessions on each release and
+# on every nightly.
+#
+# Its own hostname rather than a path under the apex, because a Workers assets
+# deploy replaces the whole set: anything else served from f32.io would have to
+# be rebuilt and re-uploaded by every release, and vice versa.
+#
+# No `main`: an assets-only Worker needs no script, and asset requests are not
+# billed as Worker invocations.
+name = "niumaterm-updates"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./public"
+
+# Creates the DNS record and provisions the certificate on deploy. One label
+# under the apex keeps it inside the free `*.f32.io` certificate; a deeper name
+# would need a paid wildcard.
+[[routes]]
+pattern = "niumaterm-updates.f32.io"
+custom_domain = true

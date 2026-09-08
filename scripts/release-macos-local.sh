@@ -32,7 +32,7 @@ set -eu
 out=dist
 notary_profile=${NMT_NOTARY_PROFILE:-niumaterm-notary}
 stamp_feed=${STAMP_FEED:-0}
-feed_url=${NMT_SPARKLE_FEED_URL:-https://github.com/f32y/NiumaTerm/releases/download/appcast/appcast.xml}
+feed_url=${NMT_SPARKLE_FEED_URL:-https://niumaterm-updates.f32.io/appcast.xml}
 # Must match `min_macos` in scripts/bundle-macos.sh, which is what
 # LSMinimumSystemVersion ends up saying: a binary built for a newer system than
 # the bundle advertises fails at launch, not at build.
