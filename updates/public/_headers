@@ -4,3 +4,8 @@
 /appcast.xml
   Cache-Control: public, max-age=300
   Content-Type: application/rss+xml; charset=utf-8
+
+# The Windows updater runs on the same six-hour schedule, so it wants the same
+# window. Content type is left to the extension, which already answers JSON.
+/windows/*
+  Cache-Control: public, max-age=300

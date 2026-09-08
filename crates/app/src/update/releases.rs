@@ -1,5 +1,5 @@
-//! Asking GitHub what the selected channel has published, and deciding whether
-//! it supersedes what is running.
+//! Asking the published manifest what the selected channel holds, and deciding
+//! whether it supersedes what is running.
 
 use std::slice::from_ref;
 use std::time::Duration;
@@ -11,34 +11,39 @@ use serde::Deserialize;
 
 use crate::update::APP_VERSION;
 
-/// GitHub's own notion of "latest" is the newest release that is neither a
-/// draft nor a prerelease, which is exactly the stable channel. Asking for it
-/// directly keeps a stable release findable however many nightlies were
-/// published after it; a page of the full list cannot promise that, since
-/// nightlies published daily push a months-old release off it.
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/f32y/NiumaTerm/releases/latest";
+/// Rendered by CI from GitHub's own "latest", the newest release that is
+/// neither a draft nor a prerelease, which is exactly the stable channel.
+/// Giving it a document of its own keeps a stable release findable however many
+/// nightlies were published after it; a page of the full list cannot promise
+/// that, since nightlies published daily push a months-old release off it.
+///
+/// Served as a static file rather than read from the GitHub API, which allows
+/// sixty unauthenticated requests an hour per address. Users who share an
+/// outbound address behind carrier or corporate NAT exhaust that between them,
+/// and the check then fails for a reason they can neither see nor fix.
+const LATEST_RELEASE_URL: &str = "https://niumaterm-updates.f32.io/windows/stable.json";
 
-/// The nightly channel has no such endpoint, so it scans the list, which
-/// arrives newest first. Thirty entries reach past the newest nightly unless
-/// the stable channel out-publishes it by that many in a row.
-const RELEASES_URL: &str = "https://api.github.com/repos/f32y/NiumaTerm/releases?per_page=30";
+/// The nightly channel scans a list instead, rendered from the newest thirty
+/// releases and ordered newest first. Thirty entries reach past the newest
+/// nightly unless the stable channel out-publishes it by that many in a row.
+const RELEASES_URL: &str = "https://niumaterm-updates.f32.io/windows/nightly.json";
 
 /// Where this repository's own release downloads live. An asset URL arrives in
-/// an API response, so following one unchecked would let that response point the
-/// download at a host and repository nobody chose; only the prefix is pinned,
-/// because GitHub redirects the download itself to its object storage.
+/// the fetched manifest, so following one unchecked would let whoever serves
+/// that document point the download at a host and repository nobody chose; only
+/// the prefix is pinned, because GitHub redirects the download itself to its
+/// object storage.
 pub(crate) const DOWNLOAD_URL_PREFIX: &str = "https://github.com/f32y/NiumaTerm/releases/download/";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// GitHub serves a few kilobytes per release. The cap is generous enough that
-/// only a response that is not the releases list can reach it.
+/// The manifest holds a few hundred bytes per release. The cap is generous
+/// enough that only a response other than the manifest can reach it.
 const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CheckError {
-    /// The request never produced a response to read, including the rate limit
-    /// GitHub applies per address to unauthenticated callers.
+    /// The request never produced a response to read.
     Unreachable,
     /// A response arrived but was not the releases list.
     Unreadable,
@@ -94,13 +99,12 @@ pub(crate) fn latest(channel: UpdateChannel) -> Result<Option<Release>, CheckErr
 }
 
 fn get(client: &Client, url: &str) -> Result<String, CheckError> {
-    // GitHub answers an unauthenticated request without a user agent with 403,
-    // so the header is required rather than merely polite.
+    // The agent string names the build doing the asking, which is what makes
+    // the serving edge's log useful when a release turns out to be unreadable
+    // for one version and fine for the rest.
     let response = client
         .get(url)
         .header("User-Agent", user_agent())
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .map_err(|_| CheckError::Unreachable)?;
 
@@ -123,9 +127,9 @@ pub(crate) fn select(body: &str, channel: UpdateChannel) -> Result<Option<Releas
     Ok(newest_in_channel(&entries, channel))
 }
 
-/// The single entry `/releases/latest` answers with. It is still checked
-/// against the stable channel: the endpoint promises the newest published
-/// non-prerelease, not that its tag is one this build can be compared against.
+/// The single entry the stable manifest holds. It is still checked against the
+/// stable channel: the manifest promises the newest published non-prerelease,
+/// leaving open whether its tag is one this build can be compared against.
 pub(crate) fn select_latest(body: &str) -> Result<Option<Release>, CheckError> {
     let entry = serde_json::from_str::<ReleaseEntry>(body).map_err(|_| CheckError::Unreadable)?;
 

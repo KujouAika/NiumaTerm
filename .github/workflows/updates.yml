@@ -1,4 +1,4 @@
-name: Appcast
+name: Update metadata
 
 on:
   workflow_call:
@@ -32,18 +32,22 @@ on:
         description: Token with Workers Scripts edit rights on the account
         required: true
 
-# The feed is served from https://niumaterm-updates.f32.io/appcast.xml by the
-# niumaterm-updates Worker. Sparkle needs one HTTPS address that never moves, because the address
-# is stamped into every build that ships and an installation only ever asks the
-# one it was built with. What makes the file trustworthy is the EdDSA signature
-# over the archive it names, so a static asset behind that address is enough.
+# Both updaters read what this publishes, from the niumaterm-updates Worker:
+# Sparkle takes the appcast at /appcast.xml, and the Windows updater takes the
+# release manifests under /windows. Each address is stamped into every build
+# that ships and an installation only ever asks the one it was built with, so
+# neither can move once a build carrying it is out.
+#
+# One job renders both, because a Workers assets deploy replaces the whole set:
+# separate jobs would each publish their own half and drop the other's.
 jobs:
   publish:
     runs-on: ubuntu-latest
     env:
+      ASSETS: updates/public
       FEED_URL: https://niumaterm-updates.f32.io/appcast.xml
-      # A Workers assets deploy replaces the whole set, so the rendered feed has
-      # to be placed in the asset directory rather than kept in source control.
+      # A deploy replaces the whole asset set, so everything served has to be
+      # rebuilt here rather than kept in source control.
       FEED_PATH: updates/public/appcast.xml
     steps:
       - uses: actions/checkout@v5
@@ -64,7 +68,8 @@ jobs:
               ;;
           esac
 
-      - run: |
+      - name: Render the appcast
+        run: |
           python3 scripts/update-appcast.py \
             --appcast "$FEED_PATH" \
             --label "$LABEL" \
@@ -82,11 +87,27 @@ jobs:
           LENGTH: ${{ inputs.length }}
           SIGNATURE: ${{ inputs.signature }}
 
+      # Projected from the API responses the Windows updater used to request
+      # directly, keeping the field names its deserializer already reads. Only
+      # the fields it looks at survive, so a release note or an uploader's
+      # profile never ends up republished here. Drafts are dropped because the
+      # tag of an unannounced version has no business on a public address.
+      - name: Render the Windows manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENTRY: '{tag_name, html_url, draft, prerelease, published_at, assets: [.assets[] | {name, browser_download_url}]}'
+        run: |
+          mkdir -p "$ASSETS/windows"
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
+            --jq "$ENTRY" > "$ASSETS/windows/stable.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+            --jq "[.[] | select(.draft | not) | $ENTRY]" > "$ASSETS/windows/nightly.json"
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
 
-      - name: Publish the feed
+      - name: Publish
         run: |
           npm ci
           npx wrangler deploy -c updates/wrangler.toml

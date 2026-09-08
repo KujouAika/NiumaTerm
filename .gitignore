@@ -41,5 +41,6 @@ node_modules
 # wrangler local dev state
 .wrangler/
 
-# Rendered by the appcast workflow into the site Worker asset directory.
+# Rendered by the update-metadata workflow into the Worker asset directory.
 updates/public/appcast.xml
+updates/public/windows/
