@@ -28,12 +28,23 @@ const LATEST_RELEASE_URL: &str = "https://niumaterm-updates.f32.io/windows/stabl
 /// nightly unless the stable channel out-publishes it by that many in a row.
 const RELEASES_URL: &str = "https://niumaterm-updates.f32.io/windows/nightly.json";
 
-/// Where this repository's own release downloads live. An asset URL arrives in
-/// the fetched manifest, so following one unchecked would let whoever serves
-/// that document point the download at a host and repository nobody chose; only
-/// the prefix is pinned, because GitHub redirects the download itself to its
-/// object storage.
-pub(crate) const DOWNLOAD_URL_PREFIX: &str = "https://github.com/f32y/NiumaTerm/releases/download/";
+/// Where the archive is served from: a Worker that caches this repository's
+/// release assets at Cloudflare's edge, because a client on a poor path to
+/// GitHub pays that cost on every update and the archive is the large part of
+/// one.
+///
+/// An asset URL arrives in the fetched manifest, so following one unchecked
+/// would let whoever serves that document point the download at a host nobody
+/// chose. Only the prefix is pinned, because the path below it names the tag
+/// and the file.
+pub(crate) const DOWNLOAD_URL_PREFIX: &str = "https://niumaterm-downloads.f32.io/";
+
+/// The digest is read from GitHub, a different host from the one serving the
+/// archive. It is a hundred bytes, so moving it would buy nothing, and holding
+/// the two apart means control of either host alone falls short of replacing an
+/// installer: an archive substituted at one still has to match a digest
+/// published at the other.
+pub(crate) const CHECKSUM_URL_PREFIX: &str = "https://github.com/f32y/NiumaTerm/releases/download/";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 

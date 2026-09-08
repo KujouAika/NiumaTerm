@@ -1,0 +1,15 @@
+# Caching front for the release assets published on GitHub. See
+# downloads/src/index.ts for what the route accepts and why.
+#
+# Its own Worker rather than a route on niumaterm-updates, which serves the
+# update metadata: that one is assets-only, and a deploy there replaces its
+# whole asset set, so the two have no reason to share a release cycle.
+name = "niumaterm-downloads"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# Creates the DNS record and provisions the certificate on deploy. One label
+# under the apex keeps it inside the free `*.f32.io` certificate.
+[[routes]]
+pattern = "niumaterm-downloads.f32.io"
+custom_domain = true
