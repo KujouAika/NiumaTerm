@@ -12,7 +12,7 @@
 | Path | Role |
 | --- | --- |
 | `.github/workflows/macos-package.yml` | Build → bundle → embed Sparkle → sign → notarize → archive. Reusable, plus `workflow_dispatch` so the signing path can be rehearsed |
-| `.github/workflows/appcast.yml` | Renders one release into the feed and deploys it |
+| `.github/workflows/updates.yml` | Renders the feed and the Windows manifests, and deploys both |
 | `scripts/update-appcast.py` | Renders and trims the appcast document |
 | `updates/wrangler.toml` | The Worker that serves the feed at `https://niumaterm-updates.f32.io/appcast.xml` |
 | `scripts/release-macos-local.sh` | The same build → sign → notarize → staple walk on a developer's own Mac, reading its credentials from the login keychain |
@@ -95,9 +95,13 @@ but static assets, configured in `updates/wrangler.toml` and bound to
 https://niumaterm-updates.f32.io/appcast.xml
 ```
 
-which is the URL `macos-package.yml` stamps as `SUFeedURL`. `appcast.yml`
+which is the URL `macos-package.yml` stamps as `SUFeedURL`. `updates.yml`
 fetches that address, prepends the run's item, and redeploys the Worker, so the
 served document is also the store the next run reads.
+
+The same Worker serves the Windows updater's release manifests under `/windows`,
+which is why one job renders both: a deploy replaces the whole asset set, so
+separate jobs would each publish their own half and drop the other's.
 
 The Worker is deliberately separate from the relay Worker at the repository
 root: deploying a Worker restarts it and drops every hibernating Durable Object
@@ -108,7 +112,8 @@ A deploy replaces the whole asset set. That is why the feed carries its own
 hostname, leaving `f32.io` free for anything published on a different schedule,
 and why `updates/public/appcast.xml` is git-ignored and written only by the
 workflow. Deploying this Worker by hand therefore serves whatever that directory
-happens to hold; re-running the appcast job restores the published document.
+happens to hold; re-running the update-metadata job restores what was
+published.
 
 One label under the apex also keeps the hostname inside the free `*.f32.io`
 certificate Cloudflare issues for the zone; a deeper name would need a paid
@@ -263,9 +268,11 @@ packaging job already measured.
 
 ## 5. Publishing order
 
-The appcast job must run **after** the GitHub release exists. Sparkle fetches
-the enclosure URL directly, so an item published against an asset that is not
-up yet is a 404 for every client that checks in between.
+The update-metadata job must run **after** the GitHub release exists. Both
+updaters fetch the download URL directly, so metadata published against an asset
+that is not up yet is a 404 for every client that checks in between. The Windows
+manifests are projected straight from the Releases API, which has nothing to
+report until the release is there either.
 
 ## 6. The remaining step: calling these from the release workflows
 
@@ -310,9 +317,9 @@ jobs:
           --title "$TAG"
           --generate-notes
 
-  appcast:
+  updates:
     needs: [package-macos, release]
-    uses: ./.github/workflows/appcast.yml
+    uses: ./.github/workflows/updates.yml
     with:
       label: ${{ inputs.tag || github.ref_name }}
       bundle-version: ${{ needs.package-macos.outputs.bundle-version }}

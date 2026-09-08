@@ -283,14 +283,14 @@ fn the_latest_endpoint_answers_the_stable_channel() {
     assert_eq!(release.label, "v1.3.0");
     assert_eq!(release.page_url, "https://example.invalid/r3");
 
-    // The endpoint promises the newest published non-prerelease, not that its
-    // tag is one this build can be placed against.
+    // The manifest promises the newest published non-prerelease, leaving open
+    // whether its tag is one this build can be placed against.
     let predates_the_naming = r#"{ "tag_name": "build-4", "html_url": "https://example.invalid/b4",
         "draft": false, "prerelease": false }"#;
     assert_eq!(select_latest(predates_the_naming).unwrap(), None);
 
-    // GitHub answers 404 for a repository with no full release yet, which
-    // reaches this as a body that is not a release.
+    // A repository with no full release yet has nothing to render here, and a
+    // 404 body reaches this as something other than a release.
     assert_eq!(
         select_latest(r#"{"message":"Not Found"}"#),
         Err(CheckError::Unreadable)

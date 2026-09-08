@@ -82,11 +82,11 @@ jobs:
             --prerelease \
             --notes "Automated nightly build of $GITHUB_SHA."
 
-  # After the release, because the feed entry points at an asset that has to be
+  # After the release, because the metadata points at assets that have to be
   # downloadable by the time an updater reads it.
-  appcast:
+  updates:
     needs: [name, package-macos, release]
-    uses: ./.github/workflows/appcast.yml
+    uses: ./.github/workflows/updates.yml
     with:
       label: ${{ needs.name.outputs.tag }}
       bundle-version: ${{ needs.package-macos.outputs.bundle-version }}

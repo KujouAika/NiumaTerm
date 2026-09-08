@@ -53,12 +53,12 @@ jobs:
           --title "$TAG"
           --generate-notes
 
-  # After the release, because the feed entry points at an asset that has to be
+  # After the release, because the metadata points at assets that have to be
   # downloadable by the time an updater reads it. A release carries no channel
   # name: the default channel is the one every installation sees.
-  appcast:
+  updates:
     needs: [package-macos, release]
-    uses: ./.github/workflows/appcast.yml
+    uses: ./.github/workflows/updates.yml
     with:
       label: ${{ inputs.tag || github.ref_name }}
       bundle-version: ${{ needs.package-macos.outputs.bundle-version }}
