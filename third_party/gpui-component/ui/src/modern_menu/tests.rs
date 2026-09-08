@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use gpui::{Bounds, Pixels, point, px, size};
 
+use crate::modern_menu::native_menu;
 use crate::modern_menu::{
     Activation, Entry, Item, ModernMenu, ModernMenuInput, normalize_separators,
 };
@@ -307,7 +308,6 @@ fn a_submenu_row_carries_its_own_entries() {
 /// into a native one, and most of this application's menus carry closures
 /// rather than actions: dropping those would leave the menu with nothing in it,
 /// which is shown as no menu at all.
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn a_native_menu_keeps_the_rows_whose_command_is_a_closure() {
     let menu = ModernMenu::new()
@@ -315,10 +315,15 @@ fn a_native_menu_keeps_the_rows_whose_command_is_a_closure() {
         .icon(crate::IconName::Settings)
         .submenu("more", |menu| menu.item("nested", |_, _| {}));
 
-    let native = crate::modern_menu::native_menu(normalize_separators(menu.entries));
+    let native = native_menu(normalize_separators(menu.entries));
 
     assert!(
         !native.is_empty(),
         "an icon row and a submenu built from closures both survive"
     );
+    let commands = ModernMenu::new().commands(|menu| {
+        menu.item("copy", |_, _| {})
+            .item_disabled("paste", true, |_, _| {})
+    });
+    assert!(!native_menu(commands.entries).is_empty());
 }

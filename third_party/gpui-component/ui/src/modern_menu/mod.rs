@@ -36,7 +36,7 @@ mod metrics;
 mod tests;
 mod view;
 
-pub use ext::ModernMenuExt;
+pub use crate::modern_menu::ext::ModernMenuExt;
 
 /// Runs against the window the menu was opened from, never the menu's own window.
 type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -127,6 +127,8 @@ struct MenuWindow {
     /// Whether the window has already been asked for ahead of time, so the
     /// request is only made once.
     prewarm_requested: bool,
+    /// A failed popup surface switches subsequent requests to the OS menu.
+    native_fallback: bool,
 }
 
 impl Global for MenuWindow {}
@@ -352,12 +354,7 @@ impl ModernMenu {
         self.show_as_native(position, window, cx);
     }
 
-    /// Stand-in for platforms without a flyout window, which is what the drawn
-    /// menu needs to reach beyond its owner and carry a backdrop material.
-    ///
-    /// [`NativeMenu`] dispatches actions and nothing else, so items carrying a
-    /// closure cannot be expressed and are dropped. Every menu that has to work
-    /// off Windows is built from actions for that reason.
+    /// Uses the platform menu while preserving actions and owner-window callbacks.
     #[cfg(not(target_os = "windows"))]
     fn show_as_native(self, position: Point<Pixels>, window: &mut Window, cx: &mut App) {
         native_menu(self.entries).show(position, window, cx);
@@ -365,20 +362,15 @@ impl ModernMenu {
 }
 
 /// The same entries as a menu the platform draws itself.
-#[cfg(not(target_os = "windows"))]
 fn native_menu(entries: Vec<Entry>) -> crate::native_menu::NativeMenu {
     let mut native = crate::native_menu::NativeMenu::new();
-    {
-        for entry in entries {
-            native = match entry {
-                Entry::Separator => native.separator(),
-                Entry::Item(item) => push_native(native, item),
-                Entry::Commands(items) => items.into_iter().fold(native, push_native),
-                Entry::Submenu(submenu) => {
-                    native.submenu(submenu.label, native_menu(submenu.entries))
-                }
-            };
-        }
+    for entry in entries {
+        native = match entry {
+            Entry::Separator => native.separator(),
+            Entry::Item(item) => push_native(native, item),
+            Entry::Commands(items) => items.into_iter().fold(native, push_native),
+            Entry::Submenu(submenu) => native.submenu(submenu.label, native_menu(submenu.entries)),
+        };
     }
 
     native
@@ -464,24 +456,30 @@ fn present(presentation: Presentation, cx: &mut App) {
     };
     let appearance = window_appearance(cx);
     let Some(menu) = menu_window(presentation.level, seed, appearance, cx) else {
+        show_native(presentation, cx);
         return;
     };
 
-    let Presentation {
-        level,
-        entries,
-        placement,
-        input,
-        font: menu_font,
-        work_area,
-        owner,
-        select_first,
-    } = presentation;
-    let opens_submenu = entries
+    let level = presentation.level;
+    let opens_submenu = presentation
+        .entries
         .iter()
         .any(|entry| matches!(entry, Entry::Submenu(_)));
 
-    let _ = menu.update(cx, |view, menu_window, cx| {
+    let mut pending = Some(presentation);
+    let updated = menu.update(cx, |view, menu_window, cx| {
+        let Presentation {
+            level,
+            entries,
+            placement,
+            input,
+            font: menu_font,
+            work_area,
+            owner,
+            select_first,
+        } = pending
+            .take()
+            .expect("a menu presentation is consumed once");
         // Shaped in the window that will render them rather than the one the
         // menu was opened from: the two have separate text systems, and a
         // label measured against the wrong one is given room that does not
@@ -560,6 +558,14 @@ fn present(presentation: Presentation, cx: &mut App) {
         menu_window.show_flyout(bounds);
         cx.notify();
     });
+    if let Err(error) = updated {
+        log::warn!("Menu window unavailable; using the OS menu: {error:#}");
+        cx.default_global::<MenuWindow>().native_fallback = true;
+        if let Some(presentation) = pending {
+            show_native(presentation, cx);
+        }
+        return;
+    }
 
     // Building a menu window costs the graphics setup described on
     // [`MenuWindow`], which under a hover would arrive long after the pointer
@@ -579,7 +585,6 @@ fn first_selectable(entries: &[Entry]) -> Option<usize> {
 /// Append `item` to a native menu, keeping both kinds of activation: the native
 /// menu runs a closure against the owner window the same way the drawn flyout
 /// does, so a menu built from handlers survives the translation.
-#[cfg(not(target_os = "windows"))]
 fn push_native(
     native: crate::native_menu::NativeMenu,
     item: Item,
@@ -738,7 +743,11 @@ fn menu_window(
     appearance: WindowAppearance,
     cx: &mut App,
 ) -> Option<WindowHandle<MenuView>> {
-    let windows = &cx.default_global::<MenuWindow>().windows;
+    let state = cx.default_global::<MenuWindow>();
+    if state.native_fallback {
+        return None;
+    }
+    let windows = &state.windows;
     if let Some(window) = windows.get(level) {
         return Some(*window);
     }
@@ -778,9 +787,40 @@ fn menu_window(
         }
         Err(error) => {
             log::error!("failed to build the modern menu window: {error:#}");
+            cx.default_global::<MenuWindow>().native_fallback = true;
             None
         }
     }
+}
+
+fn show_native(presentation: Presentation, cx: &mut App) {
+    let owner = presentation.owner;
+    let mut entries = presentation.entries;
+    let mut anchor = match presentation.placement {
+        Placement::Anchored { anchor, .. } => anchor,
+        Placement::Beside { parent, row_offset } => parent.origin + point(px(0.0), row_offset),
+    };
+    if presentation.level > 0 {
+        // Native menus run their own input loop. Restart at the visible root so
+        // its drawn ancestors cannot keep intercepting keys or pointer input.
+        let root = cx.default_global::<MenuWindow>().windows.first().copied();
+        if let Some(root) = root {
+            let _ = root.update(cx, |view, _, _| {
+                if view.owner == Some(owner) && !view.entries.is_empty() {
+                    entries = view.entries.clone();
+                    anchor = view.bounds.origin;
+                }
+            });
+        }
+    }
+    dismiss_modern_menu(cx);
+    // The request may have arrived while its owner was being updated. Dispatch
+    // after that update finishes, with coordinates relative to that same owner.
+    cx.defer(move |cx| {
+        let _ = owner.update(cx, |_, window, cx| {
+            native_menu(entries).show(anchor - window.bounds().origin, window, cx);
+        });
+    });
 }
 
 /// The menu follows the component theme rather than the system setting, so it
