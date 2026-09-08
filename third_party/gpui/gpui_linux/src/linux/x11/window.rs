@@ -32,7 +32,7 @@ use std::{
     cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ptr::NonNull, rc::Rc, sync::Arc,
 };
 
-use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
+use crate::linux::x11::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
 
 x11rb::atom_manager! {
     pub XcbAtoms: AtomsCookie {
@@ -1544,11 +1544,15 @@ impl PlatformWindow for X11Window {
         Ok(())
     }
 
-    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+    fn set_background_appearance(
+        &self,
+        background_appearance: WindowBackgroundAppearance,
+    ) -> anyhow::Result<()> {
         let mut state = self.0.state.borrow_mut();
         state.background_appearance = background_appearance;
         let transparent = state.is_transparent();
         state.renderer.update_transparency(transparent);
+        Ok(())
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
