@@ -1,14 +1,15 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, div, font,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowBackgroundAppearance, div, font,
+    px,
 };
 
 use crate::modern_menu::{MenuView, Row, metrics, snapshot};
 use crate::{ActiveTheme as _, Icon, IconName};
 
 impl Render for MenuView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let dark = theme.is_dark();
         let enabled_color = theme.popover_foreground;
@@ -20,7 +21,13 @@ impl Render for MenuView {
         let separator_color = if dark { gpui::white() } else { gpui::black() }
             .opacity(metrics::separator_alpha(dark));
         let stroke_color = gpui::black().opacity(metrics::surface_stroke_alpha(dark));
-        let tint_color = theme.tokens.popover.opacity(metrics::TINT_ALPHA);
+        let (tint_color, corner_radius) = match window.background_appearance() {
+            WindowBackgroundAppearance::CompositedBlur => (
+                theme.tokens.popover.opacity(metrics::TINT_ALPHA),
+                metrics::CORNER_RADIUS,
+            ),
+            _ => (theme.tokens.popover.opacity(1.0), px(0.0)),
+        };
 
         let selected = self.selected;
         // Snapshotted so the closures below can move what they need without
@@ -51,11 +58,11 @@ impl Render for MenuView {
 
         div()
             .size_full()
-            // The material itself comes from underneath this window; what is
-            // painted here is the tint and the inner surface stroke over it.
+            // A surface without a backdrop must cover every pixel, including
+            // its corners, so neither the desktop nor the clear color leaks in.
             .bg(tint_color)
             .py(metrics::PRESENTER_PADDING_Y)
-            .rounded(metrics::CORNER_RADIUS)
+            .rounded(corner_radius)
             .border(metrics::BORDER_WIDTH)
             .border_color(stroke_color)
             .font(
