@@ -49,6 +49,10 @@ jobs:
       # A deploy replaces the whole asset set, so everything served has to be
       # rebuilt here rather than kept in source control.
       FEED_PATH: updates/public/appcast.xml
+      # Archives are named on the caching front rather than on GitHub directly,
+      # so a client on a poor path to GitHub pays that cost once per cached
+      # object instead of on every update.
+      DOWNLOAD_BASE: https://niumaterm-downloads.f32.io
     steps:
       - uses: actions/checkout@v5
 
@@ -75,7 +79,7 @@ jobs:
             --label "$LABEL" \
             --bundle-version "$BUNDLE_VERSION" \
             --channel "$CHANNEL" \
-            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$LABEL/$ASSET" \
+            --url "$DOWNLOAD_BASE/$LABEL/$ASSET" \
             --page-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$LABEL" \
             --length "$LENGTH" \
             --signature "$SIGNATURE"
@@ -92,16 +96,38 @@ jobs:
       # the fields it looks at survive, so a release note or an uploader's
       # profile never ends up republished here. Drafts are dropped because the
       # tag of an unannounced version has no business on a public address.
+      #
+      # Archive URLs are rebuilt on the caching front. The digest beside each
+      # one keeps its GitHub address, which is where the updater pins it:
+      # substituting an archive then still means matching a digest published on
+      # a host that substitution does not reach.
       - name: Render the Windows manifests
         env:
           GH_TOKEN: ${{ github.token }}
-          ENTRY: '{tag_name, html_url, draft, prerelease, published_at, assets: [.assets[] | {name, browser_download_url}]}'
+          ENTRY: |
+            . as $release
+            | {
+                tag_name, html_url, draft, prerelease, published_at,
+                assets: [
+                  .assets[]
+                  | {
+                      name,
+                      browser_download_url: (
+                        if (.name | endswith(".zip"))
+                        then "\($base)/\($release.tag_name)/\(.name)"
+                        else .browser_download_url
+                        end
+                      )
+                    }
+                ]
+              }
         run: |
           mkdir -p "$ASSETS/windows"
           gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
-            --jq "$ENTRY" > "$ASSETS/windows/stable.json"
+            | jq --arg base "$DOWNLOAD_BASE" "$ENTRY" > "$ASSETS/windows/stable.json"
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
-            --jq "[.[] | select(.draft | not) | $ENTRY]" > "$ASSETS/windows/nightly.json"
+            | jq --arg base "$DOWNLOAD_BASE" "[.[] | select(.draft | not) | $ENTRY]" \
+              > "$ASSETS/windows/nightly.json"
 
       - uses: actions/setup-node@v5
         with:

@@ -15,6 +15,7 @@
 | `.github/workflows/updates.yml` | Renders the feed and the Windows manifests, and deploys both |
 | `scripts/update-appcast.py` | Renders and trims the appcast document |
 | `updates/wrangler.toml` | The Worker that serves the feed at `https://niumaterm-updates.f32.io/appcast.xml` |
+| `downloads/wrangler.toml` | The Worker that caches release archives at `https://niumaterm-downloads.f32.io` |
 | `scripts/release-macos-local.sh` | The same build → sign → notarize → staple walk on a developer's own Mac, reading its credentials from the login keychain |
 
 built on top of two files the macOS port already owns:
@@ -115,6 +116,18 @@ workflow. Deploying this Worker by hand therefore serves whatever that directory
 happens to hold; re-running the update-metadata job restores what was
 published.
 
+### 2.5 Where the archive comes from
+
+The enclosure the feed names points at `niumaterm-downloads.f32.io`, a second
+Worker that fetches the asset from GitHub Releases and lets Cloudflare's edge
+hold it. A client on a poor path to GitHub otherwise pays that cost on every
+update, and the archive is the large part of one; GitHub Releases stays the only
+place a build is published.
+
+Nothing about the signature changes: Sparkle checks the EdDSA signature in the
+item against `SUPublicEDKey` in the bundle, so where the bytes were served from
+does not enter into whether they are accepted.
+
 One label under the apex also keeps the hostname inside the free `*.f32.io`
 certificate Cloudflare issues for the zone; a deeper name would need a paid
 wildcard.
@@ -123,7 +136,7 @@ This address cannot change once a build carrying it has shipped. An
 installation only ever asks the URL it was built with, so moving the feed
 strands every copy already out there.
 
-### 2.5 Repository secrets and variables
+### 2.6 Repository secrets and variables
 
 Settings → Secrets and variables → Actions.
 
@@ -144,7 +157,7 @@ Settings → Secrets and variables → Actions.
 | `NMT_SPARKLE_PUBLIC_ED_KEY` | the public key `generate_keys` printed |
 | `CLOUDFLARE_ACCOUNT_ID` | the account owning `niumaterm-updates`; not a credential on its own |
 
-### 2.6 Bundle identifier
+### 2.7 Bundle identifier
 
 `io.f32.NiumaTerm`, already the default in `scripts/bundle-macos.sh`. It is
 permanent in three separate ways: Sparkle's preferences live under it in
