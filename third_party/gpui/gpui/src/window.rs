@@ -64,13 +64,13 @@ mod prompts;
 
 pub use a11y::A11ySubtreeBuilder;
 
-use self::a11y::A11y;
-#[cfg(not(target_family = "wasm"))]
-use self::a11y::ROOT_NODE_ID;
 use crate::util::{
     atomic_incr_if_not_zero, ceil_to_device_pixel, floor_to_device_pixel, round_half_toward_zero,
     round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
 };
+use crate::window::a11y::A11y;
+#[cfg(not(target_family = "wasm"))]
+use crate::window::a11y::ROOT_NODE_ID;
 pub use prompts::*;
 
 /// Default window size used when no explicit size is provided.
@@ -1401,7 +1401,7 @@ impl Window {
 
         platform_window
             .request_decorations(window_decorations.unwrap_or(WindowDecorations::Server));
-        platform_window.set_background_appearance(window_background);
+        platform_window.set_background_appearance(window_background)?;
 
         match window_bounds {
             WindowBounds::Fullscreen(_) => platform_window.toggle_fullscreen(),
@@ -2483,7 +2483,13 @@ impl Window {
     /// Sets the window background appearance.
     pub fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         self.platform_window
-            .set_background_appearance(background_appearance);
+            .set_background_appearance(background_appearance)
+            .log_err();
+    }
+
+    /// The background actually in use, including any platform fallback.
+    pub fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.platform_window.background_appearance()
     }
 
     /// Overrides the system-selected appearance for this window.

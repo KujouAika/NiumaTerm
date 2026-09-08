@@ -9,13 +9,26 @@ use windows::{
     },
     Win32::{
         Foundation::*, Graphics::Dwm::*, System::LibraryLoader::LoadLibraryA,
-        UI::WindowsAndMessaging::*,
+        System::SystemInformation::OSVERSIONINFOW, UI::WindowsAndMessaging::*,
     },
     core::{BOOL, PCSTR},
 };
 
 use crate::*;
 use gpui::*;
+
+pub(crate) fn windows_build_number() -> Option<u32> {
+    static BUILD: OnceLock<Option<u32>> = OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let mut version = OSVERSIONINFOW {
+            dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+            ..Default::default()
+        };
+        unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) }
+            .is_ok()
+            .then_some(version.dwBuildNumber)
+    })
+}
 
 pub(crate) trait HiLoWord {
     fn hiword(&self) -> u16;

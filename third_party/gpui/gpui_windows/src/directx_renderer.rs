@@ -69,8 +69,10 @@ pub(crate) struct DirectXRenderer {
     /// Remembered so a composition rebuilt after device loss matches the
     /// material the window is configured for.
     background_appearance: WindowBackgroundAppearance,
+    disable_direct_composition: bool,
+    composited_blur_available: bool,
     force_full_present: bool,
-    /// `None` when Direct Composition is disabled for this window.
+    /// Also empty while the composition is being rebuilt after device loss.
     composition: Option<WindowComposition>,
     font_info: &'static FontInfo,
 
@@ -213,12 +215,15 @@ impl DirectXRenderer {
         let composition = if disable_direct_composition {
             None
         } else {
-            Some(WindowComposition::new(
-                devices.dxgi_device.as_ref().unwrap(),
-                hwnd,
-                background_appearance,
-                &resources.swap_chain,
-            )?)
+            Some(
+                WindowComposition::new(
+                    devices.dxgi_device.as_ref().unwrap(),
+                    hwnd,
+                    background_appearance,
+                    &resources.swap_chain,
+                )?
+                .0,
+            )
         };
 
         Ok(DirectXRenderer {
@@ -230,6 +235,9 @@ impl DirectXRenderer {
             pipelines,
             target_alpha_enabled,
             background_appearance,
+            disable_direct_composition,
+            composited_blur_available: !disable_direct_composition
+                && windows_build_number().is_some_and(|build| build >= 22000),
             force_full_present: false,
             composition,
             font_info: Self::get_font_info(),
@@ -335,7 +343,7 @@ impl DirectXRenderer {
     }
 
     fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
-        let disable_direct_composition = self.composition.is_none();
+        let disable_direct_composition = self.disable_direct_composition;
 
         unsafe {
             #[cfg(debug_assertions)]
@@ -372,19 +380,20 @@ impl DirectXRenderer {
         .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
             .context("Creating DirectXGlobalElements")?;
-        let pipelines = DirectXRenderPipelines::new(&devices.device, self.target_alpha_enabled)
-            .context("Creating DirectXRenderPipelines")?;
-
-        let composition = if disable_direct_composition {
-            None
+        let (composition, background_appearance) = if disable_direct_composition {
+            (None, self.background_appearance)
         } else {
-            Some(WindowComposition::new(
+            let (composition, appearance) = WindowComposition::new(
                 devices.dxgi_device.as_ref().unwrap(),
                 self.hwnd,
                 self.background_appearance,
                 &resources.swap_chain,
-            )?)
+            )?;
+            (Some(composition), appearance)
         };
+        let target_alpha_enabled = target_alpha_enabled_for(background_appearance);
+        let pipelines = DirectXRenderPipelines::new(&devices.device, target_alpha_enabled)
+            .context("Creating DirectXRenderPipelines")?;
 
         self.atlas
             .handle_device_lost(&devices.device, &devices.device_context);
@@ -399,30 +408,48 @@ impl DirectXRenderer {
         self.globals = globals;
         self.pipelines = pipelines;
         self.composition = composition;
+        if self.background_appearance == WindowBackgroundAppearance::CompositedBlur
+            && background_appearance == WindowBackgroundAppearance::Opaque
+        {
+            self.composited_blur_available = false;
+        }
+        self.background_appearance = background_appearance;
+        self.target_alpha_enabled = target_alpha_enabled;
+        self.force_full_present = true;
         self.skip_draws = true;
         Ok(())
     }
 
     pub(crate) fn set_background_appearance(
         &mut self,
-        background_appearance: WindowBackgroundAppearance,
-    ) -> Result<()> {
-        self.background_appearance = background_appearance;
-        self.rebuild_composition(background_appearance)?;
-
-        let target_alpha_enabled = target_alpha_enabled_for(background_appearance);
-        if target_alpha_enabled == self.target_alpha_enabled {
-            return Ok(());
+        mut background_appearance: WindowBackgroundAppearance,
+    ) -> Result<WindowBackgroundAppearance> {
+        if background_appearance == WindowBackgroundAppearance::CompositedBlur
+            && !self.composited_blur_available
+        {
+            background_appearance = WindowBackgroundAppearance::Opaque;
+        }
+        let applied = self.rebuild_composition(background_appearance)?;
+        if background_appearance == WindowBackgroundAppearance::CompositedBlur
+            && applied == WindowBackgroundAppearance::Opaque
+        {
+            self.composited_blur_available = false;
         }
 
-        let devices = self.devices.as_ref().context("DirectX devices missing")?;
-        // Background appearance changes only on user input, so a one-time
-        // pipeline rebuild is simpler than retaining duplicate states.
-        self.pipelines = DirectXRenderPipelines::new(&devices.device, target_alpha_enabled)
-            .context("Recreating DirectX render pipelines for window transparency")?;
-        self.target_alpha_enabled = target_alpha_enabled;
+        let target_alpha_enabled = target_alpha_enabled_for(applied);
+        if target_alpha_enabled != self.target_alpha_enabled {
+            let devices = self.devices.as_ref().context("DirectX devices missing")?;
+            self.pipelines = DirectXRenderPipelines::new(&devices.device, target_alpha_enabled)
+                .context("Recreating DirectX render pipelines for window transparency")?;
+            self.target_alpha_enabled = target_alpha_enabled;
+        }
+        self.background_appearance = applied;
         self.force_full_present = true;
-        Ok(())
+        Ok(applied)
+    }
+
+    pub(crate) fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.background_appearance
     }
 
     /// Swap the composition when the appearance crosses between a DWM-drawn
@@ -432,12 +459,13 @@ impl DirectXRenderer {
     fn rebuild_composition(
         &mut self,
         background_appearance: WindowBackgroundAppearance,
-    ) -> Result<()> {
-        let Some(composition) = self.composition.as_ref() else {
-            return Ok(());
-        };
-        if composition.is_host_backdrop() == host_backdrop_wanted(background_appearance) {
-            return Ok(());
+    ) -> Result<WindowBackgroundAppearance> {
+        if self.disable_direct_composition
+            || self.composition.as_ref().is_some_and(|composition| {
+                composition.is_host_backdrop() == host_backdrop_wanted(background_appearance)
+            })
+        {
+            return Ok(background_appearance);
         }
 
         // Cloned so the borrow of `self` ends before the composition is replaced;
@@ -456,21 +484,17 @@ impl DirectXRenderer {
             .clone();
 
         self.composition = None;
-        self.composition = Some(WindowComposition::new(
-            &dxgi_device,
-            self.hwnd,
-            background_appearance,
-            &swap_chain,
-        )?);
+        let (composition, applied) =
+            WindowComposition::new(&dxgi_device, self.hwnd, background_appearance, &swap_chain)?;
+        self.composition = Some(composition);
         self.force_full_present = true;
 
-        Ok(())
+        Ok(applied)
     }
 
     pub(crate) fn draw(
         &mut self,
         scene: &Scene,
-        background_appearance: WindowBackgroundAppearance,
         damage: Option<&[Bounds<ScaledPixels>]>,
     ) -> Result<()> {
         if self.skip_draws {
@@ -480,7 +504,7 @@ impl DirectXRenderer {
         }
         debug_assert_eq!(
             self.target_alpha_enabled,
-            target_alpha_enabled_for(background_appearance)
+            target_alpha_enabled_for(self.background_appearance)
         );
         // Bound the present queue to one frame in flight (spec:
         // low-latency-present). Proceed on timeout rather than stall the UI
@@ -496,7 +520,7 @@ impl DirectXRenderer {
             }
             frame_stats::record_gpu_wait(wait_started_at.elapsed());
         }
-        self.pre_draw(&match background_appearance {
+        self.pre_draw(&match self.background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
         })?;
@@ -1338,24 +1362,38 @@ impl WindowComposition {
         hwnd: HWND,
         background_appearance: WindowBackgroundAppearance,
         swap_chain: &IDXGISwapChain1,
-    ) -> Result<Self> {
-        let composition = if host_backdrop_wanted(background_appearance) {
-            let composition =
-                HostBackdropComposition::new(hwnd).context("Creating HostBackdropComposition")?;
-            composition
-                .set_swap_chain(swap_chain)
-                .context("Setting swap chain for HostBackdropComposition")?;
-            Self::HostBackdrop(composition)
-        } else {
-            let composition =
-                DirectComposition::new(dxgi_device, hwnd).context("Creating DirectComposition")?;
-            composition
-                .set_swap_chain(swap_chain)
-                .context("Setting swap chain for DirectComposition")?;
-            Self::Direct(composition)
-        };
+    ) -> Result<(Self, WindowBackgroundAppearance)> {
+        let mut applied = background_appearance;
+        if host_backdrop_wanted(background_appearance) {
+            let host: Result<_> = (|| {
+                #[cfg(test)]
+                tests::check_backdrop_stage(tests::BackdropStage::Create)?;
+                let composition = HostBackdropComposition::new(hwnd)
+                    .context("Creating HostBackdropComposition")?;
+                #[cfg(test)]
+                tests::check_backdrop_stage(tests::BackdropStage::Attach)?;
+                composition
+                    .set_swap_chain(swap_chain)
+                    .context("Setting swap chain for HostBackdropComposition")?;
+                Ok(composition)
+            })();
+            match host {
+                Ok(composition) => return Ok((Self::HostBackdrop(composition), applied)),
+                Err(error) => {
+                    log::warn!(
+                        "Composited background unavailable; using an opaque surface: {error:#}"
+                    );
+                    applied = WindowBackgroundAppearance::Opaque;
+                }
+            }
+        }
 
-        Ok(composition)
+        let composition =
+            DirectComposition::new(dxgi_device, hwnd).context("Creating DirectComposition")?;
+        composition
+            .set_swap_chain(swap_chain)
+            .context("Setting swap chain for DirectComposition")?;
+        Ok((Self::Direct(composition), applied))
     }
 
     fn is_host_backdrop(&self) -> bool {
@@ -2698,20 +2736,156 @@ mod dxgi {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use crate::directx_devices::DirectXDevices;
+    use crate::directx_renderer::{
+        DirectXRenderer, WindowComposition, render_target_write_mask, target_alpha_enabled_for,
+    };
+    use crate::util::windows_build_number;
+    use anyhow::Result;
+    use gpui::{DevicePixels, Scene, WindowBackgroundAppearance, size};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Direct3D11::D3D11_COLOR_WRITE_ENABLE_ALPHA;
+    use windows::Win32::System::Ole::OleInitialize;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+        WS_EX_TOOLWINDOW, WS_POPUP,
+    };
+    use windows::core::w;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum BackdropStage {
+        Create,
+        Attach,
+    }
+
+    thread_local! {
+        static BACKDROP_FAILURE: Cell<Option<BackdropStage>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn check_backdrop_stage(stage: BackdropStage) -> Result<()> {
+        BACKDROP_FAILURE.with(|failure| {
+            if failure.get() == Some(stage) {
+                failure.set(None);
+                anyhow::bail!("injected backdrop initialization failure");
+            }
+            Ok(())
+        })
+    }
+
+    struct TestWindow(HWND);
+
+    impl TestWindow {
+        fn new() -> Result<Self> {
+            unsafe {
+                OleInitialize(None)?;
+                Ok(Self(CreateWindowExW(
+                    WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                    w!("STATIC"),
+                    w!("menu rendering test"),
+                    WS_POPUP,
+                    0,
+                    0,
+                    64,
+                    64,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?))
+            }
+        }
+    }
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            unsafe { DestroyWindow(self.0).unwrap() };
+        }
+    }
+
+    fn assert_opaque_surface_draws(renderer: &mut DirectXRenderer) -> Result<()> {
+        assert_eq!(
+            renderer.background_appearance(),
+            WindowBackgroundAppearance::Opaque
+        );
+        assert!(matches!(
+            renderer.composition,
+            Some(WindowComposition::Direct(_))
+        ));
+        assert!(!renderer.target_alpha_enabled);
+        renderer.resize(size(DevicePixels(64), DevicePixels(64)))?;
+        renderer.mark_drawable();
+        renderer.draw(&Scene::default(), None)
+    }
+
+    #[test]
+    fn unavailable_backdrop_keeps_a_drawable_surface_after_reuse_and_recovery() -> Result<()> {
+        let window = TestWindow::new()?;
+        let devices = DirectXDevices::new()?;
+        let mut renderer = DirectXRenderer::new(window.0, &devices, false)?;
+        renderer.composited_blur_available = false;
+        for _ in 0..2 {
+            assert_eq!(
+                renderer.set_background_appearance(WindowBackgroundAppearance::CompositedBlur)?,
+                WindowBackgroundAppearance::Opaque
+            );
+            assert_opaque_surface_draws(&mut renderer)?;
+        }
+        renderer.handle_device_lost_impl(&devices)?;
+        assert_opaque_surface_draws(&mut renderer)
+    }
+
+    #[test]
+    fn failed_backdrop_creation_or_attachment_restores_the_content_surface() -> Result<()> {
+        for stage in [BackdropStage::Create, BackdropStage::Attach] {
+            if stage == BackdropStage::Attach
+                && !windows_build_number().is_some_and(|build| build >= 22000)
+            {
+                continue;
+            }
+            let window = TestWindow::new()?;
+            let devices = DirectXDevices::new()?;
+            let mut renderer = DirectXRenderer::new(window.0, &devices, false)?;
+            renderer.composited_blur_available = true;
+            BACKDROP_FAILURE.with(|failure| failure.set(Some(stage)));
+            assert_eq!(
+                renderer.set_background_appearance(WindowBackgroundAppearance::CompositedBlur)?,
+                WindowBackgroundAppearance::Opaque
+            );
+            BACKDROP_FAILURE.with(|failure| assert!(failure.get().is_none()));
+            assert!(!renderer.composited_blur_available);
+            assert_opaque_surface_draws(&mut renderer)?;
+            assert_eq!(
+                renderer.set_background_appearance(WindowBackgroundAppearance::CompositedBlur)?,
+                WindowBackgroundAppearance::Opaque
+            );
+
+            // Recovery must make the same substitution if a previously usable
+            // backdrop cannot be rebuilt with the replacement graphics device.
+            renderer.background_appearance = WindowBackgroundAppearance::CompositedBlur;
+            BACKDROP_FAILURE.with(|failure| failure.set(Some(stage)));
+            renderer.handle_device_lost_impl(&devices)?;
+            BACKDROP_FAILURE.with(|failure| assert!(failure.get().is_none()));
+            assert_opaque_surface_draws(&mut renderer)?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn opaque_target_write_mask_blocks_only_alpha() {
-        let alpha = super::D3D11_COLOR_WRITE_ENABLE_ALPHA.0 as u8;
-        let opaque = super::render_target_write_mask(false);
-        let transparent = super::render_target_write_mask(true);
+        let alpha = D3D11_COLOR_WRITE_ENABLE_ALPHA.0 as u8;
+        let opaque = render_target_write_mask(false);
+        let transparent = render_target_write_mask(true);
 
         assert_eq!(opaque & alpha, 0);
         assert_ne!(transparent & alpha, 0);
         assert_eq!(opaque | alpha, transparent);
-        assert!(!super::target_alpha_enabled_for(
-            super::WindowBackgroundAppearance::Opaque
+        assert!(!target_alpha_enabled_for(
+            WindowBackgroundAppearance::Opaque
         ));
-        assert!(super::target_alpha_enabled_for(
-            super::WindowBackgroundAppearance::Blurred
+        assert!(target_alpha_enabled_for(
+            WindowBackgroundAppearance::Blurred
         ));
     }
 }

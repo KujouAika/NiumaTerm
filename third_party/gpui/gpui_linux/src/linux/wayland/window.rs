@@ -1313,10 +1313,14 @@ impl PlatformWindow for WaylandWindow {
         state.app_id = Some(app_id.to_owned());
     }
 
-    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+    fn set_background_appearance(
+        &self,
+        background_appearance: WindowBackgroundAppearance,
+    ) -> anyhow::Result<()> {
         let mut state = self.borrow_mut();
         state.background_appearance = background_appearance;
         update_window(state);
+        Ok(())
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {

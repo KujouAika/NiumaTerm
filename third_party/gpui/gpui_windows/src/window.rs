@@ -51,7 +51,6 @@ pub struct WindowsWindowState {
     pub border_offset: WindowBorderOffset,
     pub appearance: Cell<WindowAppearance>,
     pub appearance_override: Cell<Option<WindowAppearance>>,
-    pub background_appearance: Cell<WindowBackgroundAppearance>,
     pub scale_factor: Cell<f32>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
 
@@ -165,7 +164,6 @@ impl WindowsWindowState {
             border_offset,
             appearance: Cell::new(appearance),
             appearance_override: Cell::new(appearance_override),
-            background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
             scale_factor: Cell::new(scale_factor),
             restore_from_minimized: Cell::new(restore_from_minimized),
             min_size,
@@ -611,6 +609,9 @@ impl Drop for WindowsWindow {
 }
 
 fn configure_flyout_window(hwnd: HWND) {
+    if !windows_build_number().is_some_and(|build| build >= 22000) {
+        return;
+    }
     // The XAML menu surface uses an eight-pixel overlay radius. DWM clips the
     // backdrop and the swap chain to the same outer shape.
     let preference = DWMWCP_ROUND;
@@ -872,7 +873,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
-        self.state.background_appearance.get()
+        self.state.renderer.borrow().background_appearance()
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -899,26 +900,25 @@ impl PlatformWindow for WindowsWindow {
         configure_dwm_dark_mode(self.0.hwnd, appearance);
     }
 
-    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
-        if self.state.background_appearance.get() == background_appearance {
-            return;
+    fn set_background_appearance(
+        &self,
+        background_appearance: WindowBackgroundAppearance,
+    ) -> Result<()> {
+        if self.background_appearance() == background_appearance {
+            return Ok(());
         }
 
         // Keep the current backdrop active while outstanding surface updates
         // finish and the replacement alpha pipeline is created.
         unsafe { DwmFlush() }.log_err();
-        if let Err(error) = self
+        let applied = self
             .state
             .renderer
             .borrow_mut()
             .set_background_appearance(background_appearance)
-        {
-            log::error!("Failed to switch window render pipeline: {error:#}");
-            return;
-        }
-
-        self.state.background_appearance.set(background_appearance);
-        apply_background_appearance(self.0.hwnd, background_appearance);
+            .context("Failed to switch window render pipeline")?;
+        apply_background_appearance(self.0.hwnd, applied);
+        Ok(())
     }
 
     fn minimize(&self) {
@@ -1069,7 +1069,7 @@ impl PlatformWindow for WindowsWindow {
         self.state
             .renderer
             .borrow_mut()
-            .draw(scene, self.state.background_appearance.get(), damage)
+            .draw(scene, damage)
             .log_err();
     }
 
@@ -1711,12 +1711,9 @@ pub(crate) fn resolve_window_appearance(
 /// legacy SetWindowCompositionAttribute path on builds without
 /// DWMWA_SYSTEMBACKDROP_TYPE.
 fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: u32) -> bool {
-    let mut version = unsafe { std::mem::zeroed() };
-    let status = unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) };
-
     // DWMWA_SYSTEMBACKDROP_TYPE is available only on version 22621 or later
     // using SetWindowCompositionAttributeType as a fallback
-    if !status.is_ok() || version.dwBuildNumber < 22621 {
+    if !windows_build_number().is_some_and(|build| build >= 22621) {
         return false;
     }
 
@@ -1732,10 +1729,7 @@ fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: u32) -> bool 
 }
 
 fn set_window_composition_attribute(hwnd: HWND, color: Option<Color>, state: u32) {
-    let mut version = unsafe { std::mem::zeroed() };
-    let status = unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) };
-
-    if !status.is_ok() || version.dwBuildNumber < 17763 {
+    if !windows_build_number().is_some_and(|build| build >= 17763) {
         return;
     }
 
@@ -1787,7 +1781,7 @@ fn set_non_rude_hwnd(hwnd: HWND, non_rude: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClickState, drop_description, resolve_window_appearance};
+    use crate::window::{ClickState, drop_description, resolve_window_appearance};
     use gpui::{DevicePixels, MouseButton, WindowAppearance, point};
     use std::time::Duration;
     use windows::Win32::UI::Shell::DROPIMAGE_COPY;

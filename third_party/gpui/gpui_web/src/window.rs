@@ -596,7 +596,12 @@ impl PlatformWindow for WebWindow {
         }
     }
 
-    fn set_background_appearance(&self, _background: WindowBackgroundAppearance) {}
+    fn set_background_appearance(
+        &self,
+        _background: WindowBackgroundAppearance,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     fn minimize(&self) {
         log::warn!("WebWindow::minimize is not supported in the browser");

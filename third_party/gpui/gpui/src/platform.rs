@@ -645,7 +645,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn background_appearance(&self) -> WindowBackgroundAppearance;
     fn set_title(&mut self, title: &str);
     fn set_appearance_override(&self, _appearance: Option<WindowAppearance>) {}
-    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
+    /// Applies the background, using a supported substitute when needed. Errors
+    /// mean the window could not establish a usable rendering surface.
+    fn set_background_appearance(
+        &self,
+        background_appearance: WindowBackgroundAppearance,
+    ) -> anyhow::Result<()>;
     fn minimize(&self);
     /// Take the window off the screen without tearing it down, for a close
     /// whose teardown is slower than the user should have to watch. The
@@ -2398,7 +2403,7 @@ impl From<String> for ClipboardString {
 
 #[cfg(test)]
 mod image_tests {
-    use super::*;
+    use crate::platform::*;
     use std::sync::Arc;
 
     #[test]
@@ -2422,7 +2427,7 @@ mod image_tests {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
 mod tests {
-    use super::*;
+    use crate::platform::*;
     use std::collections::HashSet;
 
     #[test]
