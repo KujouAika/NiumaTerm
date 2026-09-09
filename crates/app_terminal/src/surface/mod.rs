@@ -57,7 +57,19 @@ impl TerminalSurface {
     }
 
     pub(crate) fn set_theme_colors(&self, colors: &Colors) {
-        self.session.engine.lock().set_theme_colors(colors);
+        let next = {
+            let mut engine = self.session.engine.lock();
+            engine.set_theme_colors(colors);
+
+            // An idle PTY may never publish another frame. Refresh the cached
+            // colors now so text changes together with the theme background.
+            engine.snapshot()
+        };
+
+        match next {
+            Ok(next) => *self.session.render_buffer.lock() = next,
+            Err(error) => warn!("failed to refresh terminal after theme change: {error}"),
+        }
     }
 
     pub(crate) fn set_cursor_shape(&self, shape: CursorShape) -> bool {
