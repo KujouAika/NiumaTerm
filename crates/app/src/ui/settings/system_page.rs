@@ -1,3 +1,5 @@
+#[cfg(any(windows, test))]
+use anyhow::Result;
 use nmt_i18n::i18n;
 
 #[cfg(target_os = "macos")]
@@ -104,13 +106,9 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
             ))
             .item(SettingItem::new(
                 i18n("settings-system-notification"),
-                SettingField::switch(
-                    |_| system_notification_enabled(),
-                    |value, _| {
-                        if let Err(err) = set_system_notification_enabled(value) {
-                            warn!("failed to toggle system notifications: {err:#}");
-                        }
-                    },
+                windows_notification_field(
+                    system_notification_enabled,
+                    set_system_notification_enabled,
                 ),
             ))
             .item(
@@ -171,5 +169,23 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                 )
                 .default_value(SharedString::from(NewlineShortcut::CtrlEnter.as_str())),
             )),
+    )
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn windows_notification_field(
+    registered: impl Fn() -> bool + 'static,
+    set_registered: impl Fn(bool) -> Result<()> + 'static,
+) -> SettingField<bool> {
+    SettingField::switch(
+        move |cx| cx.global::<AppSettings>().send_system_notifications && registered(),
+        move |value, cx| match set_registered(value) {
+            Ok(()) => {
+                // Imported settings can disable delivery while Windows remains
+                // registered. Update both gates only after registration succeeds.
+                cx.global_mut::<AppSettings>().send_system_notifications = value;
+            }
+            Err(err) => warn!("failed to toggle system notifications: {err:#}"),
+        },
     )
 }
