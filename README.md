@@ -4,6 +4,8 @@
 
 <h1 align="center">NiumaTerm</h1>
 
+<h2 align="center">Forked from <a href="https://github.com/f32y/NiumaTerm">f32y/NiumaTerm</a></h2>
+
 <p align="center">A high performance multi-tab, multi-workspace terminal application.</p>
 
 <p align="center">
