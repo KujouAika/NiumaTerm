@@ -16,6 +16,12 @@
   <a href="#macos"><img src="https://img.shields.io/badge/platform-macOS%20Apple%20silicon-333333?logo=apple&amp;logoColor=white" alt="Platform: macOS Apple silicon"></a>
 </p>
 
+## About this fork
+
+This is an independently maintained fork of [f32y/NiumaTerm](https://github.com/f32y/NiumaTerm), focused on improving the macOS experience, terminal menus, and visual design. It is maintained separately from the upstream project and is not an official upstream release.
+
+Thanks to f32y and all upstream contributors for building the foundation of this project. The original copyright and [MIT license](LICENSE) are preserved.
+
 ## Features
 
 - Feature-rich terminal based on [rioterm](https://github.com/raphamorim/rio)
