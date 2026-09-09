@@ -4,7 +4,9 @@
 
 <h1 align="center">NiumaTerm</h1>
 
-<h2 align="center">Forked from <a href="https://github.com/f32y/NiumaTerm">f32y/NiumaTerm</a></h2>
+<p align="center">
+  <a href="https://github.com/f32y/NiumaTerm"><img src="https://img.shields.io/badge/Forked%20from-f32y%2FNiumaTerm-181717?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Forked from f32y/NiumaTerm" width="360"></a>
+</p>
 
 <p align="center">A high performance multi-tab, multi-workspace terminal application.</p>
 
