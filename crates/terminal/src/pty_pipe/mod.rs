@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{self, Arc, mpsc};
 use std::thread::{Builder, JoinHandle};
-use std::{cell, error, fmt, mem, path, time};
+use std::{cell, error, fmt, path, time};
 
 #[cfg(target_os = "linux")]
 use libc::EIO;
@@ -201,9 +201,7 @@ fn publish_render_buffer(
         back.set_cursor_visible(false);
     }
 
-    mem::swap(&mut *front.lock(), back);
-
-    true
+    front.lock().publish_snapshot(back)
 }
 
 /// Convert `scrollback-history-limit` (in **lines**) to the engine's

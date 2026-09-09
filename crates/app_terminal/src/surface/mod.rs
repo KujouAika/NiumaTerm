@@ -67,7 +67,12 @@ impl TerminalSurface {
         };
 
         match next {
-            Ok(next) => *self.session.render_buffer.lock() = next,
+            Ok(mut next) => {
+                self.session
+                    .render_buffer
+                    .lock()
+                    .publish_snapshot(&mut next);
+            }
             Err(error) => warn!("failed to refresh terminal after theme change: {error}"),
         }
     }
@@ -84,7 +89,7 @@ impl TerminalSurface {
             engine.snapshot()
         };
 
-        let next = match next {
+        let mut next = match next {
             Ok(next) => next,
             Err(error) => {
                 warn!("failed to refresh terminal after cursor shape change: {error}");
@@ -92,7 +97,10 @@ impl TerminalSurface {
             }
         };
 
-        *self.session.render_buffer.lock() = next;
+        self.session
+            .render_buffer
+            .lock()
+            .publish_snapshot(&mut next);
 
         true
     }

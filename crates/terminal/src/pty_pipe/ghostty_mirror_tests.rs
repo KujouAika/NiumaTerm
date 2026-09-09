@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::{io, sync, time};
 
-use nmt_config::colors::Colors;
+use nmt_config::colors::{Colors, NamedColor};
 use nmt_platform::conpty_realign::{
     max_cup_row_col, rewrite_conpty_resize_echo_cup_rows, su_realign_count,
 };
@@ -925,4 +925,36 @@ echo two\r\n\x1b]133;C\x07two\r\n\
         machine.ghostty.lock().has_prompt_tagged_row(),
         "engine rows must carry semantic prompt tags after mark forwarding"
     );
+}
+
+#[test]
+fn delayed_pty_snapshot_cannot_replace_new_theme_or_output() {
+    let mut engine = ghostty::GhosttyTerminal::new(40, 3, 100).unwrap();
+    engine.write_vt(b"old output");
+    let mut old_pty = engine.snapshot().unwrap();
+    let colors = Colors {
+        foreground: [26.0 / 255.0, 51.0 / 255.0, 77.0 / 255.0, 1.0],
+        ..Colors::default()
+    };
+    engine.set_theme_colors(&colors);
+    let mut theme = engine.snapshot().unwrap();
+    let front = FairMutex::new(RenderBuffer::new(40, 3));
+    assert!(front.lock().publish_snapshot(&mut theme));
+    assert!(!publish_render_buffer(&front, &mut old_pty, Ok(()), false));
+    assert_eq!(
+        front.lock().colors()[NamedColor::Foreground],
+        Some(colors.foreground)
+    );
+
+    let mut delayed_ui = engine.snapshot().unwrap();
+    engine.write_vt(b" new output");
+    let mut current_pty = engine.snapshot().unwrap();
+    assert!(publish_render_buffer(
+        &front,
+        &mut current_pty,
+        Ok(()),
+        false
+    ));
+    assert!(!front.lock().publish_snapshot(&mut delayed_ui));
+    assert!(render_buffer_row_text(&front.lock(), 0).contains("new output"));
 }
