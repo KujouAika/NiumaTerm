@@ -35,6 +35,8 @@ mod agent_profile_list;
 mod appearance_page;
 mod card;
 mod fields;
+#[cfg(target_os = "macos")]
+mod macos_page;
 mod opacity;
 mod profiles_page;
 #[cfg(windows)]
@@ -83,6 +85,7 @@ use nmt_agent::update::{DiscoverySupport, InstallationKey, ProviderKind, UpdateP
 #[cfg(test)]
 use nmt_config::CursorShape;
 use nmt_config::system::{NewlineShortcut, WarnBeforeTerminatingShell};
+#[cfg(windows)]
 use nmt_platform::{
     is_shell_integration_registered, register_shell_integration, set_system_notification_enabled,
     shell_integration_dll_mismatched, system_notification_enabled, unregister_shell_integration,
@@ -201,7 +204,10 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
         .background_image
         .is_some();
 
+    #[cfg(windows)]
     let shell_integration_mismatched = shell_integration_dll_mismatched();
+    #[cfg(not(windows))]
+    let shell_integration_mismatched = false;
 
     let sidebar_style = sidebar_surface(cx).border_r_0();
 

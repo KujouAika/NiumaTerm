@@ -924,3 +924,10 @@ git-status-refresh-interval = 1
     assert_eq!(appearance.background_image, None);
     assert_eq!(appearance.git_status_refresh_interval, 30);
 }
+
+#[test]
+fn older_system_settings_keep_native_notifications_enabled() {
+    let config: Config = parse_toml("[system]\nopen-in-best-workspace = false\n").unwrap();
+    assert!(config.system.send_system_notifications);
+    assert!(!config.system.open_in_best_workspace);
+}

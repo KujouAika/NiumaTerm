@@ -227,3 +227,6 @@ impl From<&WinsizeBuilder> for Winsize {
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+pub mod macos_notifications;
