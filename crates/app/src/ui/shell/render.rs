@@ -19,6 +19,7 @@ pub(super) const TAB_STRIP_MIN_WIDTH: f32 = 120.0;
 /// reads it to re-anchor the macOS close/minimize/zoom buttons, which AppKit
 /// would otherwise center in its own, shorter strip.
 pub(crate) const TITLE_BAR_HEIGHT: f32 = 44.0;
+const TITLE_BAR_LEADING_INSET: f32 = 80.0;
 /// A leading-zone control: square, and spaced tightly enough that the group
 /// reads as one cluster rather than as separate buttons.
 const TITLE_BAR_BUTTON: f32 = 26.0;
@@ -73,6 +74,13 @@ impl Shell {
         // Vertical tabs move the strip into the sidebar, which leaves the
         // middle of the bar free to name the session on screen instead.
         let vertical_tabs = cx.global::<AppSettings>().tab_bar_style == TabBarStyle::Vertical;
+        let leading_width = if cfg!(target_os = "macos") {
+            (self.sidebar.width + ui::composition::FLOATING_SURFACE_SIDE_INSET
+                - TITLE_BAR_LEADING_INSET)
+                .max(0.0)
+        } else {
+            self.sidebar.width - ui::composition::FLOATING_SURFACE_SIDE_INSET
+        };
 
         // Interactive chrome lives in the titlebar but is wrapped in
         // `occlude()`: that blocks the drag hitbox beneath it, so Windows
@@ -82,6 +90,9 @@ impl Shell {
         // Add future titlebar buttons the same way.
         TitleBar::new()
             .h(px(TITLE_BAR_HEIGHT))
+            .when(cfg!(target_os = "macos"), |bar| {
+                bar.pl(px(TITLE_BAR_LEADING_INSET))
+            })
             // The default X calls `remove_window()` directly (no
             // WM_CLOSE), skipping `on_window_should_close` — so the
             // shared close confirmation is handled here too.
@@ -92,14 +103,11 @@ impl Shell {
             }))
             .child(
                 h_flex()
-                    // Sized to the sidebar column so these controls line up
-                    // with it, but shrinkable and clipped: on a narrow window
-                    // the alignment is worth less than keeping the window
-                    // controls on screen, so this block gives up width before
-                    // anything to its right does.
-                    .w(px(
-                        self.sidebar.width - ui::composition::FLOATING_SURFACE_SIDE_INSET
-                    ))
+                    // Subtract the title bar's existing inset so the tabs line up
+                    // with the content surface after its sidebar gutter.
+                    // On narrow windows this column can shrink and clip before
+                    // the tabs and window controls lose their usable width.
+                    .w(px(leading_width))
                     .min_w_0()
                     .overflow_hidden()
                     .gap(px(TITLE_BAR_BUTTON_GAP))
