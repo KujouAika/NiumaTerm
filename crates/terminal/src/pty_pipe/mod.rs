@@ -879,6 +879,12 @@ where
                         warn!("pty set_winsize failed: {err}");
                     }
                 }
+                Msg::SetThemeColors(colors) => {
+                    self.ghostty.lock().set_theme_colors(&colors);
+                    if let Err(error) = self.flush_engine_state(true) {
+                        warn!("failed to refresh terminal theme: {error}");
+                    }
+                }
                 Msg::Shutdown => return false,
             }
         }
