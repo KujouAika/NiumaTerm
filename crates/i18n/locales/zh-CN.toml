@@ -1022,3 +1022,5 @@
 "settings-system-permission-refresh" = "刷新"
 "settings-system-permission-request" = "申请权限"
 "settings-system-integration" = "系统集成"
+
+"sidebar-git-no-text-diff" = "无文本差异"

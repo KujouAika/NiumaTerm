@@ -1023,3 +1023,5 @@
 "settings-system-permission-refresh" = "Refresh"
 "settings-system-permission-request" = "Request permission"
 "settings-system-integration" = "System integration"
+
+"sidebar-git-no-text-diff" = "No text changes"

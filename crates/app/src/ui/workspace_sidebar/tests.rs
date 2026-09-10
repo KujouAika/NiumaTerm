@@ -52,3 +52,44 @@ fn both_halves_of_the_column_are_spoken_together() {
         "Needs input, Command failed"
     );
 }
+
+struct WorkspaceButtonProbe;
+
+impl gpui::Render for WorkspaceButtonProbe {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _, div, px};
+
+        use crate::ui::workspace_sidebar::rows::workspace_row_button;
+
+        div().size_full().child(
+            div()
+                .w(px(300.))
+                .child(workspace_row_button("idle-workspace", cx).child("Workspace"))
+                .debug_selector(|| "workspace-row".into()),
+        )
+    }
+}
+
+#[gpui::test]
+fn idle_workspace_button_renders_and_accepts_hover(cx: &mut gpui::TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext, point, px};
+    cx.update(gpui_component::init);
+    let window = cx.add_window(|_, _| WorkspaceButtonProbe);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    cx.run_until_parked();
+    cx.refresh().unwrap();
+    let bounds = cx
+        .debug_bounds("workspace-row")
+        .expect("workspace row was not painted");
+    assert_eq!(bounds.size.width, px(300.));
+    assert!(bounds.size.height > px(0.));
+    cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+    cx.refresh().unwrap();
+    cx.simulate_mouse_move(point(px(350.), px(100.)), None, Modifiers::default());
+    cx.refresh().unwrap();
+    assert_eq!(cx.debug_bounds("workspace-row"), Some(bounds));
+}
