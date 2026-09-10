@@ -17,6 +17,9 @@ pub(super) fn workspace_row_button(id: impl Into<ElementId>, cx: &App) -> Button
         )
         .w_full()
         .h_auto()
+        // Base buttons use a one-em line box; clipped directory text needs
+        // leading so descenders remain visible inside the row.
+        .line_height(relative(1.5))
         // Reserve the mark's width and a readable gap without moving the
         // row background or changing its trailing alignment.
         .pl(px(WORKSPACE_NAME_INSET))

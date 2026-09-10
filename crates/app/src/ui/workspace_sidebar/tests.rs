@@ -63,12 +63,21 @@ impl gpui::Render for WorkspaceButtonProbe {
     ) -> impl gpui::IntoElement {
         use gpui::{InteractiveElement as _, ParentElement as _, Styled as _, div, px};
 
+        use crate::ui::workspace_sidebar::WORKSPACE_NAME_TEXT;
         use crate::ui::workspace_sidebar::rows::workspace_row_button;
 
         div().size_full().child(
             div()
                 .w(px(300.))
-                .child(workspace_row_button("idle-workspace", cx).child("Workspace"))
+                .child(
+                    workspace_row_button("idle-workspace", cx).child(
+                        div()
+                            .text_size(px(WORKSPACE_NAME_TEXT))
+                            .truncate()
+                            .child("mipmap gyjp 工作区")
+                            .debug_selector(|| "workspace-name".into()),
+                    ),
+                )
                 .debug_selector(|| "workspace-row".into()),
         )
     }
@@ -86,7 +95,14 @@ fn idle_workspace_button_renders_and_accepts_hover(cx: &mut gpui::TestAppContext
         .debug_bounds("workspace-row")
         .expect("workspace row was not painted");
     assert_eq!(bounds.size.width, px(300.));
-    assert!(bounds.size.height > px(0.));
+    let name = cx
+        .debug_bounds("workspace-name")
+        .expect("workspace name was not painted");
+    assert!(
+        name.size.height >= px(17.),
+        "the clipped text box needs room for descenders: {name:?}"
+    );
+    assert!(bounds.top() < name.top() && bounds.bottom() > name.bottom());
     cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
     cx.refresh().unwrap();
     cx.simulate_mouse_move(point(px(350.), px(100.)), None, Modifiers::default());
