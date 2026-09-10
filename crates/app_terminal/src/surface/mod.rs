@@ -6,6 +6,7 @@ use nmt_config::colors::Colors;
 use nmt_config::local_state::TabState;
 use nmt_input::keyboard::ModifiersState;
 use nmt_terminal::clipboard::{Clipboard, ClipboardType};
+use nmt_terminal::event::Msg;
 use nmt_terminal::render_buffer::RenderBuffer;
 use nmt_terminal::terminal::pos::{Line, Pos};
 use parking_lot::Mutex;
@@ -56,20 +57,19 @@ impl TerminalSurface {
         self.session.engine.lock().title()
     }
 
-    pub(crate) fn set_theme_colors(&self, colors: &Colors) {
-        let next = {
-            let mut engine = self.session.engine.lock();
-            engine.set_theme_colors(colors);
-
-            // An idle PTY may never publish another frame. Refresh the cached
-            // colors now so text changes together with the theme background.
-            engine.snapshot()
-        };
-
-        match next {
-            Ok(next) => *self.session.render_buffer.lock() = next,
-            Err(error) => warn!("failed to refresh terminal after theme change: {error}"),
+    pub(crate) fn set_theme_colors(&self, colors: &Colors) -> bool {
+        // The PTY publisher owns synchronized-update timing and progress cursor
+        // suppression, so a theme change must use that same publication path.
+        if let Err(error) = self
+            .session
+            .messenger
+            .send(Msg::SetThemeColors(Box::new(*colors)))
+        {
+            warn!("failed to request terminal theme refresh: {error}");
+            return false;
         }
+
+        true
     }
 
     pub(crate) fn set_cursor_shape(&self, shape: CursorShape) -> bool {
@@ -84,7 +84,7 @@ impl TerminalSurface {
             engine.snapshot()
         };
 
-        let next = match next {
+        let mut next = match next {
             Ok(next) => next,
             Err(error) => {
                 warn!("failed to refresh terminal after cursor shape change: {error}");
@@ -92,7 +92,10 @@ impl TerminalSurface {
             }
         };
 
-        *self.session.render_buffer.lock() = next;
+        self.session
+            .render_buffer
+            .lock()
+            .publish_snapshot(&mut next);
 
         true
     }

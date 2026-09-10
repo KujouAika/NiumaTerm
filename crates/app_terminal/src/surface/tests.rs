@@ -1,4 +1,10 @@
 #[cfg(unix)]
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
+#[cfg(unix)]
 use nmt_config::colors::{ColorRgb, Colors, NamedColor};
 use nmt_config::local_state::TabState;
 use nmt_input::keyboard::ModifiersState;
@@ -14,10 +20,16 @@ use crate::surface::{
     mouse_motion_code, mouse_report_mods, paste_payload, selection_screen_range,
     tab_state_with_cwd,
 };
+#[cfg(unix)]
+use crate::wake::WakeSender;
 
 #[cfg(unix)]
 #[test]
 fn theme_switch_updates_idle_terminal_snapshot() {
+    let (wake_tx, wake_rx) = mpsc::channel();
+    let wake = WakeSender::from_fn(move |event| {
+        let _ = wake_tx.send(event);
+    });
     let surface = TerminalSurface::new(
         TerminalSessionConfig {
             shell: Some("/bin/cat".into()),
@@ -26,7 +38,7 @@ fn theme_switch_updates_idle_terminal_snapshot() {
             ..Default::default()
         },
         1,
-        None,
+        Some(wake),
     )
     .unwrap();
 
@@ -44,7 +56,20 @@ fn theme_switch_updates_idle_terminal_snapshot() {
         let rgb = |[r, g, b]: [u8; 3]| ColorRgb { r, g, b }.to_arr();
         colors.foreground = rgb(foreground);
         colors.background.0 = rgb(background);
-        surface.set_theme_colors(&colors);
+        while wake_rx.try_recv().is_ok() {}
+        assert!(surface.set_theme_colors(&colors));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            wake_rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("idle theme refresh must wake the view");
+            if surface.with_render_buffer(|buffer| {
+                buffer.colors()[NamedColor::Foreground] == Some(rgb(foreground))
+                    && buffer.colors()[NamedColor::Background] == Some(rgb(background))
+            }) {
+                break;
+            }
+        }
 
         surface.with_render_buffer(|buffer| {
             assert_eq!(
