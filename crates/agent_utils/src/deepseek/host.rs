@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
 
-use nmt_platform::process::KillOnCloseJob;
+use nmt_platform::process::{KillOnCloseJob, decode_child_output};
 use parking_lot::Mutex;
 
 use crate::deepseek::api::ApiClient;
@@ -70,7 +70,6 @@ impl HostError {
 /// observed not to end a process that had already run a turn.
 pub struct Host {
     client: ApiClient,
-    base: String,
     /// Held for its Drop: releasing the job terminates the host and every
     /// descendant it spawned.
     _job: KillOnCloseJob,
@@ -188,7 +187,8 @@ impl Host {
         let retained = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&retained);
         thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in BufReader::new(stderr).split(b'\n').map_while(Result::ok) {
+                let line = decode_child_output(line.strip_suffix(b"\r").unwrap_or(&line));
                 let mut lines = sink.lock();
                 if lines.len() == RETAINED_STDERR_LINES {
                     lines.remove(0);
@@ -226,7 +226,6 @@ impl Host {
 
         Ok(Self {
             client,
-            base,
             _job: job,
             child: Mutex::new(child),
         })
@@ -234,11 +233,6 @@ impl Host {
 
     pub(crate) fn client(&self) -> &ApiClient {
         &self.client
-    }
-
-    /// The origin the host bound to, for the WebSocket downlinks.
-    pub(crate) fn base(&self) -> &str {
-        &self.base
     }
 
     /// Whether the host is still serving. A host that exited takes every open
@@ -271,8 +265,17 @@ pub const NPX_ARGUMENTS: [&str; 2] = ["-y", "@deepseek-ai/dsh@latest"];
 /// pnpm's one-shot package launcher. Unlike npm's dependency resolver, pnpm
 /// can resolve the harness's mutually referring peer dependencies without
 /// spending unbounded CPU and memory in the installation phase.
+///
+/// Keep an installed release cached beyond pnpm's default one-day lifetime:
+/// rebuilding the same dependency tree delays the first tab in another process
+/// by tens of seconds. pnpm resolves `@latest` before choosing the cache keyed
+/// by the resolved release, so a new release still gets a new installation.
 pub const PNPM_DLX_EXECUTABLE: &str = "pnpm";
-pub const PNPM_DLX_ARGUMENTS: [&str; 2] = ["dlx", "@deepseek-ai/dsh@latest"];
+pub const PNPM_DLX_ARGUMENTS: [&str; 3] = [
+    "dlx",
+    "--config.dlx-cache-max-age=Infinity",
+    "@deepseek-ai/dsh@latest",
+];
 
 fn start_timeout(launch: &crate::LaunchConfig) -> Duration {
     let uses_pnpm_dlx = launch.executable.trim() == PNPM_DLX_EXECUTABLE
@@ -291,7 +294,7 @@ fn start_timeout(launch: &crate::LaunchConfig) -> Duration {
 
 fn address_in(line: &str) -> Option<String> {
     let start = line.find(ADDRESS_MARKER)?;
-    let address = line[start..].trim();
+    let address = line[start..].split_whitespace().next()?;
 
     (!address.is_empty()).then(|| address.to_string())
 }

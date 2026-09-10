@@ -13,6 +13,7 @@ mod capabilities;
 mod commands;
 mod composer;
 mod context_usage;
+mod fade;
 mod links;
 mod pane_state;
 pub mod profile;
@@ -26,11 +27,10 @@ mod workflows;
 
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui::{Entity, FocusHandle, Pixels, Point, ScrollHandle, SharedString};
 use gpui_component::VirtualListScrollHandle;
-use gpui_component::input::InputState;
+use gpui_component::input::TextareaState;
 use nmt_agent_utils::chat::{
     ContextComposition, ContextWindowUsage, ReplayTurn, SessionScope, SessionStats, SessionSummary,
     SkillCatalog, SkillReference, SlashCommandInfo,
@@ -41,6 +41,7 @@ use nmt_i18n::i18n;
 
 use crate::composer::attachments::ComposerAttachments;
 use crate::composer::{BranchFlow, CommandFeedback, PendingSlashCommand};
+use crate::fade::Fade;
 use crate::input_history::{InputHistoryNavigation, InputHistoryScope};
 use crate::pane_state::{ChildAgents, SessionRuntime, TurnState};
 pub use crate::profile::{AgentKind, AgentThreadDefaults, agent_launch};
@@ -92,10 +93,16 @@ enum RecentSessionsMode {
 }
 
 impl RecentSessionsMode {
-    fn is_visible(self, transcript_empty: bool, rows: usize) -> bool {
+    /// The automatic list is a blank tab's default surface, and a composer
+    /// with anything in it -- typed text or the placeholder a pasted image
+    /// leaves -- means the tab is being used for a new conversation, so the
+    /// list steps aside and comes back once the composer is empty again. An
+    /// explicit `/resume` list stays up over text: typing into it narrows
+    /// the rows.
+    fn is_visible(self, transcript_empty: bool, composer_empty: bool, rows: usize) -> bool {
         rows > 0
             && match self {
-                Self::Automatic => transcript_empty,
+                Self::Automatic => transcript_empty && composer_empty,
                 Self::Open => true,
                 Self::Hidden | Self::Loading => false,
             }
@@ -167,50 +174,6 @@ impl GitBranchPoll {
 #[cfg(test)]
 mod tests;
 
-/// Eased position along a transition, for a parameter already clamped to
-/// `0..=1`. The ramp leaves and arrives at zero speed, so neither end of a
-/// transition built on it reads as the effect being switched on.
-fn smoothstep(t: f32) -> f32 {
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// Ramp driving the transcript blur behind the recent-session list: where it
-/// started, what it is heading for, and when it left. Reversing mid-ramp starts
-/// a fresh one from wherever the previous had reached, so a list dismissed
-/// while it is still opening unblurs from the blur actually on screen instead
-/// of snapping to full.
-#[derive(Clone, Copy)]
-struct BlurFade {
-    from: f32,
-    to: f32,
-    start: Instant,
-}
-
-impl BlurFade {
-    const DURATION: Duration = Duration::from_millis(150);
-
-    fn progress(&self, now: Instant) -> f32 {
-        let elapsed = now.duration_since(self.start).as_secs_f32();
-        let t = (elapsed / Self::DURATION.as_secs_f32()).clamp(0.0, 1.0);
-
-        self.from + (self.to - self.from) * smoothstep(t)
-    }
-
-    fn settled(&self, now: Instant) -> bool {
-        now.duration_since(self.start) >= Self::DURATION
-    }
-}
-
-impl Default for BlurFade {
-    fn default() -> Self {
-        Self {
-            from: 0.0,
-            to: 0.0,
-            start: Instant::now(),
-        }
-    }
-}
-
 /// Recent-session list shown above the composer.
 struct SessionHistoryUi {
     /// Resumable sessions for this cwd, newest first; shown above the
@@ -248,7 +211,7 @@ struct SessionHistoryUi {
     /// resume in place; those open where they worked instead.
     scope: SessionScope,
     scroll: VirtualListScrollHandle,
-    transcript_blur: BlurFade,
+    transcript_blur: Fade,
 }
 
 impl Default for SessionHistoryUi {
@@ -264,7 +227,7 @@ impl Default for SessionHistoryUi {
             pending_resume_replay: None,
             scope: SessionScope::default(),
             scroll: VirtualListScrollHandle::new(),
-            transcript_blur: BlurFade::default(),
+            transcript_blur: Fade::default(),
         }
     }
 }
@@ -348,7 +311,7 @@ pub struct AgentPane {
     /// The conversation as the user reads it. Presentation lives in its own
     /// view so a child agent's conversation renders through the same code.
     transcript: Entity<TranscriptView>,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
     history_ui: SessionHistoryUi,
     /// The backend process and its lifecycle; a (re)spawn replaces it whole.
     runtime: SessionRuntime,
@@ -378,4 +341,8 @@ pub struct AgentPane {
     /// open. Workflow agents are not child agents, so they never reach the
     /// `Background Tasks` state above.
     workflows: WorkflowUi,
+    /// Ramp of the layer that covers the pane while its backend cannot take
+    /// input. Cross-fading the whole layer keeps its arrival readable as the
+    /// tab being held rather than as a blur being switched on.
+    overlay_fade: Fade,
 }

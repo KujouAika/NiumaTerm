@@ -89,7 +89,7 @@ impl Sidebar {
                 HoverActionVisibility::OnGroupHover("ws-item".into()),
                 modern_dropdown(
                     toolbar_button(("workspace-new-tab-button", idx))
-                        .aria_label(i18n("sidebar-tab-new"))
+                        .accessibility_label(i18n("sidebar-tab-new"))
                         .icon(IconName::Plus),
                     move |menu, _, cx| new_tab_menu(menu, &menu_shell, cx),
                 ),
@@ -268,7 +268,7 @@ impl Sidebar {
                 + SIDEBAR_ROW_GUTTER)
                 .max(80.0);
         let item = workspace_row_button(("workspace", idx), cx)
-            .aria_label(if settings_entry {
+            .accessibility_label(if settings_entry {
                 display_label.clone()
             } else {
                 i18n("sidebar-workspace-item-label")

@@ -25,7 +25,7 @@ use std::{env, fs};
 
 use futures::channel::mpsc;
 use gpui::{App, Context, Image, Window};
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, TextareaState};
 use nmt_agent_utils::chat::{
     Item as SessionItem, QueuedPrompt, SendOutcome, SkillReference, ThreadSettings,
 };
@@ -45,6 +45,7 @@ use crate::commands::{
 };
 use crate::composer::attachments::{ComposerAttachments, scratch_dir};
 use crate::composer::{BranchFlow, CommandFeedbackKind, prompt_with_response_annotations};
+use crate::fade::Fade;
 use crate::input_history::{InputHistoryNavigation, InputHistoryScope};
 use crate::profile::{AgentKind, agent_launch};
 use crate::questions::QuestionStatus;
@@ -72,12 +73,6 @@ impl Drop for AgentPane {
         let _ = fs::remove_dir_all(scratch_dir(self.agent_route.as_str()));
     }
 }
-
-/// How long a start is allowed to run before the tab is covered. Long enough
-/// that a reused host, which answers in a frame or two, never shows an overlay
-/// at all; short enough that a cold start is explained rather than looking like
-/// a dead tab.
-const START_OVERLAY_DELAY: Duration = Duration::from_millis(400);
 
 /// Whether two recorded working directories name the same place. Compared
 /// case-insensitively with separators normalized, because the two sides come
@@ -189,7 +184,7 @@ impl AgentPane {
         // The view intercepts modified Enter actions before this input's
         // submit-on-enter behavior runs.
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .auto_grow(1, 8)
                 .submit_on_enter(true)
                 .placeholder(i18n("agent-session-message-placeholder").replace("{name}", name))
@@ -225,7 +220,7 @@ impl AgentPane {
                 }
                 cx.notify();
             } else if let InputEvent::ClickLink(range) = event {
-                this.open_attached_image(range.clone(), cx);
+                this.open_attached_image(range.clone(), window, cx);
             }
         })
         .detach();
@@ -261,7 +256,6 @@ impl AgentPane {
                 epoch: 0,
                 status: Status::Starting,
                 start_failure: None,
-                start_overlay_due: false,
                 update_suspension: None,
                 last_recovery_snapshot: None,
             },
@@ -304,6 +298,7 @@ impl AgentPane {
                 restored_session: None,
             },
             workflows: WorkflowUi::default(),
+            overlay_fade: Fade::default(),
         };
 
         this.start_session_with_options(resume, false, |_, _, _| {}, cx);
@@ -472,20 +467,6 @@ impl AgentPane {
     /// the EOF signal (the sender is owned by the reader thread). Returns
     /// before the process exists; the pane sits in `Status::Starting` until it
     /// does. The calling stack sees no repaint — the arrival notifies.
-    /// Whether this pane covers its own start at all.
-    ///
-    /// The two harnesses that take long enough to be worth explaining: the
-    /// DeepSeek host is a Node process that may still be fetching its package,
-    /// and the Codex app server reads its own configuration and catalogs
-    /// before it answers. Claude's CLI is up within a frame or two, where an
-    /// overlay would read as a flicker.
-    ///
-    /// Every pane holds the cover back for a moment either way, so a start
-    /// that lands quickly is never covered whichever harness it is.
-    pub(crate) fn wears_start_overlay(&self) -> bool {
-        matches!(self.kind, AgentKind::Codex | AgentKind::DeepSeek)
-    }
-
     /// Whether the cover is on screen right now.
     ///
     /// Read from the start's own state rather than latched on and off around
@@ -496,9 +477,7 @@ impl AgentPane {
     /// the process was already up and left it there once the harness was
     /// ready.
     pub(super) fn shows_start_overlay(&self) -> bool {
-        self.wears_start_overlay()
-            && self.runtime.start_overlay_due
-            && self.runtime.status == Status::Starting
+        self.runtime.status == Status::Starting
     }
 
     pub(super) fn start_session(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
@@ -634,23 +613,6 @@ impl AgentPane {
         // as `Status::Starting` with no backend installed, so the spawn moves
         // to a background thread and the result arrives in a later update.
         self.runtime.status = Status::Starting;
-        // A host that is already running answers within a frame or two, so the
-        // cover is held back rather than shown and pulled away as a flicker.
-        // Nothing repaints while the start runs, so the hold has to wake the
-        // pane itself instead of being read from a clock at render time.
-        self.runtime.start_overlay_due = false;
-        if self.wears_start_overlay() {
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(START_OVERLAY_DELAY).await;
-                let _ = this.update(cx, |this, cx| {
-                    if this.runtime.status == Status::Starting {
-                        this.runtime.start_overlay_due = true;
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
-        }
         let spawned = cx.background_executor().spawn(async move {
             Backend::spawn(
                 kind,

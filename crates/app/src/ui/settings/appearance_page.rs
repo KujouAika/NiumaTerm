@@ -156,7 +156,22 @@ pub(super) fn appearance_page(
                             cx.global_mut::<AppSettings>().reduce_motion = value;
                         },
                     ),
-                )),
+                ))
+                .item(
+                    SettingItem::new(
+                        i18n("settings-appearance-human-friendly-agent-ui-layout"),
+                        SettingField::switch(
+                            |cx| cx.global::<AppSettings>().human_friendly_agent_ui_layout,
+                            |value, cx| {
+                                cx.global_mut::<AppSettings>()
+                                    .human_friendly_agent_ui_layout = value;
+                            },
+                        ),
+                    )
+                    .description(i18n(
+                        "settings-appearance-human-friendly-agent-ui-layout-description",
+                    )),
+                ),
         )
         .group(
             SettingGroup::new()
@@ -286,7 +301,7 @@ pub(super) fn appearance_page(
                         i18n("settings-appearance-tab-width"),
                         SettingField::number_input(
                             NumberFieldOptions {
-                                min: DEFAULT_TAB_WIDTH,
+                                min: MIN_TAB_WIDTH,
                                 max: MAX_TAB_WIDTH,
                                 step: 1.0,
                             },

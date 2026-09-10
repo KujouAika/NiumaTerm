@@ -17,13 +17,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{Context, Entity, Image, ImageFormat, Window};
-use gpui_component::input::InputState;
+use gpui_component::input::TextareaState;
 use image_rs::GenericImageView;
 use image_rs::imageops::FilterType;
 
 use crate::AgentPane;
 
-mod render;
+pub(super) mod render;
 
 /// The placeholder as it is written into the composer. A space on each side
 /// keeps it a word of its own, so the prompt around it does not run into the
@@ -103,7 +103,7 @@ impl ComposerAttachments {
     pub(crate) fn attach_image(
         &mut self,
         image: &Image,
-        input: &Entity<InputState>,
+        input: &Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<AgentPane>,
     ) -> Result<(), AttachError> {
@@ -123,7 +123,7 @@ impl ComposerAttachments {
     pub(crate) fn remove_image(
         &mut self,
         index: usize,
-        input: &Entity<InputState>,
+        input: &Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<AgentPane>,
     ) -> bool {
@@ -146,7 +146,7 @@ impl ComposerAttachments {
     pub(crate) fn sync(
         &mut self,
         text: &str,
-        input: &Entity<InputState>,
+        input: &Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<AgentPane>,
     ) -> bool {

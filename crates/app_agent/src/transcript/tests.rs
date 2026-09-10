@@ -261,10 +261,9 @@ mod prompt_truncation_tests {
         let many_rows = "output\n".repeat(129);
         let large_single_row = "x".repeat(16 * 1024);
 
-        assert!(should_virtualize_transcript(true, &many_rows));
-        assert!(should_virtualize_transcript(true, &large_single_row));
-        assert!(!should_virtualize_transcript(true, "short output"));
-        assert!(!should_virtualize_transcript(false, &many_rows));
+        assert!(should_virtualize_transcript(&many_rows));
+        assert!(should_virtualize_transcript(&large_single_row));
+        assert!(!should_virtualize_transcript("short output"));
     }
 
     #[test]
@@ -335,31 +334,6 @@ mod read_gutter_tests {
     fn extension_is_the_language_tag() {
         assert_eq!(file_extension_lang("C:\\src\\main.RS"), "rs");
         assert_eq!(file_extension_lang("noext"), "");
-    }
-}
-
-mod fence_tests {
-    use crate::transcript::{detect_output_language, fenced_code_block_as};
-
-    #[test]
-    fn fence_outgrows_backtick_runs_and_sniffs_language() {
-        assert_eq!(
-            fenced_code_block_as("plain output", detect_output_language("plain output")),
-            "```\nplain output\n```"
-        );
-        assert_eq!(
-            fenced_code_block_as("{\"key\": 1}", detect_output_language("{\"key\": 1}")),
-            "```json\n{\"key\": 1}\n```"
-        );
-        assert_eq!(detect_output_language("diff --git a/x b/x"), "diff");
-
-        let tricky = "text with ```` four backticks";
-        let fenced = fenced_code_block_as(tricky, "");
-        assert!(
-            fenced.starts_with("`````\n"),
-            "fence must outgrow body runs"
-        );
-        assert!(fenced.ends_with("\n`````"));
     }
 }
 
@@ -1640,5 +1614,126 @@ mod typed_reply_tests {
                 assert_eq!(transcript.typed_edge(0), None);
             });
         });
+    }
+}
+
+mod surface_palette_tests {
+    use std::sync::Arc;
+
+    use gpui::rgb;
+    use gpui_component::ThemeMode;
+    use gpui_component::highlighter::HighlightTheme;
+
+    use crate::transcript::render::{highlight_theme_for_surface, is_dark_surface};
+
+    #[test]
+    fn palette_is_kept_when_it_matches_the_surface() {
+        let dark = HighlightTheme::default_dark();
+        let light = HighlightTheme::default_light();
+        let own = Arc::new(HighlightTheme {
+            name: "Own Dark".to_string(),
+            appearance: ThemeMode::Dark,
+            style: Default::default(),
+        });
+
+        assert!(Arc::ptr_eq(
+            &highlight_theme_for_surface(dark.clone(), true),
+            &dark
+        ));
+        assert!(Arc::ptr_eq(
+            &highlight_theme_for_surface(light.clone(), false),
+            &light
+        ));
+        assert!(Arc::ptr_eq(
+            &highlight_theme_for_surface(own.clone(), true),
+            &own
+        ));
+    }
+
+    #[test]
+    fn palette_follows_a_surface_on_the_other_side_of_mid_gray() {
+        let dark = HighlightTheme::default_dark();
+        let light = HighlightTheme::default_light();
+
+        assert_eq!(
+            highlight_theme_for_surface(light, true).appearance,
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            highlight_theme_for_surface(dark, false).appearance,
+            ThemeMode::Light
+        );
+    }
+
+    #[test]
+    fn surfaces_split_at_mid_gray() {
+        assert!(is_dark_surface(rgb(0x300A24).into()));
+        assert!(is_dark_surface(rgb(0x1C1C1C).into()));
+        assert!(!is_dark_surface(rgb(0xE0E0E0).into()));
+        assert!(!is_dark_surface(rgb(0xFCFBFA).into()));
+    }
+}
+
+#[cfg(test)]
+mod reading_column_tests {
+    use gpui::{
+        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, VisualTestContext, Window, div, px, relative,
+    };
+    use gpui_component::text::TextView;
+    use gpui_component::{h_flex, v_flex};
+
+    use crate::settings::AgentSettings;
+    use crate::transcript::transcript_column;
+
+    /// A prompt bubble sizes to its own words under a fractional cap, the
+    /// same shape as the transcript's user row. Under the reading column it
+    /// has to keep its single line: a column whose width went indefinite
+    /// would wrap CJK prose one glyph per line.
+    #[gpui::test]
+    fn reading_column_keeps_a_shrink_to_fit_bubble_on_one_line(cx: &mut TestAppContext) {
+        struct ColumnRoot;
+
+        impl Render for ColumnRoot {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1400.)).h(px(400.)).child(transcript_column(
+                    h_flex().w_full().justify_end().child(
+                        v_flex().max_w(relative(0.6)).min_w_0().items_end().child(
+                            div()
+                                .debug_selector(|| "bubble".into())
+                                .min_w_0()
+                                .px(px(12.))
+                                .child(TextView::plain("bubble-text", "提交吧")),
+                        ),
+                    ),
+                    cx,
+                ))
+            }
+        }
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(AgentSettings::default());
+        });
+        let (_, cx) = cx.add_window_view(|_, _| ColumnRoot);
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let bubble = cx.debug_bounds("bubble").unwrap();
+        assert!(
+            bubble.size.width > bubble.size.height,
+            "bubble should stay on one line, got {bubble:?}"
+        );
+        // 1400px less the 10% margins leaves 1120px, more than the 880px
+        // measure, so the column is centred in that space and the bubble
+        // ends on its trailing edge: 140 + (1120 - 880) / 2 + 880.
+        assert!(
+            (bubble.right() - px(1140.)).abs() < px(1.),
+            "bubble should end on the centred column's edge, got {bubble:?}"
+        );
     }
 }

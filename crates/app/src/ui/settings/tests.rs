@@ -22,10 +22,11 @@ fn cursor_shape_dropdown_values_match_config_shapes() {
 
 #[test]
 fn tab_width_clamps_to_allowed_range() {
+    assert_eq!(clamp_tab_width(MIN_TAB_WIDTH), MIN_TAB_WIDTH);
     assert_eq!(clamp_tab_width(DEFAULT_TAB_WIDTH), DEFAULT_TAB_WIDTH);
     assert_eq!(clamp_tab_width(200.0), 200.0);
     assert_eq!(clamp_tab_width(MAX_TAB_WIDTH), MAX_TAB_WIDTH);
-    assert_eq!(clamp_tab_width(10.0), DEFAULT_TAB_WIDTH);
+    assert_eq!(clamp_tab_width(10.0), MIN_TAB_WIDTH);
     assert_eq!(clamp_tab_width(9999.0), MAX_TAB_WIDTH);
     assert_eq!(clamp_tab_width(f64::NAN), DEFAULT_TAB_WIDTH);
 }
@@ -411,6 +412,18 @@ fn reduce_motion_is_off_by_default_and_is_saved_when_turned_on() {
     assert!(settings.appearance_config().reduce_motion);
 }
 
+/// The reading column is on for a fresh configuration, and turning it off
+/// is what gets written to disk.
+#[test]
+fn human_friendly_agent_ui_layout_is_on_by_default_and_is_saved_when_turned_off() {
+    let mut settings = AppSettings::default();
+    assert!(settings.human_friendly_agent_ui_layout);
+    assert!(settings.appearance_config().human_friendly_agent_ui_layout);
+
+    settings.human_friendly_agent_ui_layout = false;
+    assert!(!settings.appearance_config().human_friendly_agent_ui_layout);
+}
+
 fn list_pixel_position(state: &ListState) -> f32 {
     let offset = state.logical_scroll_top();
     offset.item_ix as f32 * 20. + offset.offset_in_item.as_f32()
@@ -520,7 +533,8 @@ fn built_in_ui_themes_parse_into_component_config() {
 
 /// Color names a theme file states under `[colors.ui]`. The corner radii share
 /// that section in the file format while being a separate choice a theme may
-/// leave to the application, so they are not part of color coverage.
+/// leave to the application, and the syntax palette is a table of its own, so
+/// neither is part of color coverage.
 fn ui_color_names(name: &str) -> BTreeSet<String> {
     let theme: ConfigTheme = toml::from_str(builtin_theme_source(name).unwrap()).unwrap();
 
@@ -531,7 +545,12 @@ fn ui_color_names(name: &str) -> BTreeSet<String> {
         .as_table()
         .unwrap()
         .keys()
-        .filter(|key| !matches!(key.as_str(), "radius" | "radius.lg" | "shadow"))
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "radius" | "radius.lg" | "shadow" | "highlight"
+            )
+        })
         .map(ToString::to_string)
         .collect()
 }
@@ -556,6 +575,40 @@ fn built_in_themes_state_the_same_colors() {
             missing.is_empty() && extra.is_empty(),
             "{name} misses {missing:?} and adds {extra:?}"
         );
+    }
+}
+
+/// A theme that states no syntax palette falls back to the component
+/// library's palette for its mode, which is tuned to the library's own
+/// surfaces rather than the theme's. Every built-in therefore states a palette
+/// of its own, and the palette's editor background sits on the same side of
+/// mid-gray as the theme's mode so light colors never land on a light surface.
+#[test]
+fn built_in_themes_state_a_syntax_palette_for_their_mode() {
+    for builtin in BUILTIN_THEMES {
+        let name = builtin.name;
+        let theme: ConfigTheme = toml::from_str(builtin.source).unwrap();
+        let config = ui_theme_config(&theme.ui_theme().unwrap()).unwrap();
+        let highlight = config
+            .highlight
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} states no syntax palette"));
+
+        let background = highlight
+            .editor_background
+            .unwrap_or_else(|| panic!("{name} states no editor background"));
+        assert_eq!(background.l < 0.5, config.mode.is_dark(), "{name}");
+
+        let syntax = &highlight.syntax;
+        for (role, style) in [
+            ("comment", &syntax.comment),
+            ("keyword", &syntax.keyword),
+            ("string", &syntax.string),
+            ("type", &syntax.type_),
+            ("number", &syntax.number),
+        ] {
+            assert!(style.is_some(), "{name} states no {role} color");
+        }
     }
 }
 

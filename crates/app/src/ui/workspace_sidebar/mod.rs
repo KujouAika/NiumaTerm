@@ -425,7 +425,7 @@ impl Sidebar {
                             .child(
                                 toolbar_button("new-workspace")
                                     .icon(IconName::Plus)
-                                    .aria_label(i18n("shell-workspace-new-title"))
+                                    .accessibility_label(i18n("shell-workspace-new-title"))
                                     .tooltip(i18n("shell-workspace-new-title"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.on_new_workspace(&NewWorkspace, window, cx)
@@ -434,7 +434,7 @@ impl Sidebar {
                             .child(
                                 toolbar_button("close-temporary-workspaces")
                                     .icon(CloseTemporaryWorkspacesIcon)
-                                    .aria_label(i18n("sidebar-workspace-close-temporary"))
+                                    .accessibility_label(i18n("sidebar-workspace-close-temporary"))
                                     .tooltip(i18n("sidebar-workspace-close-temporary"))
                                     .disabled(!has_temporary_workspaces)
                                     .on_click(cx.listener(|this, _, window, cx| {

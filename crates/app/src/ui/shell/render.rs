@@ -301,7 +301,7 @@ impl Shell {
             toolbar_button("app-menu")
                 .icon(IconName::Menu)
                 .tooltip(i18n("shell-app-menu"))
-                .aria_label(i18n("shell-app-menu")),
+                .accessibility_label(i18n("shell-app-menu")),
             move |menu, _, cx| app_menu(menu, &shell, cx),
         )
     }

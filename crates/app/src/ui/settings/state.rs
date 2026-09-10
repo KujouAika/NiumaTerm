@@ -45,7 +45,8 @@ pub(super) const DEFAULT_BACKGROUND_IMAGE_OPACITY: f64 = 0.3;
 pub const DEFAULT_UI_FONT: &str = "Segoe UI";
 #[cfg(not(target_os = "windows"))]
 pub const DEFAULT_UI_FONT: &str = ".SystemUIFont";
-pub const DEFAULT_TAB_WIDTH: f64 = 120.0;
+pub const MIN_TAB_WIDTH: f64 = 120.0;
+pub const DEFAULT_TAB_WIDTH: f64 = 220.0;
 
 /// The app-wide settings model, stored as a gpui global.
 pub struct AppSettings {
@@ -93,7 +94,7 @@ pub struct AppSettings {
     pub agent_transcript_font_family: SharedString,
     /// Font size (px) used by code-oriented agent transcript content.
     pub agent_transcript_font_size: f64,
-    /// Fixed tab width in pixels (DEFAULT_TAB_WIDTH..=MAX_TAB_WIDTH). Ignored
+    /// Fixed tab width in pixels (MIN_TAB_WIDTH..=MAX_TAB_WIDTH). Ignored
     /// while `tab_auto_size` is on.
     pub tab_width: f64,
     /// Shrink tabs toward a minimum as the strip fills, rather than holding
@@ -114,6 +115,8 @@ pub struct AppSettings {
     /// Put disclosed content on screen at once, skipping the entrance the
     /// agent transcript otherwise plays for it.
     pub reduce_motion: bool,
+    /// Hold the agent conversation column at a reading width and centre it.
+    pub human_friendly_agent_ui_layout: bool,
     /// Whole-window background opacity (0.2..=1.0) while transparency is enabled.
     pub background_opacity: f64,
     /// Local image drawn behind all window content.
@@ -212,6 +215,7 @@ impl Default for AppSettings {
             transparent_main_view: true,
             smooth_scrolling: SmoothScrollingMode::All,
             reduce_motion: false,
+            human_friendly_agent_ui_layout: true,
             background_opacity: 1.0,
             background_image: None,
             background_image_opacity: DEFAULT_BACKGROUND_IMAGE_OPACITY,
@@ -373,7 +377,7 @@ pub(super) fn terminal_font_or_default(family: &str) -> SharedString {
 /// default for non-finite values.
 pub(super) fn clamp_tab_width(width: f64) -> f64 {
     if width.is_finite() {
-        width.clamp(DEFAULT_TAB_WIDTH, MAX_TAB_WIDTH)
+        width.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
     } else {
         DEFAULT_TAB_WIDTH
     }
@@ -503,6 +507,7 @@ impl AppSettings {
             transparent_main_view: appearance.transparent_main_view,
             smooth_scrolling: appearance.smooth_scrolling,
             reduce_motion: appearance.reduce_motion,
+            human_friendly_agent_ui_layout: appearance.human_friendly_agent_ui_layout,
             background_opacity: clamp_background_opacity(appearance.background_opacity),
             background_image: appearance
                 .background_image
@@ -726,6 +731,7 @@ impl AppSettings {
             transparent_main_view: self.transparent_main_view,
             smooth_scrolling: self.smooth_scrolling,
             reduce_motion: self.reduce_motion,
+            human_friendly_agent_ui_layout: self.human_friendly_agent_ui_layout,
             background_opacity: self.background_opacity,
             background_image: self.background_image.clone(),
             background_image_opacity: self.background_image_opacity,

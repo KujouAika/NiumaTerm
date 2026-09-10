@@ -4,8 +4,8 @@ use std::time::Instant;
 use chrono::{DateTime, Local};
 use gpui::prelude::*;
 use gpui::{
-    Context, FollowMode, Image, IntoElement, ListAlignment, ListState, Pixels, Render,
-    SharedString, Window, div, list, px, relative,
+    Bounds, Context, FollowMode, Image, IntoElement, ListAlignment, ListState, Pixels, Point,
+    Render, SharedString, Window, div, list, px, relative,
 };
 use gpui_component::button::Button;
 use gpui_component::scroll::Scrollbar;
@@ -16,14 +16,16 @@ use nmt_i18n::i18n;
 
 use crate::AgentPane;
 use crate::composer::PALETTE_MAX_HEIGHT;
+use crate::fade::Fade;
 use crate::profile::AgentKind;
 use crate::settings::{AgentSettings, UI_RADIUS};
 use crate::transcript::render::TRANSCRIPT_LINE_HEIGHT;
+use crate::transcript::render::image_preview::ZOOM_DURATION;
 use crate::transcript::reveal::Disclosures;
 use crate::transcript::rows::{TranscriptRow, folds_turns};
 use crate::transcript::turns::{LiveTurn, TurnLedger};
 use crate::transcript::typewriter::{Typewriter, shown_prefix};
-use crate::transcript::{Entry, ReadingPosition, VirtualTranscriptCache, is_work_row};
+use crate::transcript::{CodeTranscriptCache, Entry, ReadingPosition, is_work_row};
 
 /// One agent conversation as the user reads it: the entry list, the row
 /// structure derived from it, and every piece of view state that structure
@@ -51,6 +53,9 @@ pub struct TranscriptView {
     /// Last measured viewport height, which is how much empty space below the
     /// conversation lets its final row reach the top of the screen.
     pub(super) transcript_height: Option<Pixels>,
+    /// Where the viewport sits in the window, which is what turns the window
+    /// bounds a thumbnail reports into a position inside the preview layer.
+    pub(super) transcript_origin: Option<Point<Pixels>>,
     /// Reading position from before a picker started scrolling the transcript
     /// to the prompt it highlights, so cancelling that picker returns the
     /// conversation to where the user was reading it.
@@ -67,10 +72,9 @@ pub struct TranscriptView {
     /// Which parts of the transcript are open, how far through their motion
     /// they are, and how tall each one lays out to.
     pub(crate) disclosures: Disclosures,
-    /// Long expanded code transcripts retain their segmented source and
-    /// independent uniform-list position while visible. Collapsing a row drops
-    /// the duplicate source so large outputs do not stay resident twice.
-    pub(crate) virtual_transcripts: VirtualTranscriptCache,
+    /// Expanded technical output retains its parsed source and scroll position.
+    /// Collapsing a row releases the extra source, syntax trees, and worker.
+    pub(crate) code_transcripts: CodeTranscriptCache,
     /// What each finished turn is remembered by: whether it settled, how long
     /// it took, what it produced, and whether the user stopped it.
     pub(crate) turn_ledger: TurnLedger,
@@ -87,10 +91,19 @@ pub struct TranscriptView {
     /// Revision of the conversation this view was last filled from, for a view
     /// that mirrors content someone else owns rather than accumulating its own.
     source_revision: Option<u64>,
-    /// The image a reader opened at full size over the conversation, while one
-    /// is open. Held per conversation rather than per pane so a child agent's
-    /// transcript enlarges its own images inside its own bounds.
+    /// The image a reader opened at full size over the conversation. Held per
+    /// conversation rather than per pane so a child agent's transcript
+    /// enlarges its own images inside its own bounds. Stays through the
+    /// layer's fade-out, which needs something to fade.
     pub(crate) zoomed_image: Option<Arc<Image>>,
+    /// Whether the preview layer is up or on its way out; the image alone
+    /// cannot say, because it outlives the dismissal by the fade.
+    pub(crate) zoom_open: bool,
+    pub(crate) zoom_fade: Fade,
+    /// The thumbnail the open image grew out of, in window coordinates, so
+    /// the preview can shrink back into it. Absent when the image was opened
+    /// from something with no place on screen, such as a link in the composer.
+    pub(crate) zoom_origin: Option<Bounds<Pixels>>,
     /// The pane whose conversation this is, for the row actions that address
     /// the conversation rather than the row: branching in front of a prompt,
     /// rewinding to one. Absent on a view that mirrors somebody else's
@@ -120,9 +133,10 @@ impl TranscriptView {
             transcript_font: Default::default(),
             transcript_width: None,
             transcript_height: None,
+            transcript_origin: None,
             disclosures: Disclosures::new(folds_turns(collapse_mode)),
             collapse_mode,
-            virtual_transcripts: VirtualTranscriptCache::default(),
+            code_transcripts: CodeTranscriptCache::default(),
             turn_ledger: TurnLedger::default(),
             live_turn: LiveTurn::default(),
             typewriter: None,
@@ -130,6 +144,9 @@ impl TranscriptView {
             kind,
             source_revision: None,
             zoomed_image: None,
+            zoom_open: false,
+            zoom_fade: Fade::lasting(ZOOM_DURATION),
+            zoom_origin: None,
             owner: None,
         }
     }
@@ -158,6 +175,7 @@ impl TranscriptView {
         }
         let follow = self.source_revision.is_none();
         self.source_revision = Some(revision);
+        self.code_transcripts.invalidate_all();
         self.items = items
             .iter()
             .map(|item| Entry {
@@ -183,7 +201,7 @@ impl TranscriptView {
         self.scroll_to_bottom();
         self.disclosures.clear();
         self.turn_ledger.clear();
-        self.virtual_transcripts.clear();
+        self.code_transcripts.clear();
         self.live_turn.discard();
         self.typewriter = None;
     }
@@ -234,8 +252,9 @@ impl TranscriptView {
 
     /// Fold an authoritative completed payload into the entry that streamed it.
     pub(crate) fn merge_completed(&mut self, item: &SessionItem) {
-        for entry in &mut self.items {
+        for (index, entry) in self.items.iter_mut().enumerate() {
             if entry.item.merge_completed(item) {
+                self.code_transcripts.invalidate(index);
                 break;
             }
         }
@@ -272,6 +291,7 @@ impl TranscriptView {
                     ));
                 }
                 text.push_str(delta);
+                self.code_transcripts.invalidate(index);
                 return !text.trim().is_empty();
             }
         }
@@ -525,6 +545,7 @@ impl Render for TranscriptView {
                         move |bounds, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.transcript_height = Some(bounds.size.height);
+                                this.transcript_origin = Some(bounds.origin);
                                 let width = bounds.size.width;
                                 if this.transcript_width != Some(width) {
                                     this.transcript_width = Some(width);
@@ -612,6 +633,6 @@ impl Render for TranscriptView {
                         ),
                 )
             })
-            .children(self.render_zoomed_image(window, cx))
+            .children(self.render_zoomed_image(now, window, cx))
     }
 }
