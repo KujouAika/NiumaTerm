@@ -1,10 +1,13 @@
-use std::{rc::Rc, time::Duration};
+#[cfg(test)]
+use gpui::InteractiveElement as _;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, Bounds, Context, Display, Element, ElementId,
     GlobalElementId, InspectorElementId, IntoElement, LayoutId, MouseButton, ParentElement, Pixels,
     Point, Position, Render, SharedString, Size, StatefulInteractiveElement, Style,
-    StyleRefinement, Styled, Task, Window, deferred, div, point, prelude::FluentBuilder, px, size,
+    StyleRefinement, Styled, Task, Window, canvas, deferred, div, point, prelude::FluentBuilder,
+    px, size,
 };
 
 use crate::{
@@ -103,7 +106,7 @@ impl Render for Tooltip {
             }
         };
 
-        div().child(
+        let view = div().child(
             // Wrap in a child, to ensure the left margin is applied to the tooltip
             h_flex()
                 .font_family(cx.theme().font_family.clone())
@@ -138,7 +141,10 @@ impl Render for Tooltip {
                             .child(kbd.appearance(false)),
                     )
                 }),
-        )
+        );
+        #[cfg(test)]
+        let view = view.debug_selector(|| "tooltip-view".into());
+        view
     }
 }
 
@@ -157,11 +163,21 @@ const TOOLTIP_WINDOW_MARGIN: Pixels = px(4.);
 /// `text_sm` size, whose average advance is about half the 14px font size. A
 /// long description would otherwise stretch across the whole window in one line.
 const TOOLTIP_MAX_TEXT_WIDTH: Pixels = px(420.);
+/// Directory descriptions use the available side panel space before wrapping.
+const SIDE_TOOLTIP_MAX_WIDTH: Pixels = px(720.);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TooltipPlacement {
     Above,
     Below,
+    Right,
+}
+
+#[derive(Clone, Copy, Default)]
+enum TooltipAnchor {
+    #[default]
+    Cursor,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -175,7 +191,22 @@ fn tooltip_overlay_position(
     tooltip_size: Size<Pixels>,
     viewport_size: Size<Pixels>,
     margin: Pixels,
+    anchor: TooltipAnchor,
 ) -> TooltipOverlayPosition {
+    if matches!(anchor, TooltipAnchor::Right) {
+        let bottom = (viewport_size.height - margin - tooltip_size.height).max(margin);
+        return TooltipOverlayPosition {
+            bounds: Bounds::new(
+                point(
+                    trigger_bounds.right() + px(8.),
+                    trigger_bounds.top().clamp(margin, bottom),
+                ),
+                tooltip_size,
+            ),
+            placement: TooltipPlacement::Right,
+        };
+    }
+
     // The trigger box is the mouse cursor, so the tooltip reads as belonging to
     // the pointer when its left edge starts there rather than straddling it.
     let anchor_x = trigger_bounds.left();
@@ -232,6 +263,7 @@ fn clamp_tooltip_bounds(
 
 struct TooltipOverlayPositioner {
     trigger_bounds: Bounds<Pixels>,
+    anchor: TooltipAnchor,
     children: Vec<AnyElement>,
 }
 
@@ -239,9 +271,13 @@ struct TooltipOverlayPositionerState {
     child_layout_ids: Vec<LayoutId>,
 }
 
-fn tooltip_overlay_positioner(trigger_bounds: Bounds<Pixels>) -> TooltipOverlayPositioner {
+fn tooltip_overlay_positioner(
+    trigger_bounds: Bounds<Pixels>,
+    anchor: TooltipAnchor,
+) -> TooltipOverlayPositioner {
     TooltipOverlayPositioner {
         trigger_bounds,
+        anchor,
         children: Vec::new(),
     }
 }
@@ -321,6 +357,7 @@ impl Element for TooltipOverlayPositioner {
             tooltip_size,
             window.viewport_size(),
             TOOLTIP_WINDOW_MARGIN + client_inset,
+            self.anchor,
         );
 
         let offset = tooltip_position.bounds.origin - bounds.origin;
@@ -362,6 +399,7 @@ impl IntoElement for TooltipOverlayPositioner {
 pub(crate) struct TooltipContent {
     pub build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView>,
     pub trigger_bounds: Bounds<Pixels>,
+    anchor: TooltipAnchor,
 }
 
 /// Manages tooltip lifecycle: delay, grace period, animations, and rendering.
@@ -410,6 +448,7 @@ impl TooltipOverlay {
             TooltipContent {
                 build: Rc::new(move |window, cx| Tooltip::new(text.clone()).build(window, cx)),
                 trigger_bounds,
+                anchor: TooltipAnchor::Cursor,
             },
             window,
             cx,
@@ -529,44 +568,55 @@ impl Render for TooltipOverlay {
         let prev_trigger_bounds = self.prev_trigger_bounds;
 
         deferred(
-            tooltip_overlay_positioner(trigger_bounds).child(div().child(content_view).map(|el| {
-                if is_switching {
-                    let Some(prev_bounds) = prev_trigger_bounds else {
-                        return el.into_any_element();
-                    };
+            tooltip_overlay_positioner(trigger_bounds, content.anchor).child(
+                div().child(content_view).map(|el| {
+                    if is_switching {
+                        if matches!(content.anchor, TooltipAnchor::Right) {
+                            return el.into_any_element();
+                        }
+                        let Some(prev_bounds) = prev_trigger_bounds else {
+                            return el.into_any_element();
+                        };
 
-                    let is_same_y =
-                        (trigger_bounds.origin.y - prev_bounds.origin.y).abs() < px(10.);
-                    if !is_same_y {
-                        // If the new trigger is at a different Y level, don't slide horizontally
-                        // to avoid weird diagonal movement. (We could consider sliding vertically
-                        // in this case, but it might be less visually clear.)
-                        return el.into_any_element();
+                        let is_same_y =
+                            (trigger_bounds.origin.y - prev_bounds.origin.y).abs() < px(10.);
+                        if !is_same_y {
+                            // If the new trigger is at a different Y level, don't slide horizontally
+                            // to avoid weird diagonal movement. (We could consider sliding vertically
+                            // in this case, but it might be less visually clear.)
+                            return el.into_any_element();
+                        }
+
+                        let dx = trigger_bounds.center().x - prev_bounds.center().x;
+
+                        Transition::new(SLIDE_DURATION)
+                            .ease(ease_in_out_cubic)
+                            .slide_x(-dx, px(0.))
+                            .apply(
+                                el,
+                                ElementId::NamedInteger(
+                                    "tooltip-slide".into(),
+                                    animation_epoch as u64,
+                                ),
+                            )
+                            .into_any_element()
+                    } else {
+                        // New tooltip: slideDown + fadeIn
+                        Transition::new(ENTER_DURATION)
+                            .ease(ease_out_cubic)
+                            .slide_y(px(4.), px(0.))
+                            .fade(0.0, 1.0)
+                            .apply(
+                                el,
+                                ElementId::NamedInteger(
+                                    "tooltip-enter".into(),
+                                    animation_epoch as u64,
+                                ),
+                            )
+                            .into_any_element()
                     }
-
-                    let dx = trigger_bounds.center().x - prev_bounds.center().x;
-
-                    Transition::new(SLIDE_DURATION)
-                        .ease(ease_in_out_cubic)
-                        .slide_x(-dx, px(0.))
-                        .apply(
-                            el,
-                            ElementId::NamedInteger("tooltip-slide".into(), animation_epoch as u64),
-                        )
-                        .into_any_element()
-                } else {
-                    // New tooltip: slideDown + fadeIn
-                    Transition::new(ENTER_DURATION)
-                        .ease(ease_out_cubic)
-                        .slide_y(px(4.), px(0.))
-                        .fade(0.0, 1.0)
-                        .apply(
-                            el,
-                            ElementId::NamedInteger("tooltip-enter".into(), animation_epoch as u64),
-                        )
-                        .into_any_element()
-                }
-            })),
+                }),
+            ),
         )
         .with_priority(2)
         .into_any_element()
@@ -620,147 +670,95 @@ fn cursor_bounds(position: Point<Pixels>) -> Bounds<Pixels> {
     Bounds::new(position, size(px(0.), CURSOR_HEIGHT))
 }
 
-pub(crate) trait ManagedTooltipExt:
-    StatefulInteractiveElement + crate::ElementExt + Sized
+pub trait ManagedTooltipExt:
+    StatefulInteractiveElement + crate::ElementExt + Styled + Sized
 {
     fn managed_tooltip(
         self,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        let build_tooltip = Rc::new(build_tooltip);
+        register_tooltip(
+            self,
+            Rc::new(move |_, window, cx| build_tooltip(window, cx)),
+            TooltipAnchor::Cursor,
+        )
+    }
 
-        self.on_hover({
-            let build_tooltip = build_tooltip.clone();
-            move |hovered, window, cx| {
-                if let Some(overlay) = Root::tooltip_overlay(window, cx) {
-                    if *hovered {
-                        let bounds = cursor_bounds(window.mouse_position());
-                        overlay.update(cx, |o: &mut TooltipOverlay, cx| {
-                            o.request_show(
-                                TooltipContent {
-                                    build: build_tooltip.clone(),
-                                    trigger_bounds: bounds,
-                                },
-                                window,
-                                cx,
-                            );
-                        });
-                    } else {
-                        overlay.update(cx, |o: &mut TooltipOverlay, cx| {
-                            o.request_hide(window, cx);
-                        });
-                    }
-                }
-            }
-        })
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            if let Some(overlay) = Root::tooltip_overlay(window, cx) {
-                overlay.update(cx, |overlay, cx| {
-                    overlay.hide(cx);
-                });
-            }
-        })
+    /// Show a text tooltip beside the element, using the shared hover lifecycle.
+    fn managed_tooltip_right(self, text: impl Into<SharedString>) -> Self {
+        let text = text.into();
+        register_tooltip(
+            self,
+            Rc::new(move |bounds, window, cx| {
+                let margin = TOOLTIP_WINDOW_MARGIN + window.client_inset().unwrap_or(px(0.));
+                let width = (window.viewport_size().width - bounds.right() - px(8.) - margin)
+                    .clamp(px(1.), SIDE_TOOLTIP_MAX_WIDTH);
+                let text = text.clone();
+                Tooltip::element(move |_, _| {
+                    div()
+                        .max_w((width - px(18.)).max(px(1.)))
+                        .child(text.clone())
+                })
+                .m_0()
+                .build(window, cx)
+            }),
+            TooltipAnchor::Right,
+        )
     }
 }
 
-impl<E: StatefulInteractiveElement + crate::ElementExt> ManagedTooltipExt for E {}
+type TooltipBuilder = Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut App) -> AnyView>;
+
+fn register_tooltip<E: ManagedTooltipExt>(
+    el: E,
+    build_tooltip: TooltipBuilder,
+    anchor: TooltipAnchor,
+) -> E {
+    let measured = Rc::new(Cell::new(Bounds::default()));
+    let el = if matches!(anchor, TooltipAnchor::Right) {
+        let measured = measured.clone();
+        // Explicit insets measure the row itself, independent of its children
+        // or the pointer's entry position within the row.
+        el.child(
+            canvas(move |bounds, _, _| measured.set(bounds), |_, _, _, _| {})
+                .absolute()
+                .inset_0(),
+        )
+    } else {
+        el
+    };
+    el.on_hover(move |hovered, window, cx| {
+        if let Some(overlay) = Root::tooltip_overlay(window, cx) {
+            if *hovered {
+                let bounds = match anchor {
+                    TooltipAnchor::Cursor => cursor_bounds(window.mouse_position()),
+                    TooltipAnchor::Right => measured.get(),
+                };
+                let build_tooltip = build_tooltip.clone();
+                overlay.update(cx, |overlay, cx| {
+                    overlay.request_show(
+                        TooltipContent {
+                            build: Rc::new(move |window, cx| build_tooltip(bounds, window, cx)),
+                            trigger_bounds: bounds,
+                            anchor,
+                        },
+                        window,
+                        cx,
+                    );
+                });
+            } else {
+                overlay.update(cx, |overlay, cx| overlay.request_hide(window, cx));
+            }
+        }
+    })
+    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+        if let Some(overlay) = Root::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| overlay.hide(cx));
+        }
+    })
+}
+
+impl<E: StatefulInteractiveElement + crate::ElementExt + Styled> ManagedTooltipExt for E {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::size;
-
-    fn test_content(bounds: Bounds<Pixels>) -> TooltipContent {
-        TooltipContent {
-            build: Rc::new(|window, cx| Tooltip::new("Test tooltip").build(window, cx)),
-            trigger_bounds: bounds,
-        }
-    }
-
-    fn test_bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
-        Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
-    }
-
-    fn test_size(width: f32, height: f32) -> Size<Pixels> {
-        size(px(width), px(height))
-    }
-
-    #[test]
-    fn tooltip_overlay_clear_state_resets_active_tooltip() {
-        let mut overlay = TooltipOverlay::new();
-
-        overlay.content = Some(test_content(test_bounds(10., 10., 40., 20.)));
-        overlay.prev_trigger_bounds = Some(test_bounds(0., 0., 40., 20.));
-        overlay.had_recent_tooltip = true;
-        overlay.is_switching = true;
-        overlay._show_task = Some(Task::ready(()));
-
-        assert!(overlay.clear_state());
-        assert!(overlay.content.is_none());
-        assert!(overlay.prev_trigger_bounds.is_none());
-        assert!(!overlay.had_recent_tooltip);
-        assert!(!overlay.is_switching);
-        assert!(overlay._show_task.is_none());
-        assert!(overlay._hide_task.is_none());
-    }
-
-    #[test]
-    fn tooltip_overlay_position_prefers_above_when_space_allows() {
-        let trigger_bounds = test_bounds(100., 80., 80., 24.);
-        let position = tooltip_overlay_position(
-            trigger_bounds,
-            test_size(120., 30.),
-            test_size(300., 200.),
-            TOOLTIP_WINDOW_MARGIN,
-        );
-
-        assert_eq!(position.placement, TooltipPlacement::Above);
-        assert_eq!(position.bounds.origin.x, trigger_bounds.left());
-        assert_eq!(position.bounds.origin.y, px(50.));
-        assert_eq!(position.bounds.bottom(), trigger_bounds.top());
-    }
-
-    #[test]
-    fn tooltip_overlay_position_flips_below_near_top_edge() {
-        let trigger_bounds = test_bounds(24., 4., 120., 32.);
-        let position = tooltip_overlay_position(
-            trigger_bounds,
-            test_size(240., 32.),
-            test_size(520., 260.),
-            TOOLTIP_WINDOW_MARGIN,
-        );
-
-        assert_eq!(position.placement, TooltipPlacement::Below);
-        assert_eq!(position.bounds.top(), trigger_bounds.bottom());
-        assert!(position.bounds.top() >= trigger_bounds.bottom());
-    }
-
-    #[test]
-    fn tooltip_overlay_position_clamps_horizontal_edges() {
-        let trigger_bounds = test_bounds(4., 80., 24., 24.);
-        let position = tooltip_overlay_position(
-            trigger_bounds,
-            test_size(120., 30.),
-            test_size(300., 200.),
-            TOOLTIP_WINDOW_MARGIN,
-        );
-
-        assert_eq!(position.placement, TooltipPlacement::Above);
-        assert_eq!(position.bounds.left(), TOOLTIP_WINDOW_MARGIN);
-    }
-
-    #[test]
-    fn tooltip_overlay_position_uses_larger_side_when_neither_side_fits() {
-        let trigger_bounds = test_bounds(120., 20., 40., 20.);
-        let position = tooltip_overlay_position(
-            trigger_bounds,
-            test_size(160., 120.),
-            test_size(300., 100.),
-            TOOLTIP_WINDOW_MARGIN,
-        );
-
-        assert_eq!(position.placement, TooltipPlacement::Below);
-        assert_eq!(position.bounds.top(), TOOLTIP_WINDOW_MARGIN);
-        assert_eq!(position.bounds.left(), trigger_bounds.left());
-    }
-}
+mod tests;
