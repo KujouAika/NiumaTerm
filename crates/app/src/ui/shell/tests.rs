@@ -11,7 +11,7 @@ use nmt_agent::team::session::TeamSession;
 use nmt_config::local_state::TabState;
 use tempfile::tempdir;
 
-use crate::ui::shell::render::{TAB_STRIP_MIN_WIDTH, title_bar_leading_region};
+use crate::ui::shell::render::{TAB_STRIP_MIN_WIDTH, title_bar_leading_region, title_bar_trailing_region, title_bar_git_summary};
 use crate::ui::shell::{InlineRename, InlineRenameStyle, TabSurface, should_confirm_close};
 use crate::window::MIN_WINDOW_WIDTH;
 
@@ -177,9 +177,10 @@ impl gpui::Render for TitleBarProbeView {
     ) -> impl gpui::IntoElement {
         use gpui::prelude::*;
         use gpui::{div, px};
-        use gpui_component::button::{Button, ButtonVariants as _};
         use gpui_component::tab::{Tab, TabBar, TabVariant};
         use gpui_component::{ElementExt as _, IconName, Sizable as _, TitleBar, h_flex};
+
+        use crate::ui::composition::{toolbar_button, toolbar_toggle};
 
         let rec = |name: &'static str, probe: TitleBarProbe| {
             move |bounds: Bounds<Pixels>, _: &mut gpui::Window, _: &mut gpui::App| {
@@ -209,8 +210,12 @@ impl gpui::Render for TitleBarProbeView {
                     .child(
                         title_bar_leading_region(self.1)
                             .on_prepaint(rec("left", probe.clone()))
-                            .child(div().child(Button::new("a").ghost().icon(IconName::Settings)))
-                            .child(div().child(Button::new("b").ghost().icon(IconName::Settings))),
+                            .children((0..4usize).map(|index| {
+                                div().flex_none().child(
+                                    toolbar_button(("leading", index)).icon(IconName::Settings),
+                                )
+                            }))
+                            .child(div().w(px(1.)).h(px(18.)).flex_none()),
                     )
                     .child(
                         div()
@@ -223,11 +228,33 @@ impl gpui::Render for TitleBarProbeView {
                             .child(tab_bar),
                     )
                     .child(
-                        h_flex()
-                            .flex_none()
+                        title_bar_git_summary().child(
+                            h_flex()
+                                .px_2()
+                                .gap_1()
+                                .text_sm()
+                                .child("+1234")
+                                .child("-5678"),
+                        ),
+                    )
+                    .child(
+                        title_bar_trailing_region()
                             .on_prepaint(rec("right", probe.clone()))
-                            .child(div().child(Button::new("c").ghost().icon(IconName::Settings)))
-                            .child(div().child(Button::new("d").ghost().icon(IconName::Settings))),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .child(toolbar_toggle("git").icon(IconName::GitBranch)),
+                            )
+                            .child(
+                                div().flex_none().child(
+                                    toolbar_toggle("workflows").icon(IconName::Bot).child("2"),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .child(toolbar_toggle("tasks").icon(IconName::Bot).child("2")),
+                            ),
                     ),
             )
             .child(div().flex_1())
@@ -246,6 +273,7 @@ fn title_bar_controls_stay_inside_a_narrow_window(cx: &mut TestAppContext) {
 
     cx.update(gpui_component::init);
 
+    let trailing_inset = if cfg!(target_os = "macos") { crate::ui::shell::render::MACOS_TITLE_BAR_TRAILING_INSET } else { 0.0 };
     let probe: TitleBarProbe = Default::default();
 
     let handle = cx.add_window({
@@ -279,8 +307,8 @@ fn title_bar_controls_stay_inside_a_narrow_window(cx: &mut TestAppContext) {
         let right_edge: f32 = (right.origin.x + right.size.width).into();
 
         assert!(
-            right_edge <= width,
-            "at window width {width} the right-hand controls end at {right_edge}",
+            right_edge <= width - trailing_inset,
+            "at window width {width} the right-hand controls end at {right_edge}, inside the reserved edge inset of {trailing_inset}",
         );
 
         let tabs = group("tabs");

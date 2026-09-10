@@ -9,8 +9,7 @@ use std::time::SystemTime;
 use app::agent_tab::transcript::TranscriptView;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, WeakEntity, div};
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
 use nmt_agent::background_task::{
     BackgroundTaskKey, BackgroundTaskSnapshot, BackgroundTaskTranscriptState,
 };
@@ -21,7 +20,7 @@ use crate::ui::background_tasks::BackgroundTasksView;
 use crate::ui::background_tasks::rows::{
     background_task_kind_label, background_task_state_label, row_detail, row_timing, state_color,
 };
-use crate::ui::composition::empty_state;
+use crate::ui::composition::{empty_state, toolbar_button};
 
 impl BackgroundTasksView {
     /// Open one child's conversation, remembering the list state so going back
@@ -136,9 +135,7 @@ impl BackgroundTasksView {
                     .gap_1()
                     .items_center()
                     .child(
-                        Button::new("background-task-back")
-                            .ghost()
-                            .xsmall()
+                        toolbar_button("background-task-back")
                             .icon(IconName::ArrowLeft)
                             .tooltip(t!("tasks-background-back-tooltip"))
                             .accessibility_label(t!("tasks-background-back-tooltip"))

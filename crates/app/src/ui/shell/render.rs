@@ -7,7 +7,7 @@ use gpui_component::modern_menu::{ModernMenu, dispatch_modern_menu_key};
 use rust_i18n::t;
 
 use crate::ui::UI_RADIUS;
-use crate::ui::composition::FLOATING_SURFACE_SIDE_INSET;
+use crate::ui::composition::{FLOATING_SURFACE_SIDE_INSET, TOOLBAR_BUTTON_SIZE, toolbar_button, toolbar_toggle};
 use crate::ui::shell::*;
 #[cfg(windows)]
 use crate::update::check;
@@ -25,15 +25,13 @@ pub(crate) const TITLE_BAR_HEIGHT: f32 = 44.0;
 
 const TITLE_BAR_LEADING_INSET: f32 = 80.0;
 
-/// A leading-zone control: square, and spaced tightly enough that the group
-/// reads as one cluster rather than as separate buttons.
-const TITLE_BAR_BUTTON: f32 = 26.0;
+pub(super) const MACOS_TITLE_BAR_TRAILING_INSET: f32 = 12.0;
 
 const TITLE_BAR_BUTTON_GAP: f32 = 4.0;
 
 // Four controls, the divider, four internal gaps, and a trailing gap must
 // stay visible before the first tab, including at the sidebar's drag limit.
-const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * TITLE_BAR_BUTTON + 1.0 + 5.0 * TITLE_BAR_BUTTON_GAP;
+const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * TOOLBAR_BUTTON_SIZE + 1.0 + 5.0 * TITLE_BAR_BUTTON_GAP;
 
 pub(crate) const MIN_SIDEBAR_WIDTH: f32 = if cfg!(target_os = "macos") {
     TITLE_BAR_LEADING_INSET + TITLE_BAR_CONTROLS_WIDTH - FLOATING_SURFACE_SIDE_INSET
@@ -42,7 +40,7 @@ pub(crate) const MIN_SIDEBAR_WIDTH: f32 = if cfg!(target_os = "macos") {
 };
 
 /// A hairline between the application menu and the layout controls beside it.
-/// At 26px the two icon clusters would otherwise read as one undifferentiated
+/// The two icon clusters would otherwise read as one undifferentiated
 /// row, and the menu opens application-wide commands while its neighbours only
 /// move the view around.
 const TITLE_BAR_DIVIDER_HEIGHT: f32 = 18.0;
@@ -58,6 +56,21 @@ const TITLE_BAR_CHIP_RADIUS: f32 = 6.0;
 const TITLE_BAR_CHIP_PADDING_X: f32 = 8.0;
 const TITLE_BAR_CHIP_PADDING_Y: f32 = 2.0;
 const TITLE_BAR_CHIP_ICON: f32 = 11.0;
+
+pub(super) fn title_bar_trailing_region() -> Div {
+    // Keep toggled and hovered controls inside the macOS window's curved edge.
+    // Windows already reserves native caption controls after this group.
+    h_flex()
+        .flex_none()
+        .when(cfg!(target_os = "macos"), |group| {
+            group.mr(px(MACOS_TITLE_BAR_TRAILING_INSET))
+        })
+}
+
+pub(super) fn title_bar_git_summary() -> Div {
+    // Counts can yield space before the buttons or tab strip become unreachable.
+    div().flex_initial().min_w_0().overflow_hidden().occlude()
+}
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -407,9 +420,7 @@ impl Shell {
                     )
                     .child(
                         div().flex_none().occlude().child(
-                            Button::new("toggle-sidebar")
-                                .ghost()
-                                .size(px(TITLE_BAR_BUTTON))
+                            toolbar_button("toggle-sidebar")
                                 .icon(if self.sidebar.collapsed {
                                     SideBarIcon::Expand
                                 } else {
@@ -428,9 +439,7 @@ impl Shell {
                     // to jump, which is what keeps that position stable.
                     .child(
                         div().flex_none().occlude().child(
-                            Button::new("next-ready-tab")
-                                .ghost()
-                                .size(px(TITLE_BAR_BUTTON))
+                            toolbar_button("next-ready-tab")
                                 .icon(IconName::Bell)
                                 .tooltip(t!("shell-next-ready-tab"))
                                 .disabled(self.next_ready_tab(cx).is_none())
@@ -451,9 +460,7 @@ impl Shell {
                     )
                     .child(
                         div().flex_none().occlude().child(
-                            Button::new("next-busy-tab")
-                                .ghost()
-                                .size(px(TITLE_BAR_BUTTON))
+                            toolbar_button("next-busy-tab")
                                 .icon(NextBusyTabIcon)
                                 .tooltip(t!("shell-next-busy-tab"))
                                 .disabled(self.next_busy_tab(cx).is_none())
@@ -491,13 +498,9 @@ impl Shell {
                         false => this.child(tab_bar),
                     }),
             )
+            .child(title_bar_git_summary().child(self.git_status.clone()))
             .child(
-                h_flex()
-                    // The window controls sit to the right of this group, so
-                    // any width it concedes would be reclaimed by the tab
-                    // strip and push them off the window.
-                    .flex_none()
-                    .child(div().occlude().child(self.git_status.clone()))
+                title_bar_trailing_region()
                     // The sidebar itself stays reachable through the
                     // `ToggleGitSidebar` action while the button is hidden.
                     .children(
@@ -506,9 +509,8 @@ impl Shell {
                             .appearance
                             .show_git_status_on_title_bar
                             .then(|| {
-                                div().occlude().child(
-                                    Toggle::new("toggle-git-sidebar")
-                                        .ghost()
+                                div().flex_none().occlude().child(
+                                    toolbar_toggle("toggle-git-sidebar")
                                         .checked(self.panels.shows(RightPanelKind::Git, cx))
                                         .icon(GitIcon)
                                         .on_click(cx.listener(|this, _: &bool, window, cx| {
@@ -534,6 +536,7 @@ impl Shell {
                             .unwrap_or(0);
 
                         div()
+                            .flex_none()
                             .occlude()
                             .child(self.render_workflows_button(running, cx))
                     }))
@@ -548,6 +551,7 @@ impl Shell {
                             let running = pane.read(cx).running_background_tasks();
 
                             div()
+                                .flex_none()
                                 .occlude()
                                 .child(self.render_background_tasks_button(running, cx))
                         })
@@ -564,9 +568,7 @@ impl Shell {
         let shell = cx.entity();
 
         ui::modern_dropdown(
-            Button::new("app-menu")
-                .ghost()
-                .size(px(TITLE_BAR_BUTTON))
+            toolbar_button("app-menu")
                 .icon(IconName::Menu)
                 .tooltip(t!("shell-app-menu"))
                 .accessibility_label(t!("shell-app-menu")),
@@ -621,8 +623,7 @@ impl Shell {
     fn render_workflows_button(&self, running: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let label = t!("workflows-running-agents", count = running).into_owned();
 
-        Toggle::new("toggle-workflows")
-            .ghost()
+        toolbar_toggle("toggle-workflows")
             .checked(self.panels.shows(RightPanelKind::Workflows, cx))
             // Matches the gap a Button puts between its icon and label; the
             // toggle centres its children without one.
@@ -651,8 +652,7 @@ impl Shell {
             _ => t!("tasks-background-running-count", count = running).into_owned(),
         };
 
-        Toggle::new("toggle-background-tasks")
-            .ghost()
+        toolbar_toggle("toggle-background-tasks")
             .checked(self.panels.shows(RightPanelKind::BackgroundTasks, cx))
             .gap_2()
             .icon(IconName::Bot)
