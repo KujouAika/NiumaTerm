@@ -17,6 +17,7 @@ pub mod render_types;
 pub mod system;
 #[cfg(feature = "application")]
 pub mod theme;
+pub mod theme_catalog;
 pub mod update;
 
 #[cfg(feature = "application")]

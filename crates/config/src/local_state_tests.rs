@@ -53,6 +53,7 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                                 agent: None,
                                 agent_profile: None,
                                 team_room: None,
+                                git_cwd: None,
                                 panes: None,
                             },
                             TabState {
@@ -257,6 +258,7 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
         agent: None,
         agent_profile: None,
         team_room: None,
+        git_cwd: None,
         panes: Some(PaneNodeState::Split {
             axis: PaneSplitAxis::Horizontal,
             ratios: vec![0.6, 0.4],
@@ -465,4 +467,23 @@ active_tab = 0
     assert_eq!(workspace.tabs.len(), 1);
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn git_tab_roundtrips_without_acquiring_a_shell_or_agent() {
+    let git = TabState {
+        git_cwd: Some("/project/nested".into()),
+        ..TabState::default()
+    };
+
+    let serialized = toml::to_string(&git).unwrap();
+    let restored: TabState = toml::from_str(&serialized).unwrap();
+
+    assert_eq!(restored, git);
+    assert!(restored.shell.is_none());
+    assert!(restored.agent.is_none());
+
+    let legacy: TabState = toml::from_str("cwd = '/project'\n").unwrap();
+
+    assert!(legacy.git_cwd.is_none());
 }

@@ -346,9 +346,21 @@ impl Shell {
             self.remove_agent_route(&route, cx);
         }
 
+        let return_to = tree.git().and_then(|git| git.return_to);
+
         drop(tree);
 
         if was_active {
+            if let Some(index) = return_to.and_then(|id| {
+                self.workspaces
+                    .active_tabs()
+                    .tabs()
+                    .iter()
+                    .position(|tab| tab.id() == id)
+            }) {
+                self.workspaces.active_tabs_mut().activate(index);
+            }
+
             self.on_active_tab_changed(window, cx);
         }
 

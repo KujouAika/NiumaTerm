@@ -1,42 +1,70 @@
 mod diff_view;
+mod tree;
+mod view;
 
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashSet;
+use std::path::Path;
+
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, Entity, Point, ScrollStrategy, UniformListScrollHandle, Window, div, px,
-    uniform_list,
+    App, Context, Entity, FocusHandle, Point, ScrollStrategy, UniformListScrollHandle, Window,
 };
-use gpui_component::scroll::Scrollbar;
-use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
-use rust_i18n::t;
+use gpui_component::input::{InputEvent, InputState};
 
-use crate::ui::composition::{GitColors, toolbar_button};
 use crate::ui::git_sidebar::diff_view::DiffView;
+use crate::ui::git_sidebar::tree::TreeRow;
 use crate::ui::git_status::{GitStatusModel, fetch_file_diff};
 
-/// Git content for the shared right-side host. Open state, width, slide
-/// animation, resizing, and the outer card belong to that host, so Git and
-/// `Background Tasks` cannot disagree about the geometry they share.
+enum ChangeDirection {
+    Previous,
+    Next,
+}
+
+/// One workspace's review state survives switches to conversations and other workspaces.
 pub(crate) struct GitSidebar {
     model: Entity<GitStatusModel>,
+    cwd: String,
     selected: Option<String>,
     diff: DiffView,
-
-    /// Guards a slow diff fetch from overwriting a newer selection's diff.
     diff_seq: u64,
-
-    /// Last `snapshot_seq` reacted to, so `refreshing` flag flips don't
-    /// re-fetch the diff.
     seen_snapshot_seq: u64,
-
     files_scroll: UniformListScrollHandle,
     diff_scroll: UniformListScrollHandle,
+    focus: FocusHandle,
+    filter: Entity<InputState>,
+    filter_open: bool,
+    collapsed: HashSet<String>,
+    rows: Vec<TreeRow>,
+    selected_line: Option<usize>,
+    loading: bool,
+    visible: bool,
+    can_quote: bool,
+    files_width: f32,
+    files_open: bool,
+    wrap: bool,
+    diff_width: f32,
 }
 
 impl GitSidebar {
-    pub(crate) fn new(model: Entity<GitStatusModel>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(cwd: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let model = cx.new(GitStatusModel::for_tab);
+
+        model.update(cx, |model, cx| model.set_target_cwd(Some(cwd.clone()), cx));
+
+        let filter = cx.new(|cx| InputState::new(window, cx));
+
+        cx.subscribe(&filter, |this: &mut Self, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.update_tree(cx);
+
+                cx.notify();
+            }
+        })
+        .detach();
+
         cx.observe(&model, |this: &mut Self, model, cx| {
             let seq = model.read(cx).snapshot_seq;
 
@@ -51,59 +79,167 @@ impl GitSidebar {
 
         Self {
             model,
+            cwd,
             selected: None,
             diff: DiffView::default(),
             diff_seq: 0,
             seen_snapshot_seq: 0,
             files_scroll: UniformListScrollHandle::default(),
             diff_scroll: UniformListScrollHandle::default(),
+            focus: cx.focus_handle(),
+            filter,
+            filter_open: false,
+            collapsed: HashSet::new(),
+            rows: Vec::new(),
+            selected_line: None,
+            loading: false,
+            visible: false,
+            can_quote: false,
+            files_width: 226.0,
+            files_open: true,
+            wrap: false,
+            diff_width: 700.0,
         }
     }
 
-    fn on_snapshot_changed(&mut self, cx: &mut Context<Self>) {
-        let Some(selected) = self.selected.clone() else {
-            return;
-        };
+    pub(crate) fn cwd(&self) -> &str {
+        &self.cwd
+    }
 
-        let still_listed = self
+    pub(crate) fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+    }
+
+    pub(crate) fn set_quote_available(&mut self, available: bool) {
+        self.can_quote = available;
+    }
+
+    pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+
+        self.visible = visible;
+
+        self.model.update(cx, |model, cx| {
+            model.sidebar_open = visible;
+
+            if visible {
+                model.refresh(cx);
+            }
+        });
+    }
+
+    fn update_tree(&mut self, cx: &Context<Self>) {
+        self.rows = self
             .model
             .read(cx)
             .snapshot
             .as_ref()
-            .is_some_and(|s| s.files.iter().any(|f| f.path == selected));
+            .map_or_else(Vec::new, |snapshot| {
+                tree::rows(
+                    &snapshot.files,
+                    &self.collapsed,
+                    self.filter.read(cx).value().as_ref(),
+                )
+            });
+    }
 
-        if still_listed {
-            self.fetch_diff(cx);
-        } else {
-            self.selected = None;
+    fn on_snapshot_changed(&mut self, cx: &mut Context<Self>) {
+        self.update_tree(cx);
+
+        let files = self
+            .model
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.files);
+
+        let next = self
+            .selected
+            .as_ref()
+            .filter(|path| files.is_some_and(|files| files.iter().any(|file| &file.path == *path)))
+            .cloned()
+            .or_else(|| {
+                files
+                    .and_then(|files| files.first())
+                    .map(|file| file.path.clone())
+            });
+
+        if next != self.selected {
+            self.selected = next;
             self.diff = DiffView::default();
+            self.selected_line = None;
             self.diff_seq += 1;
+            self.reset_diff_scroll();
         }
+
+        self.fetch_diff(cx);
+    }
+
+    fn reset_diff_scroll(&self) {
+        self.diff_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(Point::default());
+
+        self.diff_scroll.scroll_to_item(0, ScrollStrategy::Top);
+    }
+
+    fn select_adjacent_file(&mut self, direction: ChangeDirection, cx: &mut Context<Self>) {
+        let files: Vec<_> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.file.is_some())
+            .collect();
+
+        if files.is_empty() {
+            return;
+        }
+
+        let current = files
+            .iter()
+            .position(|(_, row)| Some(&row.path) == self.selected.as_ref());
+
+        let next = match (current, direction) {
+            (Some(index), ChangeDirection::Next) => (index + 1).min(files.len() - 1),
+            (Some(index), ChangeDirection::Previous) => index.saturating_sub(1),
+            (None, _) => 0,
+        };
+
+        let (row, file) = files[next];
+        let path = file.path.clone();
+
+        self.files_scroll
+            .scroll_to_item(row, ScrollStrategy::Center);
+
+        self.select(path, cx);
     }
 
     fn select(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.selected.as_deref() != Some(&path) {
-            self.selected = Some(path);
-            self.diff = DiffView::default();
+        self.files_open = true;
 
-            self.diff_scroll
-                .0
-                .borrow()
-                .base_handle
-                .set_offset(Point::default());
-
-            self.diff_scroll.scroll_to_item(0, ScrollStrategy::Top);
-
-            self.fetch_diff(cx);
-
-            cx.notify();
+        if self.selected.as_deref() == Some(&path) {
+            return;
         }
+
+        self.selected = Some(path);
+        self.diff = DiffView::default();
+        self.selected_line = None;
+        self.reset_diff_scroll();
+        self.fetch_diff(cx);
+
+        cx.notify();
     }
 
     fn fetch_diff(&mut self, cx: &mut Context<Self>) {
         let (Some(path), Some(snapshot)) =
             (self.selected.clone(), self.model.read(cx).snapshot.as_ref())
         else {
+            self.loading = false;
+
             return;
         };
 
@@ -112,22 +248,31 @@ impl GitSidebar {
         let untracked = snapshot
             .files
             .iter()
-            .any(|f| f.path == path && f.status == "??");
+            .any(|file| file.path == path && file.status == "??");
 
         self.diff_seq += 1;
 
         let seq = self.diff_seq;
 
-        let fetch = cx
-            .background_executor()
-            .spawn(async move { fetch_file_diff(&root, &path, untracked) });
+        self.loading = self.diff.is_empty();
+
+        let fetch = cx.background_executor().spawn(async move {
+            let lines = fetch_file_diff(&root, &path, untracked);
+
+            DiffView::prepare(lines, &path)
+        });
 
         cx.spawn(async move |this, cx| {
-            let lines = fetch.await;
+            let prepared = fetch.await;
 
             this.update(cx, |this, cx| {
                 if this.diff_seq == seq {
-                    this.diff = DiffView::new(lines);
+                    this.diff.update(prepared);
+
+                    this.selected_line =
+                        this.selected_line.filter(|index| *index < this.diff.len());
+
+                    this.loading = false;
 
                     cx.notify();
                 }
@@ -137,183 +282,35 @@ impl GitSidebar {
         .detach();
     }
 
-    fn render_file_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let file_count = self
-            .model
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map_or(0, |s| s.files.len());
+    pub(crate) fn selected_reference(&self, cx: &App) -> Option<String> {
+        let root = &self.model.read(cx).snapshot.as_ref()?.repo_root;
+        let path = self.selected.as_ref()?;
+        let line = self.diff.line(self.selected_line?)?;
+        let number = line.new_line.or(line.old_line)?;
 
-        if file_count == 0 {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(t!("sidebar-git-no-changes"))
-                .into_any_element();
-        }
-
-        let model = self.model.clone();
-        let sidebar = cx.entity();
-        let selected = self.selected.clone();
-
-        div()
-            .flex_1()
-            .relative()
-            .overflow_hidden()
-            .child(
-                uniform_list("git-files", file_count, move |range, _window, cx| {
-                    let Some(snapshot) = model.read(cx).snapshot.as_ref() else {
-                        return Vec::new();
-                    };
-
-                    range
-                        .filter_map(|ix| snapshot.files.get(ix).cloned().map(|f| (ix, f)))
-                        .map(|(ix, file)| {
-                            let is_selected = selected.as_deref() == Some(file.path.as_str());
-                            let sidebar = sidebar.clone();
-                            let path = file.path.clone();
-                            let theme = cx.theme();
-                            let colors = GitColors::new(cx);
-
-                            h_flex()
-                                .id(("git-file", ix))
-                                // Full width pins the row to the list width so
-                                // the path truncates instead of the row growing
-                                // past the sidebar (and the window edge).
-                                .w_full()
-                                .overflow_hidden()
-                                .h(px(24.0))
-                                .px_2()
-                                .gap_2()
-                                .items_center()
-                                .text_sm()
-                                .cursor_pointer()
-                                .when(is_selected, |this| this.bg(theme.list_active))
-                                .hover(|this| this.bg(theme.list_hover))
-                                .child(
-                                    div()
-                                        .text_color(theme.muted_foreground)
-                                        .child(file.status.trim().to_string()),
-                                )
-                                .child(div().flex_1().truncate().child(file.path.clone()))
-                                .child(
-                                    div()
-                                        .text_color(colors.added)
-                                        .child(format!("+{}", file.added)),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(colors.removed)
-                                        .child(format!("-{}", file.removed)),
-                                )
-                                .on_click(move |_, _, cx| {
-                                    sidebar.update(cx, |this, cx| this.select(path.clone(), cx));
-                                })
-                        })
-                        .collect()
-                })
-                .track_scroll(&self.files_scroll)
-                .h_full(),
-            )
-            .child(scrollbar(&self.files_scroll))
-            .into_any_element()
-    }
-
-    fn render_diff(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.selected.is_none() {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(t!("sidebar-git-select-file"))
-                .into_any_element();
-        }
-
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .child(
-                div()
-                    .w_full()
-                    .h(px(26.0))
-                    .flex_none()
-                    .px_2()
-                    .border_b_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .text_sm()
-                    .line_height(px(26.0))
-                    .truncate()
-                    .child(self.selected.clone().unwrap_or_default()),
-            )
-            .child(self.diff.render(&self.diff_scroll, cx))
-            .into_any_element()
-    }
-}
-
-/// Right-edge overlay scrollbar for a `uniform_list`. The `Scrollbar` element
-/// marks itself `position: absolute` but sets no inset, so on its own it lands
-/// at the static flex position — after the list, outside the clip. This wrapper
-/// pins it to the right edge explicitly.
-fn scrollbar(handle: &UniformListScrollHandle) -> impl IntoElement {
-    div()
-        .absolute()
-        .top_0()
-        .right_0()
-        .bottom_0()
-        .w(px(16.0))
-        .child(Scrollbar::vertical(handle))
-}
-
-impl Render for GitSidebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let model = self.model.clone();
-        let in_repo = model.read(cx).snapshot.is_some();
-
-        let header = h_flex()
-            .px_2()
-            .py_1()
-            .justify_between()
-            .items_center()
-            .border_b_1()
-            .border_color(cx.theme().sidebar_border)
-            .child(div().text_sm().child(t!("sidebar-git-title")))
-            .child(
-                toolbar_button("git-refresh")
-                    .icon(IconName::Redo)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.model.update(cx, |model, cx| model.refresh(cx));
-                    })),
-            );
-
-        let body: AnyElement = if in_repo {
-            v_flex()
-                .flex_1()
-                .overflow_hidden()
-                .child(self.render_file_list(cx))
-                .child(div().border_t_1().border_color(cx.theme().sidebar_border))
-                .child(self.render_diff(cx))
-                .into_any_element()
+        let side = if line.new_line.is_some() {
+            "new"
         } else {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(t!("sidebar-git-not-repo"))
-                .into_any_element()
+            "old"
         };
 
-        v_flex().size_full().child(header).child(body)
+        Some(format!(
+            "{}:{number} ({side})\n    {}",
+            Path::new(root).join(path).display(),
+            line.text
+        ))
+    }
+
+    fn jump_change(&mut self, direction: ChangeDirection, cx: &mut Context<Self>) {
+        let current = self.diff.current_change(&self.diff_scroll);
+
+        let index = match direction {
+            ChangeDirection::Next => (current + 1).min(self.diff.change_count().saturating_sub(1)),
+            ChangeDirection::Previous => current.saturating_sub(1),
+        };
+
+        self.diff.jump_change(index, &self.diff_scroll);
+
+        cx.notify();
     }
 }

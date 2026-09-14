@@ -749,6 +749,31 @@ fn custom_theme_overrides_builtin_case_insensitively() {
 }
 
 #[test]
+fn copied_builtin_keeps_family_without_changing_customized_colors() {
+    let dir = TempDirBuilder::new()
+        .prefix("theme-family-upgrade")
+        .tempdir()
+        .unwrap();
+
+    let source = get_builtin_theme("slate_light")
+        .unwrap()
+        .replace("family = \"Slate\"\n", "")
+        .replace("#FCFDFE", "#FAFAFA");
+
+    let path = dir.path().join("slate_light.toml");
+
+    fs::write(&path, source).unwrap();
+
+    let theme = Config::load_theme(&path).unwrap();
+
+    assert_eq!(theme.family, "Slate");
+    assert_eq!(
+        theme.colors.terminal.background.0,
+        hex_to_color_arr("#FAFAFA")
+    );
+}
+
+#[test]
 fn top_level_colors_are_ignored() {
     let result = create_temporary_config(
         "ignored-colors",

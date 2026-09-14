@@ -178,6 +178,14 @@ impl Shell {
     /// owns the outer frame, so a single pane renders without another card.
     pub(super) fn render_active_tree(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.workspaces.active_tabs().active() {
+            TabSurface::Git(tab) => {
+                return div()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(tab.view.clone())
+                    .into_any_element();
+            }
+
             TabSurface::Team(pane) => {
                 return div()
                     .size_full()

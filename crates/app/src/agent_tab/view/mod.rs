@@ -202,7 +202,7 @@ impl Render for AgentPane {
             .history_ui
             .mode
             .is_visible(transcript_empty, composer_empty, history_rows)
-            .then(|| self.render_history(background, cx));
+            .then(|| self.render_history(cx));
 
         // A list opened over a live conversation is a picker, and the
         // transcript behind it is not what the next click should reach. Blur
@@ -264,13 +264,8 @@ impl Render for AgentPane {
                     }),
             )
             .child({
-                // Composer area: auxiliary strips sit outside the bordered,
-                // shadowed shell on a deeper surface. History is absolutely
-                // anchored above the shell because it only exists while the
-                // transcript is empty; loading it must never participate in
-                // composer height calculation. Both strips are painted before
-                // the shell, whose edge and shadow keep them visibly tucked
-                // behind the input card.
+                // The recent-session picker floats above the input with its own gap,
+                // so loading history never moves the draft or changes its width.
                 transcript_column(
                     div()
                         .w_full()
@@ -281,7 +276,7 @@ impl Render for AgentPane {
                                 .left_0()
                                 .right_0()
                                 .bottom(relative(1.))
-                                .mb(px(-14.))
+                                .mb(px(12.))
                                 .child(history)
                         }))
                         .child(

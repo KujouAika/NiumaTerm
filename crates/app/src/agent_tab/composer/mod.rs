@@ -354,3 +354,23 @@ impl From<Status> for ComposerAction {
         }
     }
 }
+
+impl AgentPane {
+    /// Append a source excerpt without replacing the pending request or sending it.
+    pub fn append_code_reference(
+        &mut self,
+        reference: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            let text = input.text().to_string();
+
+            let separator = if text.is_empty() { "" } else { "\n\n" };
+
+            input.set_value(format!("{text}{separator}{reference}\n"), window, cx);
+        });
+
+        cx.notify();
+    }
+}

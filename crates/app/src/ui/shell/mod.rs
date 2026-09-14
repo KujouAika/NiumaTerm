@@ -2,9 +2,9 @@
 pub(crate) use crate::ui::shell::actions::NewRemoteTab;
 pub(crate) use crate::ui::shell::actions::{
     CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
-    PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, ShowSettings,
-    SplitDown, SplitLeft, SplitRight, SplitUp, ToggleBackgroundTasks, ToggleGitSidebar,
-    ToggleSidebar, ToggleWorkflows,
+    PrevWorkspace, QuoteGitLine, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
+    ReturnFromGit, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, ToggleBackgroundTasks,
+    ToggleGitSidebar, ToggleSidebar, ToggleWorkflows,
 };
 pub(crate) use crate::ui::shell::render::MIN_SIDEBAR_WIDTH;
 // Only the macOS backend re-anchors its window buttons against the bar's
@@ -22,6 +22,7 @@ pub(crate) mod tab_surface;
 mod actions;
 mod agent_notifications;
 mod close;
+mod git_tabs;
 mod inline_rename;
 mod panels;
 mod panes;
@@ -90,7 +91,6 @@ use crate::remote;
 use crate::tabs::{Tab, TabId, TabManager};
 use crate::ui;
 use crate::ui::background_tasks::BackgroundTasksView;
-use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::git_status::{GitStatusModel, GitStatusView};
 use crate::ui::persistence::{default_session, materialize_active_tab, restore_session};
 use crate::ui::right_panel::{RightPanel, RightPanelKind};
@@ -339,10 +339,9 @@ impl Shell {
             agent_usage: cx.new(AgentUsageView::new),
             git_status: cx.new(|cx| GitStatusView::new(git_model.clone(), cx)),
             panels: {
-                let git = cx.new(|cx| GitSidebar::new(git_model.clone(), cx));
                 let tasks = cx.new(|_| BackgroundTasksView::new());
                 let workflows = cx.new(|_| WorkflowsView::new());
-                let panel = cx.new(|_| RightPanel::new(git, tasks, workflows));
+                let panel = cx.new(|_| RightPanel::new(tasks, workflows));
 
                 RightPanelController::new(panel, git_model)
             },
@@ -505,6 +504,7 @@ impl Shell {
     pub(crate) fn on_active_tab_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_active_tab_live(window, cx);
         self.sync_active_terminal_title(cx);
+        self.sync_git_tab_visibility(cx);
 
         let tabs = self.workspaces.active_tabs_mut();
 
@@ -516,6 +516,14 @@ impl Shell {
     }
 
     pub(crate) fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(git) = self.workspaces.active_tabs().active().git() {
+            let view = git.view.clone();
+
+            view.update(cx, |view, cx| view.focus(window, cx));
+
+            return;
+        }
+
         // Settings owns its controls' focus and has no pane to focus.
         if self.workspaces.active_tabs().active().is_settings() {
             window.focus(&self.focus, cx);

@@ -1,7 +1,5 @@
-//! The single right-side area. Git, `Background Tasks`, and `Workflows` are
-//! contents of one host rather than separate sidebars, so choosing one replaces
-//! the visible one at the current width and the main pane can never be narrowed
-//! by a second column.
+//! Background tasks and workflows share one auxiliary column. Git review
+//! belongs to the workspace tab strip and uses the central content area.
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, DragMoveEvent, Entity, Pixels, Window, div, px};
@@ -9,7 +7,6 @@ use gpui_component::{StyledExt as _, v_flex};
 
 use crate::ui::background_tasks::BackgroundTasksView;
 use crate::ui::composition::sidebar_surface;
-use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::sidebar_resize::{self, ResizeDrag};
 use crate::ui::workflows::WorkflowsView;
 
@@ -26,7 +23,6 @@ const MAX_WIDTH: f32 = 900.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RightPanelKind {
-    Git,
     BackgroundTasks,
     Workflows,
 }
@@ -42,7 +38,7 @@ pub(crate) struct RightPanelSelection {
 impl RightPanelSelection {
     pub(crate) fn new() -> Self {
         Self {
-            kind: RightPanelKind::Git,
+            kind: RightPanelKind::BackgroundTasks,
             open: false,
         }
     }
@@ -72,14 +68,12 @@ pub(crate) struct RightPanel {
     /// False on startup and during a live drag so only explicit toggles slide.
     animated: bool,
 
-    git: Entity<GitSidebar>,
     tasks: Entity<BackgroundTasksView>,
     workflows: Entity<WorkflowsView>,
 }
 
 impl RightPanel {
     pub(crate) fn new(
-        git: Entity<GitSidebar>,
         tasks: Entity<BackgroundTasksView>,
         workflows: Entity<WorkflowsView>,
     ) -> Self {
@@ -87,7 +81,6 @@ impl RightPanel {
             selection: RightPanelSelection::new(),
             width: px(PANEL_WIDTH),
             animated: false,
-            git,
             tasks,
             workflows,
         }
@@ -107,8 +100,7 @@ impl RightPanel {
 
     /// Choose what the right-side area shows. Selecting the visible content
     /// closes the area; selecting the other replaces it at the current width.
-    /// Returns the open state so the caller can react (Git refreshes on open,
-    /// `Background Tasks` records its activity as seen).
+    /// Returns the open state so callers can mark newly visible activity as seen.
     pub(crate) fn select(&mut self, kind: RightPanelKind, cx: &mut Context<Self>) -> bool {
         let open = self.selection.select(kind);
 
@@ -139,14 +131,12 @@ impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = self.width;
 
-        let open = self.selection.shows(RightPanelKind::Git)
-            || self.selection.shows(RightPanelKind::BackgroundTasks)
+        let open = self.selection.shows(RightPanelKind::BackgroundTasks)
             || self.selection.shows(RightPanelKind::Workflows);
 
         // One content is mounted at a time; two right-side columns are not
         // representable by this layout.
         let body: AnyElement = match self.selection.kind {
-            RightPanelKind::Git => self.git.clone().into_any_element(),
             RightPanelKind::BackgroundTasks => self.tasks.clone().into_any_element(),
             RightPanelKind::Workflows => self.workflows.clone().into_any_element(),
         };

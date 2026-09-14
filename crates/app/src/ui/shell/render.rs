@@ -6,7 +6,6 @@ use gpui_component::Disableable;
 use gpui_component::modern_menu::{ModernMenu, dispatch_modern_menu_key};
 use rust_i18n::t;
 
-use crate::ui::UI_RADIUS;
 use crate::ui::composition::{
     FLOATING_SURFACE_SIDE_INSET, TOOLBAR_BUTTON_SIZE, toolbar_button, toolbar_toggle,
 };
@@ -362,6 +361,8 @@ impl Shell {
             .on_action(cx.listener(Self::on_resize_pane_right))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_git_sidebar))
+            .on_action(cx.listener(Self::on_quote_git_line))
+            .on_action(cx.listener(Self::on_return_from_git))
             .on_action(cx.listener(Self::on_toggle_background_tasks))
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_new_agent_tab))
@@ -378,12 +379,17 @@ impl Shell {
         let vertical_tabs =
             cx.global::<AppSettings>().config().appearance.tab_bar_style == TabBarStyle::Vertical;
 
+        let sidebar_width = if self.sidebar.collapsed {
+            0.0
+        } else {
+            self.sidebar.width
+        };
+
         let leading_width = if cfg!(target_os = "macos") {
-            (self.sidebar.width + ui::composition::FLOATING_SURFACE_SIDE_INSET
-                - TITLE_BAR_LEADING_INSET)
+            (sidebar_width + ui::composition::FLOATING_SURFACE_SIDE_INSET - TITLE_BAR_LEADING_INSET)
                 .max(0.0)
         } else {
-            self.sidebar.width - ui::composition::FLOATING_SURFACE_SIDE_INSET
+            sidebar_width - ui::composition::FLOATING_SURFACE_SIDE_INSET
         };
 
         // Interactive chrome lives in the titlebar but is wrapped in
@@ -493,8 +499,7 @@ impl Shell {
                     .min_w(px(TAB_STRIP_MIN_WIDTH))
                     .h_full()
                     .flex()
-                    .items_center()
-                    .min_w_0()
+                    .items_end()
                     .map(|this| match vertical_tabs {
                         true => this.child(self.render_session_heading(cx)),
                         false => this.child(tab_bar),
@@ -513,7 +518,7 @@ impl Shell {
                             .then(|| {
                                 div().flex_none().occlude().child(
                                     toolbar_toggle("toggle-git-sidebar")
-                                        .checked(self.panels.shows(RightPanelKind::Git, cx))
+                                        .checked(self.workspaces.active_tabs().active().is_git())
                                         .icon(GitIcon)
                                         .on_click(cx.listener(|this, _: &bool, window, cx| {
                                             this.on_toggle_git_sidebar(
@@ -759,6 +764,5 @@ fn floating_surface_card(cx: &App) -> Div {
         .border_l_1()
         .border_t_1()
         .border_color(cx.theme().sidebar_border)
-        .rounded_tl(UI_RADIUS)
-        .bg(cx.theme().background)
+        .bg(cx.theme().sidebar)
 }

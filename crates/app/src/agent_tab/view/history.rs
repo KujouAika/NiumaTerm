@@ -2,11 +2,10 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FontWeight, Hsla, IntoElement, ListSizingBehavior, MouseMoveEvent, Pixels,
+    AnyElement, Context, FontWeight, IntoElement, ListSizingBehavior, MouseMoveEvent, Pixels,
     Point, div, px, relative, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::checkbox::Checkbox;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::skeleton::Skeleton;
 use gpui_component::{
@@ -120,23 +119,14 @@ impl AgentPane {
 
     /// Height of one history row; all rows are uniform, which is what lets
     /// the virtual list precompute its scroll geometry.
-    const HISTORY_ROW_HEIGHT: f32 = 28.0;
+    const HISTORY_ROW_HEIGHT: f32 = 32.0;
 
-    /// Ten rows visible by default; more scroll within the fixed viewport.
-    const HISTORY_MAX_HEIGHT: f32 = Self::HISTORY_ROW_HEIGHT * 10.0;
+    /// Three rows remain visible; older sessions scroll within this viewport.
+    const HISTORY_MAX_HEIGHT: f32 = Self::HISTORY_ROW_HEIGHT * 3.0;
 
-    /// The resumable-sessions block slotted into the composer shell above the
-    /// input: a strip at 90% of the composer width on a slightly deeper
-    /// surface, reading as a layer tucked behind the input card (t3code's
-    /// context-strip look). While only the count pass has finished it shows
-    /// skeleton rows at the final height, so the composer doesn't jump when
-    /// the real rows land; rows render through a virtual list, so hundreds
-    /// of persisted sessions cost only the visible ten.
-    pub(super) fn render_history(
-        &self,
-        pane_background: Hsla,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    /// Recent sessions share the composer's width and keep a stable height
+    /// while loading, so returning results do not move the input field.
+    pub(super) fn render_history(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let rows = self
             .history_ui
             .data
@@ -156,7 +146,7 @@ impl AgentPane {
                 .flex_none()
                 .px_2()
                 .gap_0()
-                .children((0..rows.min(10)).map(|i| {
+                .children((0..rows.min(3)).map(|i| {
                     h_flex()
                         .h(px(Self::HISTORY_ROW_HEIGHT))
                         .w_full()
@@ -235,12 +225,7 @@ impl AgentPane {
                 .into_any_element()
         };
 
-        // Centered at 90% of the composer width, on the pane background
-        // behind the shell: an outlined strip on a deeper tint, rounded only
-        // at the top. The shell overlaps its lower edge (negative margin on
-        // the shell), so the strip reads as a layer sliding out from behind
-        // the front card. The extra bottom padding is clearance for that
-        // overlap — without it the card would cover the last row.
+        // The picker shares the composer width and leaves a visible gap above it.
         div()
             .w_full()
             .flex()
@@ -255,24 +240,12 @@ impl AgentPane {
             }))
             .child(
                 v_flex()
-                    .w(relative(0.95))
-                    .rounded_t(UI_RADIUS)
-                    .border_1()
-                    .border_b_0()
-                    .border_color(cx.theme().border.opacity(0.6))
-                    // Composited over the pane rather than taken at full
-                    // alpha: Fluent's `muted` is a translucent overlay tint
-                    // (#00000006), so forcing its alpha to 1 would paint the
-                    // strip in the tint's bare RGB - solid black in the light
-                    // theme, solid white in the dark one. Blending yields the
-                    // intended slightly deeper surface under either idiom,
-                    // and is a no-op for themes whose `muted` is opaque.
-                    .bg(pane_background.blend(cx.theme().muted))
-                    .pb(px(20.))
+                    .w_full()
+                    .pb(px(2.))
                     .child(
                         h_flex()
                             .w_full()
-                            .px_4()
+                            .px_2()
                             .pt_2()
                             .pb_1()
                             .gap_2()
@@ -288,10 +261,18 @@ impl AgentPane {
                                     .child(t!("agent-history-recent-sessions")),
                             )
                             .child(
-                                Checkbox::new("history-scope")
-                                    .label(t!("agent-history-show-all-sessions").into_owned())
-                                    .checked(
-                                        self.history_ui.data.scope == SessionScope::AllDirectories,
+                                Button::new("history-scope")
+                                    .ghost()
+                                    .small()
+                                    .label(
+                                        t!(if self.history_ui.data.scope
+                                            == SessionScope::AllDirectories
+                                        {
+                                            "agent-history-all-directories"
+                                        } else {
+                                            "agent-history-current-directory"
+                                        })
+                                        .into_owned(),
                                     )
                                     .tooltip(t!("agent-history-show-all-sessions-tooltip"))
                                     .on_click(
@@ -320,11 +301,6 @@ impl AgentPane {
             return div().into_any_element();
         };
 
-        // The strip's own surface is the muted tint, so a row state derived
-        // from `muted` again lands on the color it sits on and disappears.
-        // The list tokens are the per-theme fills meant to read against a
-        // surface, translucent in Fluent and in the Modern themes alike.
-        //
         // One fill, for the one current row. The pointer and the arrow keys
         // move the same highlight, so a hover tint on top of it would be a
         // second mark for a state the list only has one of.
@@ -360,7 +336,7 @@ impl AgentPane {
                     .child(
                         div()
                             .flex_none()
-                            .max_w(relative(0.5))
+                            .max_w(relative(1.0))
                             .truncate()
                             .text_sm()
                             .text_color(cx.theme().foreground.opacity(0.82))

@@ -47,12 +47,14 @@ mod table;
 mod terminal_bridge;
 mod terminal_page;
 mod theme;
+mod theme_gallery;
 
 #[cfg(test)]
 mod tests;
 
 use std::{io, path};
 
+use app::design::SETTINGS_NAV_WIDTH;
 #[cfg(test)]
 use gpui::AppContext as _;
 #[cfg(test)]
@@ -134,7 +136,7 @@ use crate::ui::settings::table::{
 use crate::ui::settings::terminal_page::terminal_page;
 #[cfg(test)]
 use crate::ui::settings::theme::tab_background_opacity;
-use crate::ui::settings::theme::theme_list;
+use crate::ui::settings::theme_gallery::theme_list;
 use crate::{agent_updates, ui};
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
@@ -210,10 +212,10 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
     #[cfg(not(windows))]
     let shell_integration_mismatched = false;
 
-    let sidebar_style = sidebar_surface(cx).border_r_0();
+    let sidebar_style = sidebar_surface(cx).rounded_none().border_0().border_r_1();
 
     let settings = Settings::new("app-settings")
-        .sidebar_width(px(240.0))
+        .sidebar_width(SETTINGS_NAV_WIDTH)
         .sidebar_style(&sidebar_style)
         // Each subcategory is its own page; the alternative scrolls the
         // whole category top to bottom.

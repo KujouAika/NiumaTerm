@@ -57,7 +57,7 @@ pub(crate) enum DiffLineKind {
     Truncated,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DiffLine {
     pub(crate) kind: DiffLineKind,
     pub(crate) text: SharedString,
@@ -406,28 +406,44 @@ pub(crate) struct GitStatusModel {
     pub(crate) sidebar_open: bool,
 }
 
+enum GitStatusConsumer {
+    TitleBar,
+    Tab,
+}
+
 impl GitStatusModel {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let enabled = cx
-            .global::<AppSettings>()
-            .config()
-            .appearance
-            .show_git_status_on_title_bar;
+        Self::create(GitStatusConsumer::TitleBar, cx)
+    }
 
-        cx.observe_global::<AppSettings>(|this, cx| {
-            let enabled = cx
+    pub(crate) fn for_tab(cx: &mut Context<Self>) -> Self {
+        Self::create(GitStatusConsumer::Tab, cx)
+    }
+
+    fn create(consumer: GitStatusConsumer, cx: &mut Context<Self>) -> Self {
+        let enabled = matches!(consumer, GitStatusConsumer::TitleBar)
+            && cx
                 .global::<AppSettings>()
                 .config()
                 .appearance
                 .show_git_status_on_title_bar;
 
-            if enabled && !this.enabled {
-                this.refresh(cx);
-            }
+        if matches!(consumer, GitStatusConsumer::TitleBar) {
+            cx.observe_global::<AppSettings>(|this, cx| {
+                let enabled = cx
+                    .global::<AppSettings>()
+                    .config()
+                    .appearance
+                    .show_git_status_on_title_bar;
 
-            this.enabled = enabled;
-        })
-        .detach();
+                if enabled && !this.enabled {
+                    this.refresh(cx);
+                }
+
+                this.enabled = enabled;
+            })
+            .detach();
+        }
 
         // Interval loop; the period is re-read each tick so the settings
         // dropdown takes effect at the next tick without restart plumbing.

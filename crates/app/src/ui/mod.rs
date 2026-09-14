@@ -1,3 +1,4 @@
+pub(crate) use app::design::SURFACE_RADIUS as UI_RADIUS;
 pub(crate) use gpui_component::modern_menu::dismiss_modern_menu;
 
 pub(crate) use crate::ui::active_list::{ActiveList, HasId};
@@ -47,10 +48,9 @@ mod tests;
 
 use std::sync::LazyLock;
 
-use gpui::{App, Font, FontFallbacks, Pixels, SharedString, font, px};
+use gpui::{App, Font, FontFallbacks, SharedString, font};
 use gpui_component::modern_menu::{prewarm_modern_menu, set_default_font};
 
-pub(crate) const UI_RADIUS: Pixels = px(8.0);
 pub(crate) const UI_BORDER_OPACITY: f32 = 0.5;
 
 /// The Chinese face preferred ahead of the system's own list, chosen per

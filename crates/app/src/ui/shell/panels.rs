@@ -15,17 +15,15 @@ use nmt_config::get;
 use crate::ui::git_status::GitStatusModel;
 use crate::ui::right_panel::{RightPanel, RightPanelKind};
 use crate::ui::shell::Shell;
-use crate::ui::shell::actions::{ToggleBackgroundTasks, ToggleGitSidebar, ToggleWorkflows};
+use crate::ui::shell::actions::{ToggleBackgroundTasks, ToggleWorkflows};
 
-/// The right-side area and everything that decides what it shows. The git
-/// model sits here because opening or leaving the Git view is what turns its
-/// polling on and off, and the two sticky flags because they gate the title-bar
-/// controls that open the other two views.
+/// Controls the right-side task views and their title-bar entry points.
+/// The title-bar Git summary follows the active workspace independently.
 pub(super) struct RightPanelController {
     /// Always mounted so close can animate.
     panel: Entity<RightPanel>,
 
-    /// Shared git status poller feeding the titlebar indicator and sidebar.
+    /// Status for the title-bar summary; each Git tab owns its review state.
     git_model: Entity<GitStatusModel>,
 
     /// Whether any tab has run a workflow. Sticky: the title-bar control
@@ -110,29 +108,24 @@ impl RightPanelController {
     pub(super) fn select(&self, kind: RightPanelKind, cx: &mut Context<Shell>) -> bool {
         self.panel.update(cx, |panel, cx| panel.select(kind, cx))
     }
-
-    /// Match the git poller to whether its own view is on screen. Refreshing on
-    /// the open edge keeps a visible sidebar from re-querying every frame.
-    pub(super) fn set_git_sidebar_open(&self, open: bool, cx: &mut Context<Shell>) {
-        self.git_model.update(cx, |model, cx| {
-            model.sidebar_open = open;
-
-            if open {
-                model.refresh(cx);
-            }
-        });
-    }
 }
 
 impl Shell {
     /// Follow the active terminal's OSC7 directory or the active Agent's
     /// primary directory, falling back to the configured directory only when
     /// neither provides one. Rendering and CWD events both synchronize the
-    /// target so tab switches and workspace directory edits refresh the panel.
+    /// target so tab switches and workspace directory edits refresh the summary.
     pub(super) fn sync_git_target(&self, cx: &mut Context<Self>) {
         let cwd = self
-            .try_active_pane()
-            .and_then(|pane| pane.read(cx).tab_state().cwd)
+            .workspaces
+            .active_tabs()
+            .active()
+            .git()
+            .map(|tab| tab.view.read(cx).cwd().to_string())
+            .or_else(|| {
+                self.try_active_pane()
+                    .and_then(|pane| pane.read(cx).tab_state().cwd)
+            })
             .or_else(|| {
                 self.active_agent()
                     .and_then(|pane| pane.read(cx).working_directory())
@@ -140,19 +133,6 @@ impl Shell {
             .or_else(|| get().working_dir.clone());
 
         self.panels.set_git_target(cwd, cx);
-    }
-
-    pub(super) fn on_toggle_git_sidebar(
-        &mut self,
-        _: &ToggleGitSidebar,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let open = self.panels.select(RightPanelKind::Git, cx);
-
-        self.panels.set_git_sidebar_open(open, cx);
-
-        cx.notify();
     }
 
     pub(super) fn on_toggle_background_tasks(
@@ -174,10 +154,6 @@ impl Shell {
             }
         }
 
-        // Git content owns the poller's own visibility flag; leaving Git for
-        // another view stops the polling it turned on.
-        self.panels.set_git_sidebar_open(false, cx);
-
         cx.notify();
     }
 
@@ -192,10 +168,6 @@ impl Shell {
         if open {
             self.panels.sync_agent_targets(self.active_agent(), cx);
         }
-
-        // Git owns the poller's own visibility flag; leaving Git for another
-        // view stops the polling it turned on.
-        self.panels.set_git_sidebar_open(false, cx);
 
         cx.notify();
     }
