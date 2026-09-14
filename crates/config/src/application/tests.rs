@@ -45,6 +45,7 @@ fn sample_system() -> SystemConfig {
         prioritize_ui_threads: true,
         newline_shortcut: system::NewlineShortcut::ShiftEnter,
         open_in_best_workspace: false,
+        send_system_notifications: false,
     }
 }
 
@@ -928,6 +929,7 @@ git-status-refresh-interval = 1
 #[test]
 fn older_system_settings_keep_native_notifications_enabled() {
     let config: Config = parse_toml("[system]\nopen-in-best-workspace = false\n").unwrap();
+
     assert!(config.system.send_system_notifications);
     assert!(!config.system.open_in_best_workspace);
 }

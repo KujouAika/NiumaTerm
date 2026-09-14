@@ -823,29 +823,39 @@ fn windows_notification_switch_restores_imported_disabled_setting(cx: &mut TestA
     use crate::ui::settings::system_page::windows_notification_field;
 
     let mut settings = AppSettings::default();
+
     settings.edit_system(|section| section.send_system_notifications = false);
     cx.set_global(settings);
+
     let registered = Rc::new(Cell::new(true));
+
     let field = windows_notification_field(
         {
             let registered = registered.clone();
+
             move || registered.get()
         },
         {
             let registered = registered.clone();
+
             move |enabled| {
                 registered.set(enabled);
+
                 Ok(())
             }
         },
     )
     .default_value(true);
+
     let cx = cx.add_empty_window();
+
     cx.update(|window, cx| {
         // Reset uses the same setter as clicking the switch, and dirty state
         // reads its displayed value through the same getter.
         assert!(field.is_resettable(cx));
+
         field.reset(window, cx);
+
         assert!(!field.is_resettable(cx));
         assert!(
             cx.global::<AppSettings>()
@@ -856,8 +866,11 @@ fn windows_notification_switch_restores_imported_disabled_setting(cx: &mut TestA
         assert!(registered.get());
 
         let field = field.default_value(false);
+
         assert!(field.is_resettable(cx));
+
         field.reset(window, cx);
+
         assert!(!field.is_resettable(cx));
         assert!(
             !cx.global::<AppSettings>()
@@ -877,13 +890,18 @@ fn windows_notification_switch_keeps_setting_after_registration_failure(cx: &mut
     use crate::ui::settings::system_page::windows_notification_field;
 
     let mut settings = AppSettings::default();
+
     settings.edit_system(|section| section.send_system_notifications = false);
     cx.set_global(settings);
+
     let field = windows_notification_field(|| false, |_| Err(anyhow!("registration failed")))
         .default_value(true);
+
     let cx = cx.add_empty_window();
+
     cx.update(|window, cx| {
         field.reset(window, cx);
+
         assert!(
             !cx.global::<AppSettings>()
                 .config()

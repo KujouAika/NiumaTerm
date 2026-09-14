@@ -65,6 +65,7 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                                 .system
                                 .warn_before_terminating_shell
                                 .into();
+
                             SharedString::from(key)
                         },
                         |value, cx| {
@@ -98,7 +99,7 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                         },
                     ),
                 )
-                .description(t!("settings-system-open-best-workspace-description")),
+                .description(t!("settings-system-open-best-workspace-description").into_owned()),
             ),
     );
 
@@ -150,12 +151,13 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                         },
                     ),
                 )
-                .description(t!("settings-system-manage-job-description")),
+                .description(t!("settings-system-manage-job-description").into_owned()),
             ),
     );
 
     #[cfg(target_os = "macos")]
     let page = page.group(macos_group());
+
     #[cfg(not(windows))]
     let _ = shell_integration_mismatched;
 
@@ -203,6 +205,7 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                             .system
                             .newline_shortcut
                             .into();
+
                         SharedString::from(key)
                     },
                     |value, cx| {
@@ -236,6 +239,7 @@ pub(super) fn windows_notification_field(
                 cx.global_mut::<AppSettings>()
                     .edit_system(|section| section.send_system_notifications = value);
             }
+
             Err(err) => warn!("failed to toggle system notifications: {err:#}"),
         },
     )

@@ -28,6 +28,7 @@ pub(crate) fn modern_dropdown(
         .relative()
         .child(button.on_click(move |_, window, cx| {
             let mut position = measured.get().bottom_left();
+
             // Native menus position their content, leaving the rounded outer
             // frame above it. Reserve enough space to keep the trigger visible.
             position.y += px(8.);

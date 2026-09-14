@@ -42,6 +42,7 @@ fn titlebar_options() -> TitlebarOptions {
         // Equal top and leading insets center the close button within the
         // rounded corner instead of retaining the narrower native titlebar inset.
         let inset = px(TRAFFIC_LIGHT_INSET);
+
         titlebar.traffic_light_position = Some(point(inset, inset));
     }
 

@@ -485,6 +485,7 @@ fn theme_refresh_preserves_synchronized_output_until_commit() {
         foreground: [0.2, 0.4, 0.6, 1.0],
         ..Colors::default()
     };
+
     let mut state = PtyState::default();
     let mut buf = [0u8; READ_BUFFER_SIZE];
 
@@ -499,10 +500,12 @@ fn theme_refresh_preserves_synchronized_output_until_commit() {
         .extend_from_slice(b"\x1b[?2026h\x1b[1;1HWorking");
 
     machine.pty_read(&mut state, &mut buf).unwrap();
+
     machine
         .sender
         .send(event::Msg::Theme(Box::new(colors)))
         .unwrap();
+
     assert!(machine.drain_recv_channel(&mut state));
 
     {
@@ -598,6 +601,7 @@ fn theme_refresh_preserves_progress_cursor_suppression() {
         foreground: [0.2, 0.4, 0.6, 1.0],
         ..Colors::default()
     };
+
     let mut state = PtyState::default();
     let mut buf = [0u8; READ_BUFFER_SIZE];
 
@@ -611,10 +615,12 @@ fn theme_refresh_preserves_progress_cursor_suppression() {
 
     machine.last_snapshot_at = Some(time::Instant::now() - SNAPSHOT_MIN_INTERVAL);
     machine.pty_read(&mut state, &mut buf).unwrap();
+
     machine
         .sender
         .send(event::Msg::Theme(Box::new(colors)))
         .unwrap();
+
     assert!(machine.drain_recv_channel(&mut state));
 
     {
@@ -1267,4 +1273,49 @@ echo two\r\n\x1b]133;C\x07two\r\n\
         machine.ghostty.has_prompt_tagged_row(),
         "engine rows must carry semantic prompt tags after mark forwarding"
     );
+}
+
+#[test]
+fn idle_theme_requests_publish_colors_without_replacing_retained_frames() {
+    let (_, mut machine) = pty_read_events(b"idle text");
+    let original = machine.render_buffer.load();
+    let mut state = PtyState::default();
+
+    for (foreground, background) in [
+        ([0.2, 0.4, 0.6, 1.0], [1.0, 1.0, 1.0, 1.0]),
+        ([1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]),
+    ] {
+        let mut colors = Colors {
+            foreground,
+            ..Colors::default()
+        };
+
+        colors.background.0 = background;
+
+        machine.event_proxy.0.lock().clear();
+
+        machine
+            .sender
+            .send(event::Msg::Theme(Box::new(colors)))
+            .unwrap();
+
+        assert!(machine.drain_recv_channel(&mut state));
+
+        let frame = machine.render_buffer.load();
+
+        assert_eq!(frame.colors()[NamedColor::Foreground], Some(foreground));
+        assert_eq!(frame.colors()[NamedColor::Background], Some(background));
+        assert_eq!(render_buffer_row_text(&frame, 0), "idle text");
+        assert!(
+            machine
+                .event_proxy
+                .0
+                .lock()
+                .iter()
+                .any(|event| { matches!(event, event::TerminalEvent::TerminalDamaged(_)) })
+        );
+        assert!(!Arc::ptr_eq(&original, &frame));
+    }
+
+    assert_eq!(render_buffer_row_text(&original, 0), "idle text");
 }

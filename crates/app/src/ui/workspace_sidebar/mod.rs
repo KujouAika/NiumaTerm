@@ -66,14 +66,6 @@ pub(super) const RESIZE_HANDLE: &str = "workspace-sidebar-resize";
 pub(super) const MIN_WIDTH: f32 = MIN_SIDEBAR_WIDTH;
 pub(crate) const MAX_WIDTH: f32 = 480.0;
 
-/// Side of the vertical tab-bar new-tab control on a workspace row, and the
-/// size the `+` glyph inside it is drawn at. The control is hover-only, so it
-/// is sized as a comfortable pointer target rather than to match the `×` it
-/// replaces.
-const NEW_TAB_BUTTON: f32 = 24.0;
-
-const NEW_TAB_GLYPH: f32 = 14.0;
-
 /// Diameter of a status dot in the sidebar column. Smaller than the agent
 /// spinner's `size_3`, so a stacked pair reads as a spinner with a mark under
 /// it rather than as two equal glyphs.
@@ -304,7 +296,10 @@ impl Sidebar {
                     .border_t_1()
                     .border_color(cx.theme().sidebar_border)
                     .children(show_daily_token_usage.then_some(usage.daily))
-                    .children(show_agent_usage.then(|| div().ml(px(-SIDEBAR_ROW_GUTTER)).child(usage.quotas)))
+                    .children(
+                        show_agent_usage
+                            .then(|| div().ml(px(-SIDEBAR_ROW_GUTTER)).child(usage.quotas)),
+                    )
             }));
 
         // The terminal column's left gutter forms the gap between panels and
@@ -572,37 +567,47 @@ const TAB_ROW_TEXT: f32 = 13.0;
 ///
 /// The panel owns the horizontal text inset; row fills extend into its gutter.
 const SIDEBAR_PADDING_X: f32 = 12.0;
+
 /// How far a row's fill reaches back into that inset on each side, and how
 /// much padding the row then puts back so its content still lands on the
 /// column's edge. Without it the highlight stops exactly where the first
 /// glyph starts and reads as clipped; the leading half of it is also the lane
 /// the selected-row mark stands in.
 const SIDEBAR_ROW_GUTTER: f32 = 6.0;
+
 // Remove the outer panel offset and restore the row's negative margin so
 // the visible row fill starts directly below the native close button.
 #[cfg(target_os = "macos")]
 const SIDEBAR_PADDING_LEFT: f32 =
     TRAFFIC_LIGHT_INSET - FLOATING_SURFACE_SIDE_INSET + SIDEBAR_ROW_GUTTER;
+
 #[cfg(not(target_os = "macos"))]
 const SIDEBAR_PADDING_LEFT: f32 = SIDEBAR_PADDING_X;
+
 const SIDEBAR_GROUP_GAP: f32 = 8.0;
 const WORKSPACE_LIST_GAP: f32 = 6.0;
+
 /// The heading uses one size across languages to keep the section easy to scan.
 const SIDEBAR_SECTION_TEXT: f32 = 12.0;
+
 /// A workspace heading: its name, and the path that trails it on the same
 /// line. The path is set small enough to read as an annotation on the name.
 const WORKSPACE_NAME_TEXT: f32 = 13.0;
+
 const WORKSPACE_PATH_TEXT: f32 = 10.5;
+
 /// The status cluster along the bottom edge: today's spend over the
 /// subscription gauges. Both report what the agents have consumed, so they
 /// stack as one block under a single rule rather than each carrying an edge.
 const SIDEBAR_STATUS_PADDING_TOP: f32 = 8.0;
+
 const SIDEBAR_STATUS_PADDING_BOTTOM: f32 = 2.0;
 const SIDEBAR_STATUS_ROW_GAP: f32 = 2.0;
 
 /// Distance from the row box's leading edge. The row is a rounded rectangle,
 /// so a mark flush against that edge would sit outside the fill at the corners.
 const SELECTION_BAR_INSET: f32 = 2.0;
+
 /// Names retain an 8px gap after the selection mark on active and idle rows.
 const WORKSPACE_NAME_INSET: f32 = SELECTION_BAR_INSET + SELECTION_BAR_WIDTH + 8.0;
 
@@ -647,4 +652,3 @@ fn workspace_list_scrollbar(handle: &ScrollHandle) -> impl IntoElement {
         .w(px(16.0))
         .child(Scrollbar::vertical(handle))
 }
-

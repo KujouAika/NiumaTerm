@@ -46,7 +46,18 @@ fn numstat_z_handles_unicode_paths() {
 #[test]
 fn diff_hides_headers_and_tracks_both_line_numbers() {
     let text = "diff --git a/f b/f\nindex 123..456 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n context\n-removed\n+added\n";
-    let kinds: Vec<DiffLineKind> = parse_diff(text).iter().map(|l| l.kind).collect();
+    let rows = parse_diff(text);
+    let kinds: Vec<DiffLineKind> = rows.iter().map(|line| line.kind).collect();
+
+    assert_eq!(
+        kinds,
+        vec![
+            DiffLineKind::Hunk,
+            DiffLineKind::Context,
+            DiffLineKind::Removed,
+            DiffLineKind::Added
+        ]
+    );
 
     assert_eq!(
         (rows[1].old_line, rows[1].new_line, rows[1].text.as_ref()),
@@ -101,11 +112,13 @@ fn diff_resets_numbers_and_keeps_header_like_code() {
     let rows = parse_diff(
         "@@ -7 +9 @@\n---code\n+++code\n\\ No newline at end of file\n@@ -30,0 +32,2 @@\n+first\n+second\n@@ -40,2 +43,0 @@\n-old\n-last\n",
     );
+
     let content: Vec<_> = rows
         .iter()
         .filter(|r| r.old_line.is_some() || r.new_line.is_some())
         .map(|r| (r.old_line, r.new_line, r.text.as_ref()))
         .collect();
+
     assert_eq!(
         content,
         vec![
@@ -126,6 +139,7 @@ fn diff_preserves_binary_notice_without_file_metadata() {
     let rows = parse_diff(
         "diff --git a/image b/image\nindex a..b 100644\nBinary files a/image and b/image differ\n",
     );
+
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].kind, DiffLineKind::Notice);
     assert!(!rows[0].text.contains("diff --git"));
@@ -138,9 +152,12 @@ fn diff_preserves_binary_notice_without_file_metadata() {
 #[test]
 fn untracked_diff_has_new_line_numbers_without_added_prefix() {
     let dir = env::temp_dir().join(format!("nmt-untracked-diff-{}", process::id()));
+
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("new.txt"), "first\n+second").unwrap();
+
     let rows = fetch_file_diff(dir.to_str().unwrap(), "new.txt", true);
+
     assert_eq!(rows.len(), 2);
     assert_eq!(
         (rows[0].old_line, rows[0].new_line, rows[0].text.as_ref()),
@@ -150,6 +167,7 @@ fn untracked_diff_has_new_line_numbers_without_added_prefix() {
         (rows[1].old_line, rows[1].new_line, rows[1].text.as_ref()),
         (None, Some(2), "+second")
     );
+
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -158,6 +176,7 @@ fn diff_handles_windows_line_endings_without_changing_source_numbers() {
     let rows = parse_diff(
         "diff --git a/f b/f\r\n--- a/f\r\n+++ b/f\r\n@@ -20,2 +20,2 @@\r\n unchanged\r\n-old\r\n+new\r\n",
     );
+
     assert_eq!(rows.len(), 4);
     assert_eq!((rows[1].old_line, rows[1].new_line), (Some(20), Some(20)));
     assert_eq!((rows[2].old_line, rows[2].new_line), (Some(21), None));

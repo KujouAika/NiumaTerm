@@ -55,16 +55,19 @@ pub(super) fn render_row(
     let stop = task.can_stop.then(|| {
         // Keyed by the child rather than by row position: the two sections
         // enumerate independently, so a positional id is not unique across them.
-        toolbar_button(SharedString::from(format!("background-task-stop-{}", task.key.id)))
-            .icon(StopTaskIcon)
-            .tooltip(t!("tasks-background-stop-tooltip"))
-            .accessibility_label(t!("tasks-background-stop-tooltip"))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                // The row opens the child's conversation, so a click that was
-                // meant for Stop must not also navigate.
-                cx.stop_propagation();
-                this.stop_task(&stop_key, cx);
-            }))
+        toolbar_button(SharedString::from(format!(
+            "background-task-stop-{}",
+            task.key.id
+        )))
+        .icon(StopTaskIcon)
+        .tooltip(t!("tasks-background-stop-tooltip"))
+        .accessibility_label(t!("tasks-background-stop-tooltip"))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            // The row opens the child's conversation, so a click that was
+            // meant for Stop must not also navigate.
+            cx.stop_propagation();
+            this.stop_task(&stop_key, cx);
+        }))
     });
 
     h_flex()

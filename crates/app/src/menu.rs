@@ -17,10 +17,10 @@
 use gpui::{App, Menu, MenuItem, SystemMenuType, Window, actions};
 use rust_i18n::t;
 
-use crate::ui::settings::save_settings;
 use crate::ui::{
     CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
     PrevWorkspace, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, ToggleSidebar,
+    save_settings,
 };
 use crate::{open_window_without_a_source, sparkle};
 

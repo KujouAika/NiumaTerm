@@ -15,6 +15,8 @@ pub mod clipboard;
 /// without splitting its control flow across `cfg` arms.
 pub mod conpty_realign;
 pub mod library;
+#[cfg(target_os = "macos")]
+pub mod macos_notifications;
 
 #[cfg(windows)]
 pub mod windows;
@@ -227,6 +229,3 @@ impl From<&WinsizeBuilder> for Winsize {
         }
     }
 }
-
-#[cfg(target_os = "macos")]
-pub mod macos_notifications;

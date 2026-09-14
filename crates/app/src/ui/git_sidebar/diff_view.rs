@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
+use app::terminal_tab::metrics;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ListHorizontalSizingBehavior, UniformListScrollHandle, div, px, uniform_list,
 };
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme, h_flex};
-use app::terminal_tab::metrics;
 use rust_i18n::t;
 use unicode_width::UnicodeWidthStr;
 
@@ -28,18 +28,22 @@ impl DiffView {
                 line.text = line.text.replace('\t', "    ").into();
             }
         }
+
         let widest = lines
             .iter()
             .enumerate()
             .max_by_key(|(_, line)| UnicodeWidthStr::width(line.text.as_ref()))
             .map_or(0, |(index, _)| index);
+
         let max_number = lines
             .iter()
             .flat_map(|line| [line.old_line, line.new_line])
             .flatten()
             .max()
             .unwrap_or(1);
+
         let digits = (max_number.ilog10() + 1).max(3);
+
         Self {
             lines: lines.into(),
             widest,
@@ -59,8 +63,10 @@ impl DiffView {
                 .child(t!("sidebar-git-no-text-diff"))
                 .into_any_element();
         }
+
         let lines = self.lines.clone();
         let gutter_width = self.gutter_width;
+
         div()
             .flex_1()
             .min_h_0()
@@ -72,9 +78,11 @@ impl DiffView {
                 uniform_list("git-diff", lines.len(), move |range, _, cx| {
                     let theme = cx.theme();
                     let colors = GitColors::new(cx);
+
                     range
                         .map(|index| {
                             let line = &lines[index];
+
                             let mut row = h_flex()
                                 .w_full()
                                 .h(px(20.0))
@@ -82,14 +90,18 @@ impl DiffView {
                                 .line_height(px(20.0))
                                 .whitespace_nowrap()
                                 .text_color(theme.foreground);
+
                             row = match line.kind {
                                 DiffLineKind::Added => row.bg(colors.added_background),
                                 DiffLineKind::Removed => row.bg(colors.removed_background),
+
                                 DiffLineKind::Hunk
                                 | DiffLineKind::Notice
                                 | DiffLineKind::Truncated => row.text_color(theme.muted_foreground),
+
                                 DiffLineKind::Context => row,
                             };
+
                             let number = |value: Option<u64>| {
                                 div()
                                     .w(px(gutter_width))
@@ -99,6 +111,7 @@ impl DiffView {
                                     .text_color(theme.muted_foreground)
                                     .child(value.map(|n| n.to_string()).unwrap_or_default())
                             };
+
                             let row = row
                                 .child(
                                     h_flex()
@@ -109,8 +122,10 @@ impl DiffView {
                                         .child(number(line.new_line)),
                                 )
                                 .child(div().flex_none().px_2().child(line.text.clone()));
+
                             #[cfg(test)]
                             let row = row.debug_selector(move || format!("diff-row-{index}"));
+
                             row
                         })
                         .collect::<Vec<_>>()

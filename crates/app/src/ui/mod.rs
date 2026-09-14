@@ -4,8 +4,8 @@ pub(crate) use crate::ui::active_list::{ActiveList, HasId};
 pub(crate) use crate::ui::modern_dropdown::modern_dropdown;
 pub(crate) use crate::ui::settings::{
     AppSettings, apply_ui_theme, apply_window_translucency, background_image_layer_opacity,
-    install_agent_settings, install_terminal_settings, main_view_background_opacity, watch_themes,
-    window_background_appearance,
+    install_agent_settings, install_terminal_settings, main_view_background_opacity, save_settings,
+    watch_themes, window_background_appearance,
 };
 // Remote sessions connect to a Windows host, so only the Windows key table
 // names the action that opens one.

@@ -11,7 +11,10 @@ use nmt_agent::team::session::TeamSession;
 use nmt_config::local_state::TabState;
 use tempfile::tempdir;
 
-use crate::ui::shell::render::{TAB_STRIP_MIN_WIDTH, title_bar_leading_region, title_bar_trailing_region, title_bar_git_summary};
+use crate::ui::shell::render::{
+    MACOS_TITLE_BAR_TRAILING_INSET, TAB_STRIP_MIN_WIDTH, title_bar_git_summary,
+    title_bar_leading_region, title_bar_trailing_region,
+};
 use crate::ui::shell::{InlineRename, InlineRenameStyle, TabSurface, should_confirm_close};
 use crate::window::MIN_WINDOW_WIDTH;
 
@@ -273,7 +276,12 @@ fn title_bar_controls_stay_inside_a_narrow_window(cx: &mut TestAppContext) {
 
     cx.update(gpui_component::init);
 
-    let trailing_inset = if cfg!(target_os = "macos") { crate::ui::shell::render::MACOS_TITLE_BAR_TRAILING_INSET } else { 0.0 };
+    let trailing_inset = if cfg!(target_os = "macos") {
+        MACOS_TITLE_BAR_TRAILING_INSET
+    } else {
+        0.0
+    };
+
     let probe: TitleBarProbe = Default::default();
 
     let handle = cx.add_window({

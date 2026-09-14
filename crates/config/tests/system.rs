@@ -67,6 +67,8 @@ fn warn_mode_decides_from_child_process_count() {
 fn shipped_system_example_matches_serialized_defaults() {
     let example: Value = from_str(include_str!("../../../assets/config-example.toml"))
         .expect("example config parses");
+
     let defaults = Value::try_from(SystemConfig::default()).expect("defaults serialize");
+
     assert_eq!(example.get("system"), Some(&defaults));
 }

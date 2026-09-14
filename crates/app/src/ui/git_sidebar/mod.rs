@@ -1,3 +1,8 @@
+mod diff_view;
+
+#[cfg(test)]
+mod tests;
+
 use gpui::prelude::*;
 use gpui::{
     AnyElement, Context, Entity, Point, ScrollStrategy, UniformListScrollHandle, Window, div, px,
@@ -11,10 +16,6 @@ use crate::ui::composition::{GitColors, toolbar_button};
 use crate::ui::git_sidebar::diff_view::DiffView;
 use crate::ui::git_status::{GitStatusModel, fetch_file_diff};
 
-mod diff_view;
-#[cfg(test)]
-mod tests;
-
 /// Git content for the shared right-side host. Open state, width, slide
 /// animation, resizing, and the outer card belong to that host, so Git and
 /// `Background Tasks` cannot disagree about the geometry they share.
@@ -22,11 +23,14 @@ pub(crate) struct GitSidebar {
     model: Entity<GitStatusModel>,
     selected: Option<String>,
     diff: DiffView,
+
     /// Guards a slow diff fetch from overwriting a newer selection's diff.
     diff_seq: u64,
+
     /// Last `snapshot_seq` reacted to, so `refreshing` flag flips don't
     /// re-fetch the diff.
     seen_snapshot_seq: u64,
+
     files_scroll: UniformListScrollHandle,
     diff_scroll: UniformListScrollHandle,
 }
@@ -35,10 +39,12 @@ impl GitSidebar {
     pub(crate) fn new(model: Entity<GitStatusModel>, cx: &mut Context<Self>) -> Self {
         cx.observe(&model, |this: &mut Self, model, cx| {
             let seq = model.read(cx).snapshot_seq;
+
             if seq != this.seen_snapshot_seq {
                 this.seen_snapshot_seq = seq;
                 this.on_snapshot_changed(cx);
             }
+
             cx.notify();
         })
         .detach();
@@ -79,6 +85,7 @@ impl GitSidebar {
         if self.selected.as_deref() != Some(&path) {
             self.selected = Some(path);
             self.diff = DiffView::default();
+
             self.diff_scroll
                 .0
                 .borrow()
@@ -121,6 +128,7 @@ impl GitSidebar {
             this.update(cx, |this, cx| {
                 if this.diff_seq == seq {
                     this.diff = DiffView::new(lines);
+
                     cx.notify();
                 }
             })

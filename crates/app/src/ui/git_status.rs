@@ -10,7 +10,7 @@ use std::{fs, io, path};
 
 use gpui::prelude::*;
 use gpui::{AsyncApp, Context, Entity, SharedString, WeakEntity, Window, div};
-use gpui_component::{ActiveTheme, h_flex};
+use gpui_component::h_flex;
 use nmt_agent::git::{CheckedOut, current_branch, run_git};
 use rust_i18n::t;
 use tracing::warn;
@@ -177,14 +177,11 @@ fn count_file_lines(root: &str, path: &str) -> u64 {
 pub(crate) fn fetch_file_diff(root: &str, path: &str, untracked: bool) -> Vec<DiffLine> {
     if untracked {
         let Ok(bytes) = fs::read(path::Path::new(root).join(path)) else {
-            return vec![line(
-                DiffLineKind::FileHeader,
-                t!("git-status-unreadable-file"),
-            )];
+            return vec![line(DiffLineKind::Notice, t!("git-status-unreadable-file"))];
         };
 
         if bytes.contains(&0) {
-            return vec![line(DiffLineKind::FileHeader, t!("git-status-binary-file"))];
+            return vec![line(DiffLineKind::Notice, t!("git-status-binary-file"))];
         }
 
         let text = String::from_utf8_lossy(&bytes);
@@ -213,7 +210,7 @@ pub(crate) fn fetch_file_diff(root: &str, path: &str, untracked: bool) -> Vec<Di
             parse_diff(&text)
         }
 
-        Err(err) => vec![line(DiffLineKind::FileHeader, err)],
+        Err(err) => vec![line(DiffLineKind::Notice, err)],
     }
 }
 
@@ -306,40 +303,51 @@ pub(crate) fn parse_numstat_z(raw: &[u8]) -> Vec<(String, u64, u64)> {
 /// Decode content inside unified hunks; file metadata is presented by the file list.
 pub(crate) fn parse_diff(text: &str) -> Vec<DiffLine> {
     let mut hunk: Option<Hunk> = None;
+
     cap_lines(text.lines().filter_map(|text| {
         if let Some(parsed) = Hunk::parse(text) {
             hunk = Some(parsed);
+
             return Some(line(DiffLineKind::Hunk, text.to_string()));
         }
+
         if text.starts_with("\\ No newline at end of file") {
             return Some(line(DiffLineKind::Notice, text.to_string()));
         }
+
         if text.starts_with("Binary files ") || text == "GIT binary patch" {
             return Some(line(DiffLineKind::Notice, t!("git-status-binary-file")));
         }
+
         let hunk = hunk.as_mut()?;
         let (prefix, content) = text.split_at_checked(1)?;
+
         let (kind, old, new) = match prefix {
             " " if hunk.old_remaining > 0 && hunk.new_remaining > 0 => {
                 (DiffLineKind::Context, true, true)
             }
+
             "-" if hunk.old_remaining > 0 => (DiffLineKind::Removed, true, false),
             "+" if hunk.new_remaining > 0 => (DiffLineKind::Added, false, true),
             _ => return None,
         };
+
         let row = DiffLine {
             old_line: old.then_some(hunk.old),
             new_line: new.then_some(hunk.new),
             ..line(kind, content.to_string())
         };
+
         if old {
             hunk.old += 1;
             hunk.old_remaining -= 1;
         }
+
         if new {
             hunk.new += 1;
             hunk.new_remaining -= 1;
         }
+
         Some(row)
     }))
 }
@@ -356,15 +364,20 @@ impl Hunk {
         let mut parts = text.strip_prefix("@@ ")?.split_whitespace();
         let old = parts.next()?.strip_prefix('-')?;
         let new = parts.next()?.strip_prefix('+')?;
+
         if parts.next()? != "@@" {
             return None;
         }
+
         let range = |value: &str| -> Option<(u64, u64)> {
             let (start, count) = value.split_once(',').unwrap_or((value, "1"));
+
             Some((start.parse().ok()?, count.parse().ok()?))
         };
+
         let (old, old_remaining) = range(old)?;
         let (new, new_remaining) = range(new)?;
+
         Some(Self {
             old,
             new,
@@ -640,6 +653,7 @@ impl Render for GitStatusView {
         }
 
         let colors = GitColors::new(cx);
+
         h_flex()
             .gap_1()
             .px_2()

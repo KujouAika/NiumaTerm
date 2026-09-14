@@ -87,26 +87,35 @@ impl gpui::Render for WorkspaceButtonProbe {
 #[gpui::test]
 fn idle_workspace_button_renders_and_accepts_hover(cx: &mut gpui::TestAppContext) {
     use gpui::{Modifiers, VisualTestContext, point, px};
+
     cx.update(gpui_component::init);
+
     let window = cx.add_window(|_, _| WorkspaceButtonProbe);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
+
     cx.run_until_parked();
     cx.refresh().unwrap();
+
     let bounds = cx
         .debug_bounds("workspace-row")
         .expect("workspace row was not painted");
+
     assert_eq!(bounds.size.width, px(300.));
+
     let name = cx
         .debug_bounds("workspace-name")
         .expect("workspace name was not painted");
+
     assert!(
         name.size.height >= px(17.),
         "the clipped text box needs room for descenders: {name:?}"
     );
     assert!(bounds.top() < name.top() && bounds.bottom() > name.bottom());
+
     cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
     cx.refresh().unwrap();
     cx.simulate_mouse_move(point(px(350.), px(100.)), None, Modifiers::default());
     cx.refresh().unwrap();
+
     assert_eq!(cx.debug_bounds("workspace-row"), Some(bounds));
 }

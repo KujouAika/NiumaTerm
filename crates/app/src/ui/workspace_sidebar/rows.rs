@@ -1,12 +1,13 @@
 use gpui::{ClipboardItem, Role, relative};
 use rust_i18n::t;
 
-use gpui_component::tooltip::ManagedTooltipExt as _;
 use crate::ui::modern_dropdown;
 use crate::ui::workspace_sidebar::*;
+use gpui_component::tooltip::ManagedTooltipExt as _;
 
 pub(super) fn workspace_row_button(id: impl Into<ElementId>, cx: &App) -> Button {
     let selection = sidebar_selection(cx);
+
     Button::new(id)
         // Button registers its own hover handler; variants supply its colors
         // without installing a second hover style on the same element.
@@ -99,15 +100,9 @@ impl Sidebar {
                 HoverActionLayout::Bare,
                 HoverActionVisibility::OnGroupHover("ws-item".into()),
                 modern_dropdown(
-                    Button::new(("workspace-new-tab-button", idx))
-                        // A pixel size leaves the box to the styles below:
-                        // Button only derives its padding and glyph size from
-                        // it, while the named sizes would pin the height too.
-                        .with_size(px(NEW_TAB_GLYPH))
-                        .ghost()
-                        .accessibility_label(t!("sidebar-tab-new"))
-                        .size(px(NEW_TAB_BUTTON))
-                        .child("+"),
+                    toolbar_button(("workspace-new-tab-button", idx))
+                        .icon(IconName::Plus)
+                        .accessibility_label(t!("sidebar-tab-new")),
                     move |menu, _, cx| new_tab_menu(menu, &menu_shell, cx),
                 ),
             )

@@ -7,7 +7,9 @@ use gpui_component::modern_menu::{ModernMenu, dispatch_modern_menu_key};
 use rust_i18n::t;
 
 use crate::ui::UI_RADIUS;
-use crate::ui::composition::{FLOATING_SURFACE_SIDE_INSET, TOOLBAR_BUTTON_SIZE, toolbar_button, toolbar_toggle};
+use crate::ui::composition::{
+    FLOATING_SURFACE_SIDE_INSET, TOOLBAR_BUTTON_SIZE, toolbar_button, toolbar_toggle,
+};
 use crate::ui::shell::*;
 #[cfg(windows)]
 use crate::update::check;

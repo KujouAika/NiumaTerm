@@ -206,6 +206,7 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
 
     #[cfg(windows)]
     let shell_integration_mismatched = shell_integration_dll_mismatched();
+
     #[cfg(not(windows))]
     let shell_integration_mismatched = false;
 

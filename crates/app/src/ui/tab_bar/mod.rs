@@ -24,7 +24,7 @@ use rust_i18n::t;
 use crate::tabs::{TabId, TabManager};
 use crate::ui::composition::{
     HoverActionLayout, HoverActionVisibility, StatusMark, StatusMarkTone, TOOLBAR_BUTTON_SIZE,
-    hover_action, toolbar_button, TOOLBAR_BUTTON_SIZE,
+    hover_action, toolbar_button,
 };
 use crate::ui::shell::{
     InlineRename, InlineRenameSession, InlineRenameStyle, TabSurface, pending_tab_icon,

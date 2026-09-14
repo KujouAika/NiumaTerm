@@ -10,6 +10,7 @@ use crate::ui::persistence::spawn_default_pane;
 use crate::ui::shell::actions::NewTeamTab;
 use crate::ui::shell::tab_surface::AgentTab;
 use crate::ui::shell::*;
+#[cfg(windows)]
 use crate::ui::terminal_launch::attach_remote;
 
 impl Shell {

@@ -28,7 +28,7 @@ pub(super) fn macos_group() -> SettingGroup {
                     },
                 ),
             )
-            .description(t!("settings-system-send-notifications-description")),
+            .description(t!("settings-system-send-notifications-description").into_owned()),
         )
         .item(
             SettingItem::new(
@@ -40,13 +40,16 @@ pub(super) fn macos_group() -> SettingGroup {
                                 status: None,
                                 pending: false,
                             };
+
                             view.refresh(cx);
+
                             view
                         });
+
                     state
                 }),
             )
-            .description(t!("settings-system-notification-permission-description")),
+            .description(t!("settings-system-notification-permission-description").into_owned()),
         )
 }
 
@@ -58,17 +61,21 @@ struct PermissionView {
 impl PermissionView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (sender, receiver) = mpsc::unbounded();
+
         notification_permission(move |status| {
             let _ = sender.unbounded_send(status);
         });
+
         self.receive(receiver, cx);
     }
 
     fn request(&mut self, cx: &mut Context<Self>) {
         let (sender, receiver) = mpsc::unbounded();
+
         request_notification_permission(move |status| {
             let _ = sender.unbounded_send(status);
         });
+
         self.receive(receiver, cx);
     }
 
@@ -78,12 +85,16 @@ impl PermissionView {
         cx: &mut Context<Self>,
     ) {
         self.pending = true;
+
         cx.notify();
+
         cx.spawn(async move |this, cx| {
             let status = receiver.next().await;
+
             let _ = this.update(cx, |this, cx| {
                 this.status = status;
                 this.pending = false;
+
                 cx.notify();
             });
         })
@@ -95,14 +106,17 @@ impl Render for PermissionView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let key = match self.status {
             None => "settings-system-permission-loading",
+
             Some(NotificationPermission::NotDetermined) => {
                 "settings-system-permission-not-determined"
             }
+
             Some(NotificationPermission::Denied) => "settings-system-permission-denied",
             Some(NotificationPermission::Authorized) => "settings-system-permission-authorized",
             Some(NotificationPermission::Provisional) => "settings-system-permission-provisional",
             Some(NotificationPermission::Unavailable) => "settings-system-permission-unavailable",
         };
+
         v_flex()
             .items_end()
             .gap_2()
