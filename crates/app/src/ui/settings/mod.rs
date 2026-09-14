@@ -216,6 +216,7 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
 
     let settings = Settings::new("app-settings")
         .sidebar_width(SETTINGS_NAV_WIDTH)
+        .sidebar_size_range(SETTINGS_NAV_WIDTH..SETTINGS_NAV_WIDTH)
         .sidebar_style(&sidebar_style)
         // Each subcategory is its own page; the alternative scrolls the
         // whole category top to bottom.

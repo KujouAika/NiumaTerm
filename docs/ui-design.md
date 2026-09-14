@@ -16,7 +16,9 @@ consume the same measurement rather than maintaining separate numeric values.
 
 Round exposed corners. An attached tab has rounded upper corners and a flat
 lower edge; adjoining navigation and content panes have straight shared edges.
-Use one divider at each join. Theme changes alter colors while retaining the
+Keep settings navigation at the same fixed width as its tab when resizing
+the window. Use one divider at each join. The content frame overlays its borders without
+consuming layout width, and attached tab bars leave the shared baseline to it. Theme changes alter colors while retaining the
 application's geometry. Tiny preview glyphs and full-circle indicators scale to
 their own sizes.
 
@@ -44,3 +46,17 @@ retains the active colors; directory changes update the gallery automatically.
 Claude colors are adapted from the supplied Typora theme. Attribution is in
 `assets/licenses/claude-typora-theme.txt`. Application font preferences remain
 independent of palette selection.
+
+## Content proportions
+
+The task/workflow auxiliary panel starts at about 38.2 percent of the width
+remaining after workspace navigation. This is a composition starting point,
+not a scale for controls or typography. Its normal range is 240 to 480 pixels,
+and it yields below that range to preserve 320 pixels for the main content.
+A manual panel width takes priority and returns after a temporary window shrink.
+
+Source-review file navigation starts at 224 pixels with a 160 to 400 pixel
+resize range. Its content does not need 38.2 percent of a wide code surface.
+Theme cards retain a 200 pixel minimum width and 120 pixel height, with a
+72 pixel preview, 12 pixel gaps, and at most four columns. Their minimum width
+and gap determine the column count from the same shared measurements.

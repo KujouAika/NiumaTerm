@@ -8,6 +8,7 @@ mod tests;
 use std::collections::HashSet;
 use std::path::Path;
 
+use app::design::REVIEW_FILES_WIDTH;
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, FocusHandle, Point, ScrollStrategy, UniformListScrollHandle, Window,
@@ -95,7 +96,7 @@ impl GitSidebar {
             loading: false,
             visible: false,
             can_quote: false,
-            files_width: 226.0,
+            files_width: REVIEW_FILES_WIDTH.as_f32(),
             files_open: true,
             wrap: false,
             diff_width: 700.0,

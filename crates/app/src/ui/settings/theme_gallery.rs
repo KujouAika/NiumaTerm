@@ -1,4 +1,7 @@
-use app::design::SURFACE_RADIUS;
+use app::design::{
+    SPACE_3, SURFACE_RADIUS, THEME_CARD_HEIGHT, THEME_CARD_MIN_WIDTH, THEME_GRID_MAX_COLUMNS,
+    THEME_PREVIEW_HEIGHT,
+};
 use gpui::prelude::*;
 use gpui::{App, Div, Entity, Hsla, Rgba, div, px, rgba};
 use gpui_base::Button;
@@ -56,7 +59,7 @@ fn theme_preview(theme: &Theme) -> Div {
 
     v_flex()
         .w_full()
-        .h(px(72.))
+        .h(THEME_PREVIEW_HEIGHT)
         .flex_none()
         .rounded(SURFACE_RADIUS)
         .border_1()
@@ -242,11 +245,13 @@ pub(super) fn theme_list(editing: Entity<SettingsEditing>, cx: &mut App) -> Div 
                 .relative()
                 .grid()
                 .grid_cols(columns)
-                .gap_3()
+                .gap(SPACE_3)
                 .on_prepaint(move |bounds, window, cx| {
-                    let columns = ((bounds.size.width.as_f32() + 12.) / 212.)
-                        .floor()
-                        .clamp(1., 4.) as u16;
+                    let columns = ((bounds.size.width + SPACE_3).as_f32()
+                        / (THEME_CARD_MIN_WIDTH + SPACE_3).as_f32())
+                    .floor()
+                    .clamp(1., f32::from(THEME_GRID_MAX_COLUMNS))
+                        as u16;
 
                     if measure
                         .upgrade()
@@ -282,7 +287,7 @@ pub(super) fn theme_list(editing: Entity<SettingsEditing>, cx: &mut App) -> Div 
                         .selected(active)
                         .w_full()
                         .min_w_0()
-                        .h(px(120.))
+                        .h(THEME_CARD_HEIGHT)
                         .p_2()
                         .flex_col()
                         .gap_2()

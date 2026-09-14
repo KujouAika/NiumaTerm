@@ -30,21 +30,15 @@ pub(super) const MACOS_TITLE_BAR_TRAILING_INSET: f32 = 12.0;
 
 const TITLE_BAR_BUTTON_GAP: f32 = 4.0;
 
-// Four controls, the divider, four internal gaps, and a trailing gap must
-// stay visible before the first tab, including at the sidebar's drag limit.
-const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * TOOLBAR_BUTTON_SIZE + 1.0 + 5.0 * TITLE_BAR_BUTTON_GAP;
+// Four controls, three internal gaps, and a trailing gap stay reachable
+// before the first tab, including at the sidebar's drag limit.
+const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * (TOOLBAR_BUTTON_SIZE + TITLE_BAR_BUTTON_GAP);
 
 pub(crate) const MIN_SIDEBAR_WIDTH: f32 = if cfg!(target_os = "macos") {
     TITLE_BAR_LEADING_INSET + TITLE_BAR_CONTROLS_WIDTH - FLOATING_SURFACE_SIDE_INSET
 } else {
     140.0
 };
-
-/// A hairline between the application menu and the layout controls beside it.
-/// The two icon clusters would otherwise read as one undifferentiated
-/// row, and the menu opens application-wide commands while its neighbours only
-/// move the view around.
-const TITLE_BAR_DIVIDER_HEIGHT: f32 = 18.0;
 
 /// The session heading in the middle of the bar, and the branch chip beside
 /// it. The chip is set smaller than the title because it qualifies the title
@@ -129,6 +123,18 @@ impl Render for Shell {
         // compare-and-set catches every switch path.
         self.sync_git_target(cx);
         self.panels.sync_agent_targets(self.active_agent(), cx);
+
+        let sidebar_width = if self.sidebar.collapsed {
+            0.0
+        } else {
+            self.sidebar.width
+        };
+
+        let content_width = window.viewport_size().width - px(sidebar_width);
+
+        self.panels.panel().update(cx, |panel, cx| {
+            panel.set_available_width(content_width, cx);
+        });
 
         // The sidebar is always mounted so it can animate its width open/closed.
         let summaries = self.workspace_chrome(cx);
@@ -314,6 +320,7 @@ impl Render for Shell {
                                     .min_w_0()
                                     .relative()
                                     .child(pane_tree)
+                                    .child(surface_border(cx))
                                     // Notifications are anchored to the pane
                                     // viewport inside the clipped card.
                                     .children(notification_layer),
@@ -418,13 +425,6 @@ impl Shell {
                             .flex_none()
                             .occlude()
                             .child(self.render_app_menu_button(cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(1.))
-                            .h(px(TITLE_BAR_DIVIDER_HEIGHT))
-                            .bg(cx.theme().border),
                     )
                     .child(
                         div().flex_none().occlude().child(
@@ -758,11 +758,15 @@ impl IconNamed for NextBusyTabIcon {
 /// border or radius on the other two sides would trace a line just inside the
 /// window frame.
 fn floating_surface_card(cx: &App) -> Div {
+    div().size_full().overflow_hidden().bg(cx.theme().sidebar)
+}
+
+/// Borders overlay content so attached tab and navigation bounds share one origin.
+fn surface_border(cx: &App) -> Div {
     div()
-        .size_full()
-        .overflow_hidden()
+        .absolute()
+        .inset_0()
         .border_l_1()
         .border_t_1()
         .border_color(cx.theme().sidebar_border)
-        .bg(cx.theme().sidebar)
 }

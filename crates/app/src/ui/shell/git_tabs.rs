@@ -16,6 +16,14 @@ impl Shell {
     ) {
         self.leave_settings_workspace();
 
+        if self.workspaces.active_tabs().active().is_git() {
+            let id = self.workspaces.active_tabs().active_id();
+
+            self.request_close_tab(id, window, cx);
+
+            return;
+        }
+
         let tabs = self.workspaces.active_tabs();
         let return_to = (!tabs.active().is_git()).then_some(tabs.active_id());
         let existing = tabs.tabs().iter().position(|tab| tab.surface().is_git());

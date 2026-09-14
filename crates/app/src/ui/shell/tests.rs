@@ -200,8 +200,7 @@ impl gpui::Render for TitleBarProbeView {
                                 div().flex_none().child(
                                     toolbar_button(("leading", index)).icon(IconName::Settings),
                                 )
-                            }))
-                            .child(div().w(px(1.)).h(px(18.)).flex_none()),
+                            })),
                     )
                     .child(
                         div()

@@ -207,6 +207,7 @@ impl TabStrip {
         let bar = TabBar::new("shell-tabs")
             // Attached tabs share the content edge and keep their own horizontal scroll.
             .with_variant(TabVariant::Tab)
+            .bottom_border(false)
             .when(cfg!(target_os = "macos"), |bar| bar.pl_0())
             .w_full()
             .min_w_0()

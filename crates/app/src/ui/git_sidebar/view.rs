@@ -1,4 +1,6 @@
-use app::design::{REVIEW_FOOTER_HEIGHT, SURFACE_RADIUS};
+use app::design::{
+    REVIEW_FILES_MAX_WIDTH, REVIEW_FILES_MIN_WIDTH, REVIEW_FOOTER_HEIGHT, SURFACE_RADIUS,
+};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, ClipboardItem, Context, DragMoveEvent, Focusable, KeyDownEvent, Role, Window, div,
@@ -167,7 +169,10 @@ impl GitSidebar {
                     if event.drag(cx).is_from(FILE_RESIZE) {
                         this.files_width = (event.event.position.x - event.bounds.left())
                             .as_f32()
-                            .clamp(150.0, 400.0);
+                            .clamp(
+                                REVIEW_FILES_MIN_WIDTH.as_f32(),
+                                REVIEW_FILES_MAX_WIDTH.as_f32(),
+                            );
 
                         cx.notify();
                     }
