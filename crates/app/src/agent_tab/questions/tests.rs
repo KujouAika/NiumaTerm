@@ -1,4 +1,6 @@
-use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
+use gpui::{
+    AppContext as _, BorrowAppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle,
+};
 use gpui_component::Root;
 use gpui_component::input::InputEvent;
 use nmt_agent::AgentWorkspace;
@@ -11,6 +13,7 @@ use nmt_agent::session::lifecycle::StartOutcome;
 use nmt_agent::session::test_support::TestBackend;
 use nmt_agent::session::{AgentKind, Backend};
 use nmt_config::profile::AgentProfile;
+use nmt_config::system::NewlineShortcut;
 
 use crate::agent_tab::AgentPane;
 use crate::agent_tab::questions::{QuestionEditorState, QuestionPresentation};
@@ -66,6 +69,95 @@ fn open_pane(cx: &mut TestAppContext) -> (Entity<AgentPane>, WindowHandle<Root>)
     });
 
     (pane, window)
+}
+
+#[gpui::test]
+fn question_editor_enter_uses_current_newline_setting(cx: &mut TestAppContext) {
+    for shortcut in [
+        NewlineShortcut::CtrlEnter,
+        NewlineShortcut::ShiftEnter,
+        NewlineShortcut::Off,
+    ] {
+        for key in ["enter", "ctrl-enter", "shift-enter"] {
+            let (pane, window) = open_pane(cx);
+
+            let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+            deliver_session_event(
+                &pane,
+                Event::InputRequested(QuestionRequest {
+                    id: "keyboard-answer".into(),
+                    mode: QuestionMode::Blocking,
+                    questions: vec![Question {
+                        input: QuestionInput::Text,
+                        ..question("Describe the change", false, &[])
+                    }],
+                }),
+                &cx,
+            );
+
+            let editor = cx.update(|window, cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.prompts.prepare_editors(&pane.session, window, cx);
+
+                    let active = pane.prompts.active.unwrap();
+
+                    let QuestionEditorState::Text(editor) = &pane.prompts.presentations[&active]
+                        .editors[0]
+                        .as_ref()
+                        .unwrap()
+                        .state
+                    else {
+                        panic!("text editor required");
+                    };
+
+                    editor.update(cx, |editor, cx| {
+                        editor.set_value("answer", window, cx);
+
+                        cx.emit(InputEvent::Change);
+                        editor.focus(window, cx);
+                    });
+
+                    editor.clone()
+                })
+            });
+
+            cx.update(|_, cx| {
+                cx.update_global::<AgentSettings, _>(|settings, _| {
+                    settings.newline_shortcut = shortcut;
+                });
+            });
+
+            cx.run_until_parked();
+            cx.simulate_keystrokes(key);
+            cx.run_until_parked();
+
+            let newline = matches!(
+                (shortcut, key),
+                (NewlineShortcut::CtrlEnter, "ctrl-enter")
+                    | (NewlineShortcut::ShiftEnter, "shift-enter")
+            );
+
+            cx.update(|_, cx| {
+                pane.update(cx, |pane, cx| {
+                    let session = pane.session.borrow();
+                    let draft = &session.input().batches()[0];
+
+                    assert_eq!(
+                        draft.status(),
+                        if newline {
+                            QuestionStatus::Pending
+                        } else {
+                            QuestionStatus::Submitting
+                        },
+                        "{shortcut:?}: {key}"
+                    );
+                    assert_eq!(editor.read(cx).value().contains('\n'), newline);
+                    assert_eq!(draft.text(0), editor.read(cx).value().as_ref());
+                });
+            });
+        }
+    }
 }
 
 #[gpui::test]

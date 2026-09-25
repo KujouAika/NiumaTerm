@@ -593,7 +593,7 @@ impl QuestionPanel {
 
                 if pending {
                     if let Some(editor) = &presentation.editors[index] {
-                        row = row.child(editor.render(!enabled));
+                        row = row.child(editor.render(!enabled, cx));
                     }
                 } else if prompt.status() == QuestionStatus::Submitted && prompt.is_custom(index) {
                     row = row.child(

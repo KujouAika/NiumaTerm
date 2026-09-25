@@ -7,9 +7,14 @@ pub(super) mod panel;
 #[cfg(test)]
 mod tests;
 
-use gpui::{AnyElement, App, Entity, IntoElement as _, Subscription, Window};
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui::prelude::*;
+use gpui::{AnyElement, App, Context, Entity, Subscription, Window, div};
+use gpui_component::input::{Enter, Input, InputState, Textarea, TextareaState};
 use nmt_agent::session::input::QuestionDraft;
+
+use crate::agent_tab::AgentPane;
+use crate::agent_tab::settings::AgentSettings;
+use crate::agent_tab::view::composer_layout::{ComposerEnterBehavior, composer_enter_behavior};
 
 pub(super) struct QuestionEditor {
     state: QuestionEditorState,
@@ -104,7 +109,33 @@ impl QuestionEditor {
         self.state.focus(window, cx);
     }
 
-    pub(super) fn render(&self, disabled: bool) -> AnyElement {
-        self.state.render(disabled)
+    pub(super) fn render(&self, disabled: bool, cx: &mut Context<AgentPane>) -> AnyElement {
+        let text = match &self.state {
+            QuestionEditorState::Text(state) => Some(state.clone()),
+            QuestionEditorState::Secret(_) => None,
+        };
+
+        div()
+            .capture_action(cx.listener(move |this, action: &Enter, window, cx| {
+                if !disabled {
+                    match composer_enter_behavior(
+                        cx.global::<AgentSettings>().newline_shortcut,
+                        action,
+                    ) {
+                        ComposerEnterBehavior::InsertNewline => {
+                            if let Some(text) = &text {
+                                text.update(cx, |input, cx| input.replace("\n", window, cx));
+                            }
+                        }
+                        ComposerEnterBehavior::Submit | ComposerEnterBehavior::ActivateOrSubmit => {
+                            this.submit_current_questions(cx);
+                        }
+                    }
+                }
+
+                cx.stop_propagation();
+            }))
+            .child(self.state.render(disabled))
+            .into_any_element()
     }
 }
