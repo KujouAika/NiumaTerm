@@ -19,8 +19,6 @@ struct TerminalLineData {
     text_hash: u64,
     cells: Box<[TerminalCell]>,
     runs: Box<[StyleRun]>,
-    #[cfg(test)]
-    cursor_col: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,11 +64,6 @@ impl TerminalLine {
         self.0.text_hash
     }
 
-    #[cfg(test)]
-    pub(crate) fn cursor_col(&self) -> Option<u16> {
-        self.0.cursor_col
-    }
-
     fn new(
         text: String,
         cells: Vec<TerminalCell>,
@@ -85,8 +78,6 @@ impl TerminalLine {
             text_hash,
             cells: cells.into_boxed_slice(),
             runs: runs.into_boxed_slice(),
-            #[cfg(test)]
-            cursor_col,
         }))
     }
 

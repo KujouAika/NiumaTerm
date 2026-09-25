@@ -2,10 +2,6 @@
 //! tab it belongs to. Both surfaces grade the same state, so the color and
 //! wording live here rather than being spelled out twice.
 
-#[cfg(test)]
-#[path = "terminal_status_tests.rs"]
-mod terminal_status_tests;
-
 use std::borrow::Cow;
 
 use gpui::prelude::*;

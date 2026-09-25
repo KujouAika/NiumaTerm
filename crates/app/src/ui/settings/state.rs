@@ -1,12 +1,6 @@
 pub use nmt_config::agent::{CollapseRows, ModelListStyle};
 #[cfg(test)]
-pub use nmt_config::appearance::{
-    DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE, DEFAULT_BACKGROUND_IMAGE_OPACITY, DEFAULT_FONT_FAMILY,
-    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, DEFAULT_TAB_WIDTH, DEFAULT_UI_FONT,
-    clamp_agent_transcript_font_size, clamp_background_image_opacity, clamp_background_opacity,
-    clamp_git_interval, clamp_tab_width, clamp_terminal_font_size, clamp_terminal_line_height,
-    terminal_font_or_default, ui_font_or_default,
-};
+pub use nmt_config::appearance::{DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_UI_FONT};
 pub use nmt_config::appearance::{InputStyle, MIN_TAB_WIDTH, TabBarStyle, WindowBackdrop};
 pub use nmt_config::profile::{AgentKind, AgentProfile, AgentProfileLauncher, EnvVar, Profile};
 

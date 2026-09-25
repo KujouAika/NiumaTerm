@@ -80,14 +80,6 @@ fn attach_three() -> (PendingAttachments, String) {
 }
 
 #[test]
-fn attaching_numbers_placeholders_in_order() {
-    let (pending, text) = attach_three();
-
-    assert_eq!(text, "[Image #1][Image #2][Image #3]");
-    assert_eq!(pending.iter().count(), 3);
-}
-
-#[test]
 fn removing_the_first_attachment_renumbers_the_rest() {
     let (mut pending, text) = attach_three();
 

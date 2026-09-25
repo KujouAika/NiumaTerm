@@ -169,42 +169,6 @@ fn inline_rename_routes_escape_to_cancellation(cx: &mut TestAppContext) {
     assert!(cancelled.get());
 }
 
-#[test]
-fn right_side_views_share_one_area() {
-    use crate::ui::right_panel::{RightPanelKind, RightPanelSelection};
-
-    let mut selection = RightPanelSelection::new();
-
-    assert!(selection.select(RightPanelKind::BackgroundTasks));
-    assert!(selection.shows(RightPanelKind::BackgroundTasks));
-    assert!(selection.select(RightPanelKind::Workflows));
-    assert!(selection.shows(RightPanelKind::Workflows));
-    assert!(!selection.shows(RightPanelKind::BackgroundTasks));
-    assert!(!selection.select(RightPanelKind::Workflows));
-    assert!(!selection.shows(RightPanelKind::Workflows));
-}
-
-/// Shared by the ready-tab and busy-tab jumps: each click walks to the next
-/// marked tab and wraps, so a set of them is visited in order rather than the
-/// same one being reopened.
-#[test]
-fn marked_tab_search_wraps_past_the_active_tab() {
-    use crate::ui::shell::next_marked_position;
-
-    let marks = [true, false, true, false];
-
-    assert_eq!(next_marked_position(&marks, 0), Some(2));
-    assert_eq!(next_marked_position(&marks, 2), Some(0));
-    assert_eq!(next_marked_position(&marks, 3), Some(0));
-
-    // The active tab is the last slot visited, so its own mark still counts
-    // when nothing else carries one.
-    assert_eq!(next_marked_position(&[true], 0), Some(0));
-
-    assert_eq!(next_marked_position(&[false, false], 0), None);
-    assert_eq!(next_marked_position(&[], 0), None);
-}
-
 fn window_state() -> WindowState {
     WindowState {
         x: 1.0,

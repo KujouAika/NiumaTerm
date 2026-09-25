@@ -38,8 +38,6 @@ use crate::chat::{
     SlashCommandRunPolicy, SlashCommandSource, ThreadSettings,
 };
 use crate::claude_code::config_home;
-#[cfg(test)]
-use crate::claude_code::records::{edit_diff, input_detail, tool_item};
 use crate::claude_code::sessions::progress::{PROGRESS_METHOD, ProgressMonitor, ProgressSnapshot};
 use crate::claude_code::sessions::{RestoredTask, load_child_transcript};
 use crate::claude_code::stream_json::control::{

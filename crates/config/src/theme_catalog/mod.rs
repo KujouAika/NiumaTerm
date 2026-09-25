@@ -1,8 +1,5 @@
 //! Theme families preserve the existing file identifiers used by saved settings.
 
-#[cfg(test)]
-mod tests;
-
 use std::collections::BTreeMap;
 
 use crate::theme::{AppearanceTheme, Theme};

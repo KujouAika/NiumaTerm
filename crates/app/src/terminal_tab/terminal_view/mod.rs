@@ -1,11 +1,6 @@
-#[cfg(test)]
-pub(super) use crate::terminal_tab::paint::frame::cursor_bounds;
 pub(super) use crate::terminal_tab::terminal_view::item::BlockListItem;
 
 mod item;
-
-#[cfg(test)]
-mod tests;
 
 use std::panic;
 

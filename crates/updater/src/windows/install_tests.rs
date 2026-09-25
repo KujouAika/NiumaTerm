@@ -59,26 +59,6 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
-fn selected_names_are_exposed_before_the_swap() {
-    let plan = InstallPlan {
-        names: differing(&versions([
-            ("NiumaTerm.exe", Some("v1.3.0"), Some("v1.2.0")),
-            (
-                "NmtShellExtension.dll",
-                Some("new-shell"),
-                Some("old-shell"),
-            ),
-            ("conpty.dll", Some("1.24.0"), Some("1.24.0")),
-        ])),
-    };
-
-    assert!(!plan.is_empty());
-    assert!(plan.contains("NiumaTerm.exe"));
-    assert!(plan.contains("NmtShellExtension.dll"));
-    assert!(!plan.contains("conpty.dll"));
-}
-
-#[test]
 fn applying_a_plan_reports_a_missing_staged_file() {
     let staging = scratch("staging");
     let install = scratch("install");

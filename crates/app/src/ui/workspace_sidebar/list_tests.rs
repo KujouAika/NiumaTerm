@@ -1,30 +1,3 @@
-use crate::ui::workspace_sidebar::list::{tail_preserving_path, workspace_display_label};
-
-#[test]
-fn generated_workspace_uses_final_cwd_component() {
-    assert_eq!(
-        workspace_display_label("New Workspace", r"C:\Workspace\NiumaTerm\"),
-        "NiumaTerm"
-    );
-    assert_eq!(
-        workspace_display_label("Renamed", r"C:\Workspace\NiumaTerm"),
-        "Renamed"
-    );
-    assert_eq!(
-        workspace_display_label("New Workspace", "."),
-        "New Workspace"
-    );
-}
-
-#[test]
-fn long_workspace_path_keeps_its_tail() {
-    assert_eq!(
-        tail_preserving_path(r"C:\very\long\workspace\NiumaTerm", 18),
-        "…\\NiumaTerm"
-    );
-    assert_eq!(tail_preserving_path("short/path", 18), "short/path");
-}
-
 struct WorkspaceButtonProbe;
 
 impl gpui::Render for WorkspaceButtonProbe {

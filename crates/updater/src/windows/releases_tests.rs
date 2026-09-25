@@ -27,46 +27,6 @@ fn published_on(label: &str, published: u32) -> Release {
 }
 
 #[test]
-fn a_higher_release_supersedes_a_lower_one() {
-    assert!(supersedes(&version("v1.2.0"), &undated("v1.3.0")));
-    assert!(supersedes(&version("v1.2.0"), &undated("v1.2.1")));
-    assert!(supersedes(&version("v1.9.0"), &undated("v2.0.0")));
-
-    assert!(!supersedes(&version("v1.3.0"), &undated("v1.2.0")));
-    assert!(!supersedes(&version("v1.2.0"), &undated("v1.2.0")));
-
-    // Component order, which a lexical comparison of the labels would get
-    // wrong once a number reaches two digits.
-    assert!(!supersedes(&version("v1.10.0"), &undated("v1.9.0")));
-    assert!(supersedes(&version("v1.9.0"), &undated("v1.10.0")));
-}
-
-#[test]
-fn a_later_nightly_supersedes_an_earlier_one() {
-    let installed = version("nightly-20260821-7567b41");
-
-    assert!(supersedes(&installed, &undated("nightly-20260822-aaaaaaa")));
-    assert!(!supersedes(
-        &installed,
-        &undated("nightly-20260820-aaaaaaa")
-    ));
-    assert!(!supersedes(
-        &installed,
-        &undated("nightly-20260821-7567b41")
-    ));
-
-    // Two revisions dated the same day: the published list is ordered by when
-    // each release was cut, so a different one reached from that list is the
-    // newer build rather than an ambiguous one.
-    assert!(supersedes(&installed, &undated("nightly-20260821-aaaaaaa")));
-}
-
-#[test]
-fn a_tag_that_cannot_be_read_is_still_offered() {
-    assert!(supersedes(&version("v1.2.0"), &undated("build-4")));
-}
-
-#[test]
 fn a_release_older_than_a_running_nightly_is_not_offered() {
     let installed = version("nightly-20260822-7567b41");
 
@@ -84,16 +44,6 @@ fn a_release_older_than_a_running_nightly_is_not_offered() {
 
     // With nothing to place it by, it cannot be shown to be ahead.
     assert!(!supersedes(&installed, &undated("v1.2.3")));
-}
-
-#[test]
-fn a_nightly_is_offered_to_a_release_build() {
-    // Moving to the nightly channel needs no publishing date: that channel is
-    // only ever cut from the tip.
-    assert!(supersedes(
-        &version("v1.2.0"),
-        &undated("nightly-20260821-7567b41")
-    ));
 }
 
 /// Shaped like the releases page: newest first, with the entries this

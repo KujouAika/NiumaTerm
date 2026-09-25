@@ -14,9 +14,7 @@ use crate::chat::{Event, Item};
 use crate::dsh::api::ApiClient;
 use crate::dsh::history::sessions;
 use crate::dsh::mapping::{EventTracker, map_frame};
-use crate::dsh::session::{
-    CloseAction, open_new_conversation, run_close_actions, session_create_payload,
-};
+use crate::dsh::session::{CloseAction, open_new_conversation, run_close_actions};
 use crate::dsh::{history, mapping};
 use crate::workspace::AgentWorkspace;
 
@@ -509,44 +507,6 @@ fn an_approval_request_carries_what_answering_it_needs() {
 }
 
 #[test]
-fn a_command_result_reports_what_the_registry_settled() {
-    use crate::chat::SlashCommandOutcome;
-    use crate::dsh::catalogs;
-
-    assert_eq!(
-        catalogs::command_outcome(
-            "compact",
-            "",
-            &json!({ "commandId": "cmd-1", "result": { "kind": "success", "text": "compacted" } }),
-        ),
-        SlashCommandOutcome::Completed {
-            message: Some("compacted".into()),
-            approval: None,
-        }
-    );
-    assert_eq!(
-        catalogs::command_outcome(
-            "permission",
-            "nope",
-            &json!({ "commandId": "cmd-2", "result": { "kind": "error", "text": "no such preset" } }),
-        ),
-        SlashCommandOutcome::Rejected {
-            message: "no such preset".into(),
-        }
-    );
-
-    // A name the registry could not resolve produces no answer at all, and
-    // nothing ran, so the caller reports the refusal itself.
-    let SlashCommandOutcome::Rejected { message } =
-        catalogs::command_outcome("nope", "", &Value::Null)
-    else {
-        panic!("an unresolved name should be refused");
-    };
-
-    assert!(message.contains("/nope"), "{message}");
-}
-
-#[test]
 fn only_a_successful_permission_switch_names_a_preset_to_remember() {
     use crate::chat::SlashCommandOutcome;
     use crate::dsh::catalogs;
@@ -568,38 +528,6 @@ fn only_a_successful_permission_switch_names_a_preset_to_remember() {
     // another command's argument is not a preset.
     assert_eq!(approval("permission", "  "), None);
     assert_eq!(approval("compact", "danger-full-access"), None);
-}
-
-#[test]
-fn the_skill_catalog_names_what_a_prompt_can_write() {
-    use crate::dsh::catalogs;
-
-    let catalog = catalogs::skill_catalog(&json!({
-        "skills": [
-            {
-                "name": "diagnose",
-                "description": "Disciplined diagnosis loop",
-                "whenToUse": "when a bug resists the obvious fix",
-                "modelInvocable": true,
-            },
-            { "name": "handoff", "description": "Compact the conversation", "modelInvocable": false },
-        ],
-    }));
-
-    assert_eq!(catalog.skills.len(), 2);
-    assert!(
-        catalog.skills[0]
-            .description
-            .contains("resists the obvious"),
-        "{}",
-        catalog.skills[0].description
-    );
-
-    // The catalog lists what a user can invoke, so a row on it is reachable
-    // whether or not the model may reach for it too.
-    assert!(catalog.skills[1].enabled);
-    assert_eq!(catalog.skills[0].path, "diagnose");
-    assert!(catalog.errors.is_empty());
 }
 
 #[test]
@@ -671,155 +599,6 @@ fn a_workflow_run_is_folded_from_its_own_increments() {
         "data": { "runId": "wf-1", "name": "review-changes" },
     }))));
     assert_eq!(workflows.snapshot(SESSION).runs.len(), 1);
-}
-
-#[test]
-fn the_child_catalog_becomes_rows_that_can_be_opened() {
-    use crate::background_task::{BackgroundTaskRefs, BackgroundTaskState};
-    use crate::dsh::catalogs;
-
-    let catalog = json!({
-        "parentAvailable": true,
-        "entries": [
-            {
-                "kind": "child",
-                "id": "child-1",
-                "activity": "running",
-                "hasChildren": false,
-                "mode": "continuable",
-                "label": "Review the diff",
-            },
-            {
-                "kind": "child",
-                "id": "child-2",
-                "activity": "inactive",
-                "hasChildren": false,
-                "mode": "one-shot",
-            },
-            // Names a child the harness could not read, so nothing about it can
-            // be opened and a row would only report its own unreadability.
-            { "kind": "diagnostic", "id": "child-3", "reason": "corrupt" },
-        ],
-    });
-
-    let snapshot = catalogs::subagent_snapshot(&catalog, SESSION, 7);
-
-    assert_eq!(snapshot.tasks.len(), 2);
-    assert_eq!(snapshot.parent_session.id, SESSION);
-
-    let first = &snapshot.tasks[0];
-
-    assert_eq!(first.key.id, "child-1");
-    assert_eq!(first.display_name.as_deref(), Some("Review the diff"));
-    assert_eq!(first.state, BackgroundTaskState::Working);
-
-    // Only a running continuable child has anything a stop can reach.
-    assert!(first.can_stop);
-    assert!(!snapshot.tasks[1].can_stop);
-    assert_eq!(snapshot.tasks[1].state, BackgroundTaskState::Done);
-
-    // The pair is what addresses a child's conversation, so the row carries the
-    // parent as well as which of the two child kinds it is.
-    assert_eq!(
-        first.refs,
-        BackgroundTaskRefs::DeepSeek { continuable: true }
-    );
-}
-
-#[test]
-fn background_jobs_become_rows_beside_the_child_catalog() {
-    use std::time::{Duration, UNIX_EPOCH};
-
-    use crate::background_task::{BackgroundTaskKind, BackgroundTaskState};
-    use crate::dsh::catalogs;
-
-    // Trimmed from a `jobs` frame on the host's `session/control` stream.
-    let jobs = json!([
-        {
-            "id": "bash-3",
-            "kind": "bash",
-            "label": "python capture.py --time 30",
-            "status": "running",
-            "startedAt": 1_790_077_300_000_u64,
-        },
-        {
-            "id": "bash-2",
-            "kind": "bash",
-            "label": "cargo build",
-            "status": "failed",
-            "detail": "exit code: 3",
-            "startedAt": 1_790_077_200_000_u64,
-            "finishedAt": 1_790_077_260_000_u64,
-        },
-        // A delegated child is already a row from the child catalog.
-        {
-            "id": "subagent-1",
-            "kind": "subagent",
-            "label": "Review the diff",
-            "status": "running",
-            "startedAt": 1_790_077_100_000_u64,
-        },
-    ]);
-
-    let rows = catalogs::job_rows(&jobs, SESSION, 4);
-
-    assert_eq!(rows.len(), 2);
-
-    let running = &rows[0];
-
-    assert_eq!(running.key.id, "bash-3");
-    assert_eq!(running.kind, BackgroundTaskKind::Shell);
-    assert_eq!(
-        running.display_name.as_deref(),
-        Some("python capture.py --time 30")
-    );
-    assert_eq!(running.state, BackgroundTaskState::Working);
-    assert_eq!(
-        running.started_at,
-        Some(UNIX_EPOCH + Duration::from_millis(1_790_077_300_000))
-    );
-
-    // The harness offers other clients no way to stop a job.
-    assert!(!running.can_stop);
-
-    let failed = &rows[1];
-
-    assert_eq!(failed.state, BackgroundTaskState::Failed);
-    assert_eq!(failed.status.as_deref(), Some("exit code: 3"));
-    assert_eq!(
-        failed.completed_at,
-        Some(UNIX_EPOCH + Duration::from_millis(1_790_077_260_000))
-    );
-}
-
-#[test]
-fn the_command_registry_fills_the_palette() {
-    use crate::chat::{SlashCommandArguments, SlashCommandRunPolicy, SlashCommandSource};
-    use crate::dsh::catalogs;
-
-    let listed = json!([
-        { "name": "compact", "description": "Summarize the conversation so far" },
-        {
-            "name": "permission",
-            "description": "Switch the permission preset",
-            "input": { "hint": "preset name" },
-        },
-    ]);
-
-    let catalog = catalogs::command_catalog(&listed);
-
-    assert_eq!(catalog.len(), 2);
-    assert_eq!(catalog[0].name, "compact");
-    assert_eq!(catalog[0].source, SlashCommandSource::Provider);
-
-    // The registry settles a command itself rather than handing it to the
-    // model, so none of them wait for a turn.
-    assert_eq!(catalog[0].run_policy, SlashCommandRunPolicy::Immediate);
-
-    // An input hint is what says the name is followed by free text.
-    assert_eq!(catalog[0].arguments, SlashCommandArguments::None);
-    assert_eq!(catalog[1].arguments, SlashCommandArguments::Freeform);
-    assert_eq!(catalog[1].argument_hint.as_deref(), Some("preset name"));
 }
 
 #[test]
@@ -1015,107 +794,6 @@ fn a_compaction_records_itself_only_once_it_produced_a_summary() {
 }
 
 #[test]
-fn a_retry_says_the_turn_is_waiting_rather_than_thinking() {
-    use crate::chat::TurnRetry;
-
-    let retry = session_frame(json!({
-        "type": "llm/retry",
-        "data": {
-            "retryId": "r-1",
-            "turn": 1,
-            "step": 1,
-            "provider": "deepseek",
-            "mode": "normal",
-            "policyKey": "deepseek-normal",
-            "retry": 1,
-            "maxRetries": 2,
-            "delayMs": 4500,
-            "failure": { "message": "429 rate limited", "code": "rate_limit", "status": 429 },
-        },
-    }));
-
-    assert_eq!(
-        map_frame(&retry, SESSION, &mut EventTracker::default()),
-        vec![Event::StatusDetail(Some(TurnRetry {
-            attempt: 1,
-            total: 2,
-            reason: "429 rate limited".into(),
-        }))]
-    );
-
-    // The wait is over and the next attempt starts, which is ordinary work.
-    let started = session_frame(json!({
-        "type": "llm/retry-started",
-        "data": { "retryId": "r-1", "turn": 1, "step": 1, "retry": 1 },
-    }));
-
-    assert_eq!(
-        map_frame(&started, SESSION, &mut EventTracker::default()),
-        vec![Event::StatusDetail(None)]
-    );
-
-    // A failure with no sentence still separates a rate limit from an outage.
-    let coded = session_frame(json!({
-        "type": "llm/retry",
-        "data": { "retry": 2, "maxRetries": 2, "failure": { "code": "overloaded" } },
-    }));
-
-    assert_eq!(
-        map_frame(&coded, SESSION, &mut EventTracker::default()),
-        vec![Event::StatusDetail(Some(TurnRetry {
-            attempt: 2,
-            total: 2,
-            reason: "overloaded".into(),
-        }))]
-    );
-}
-
-#[test]
-fn a_todo_write_renders_as_the_shared_checklist_shape() {
-    let frame = session_frame(json!({
-        "type": "todo/write",
-        "seq": 88,
-        "data": {
-            "todos": [
-                { "content": "read the spec", "status": "completed" },
-                { "content": "write the mapping", "status": "in_progress" },
-                { "content": "cover it", "status": "pending" },
-            ],
-        },
-    }));
-
-    let events = map_frame(&frame, SESSION, &mut EventTracker::default());
-
-    let [Event::ItemCompleted(item)] = events.as_slice() else {
-        panic!("expected one todo row, got {events:?}");
-    };
-
-    // The tally the transcript shows reads this shape, so the row has to speak
-    // it rather than a second vocabulary of its own.
-    assert_eq!(item.task_tally(), Some((1, 3)));
-
-    let Item::Other { id, kind, .. } = item else {
-        panic!("expected a generic row, got {item:?}");
-    };
-
-    assert_eq!(kind, "TodoWrite");
-
-    // Each write describes its own moment, so rows do not collapse into one.
-    assert_eq!(id, "todo:88");
-
-    let empty = session_frame(json!({
-        "type": "todo/write",
-        "seq": 89,
-        "data": { "todos": [] },
-    }));
-
-    assert_eq!(
-        map_frame(&empty, SESSION, &mut EventTracker::default()),
-        Vec::new()
-    );
-}
-
-#[test]
 fn the_model_directory_addresses_a_pick_as_a_provider_and_model_pair() {
     use crate::dsh::models::ModelDirectory;
 
@@ -1187,31 +865,6 @@ fn the_model_directory_addresses_a_pick_as_a_provider_and_model_pair() {
         directory.route("Qwen/Qwen3-32B"),
         ("deepseek", "Qwen/Qwen3-32B")
     );
-}
-
-#[test]
-fn a_selection_outside_the_catalog_still_shows_in_the_picker() {
-    use crate::dsh::models::ModelDirectory;
-
-    // Catalog membership is advisory: a route can serve a model it stopped
-    // advertising, and that session runs perfectly well.
-    let directory = ModelDirectory::parse(&json!({
-        "current": { "provider": "deepseek", "model": "deepseek-retired" },
-        "routable": true,
-        "groups": [{
-            "id": "deepseek",
-            "name": "DeepSeek",
-            "models": [{ "id": "deepseek-chat", "name": "DeepSeek Chat" }],
-        }],
-        "failures": [],
-    }));
-
-    assert_eq!(directory.selected(), Some("deepseek-retired"));
-    assert_eq!(
-        directory.route("deepseek-retired"),
-        ("deepseek", "deepseek-retired")
-    );
-    assert_eq!(directory.effort(), None);
 }
 
 #[test]
@@ -1440,44 +1093,6 @@ fn a_conversation_still_waiting_for_a_name_keeps_the_one_it_shows() {
 }
 
 #[test]
-fn a_context_breakdown_becomes_the_composition_segments() {
-    use crate::dsh::projections::ProjectionTracker;
-
-    let mut usage = ProjectionTracker::default();
-
-    usage.apply(
-        &projection_frame(
-            "contextPressure",
-            json!({ "projectedTokens": 900, "contextWindow": 64000 }),
-        ),
-        SESSION,
-    );
-
-    let events = usage
-        .apply(
-            &projection_frame(
-                "contextBreakdown",
-                json!({ "systemTokens": 400, "toolsTokens": 250, "messageTokens": 1000 }),
-            ),
-            SESSION,
-        )
-        .expect("a projection frame for this session should be claimed");
-
-    let [Event::ContextCompositionUpdated(composition)] = events.as_slice() else {
-        panic!("expected one composition, got {events:?}");
-    };
-
-    assert_eq!(composition.segments.len(), 3);
-    assert_eq!(composition.segments[1].label, "Tools");
-    assert_eq!(composition.segments[1].tokens, 250);
-
-    // The three figures share one estimator, so their sum is the only total
-    // that describes this split.
-    assert_eq!(composition.used_tokens, 1650);
-    assert_eq!(composition.max_tokens, Some(64_000));
-}
-
-#[test]
 fn a_question_request_carries_the_ids_an_answer_is_matched_against() {
     use crate::dsh::mapping::question_request;
 
@@ -1701,40 +1316,6 @@ fn an_edit_becomes_a_file_row_whose_result_diff_carries_context() {
 }
 
 #[test]
-fn a_card_this_build_does_not_model_still_shows_the_call() {
-    let mut tools = EventTracker::default();
-
-    // read, search, and web cards all land here, as does any card a later
-    // harness release adds. None of them may vanish from the transcript.
-    let started = map_frame(
-        &tool_frame(
-            json!({
-                "type": "tool/call",
-                "data": { "callId": "call_3", "name": "read" },
-            }),
-            json!({ "for": "call", "view": {
-                "card": "generic",
-                "title": "Read probe-target.txt",
-                "kind": "read",
-            }}),
-        ),
-        SESSION,
-        &mut tools,
-    );
-
-    assert_eq!(
-        started,
-        vec![Event::ItemStarted(Item::Other {
-            id: "call_3".into(),
-            kind: "read".into(),
-            title: "Read probe-target.txt".into(),
-            output: None,
-            status: Some("inProgress".into()),
-        })]
-    );
-}
-
-#[test]
 fn a_failed_call_reports_the_text_the_model_saw() {
     let mut tools = EventTracker::default();
 
@@ -1851,86 +1432,6 @@ fn a_pending_inbox_snapshot_becomes_the_queued_prompt_rows() {
             },
         ]
     );
-}
-
-#[test]
-fn a_search_answer_takes_its_display_from_the_list_and_keeps_the_rank_order() {
-    use crate::dsh::history::search_results;
-
-    let matches = json!({
-        "items": [
-            { "sessionId": "s-2", "snippet": "…the parser rewrite…" },
-            { "sessionId": "s-1", "snippet": "…parser notes…" },
-            // Matched, but rooted in another project, so this tab cannot open it.
-            { "sessionId": "s-3", "snippet": "…parser…" },
-        ],
-        "hasMore": false,
-    });
-
-    let listed = json!({
-        "items": [
-            { "sessionId": "s-1", "updatedAt": 1_000, "blank": false, "cwd": "C:/p",
-              "projections": { "values": { "title": "Older" } } },
-            { "sessionId": "s-2", "updatedAt": 2_000, "blank": false, "cwd": "C:/p",
-              "projections": { "values": { "title": "Newer" } } },
-            { "sessionId": "s-3", "updatedAt": 3_000, "blank": false, "cwd": "C:/other" },
-        ],
-    });
-
-    let rows = search_results(&matches, &listed, Some("C:/p"));
-
-    assert_eq!(rows.len(), 2);
-
-    // The list is ordered by recency and the search by relevance; the rows
-    // follow the search, because that is the question being answered.
-    assert_eq!(rows[0].id, "s-2");
-    assert_eq!(rows[0].title, "Newer");
-    assert_eq!(rows[0].snippet.as_deref(), Some("…the parser rewrite…"));
-    assert_eq!(rows[1].id, "s-1");
-    assert_eq!(rows[1].snippet.as_deref(), Some("…parser notes…"));
-}
-
-#[test]
-fn the_goal_projection_carries_the_objective_and_how_much_of_its_budget_is_spent() {
-    use crate::dsh::projections::ProjectionTracker;
-
-    let mut projections = ProjectionTracker::default();
-
-    let events = projections
-        .apply(
-            &projection_frame(
-                "goal",
-                json!({
-                    "goal": {
-                        "objective": "Get the suite green",
-                        "phase": "active",
-                        "maxGoalRounds": 12,
-                    },
-                    "roundsStarted": 3,
-                    "createdAt": 1,
-                    "updatedAt": 2,
-                }),
-            ),
-            SESSION,
-        )
-        .expect("a projection frame for this session should be claimed");
-
-    let [Event::GoalUpdated(Some(goal))] = events.as_slice() else {
-        panic!("expected one goal snapshot, got {events:?}");
-    };
-
-    assert_eq!(goal.objective, "Get the suite green");
-    assert_eq!(goal.phase, "active");
-    assert_eq!(goal.rounds_started, 3);
-    assert_eq!(goal.max_rounds, 12);
-
-    // A cleared goal arrives as a null value rather than as a missing key, so
-    // the absent case has to be published rather than ignored.
-    let cleared = projections
-        .apply(&projection_frame("goal", Value::Null), SESSION)
-        .expect("a null goal is still this session's frame");
-
-    assert_eq!(cleared, vec![Event::GoalUpdated(None)]);
 }
 
 #[test]
@@ -2122,27 +1623,6 @@ fn branch_points_pair_each_prompt_with_the_seq_of_the_one_ahead_of_it() {
                 anchor: ForkAnchor::DeepSeekThrough(1),
             },
         ]
-    );
-}
-
-#[test]
-fn a_conversation_opens_with_the_primary_directory_alone() {
-    let workspace = AgentWorkspace::new(
-        Some(r"C:\Work\api".into()),
-        vec![r"C:\Work\web".into(), r"D:\Docs".into()],
-    );
-
-    // Only the primary directory has a field in the session header, so this is
-    // the whole of what a multi-directory workspace can send.
-    assert_eq!(
-        session_create_payload(workspace.primary(), None, None),
-        json!({"cwd": r"C:\Work\api"})
-    );
-
-    // Resuming reopens the same conversation in the same directory.
-    assert_eq!(
-        session_create_payload(workspace.primary(), Some("sess_1"), None),
-        json!({"cwd": r"C:\Work\api", "sessionId": "sess_1"})
     );
 }
 

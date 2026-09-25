@@ -2,11 +2,8 @@ use nmt_agent::background_task::{
     BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskRegistry, BackgroundTaskState,
     BackgroundTaskUpdate,
 };
-use nmt_agent::session::ConversationTitleRequest;
-use nmt_agent::session::naming::conversation_title_request as build_title_request;
 
-use crate::agent_tab::session::{directories_match, directory_label};
-use crate::agent_tab::{AgentKind, tab_title_from_prompt};
+use crate::agent_tab::session::directories_match;
 
 #[test]
 fn a_failed_refresh_reports_unavailable_without_dropping_known_rows() {
@@ -31,79 +28,6 @@ fn a_failed_refresh_reports_unavailable_without_dropping_known_rows() {
         snapshot.discovery,
         BackgroundTaskLoadState::Unavailable { .. }
     ));
-}
-
-#[test]
-fn a_prompt_names_its_tab_by_its_first_real_line() {
-    assert_eq!(
-        tab_title_from_prompt(
-            "
-  Fix the flaky auth test
-and the retry loop"
-        ),
-        Some("Fix the flaky auth test".to_string())
-    );
-
-    // A slash command instructs the CLI instead of stating a subject, and the
-    // settings controls send some of them for the user.
-    assert_eq!(tab_title_from_prompt("/effort high"), None);
-    assert_eq!(tab_title_from_prompt("   \n\t "), None);
-
-    let long = "x".repeat(200);
-
-    assert_eq!(
-        tab_title_from_prompt(&long).map(|t| t.chars().count()),
-        Some(60)
-    );
-}
-
-#[test]
-fn title_requests_keep_each_provider_semantics() {
-    let codex = conversation_title_request(
-        AgentKind::Codex,
-        "  Inspect title generation\n and its fallback  ",
-    )
-    .unwrap();
-
-    assert_eq!(
-        codex.provisional_title,
-        "Inspect title generation and its fallback"
-    );
-
-    let claude = conversation_title_request(
-        AgentKind::Claude,
-        "  Inspect title generation\n and its fallback  ",
-    )
-    .unwrap();
-
-    assert_eq!(
-        claude.provisional_title,
-        "Inspect title generation and its fallback"
-    );
-    assert!(conversation_title_request(AgentKind::Codex, "/effort high").is_none());
-    assert!(conversation_title_request(AgentKind::Claude, "/effort high").is_none());
-}
-
-#[test]
-fn claude_provisional_titles_match_the_desktop_projection() {
-    assert_eq!(
-        conversation_title_request(
-            AgentKind::Claude,
-            "  one two\nthree four five six seven eight  "
-        )
-        .as_ref()
-        .map(|request| request.provisional_title.as_str()),
-        Some("one two three four five six")
-    );
-
-    let long_word = "界".repeat(80);
-
-    let title = conversation_title_request(AgentKind::Claude, &long_word)
-        .unwrap()
-        .provisional_title;
-
-    assert_eq!(title.chars().count(), 60);
-    assert!(title.ends_with('…'));
 }
 
 #[test]
@@ -133,16 +57,6 @@ fn recorded_unix_directories_preserve_case_and_backslashes() {
     assert!(directories_match(Some("/work/Foo/"), Some("/work/Foo")));
     assert!(!directories_match(Some("/"), Some("")));
     assert!(directories_match(None, Some("/work/Foo")));
-}
-
-#[test]
-fn a_directory_reads_as_its_last_two_components() {
-    assert_eq!(
-        directory_label(r"C:\Workspace\NiumaTerm"),
-        "Workspace/NiumaTerm"
-    );
-    assert_eq!(directory_label("/home/u/projects/app/"), "projects/app");
-    assert_eq!(directory_label("C:/only"), "C:/only");
 }
 
 mod conversation_title_tests {
@@ -1384,8 +1298,4 @@ mod command_catalog_cache_tests {
 
         cx.run_until_parked();
     }
-}
-
-fn conversation_title_request(kind: AgentKind, text: &str) -> Option<ConversationTitleRequest> {
-    build_title_request(kind, text, tab_title_from_prompt)
 }

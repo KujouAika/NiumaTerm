@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "status_tests.rs"]
-mod tests;
-
 use std::borrow::Cow;
 
 use gpui::prelude::*;

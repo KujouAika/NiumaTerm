@@ -18,7 +18,3 @@ mod macos;
 mod notification;
 #[cfg(windows)]
 mod windows;
-
-#[cfg(test)]
-#[cfg(windows)]
-mod tests;

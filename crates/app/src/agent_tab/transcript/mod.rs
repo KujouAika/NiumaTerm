@@ -13,8 +13,6 @@ pub(super) use crate::agent_tab::transcript::format::{
 };
 pub(super) use crate::agent_tab::transcript::render::transcript_column;
 pub(super) use crate::agent_tab::transcript::rows::{Entry, RowSpec};
-#[cfg(test)]
-pub(super) use crate::agent_tab::transcript::rows::{TurnSummary, turn_summary};
 pub(super) use crate::agent_tab::transcript::view::TranscriptAttribution;
 
 mod code;
@@ -45,8 +43,3 @@ use crate::agent_tab::transcript::code::VIRTUAL_TRANSCRIPT_MAX_SEGMENT_BYTES;
 use crate::agent_tab::transcript::code::should_virtualize_transcript;
 #[cfg(test)]
 use crate::agent_tab::transcript::code::transcript_segments;
-#[cfg(test)]
-use crate::agent_tab::transcript::format::{
-    command_execution_detail, elapsed_label, interrupted_status_label, worked_status_label,
-    working_status_label,
-};

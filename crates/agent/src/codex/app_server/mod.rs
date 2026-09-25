@@ -42,8 +42,6 @@ use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-#[cfg(test)]
-use std::time::UNIX_EPOCH;
 
 use futures::future::{BoxFuture, FutureExt as _, ready};
 use serde_json::{Value, json};

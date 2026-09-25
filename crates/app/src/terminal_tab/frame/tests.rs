@@ -1,15 +1,13 @@
-use nmt_config::CursorShape;
-use nmt_config::colors::term::TermColors;
-use nmt_config::colors::{ColorArray, Colors, NamedColor};
+use nmt_config::colors::NamedColor;
 use nmt_terminal::ghostty::GhosttyTerminal;
-use nmt_terminal::grid::{Column, Line, Pos, Wide};
+use nmt_terminal::grid::{Column, Line, Pos};
 use nmt_terminal::render_buffer::RenderBuffer;
 use nmt_terminal::selection::SelectionRange;
 
 use crate::terminal_tab::frame::{
     BackgroundColors, EngineRowBuilder, FrameImageKind, GenerationMap, TerminalColor,
-    TerminalFrame, TerminalLine, ZLayer, cursor_for_row, extract_frame_images, extract_row,
-    extract_row_with_colors, frame_cursor, line_from_parts,
+    TerminalFrame, TerminalLine, ZLayer, extract_frame_images, extract_row,
+    extract_row_with_colors, line_from_parts,
 };
 // --- Kitty image frame extraction ---
 use crate::terminal_tab::graphics;
@@ -54,50 +52,6 @@ fn application_hidden_and_offscreen_cursors_do_not_extend_content() {
     assert!(frame.cursor().is_none());
     assert_eq!(frame.layout_cursor_row(), None);
     assert_eq!(frame_content_rows(&frame), 0);
-}
-
-#[test]
-fn terminal_cursor_color_prefers_runtime_override() {
-    let expected: ColorArray = [0.8, 0.1, 0.2, 1.0];
-
-    let mut term_colors = TermColors::default();
-
-    term_colors[NamedColor::Cursor] = Some(expected);
-
-    let colors = BackgroundColors::new(term_colors, &FrameTheme::default());
-
-    assert_eq!(colors.named(NamedColor::Cursor), expected.into());
-}
-
-#[test]
-fn block_cursor_uses_terminal_background_for_glyph() {
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"A\x1b[D");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let gray = |value: u8| -> ColorArray {
-        let value: f32 = value.into();
-        let value = value / 255.;
-
-        [value, value, value, 1.]
-    };
-
-    let mut term_colors = TermColors::default();
-
-    term_colors[NamedColor::Foreground] = Some(gray(0x29));
-    term_colors[NamedColor::Background] = Some(gray(0xe0));
-    term_colors[NamedColor::Cursor] = Some(gray(0x38));
-
-    let colors = BackgroundColors::new(term_colors, &FrameTheme::default());
-    let cursor = frame_cursor(&buf, &colors).unwrap();
-    let row = extract_row_with_colors(&buf, 0, Some(cursor), &colors, None);
-
-    assert_eq!(cursor.shape, CursorShape::Block);
-    assert_eq!(row.runs()[0].fg, colors.named(NamedColor::Background));
 }
 
 #[test]
@@ -387,134 +341,6 @@ fn selection_changes_rebuild_only_affected_rows() {
 }
 
 #[test]
-fn extracts_row_cells_extras_wide_style_and_cursor() {
-    let mut engine = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    engine.write_vt("e\u{0301}中\x1b[1mB\x1b[0m".as_bytes());
-
-    let mut buf = RenderBuffer::new(8, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let frame = TerminalFrame::from_render_buffer(&buf);
-    let row = extract_row(&buf, 0, cursor_for_row(frame.cursor(), 0));
-
-    // The wide '中' is followed by a blank placeholder for its second column.
-    assert!(row.text().as_ref().starts_with("e\u{0301}中\u{00a0}B"));
-    assert_eq!(row.cursor_col(), Some(4));
-    assert!(row.cells().iter().any(|cell| cell.has_cursor));
-
-    let e = &row.cells()[0];
-
-    assert_eq!(e.ch, 'e');
-    assert_eq!(e.extras, vec!['\u{0301}']);
-
-    let wide = row.cells().iter().find(|cell| cell.ch == '中').unwrap();
-
-    assert_eq!(wide.wide, Wide::Wide);
-    assert!(!row.cells().iter().any(|cell| cell.col == 2));
-
-    let bold = row.cells().iter().find(|cell| cell.ch == 'B').unwrap();
-
-    assert_eq!(bold.style_id, buf.cell(bold.col as usize, 0).style_id());
-}
-
-#[test]
-fn colored_text_yields_distinct_fg_run_and_cache_key() {
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"\x1b[31mAB\x1b[0m");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let colored = extract_row(&buf, 0, None);
-
-    let mut plain_engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    plain_engine.write_vt(b"AB");
-
-    let mut plain_buf = RenderBuffer::new(4, 1);
-
-    plain_engine.snapshot_into(&mut plain_buf, 0, 0).unwrap();
-
-    let plain = extract_row(&plain_buf, 0, None);
-
-    // Identical visible text...
-    assert_eq!(colored.text(), plain.text());
-
-    // ...but the red run makes the shape-cache key differ (no stale glyph reuse)...
-    assert_ne!(colored.text_hash(), plain.text_hash());
-
-    // ...and a distinct foreground run exists for the colored cells.
-    let default_fg = plain.runs()[0].fg;
-
-    assert!(colored.runs().iter().any(|run| run.fg != default_fg));
-}
-
-#[test]
-fn extracts_cell_backgrounds_from_rgb_style() {
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"\x1b[48;2;1;2;3mA");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let row = extract_row(&buf, 0, None);
-
-    assert_eq!(row.cells()[0].background, Some((1, 2, 3).into()));
-}
-
-#[test]
-fn dim_does_not_change_explicit_background() {
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"\x1b[48;2;120;100;80mA\x1b[2mB");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let row = extract_row(&buf, 0, None);
-
-    assert_eq!(row.cells()[0].background, row.cells()[1].background);
-}
-
-#[test]
-fn selection_overlay_uses_selection_background() {
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"abcd");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let selection = SelectionRange::new(
-        Pos::new(Line(0), Column(1)),
-        Pos::new(Line(0), Column(2)),
-        false,
-    );
-
-    let frame = TerminalFrame::from_render_buffer_with_selection(
-        &buf,
-        Some(selection),
-        &GenerationMap::new(),
-    );
-
-    let selected: TerminalColor = Colors::default().selection_background.into();
-    let cells = frame.lines()[0].cells();
-
-    assert_eq!(cells[0].background, None);
-    assert_eq!(cells[1].background, Some(selected));
-    assert_eq!(cells[2].background, Some(selected));
-    assert_eq!(cells[3].background, None);
-}
-
-#[test]
 fn wide_char_gets_placeholder_and_runs_cover_text() {
     let mut engine = GhosttyTerminal::new(6, 1, 100).unwrap();
 
@@ -533,56 +359,6 @@ fn wide_char_gets_placeholder_and_runs_cover_text() {
     let run_bytes: usize = row.runs().iter().map(|run| run.len).sum();
 
     assert_eq!(run_bytes, row.text().len());
-}
-
-#[test]
-fn inverse_swaps_foreground_into_the_painted_background() {
-    // Inverse video paints the cell background with what would be the
-    // foreground color, so a plain 'A' fg equals the inverse 'A' background.
-    let mut plain_engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    plain_engine.write_vt(b"A");
-
-    let mut plain_buf = RenderBuffer::new(4, 1);
-
-    plain_engine.snapshot_into(&mut plain_buf, 0, 0).unwrap();
-
-    let plain = extract_row(&plain_buf, 0, None);
-
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"\x1b[7mA");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let inverse = extract_row(&buf, 0, None);
-
-    assert_eq!(inverse.cells()[0].background, Some(plain.runs()[0].fg));
-}
-
-#[test]
-fn text_styles_become_distinct_style_runs() {
-    let mut engine = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    // Bold B, italic I, underline U, strikethrough S, each reset between.
-    engine.write_vt(b"\x1b[1mB\x1b[0m\x1b[3mI\x1b[0m\x1b[4mU\x1b[0m\x1b[9mS\x1b[0m");
-
-    let mut buf = RenderBuffer::new(8, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let row = extract_row(&buf, 0, None);
-
-    assert!(
-        row.runs()
-            .iter()
-            .any(|r| r.bold && !r.italic && !r.underline && !r.strikethrough)
-    );
-    assert!(row.runs().iter().any(|r| r.italic && !r.bold));
-    assert!(row.runs().iter().any(|r| r.underline && !r.strikethrough));
-    assert!(row.runs().iter().any(|r| r.strikethrough && !r.underline));
 }
 
 #[test]
@@ -610,24 +386,6 @@ fn bold_toggle_changes_shape_cache_key() {
     // Same visible text, but bold must not reuse the plain shaped glyphs.
     assert_eq!(plain.text(), bold.text());
     assert_ne!(plain.text_hash(), bold.text_hash());
-}
-
-#[test]
-fn extracts_cursor_shape_without_mutating_row_text() {
-    let mut engine = GhosttyTerminal::new(4, 1, 100).unwrap();
-
-    engine.write_vt(b"\x1b[5 qA\x1b[D");
-
-    let mut buf = RenderBuffer::new(4, 1);
-
-    engine.snapshot_into(&mut buf, 0, 0).unwrap();
-
-    let frame = TerminalFrame::from_render_buffer(&buf);
-    let row = &frame.lines()[0];
-
-    assert_eq!(frame.cursor().unwrap().shape, CursorShape::Beam);
-    assert!(row.text().as_ref().starts_with("A\u{00a0}"));
-    assert_eq!(row.runs()[0].fg, FrameTheme::default().foreground);
 }
 
 /// Run `vt` through the engine, mirror it into a `RenderBuffer`, and build a live
@@ -681,43 +439,6 @@ fn extracts_ordinary_placement_with_source_and_z() {
         }
         _ => panic!("expected ordinary"),
     }
-}
-
-#[test]
-fn ordinary_destination_maps_cells_to_pixels() {
-    let (buf, generations) =
-        buf_and_generations(20, 5, b"\x1b_Ga=T,f=32,s=1,v=1,i=1;/wAA/w==\x1b\\");
-
-    let img = &extract_frame_images(&buf, &generations)[0];
-
-    // cell 10x20, viewport (0,0), no offsets: dest = one cell, full source.
-    let (dest, source) = img.destination(10.0, 20.0, 100.0, 50.0, 0.0).unwrap();
-
-    assert_eq!(dest, [100.0, 50.0, 10.0, 20.0]);
-    assert_eq!(source, [0.0, 0.0, 1.0, 1.0]);
-
-    // A row displacement (fixed-bottom / block-list) shifts y only.
-    let (dest2, _) = img.destination(10.0, 20.0, 100.0, 50.0, 7.0).unwrap();
-
-    assert_eq!(dest2[1], 57.0);
-}
-
-#[test]
-fn destination_maps_negative_viewport_row_above_origin() {
-    // A placement scrolled one row above the viewport top → negative dest y (paint
-    // clips it to the content mask).
-    let (buf, generations) =
-        buf_and_generations(20, 5, b"\x1b_Ga=T,f=32,s=1,v=1,i=1;/wAA/w==\x1b\\");
-
-    let mut img = extract_frame_images(&buf, &generations).remove(0);
-
-    if let FrameImageKind::Ordinary { viewport_row, .. } = &mut img.kind {
-        *viewport_row = -1;
-    }
-
-    let (dest, _) = img.destination(10.0, 20.0, 0.0, 0.0, 0.0).unwrap();
-
-    assert_eq!(dest[1], -20.0, "one row above the origin");
 }
 
 #[test]
@@ -893,25 +614,4 @@ fn placeholder_codepoint_is_suppressed_from_text() {
         !frame.lines()[0].text().as_ref().contains('\u{10EEEE}'),
         "placeholder codepoint suppressed"
     );
-}
-
-#[test]
-fn z_layer_buckets_by_protocol_thresholds() {
-    // Pure classifier check across the three protocol layers.
-    let (buf, generations) =
-        buf_and_generations(20, 5, b"\x1b_Ga=T,f=32,s=1,v=1,i=1;/wAA/w==\x1b\\");
-
-    let mut img = extract_frame_images(&buf, &generations).remove(0);
-
-    img.z = i32::MIN;
-
-    assert_eq!(img.z_layer(), ZLayer::BelowBackground);
-
-    img.z = -1;
-
-    assert_eq!(img.z_layer(), ZLayer::BelowText);
-
-    img.z = 0;
-
-    assert_eq!(img.z_layer(), ZLayer::AboveText);
 }

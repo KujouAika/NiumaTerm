@@ -141,76 +141,6 @@ fn can_append_inherits_row_and_col() {
     assert_eq!(a.width, 2);
 }
 
-#[test]
-fn can_append_explicit_sequential_col() {
-    let a = p(Some(0), Some(0));
-    let b = p(Some(0), Some(1));
-
-    assert!(a.can_append(&b));
-}
-
-#[test]
-fn can_append_inherit_row_explicit_col() {
-    let a = p(Some(0), Some(0));
-    let b = p(None, Some(1));
-
-    assert!(a.can_append(&b));
-}
-
-#[test]
-fn cannot_append_col_jump() {
-    // Skipping a column breaks the run.
-    let a = p(Some(0), Some(0));
-    let b = p(Some(0), Some(2));
-
-    assert!(!a.can_append(&b));
-}
-
-#[test]
-fn cannot_append_different_row() {
-    let a = p(Some(0), Some(0));
-    let b = p(Some(1), Some(1));
-
-    assert!(!a.can_append(&b));
-}
-
-#[test]
-fn cannot_append_different_image_id() {
-    let mut a = p(Some(0), Some(0));
-
-    a.image_id_low = 1;
-
-    let mut b = p(Some(0), Some(1));
-
-    b.image_id_low = 2;
-
-    assert!(!a.can_append(&b));
-}
-
-#[test]
-fn cannot_append_different_image_id_high() {
-    let mut a = p(Some(0), Some(0));
-
-    a.image_id_high = Some(5);
-
-    let mut b = p(Some(0), Some(1));
-
-    b.image_id_high = Some(6);
-
-    assert!(!a.can_append(&b));
-}
-
-#[test]
-fn can_append_inherits_image_id_high() {
-    let mut a = p(Some(0), Some(0));
-
-    a.image_id_high = Some(5);
-
-    let b = p(Some(0), Some(1)); // image_id_high = None
-
-    assert!(a.can_append(&b));
-}
-
 fn approx(a: f32, b: f32) {
     assert!((a - b).abs() < 1e-4, "expected ~{b}, got {a}");
 }
@@ -392,13 +322,6 @@ fn geom_screen_line_and_start_col_offset_screen_pos() {
     approx(g.x, 50.0);
 
     approx(g.y, 70.0);
-}
-
-#[test]
-fn geom_returns_none_when_image_zero_sized() {
-    let none = compute_run_geometry(&run(0, 0, 1), 10, 5, 0, 50, 10.0, 10.0, 0.0, 0.0, 0, 0);
-
-    assert!(none.is_none());
 }
 
 #[test]

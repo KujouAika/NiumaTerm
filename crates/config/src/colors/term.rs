@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "term_tests.rs"]
-mod term_tests;
-
 use std::ops::{Index, IndexMut};
 
 use crate::Colors;

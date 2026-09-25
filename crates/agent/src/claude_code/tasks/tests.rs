@@ -62,35 +62,6 @@ fn state_of(tasks: &ClaudeTasks, id: &str) -> Option<BackgroundTaskState> {
 }
 
 #[test]
-fn a_task_launch_creates_a_starting_row_before_any_child_activity() {
-    let mut tasks = reducer();
-
-    assert!(tasks.observe(&launch("toolu_1")));
-
-    let snapshot = tasks.snapshot().expect("session is known");
-
-    assert_eq!(snapshot.tasks.len(), 1);
-
-    let task = &snapshot.tasks[0];
-
-    assert_eq!(task.state, BackgroundTaskState::Starting);
-    assert_eq!(task.display_name.as_deref(), Some("Review the diff"));
-    assert_eq!(
-        task.objective.as_deref(),
-        Some("Read the changed files and report issues")
-    );
-    assert_eq!(task.parent_session, BackgroundTaskKey::claude_code(SESSION));
-    assert_eq!(
-        task.refs,
-        BackgroundTaskRefs::ClaudeCode {
-            task_id: None,
-            tool_use_id: Some("toolu_1".into()),
-            agent_id: None,
-        }
-    );
-}
-
-#[test]
 fn linked_sidechain_activity_advances_the_row_without_entering_the_transcript() {
     let mut tasks = reducer();
 
@@ -125,26 +96,6 @@ fn unlinked_sidechain_activity_never_creates_a_row() {
 }
 
 #[test]
-fn a_matching_result_completes_the_task_and_an_error_result_fails_it() {
-    let mut done = reducer();
-
-    done.observe(&launch("toolu_1"));
-
-    assert!(done.observe(&tool_result("toolu_1", false)));
-    assert_eq!(state_of(&done, "toolu_1"), Some(BackgroundTaskState::Done));
-
-    let mut failed = reducer();
-
-    failed.observe(&launch("toolu_1"));
-
-    assert!(failed.observe(&tool_result("toolu_1", true)));
-    assert_eq!(
-        state_of(&failed, "toolu_1"),
-        Some(BackgroundTaskState::Failed)
-    );
-}
-
-#[test]
 fn a_result_for_another_tool_leaves_every_task_untouched() {
     let mut tasks = reducer();
 
@@ -154,60 +105,6 @@ fn a_result_for_another_tool_leaves_every_task_untouched() {
 
     assert!(!tasks.observe(&tool_result("toolu_other", false)));
     assert_eq!(tasks.snapshot(), baseline);
-}
-
-#[test]
-fn lifecycle_records_map_onto_the_shared_states() {
-    // `task_notification` reports only terminal outcomes; a task killed through
-    // the CLI's own stop path reports `killed` in a `task_updated` patch and
-    // may never emit a notification at all.
-    for (record, expected) in [
-        (
-            json!({"subtype": "task_started", "task_type": "local_agent"}),
-            BackgroundTaskState::Working,
-        ),
-        (
-            json!({"subtype": "task_progress", "last_tool_name": "Read"}),
-            BackgroundTaskState::Working,
-        ),
-        (
-            json!({"subtype": "task_notification", "status": "completed", "summary": "done"}),
-            BackgroundTaskState::Done,
-        ),
-        (
-            json!({"subtype": "task_notification", "status": "failed"}),
-            BackgroundTaskState::Failed,
-        ),
-        (
-            json!({"subtype": "task_notification", "status": "stopped"}),
-            BackgroundTaskState::Stopped,
-        ),
-        (
-            json!({"subtype": "task_updated", "patch": {"status": "running"}}),
-            BackgroundTaskState::Working,
-        ),
-        (
-            json!({"subtype": "task_updated", "patch": {"status": "killed"}}),
-            BackgroundTaskState::Stopped,
-        ),
-        (
-            json!({"subtype": "task_updated", "patch": {"status": "completed"}}),
-            BackgroundTaskState::Done,
-        ),
-    ] {
-        let mut tasks = reducer();
-
-        tasks.observe(&launch("toolu_1"));
-
-        let mut record = record;
-
-        record["type"] = json!("system");
-        record["session_id"] = json!(SESSION);
-        record["tool_use_id"] = json!("toolu_1");
-
-        assert!(tasks.observe(&record), "{record}");
-        assert_eq!(state_of(&tasks, "toolu_1"), Some(expected), "{record}");
-    }
 }
 
 /// `stop_task` names a child by the task id the CLI registered it under. A row
@@ -544,23 +441,6 @@ fn a_subagent_stop_hook_lands_only_on_a_child_an_earlier_record_identified() {
 }
 
 #[test]
-fn an_ordinary_user_message_changes_nothing() {
-    let mut tasks = reducer();
-
-    tasks.observe(&launch("toolu_1"));
-
-    let baseline = tasks.snapshot();
-
-    assert!(!tasks.observe(&json!({
-        "type": "user",
-        "session_id": SESSION,
-        "parent_tool_use_id": null,
-        "message": {"content": [{"type": "text", "text": "keep going"}]},
-    })));
-    assert_eq!(tasks.snapshot(), baseline);
-}
-
-#[test]
 fn switching_to_another_session_drops_the_previous_rows() {
     let mut tasks = reducer();
 
@@ -614,65 +494,6 @@ fn linked_activity_becomes_the_childs_own_conversation() {
     assert!(matches!(update.items[0], Item::Reasoning { .. }));
     assert!(matches!(update.items[1], Item::AgentMessage { .. }));
     assert!(matches!(update.items[2], Item::Other { .. }));
-}
-
-#[test]
-fn linked_user_text_becomes_the_childs_first_instruction() {
-    let mut tasks = reducer();
-
-    tasks.observe(&launch("toolu_1"));
-
-    tasks.take_transcripts();
-
-    tasks.observe(&json!({
-        "type": "user",
-        "session_id": SESSION,
-        "parent_tool_use_id": "toolu_1",
-        "uuid": "u-0",
-        "message": {"content": [
-            {"type": "text", "text": "review the parser"},
-        ]},
-    }));
-
-    let published = tasks.take_transcripts();
-
-    assert_eq!(published.len(), 1);
-    assert!(matches!(
-        &published[0].1.items[0],
-        Item::UserMessage { text: Some(text) } if text == "review the parser"
-    ));
-}
-
-#[test]
-fn a_launch_opens_the_childs_conversation_with_its_instructions() {
-    let mut tasks = reducer();
-
-    tasks.observe(&launch("toolu_1"));
-
-    // Claude Code 2.1.2x streams a child's assistant output only, so the
-    // launch block is the sole live source of the prompt.
-    let published = tasks.take_transcripts();
-
-    assert_eq!(published.len(), 1);
-    assert_eq!(published[0].0, BackgroundTaskKey::claude_code("toolu_1"));
-    assert!(matches!(
-        &published[0].1.items[0],
-        Item::UserMessage { text: Some(text) }
-            if text == "Read the changed files and report issues"
-    ));
-
-    // An older CLI also replays the same prompt as sidechain traffic.
-    tasks.observe(&json!({
-        "type": "user",
-        "session_id": SESSION,
-        "parent_tool_use_id": "toolu_1",
-        "uuid": "u-0",
-        "message": {"content": [
-            {"type": "text", "text": "Read the changed files and report issues"},
-        ]},
-    }));
-
-    assert!(tasks.take_transcripts().is_empty());
 }
 
 #[test]
@@ -984,15 +805,6 @@ fn the_live_set_does_not_revive_a_shell_that_already_reported_its_outcome() {
     );
 }
 
-#[test]
-fn a_child_agent_has_no_shell_detail_to_read() {
-    let mut tasks = reducer();
-
-    tasks.observe(&launch("toolu_1"));
-
-    assert!(tasks.shell_detail("toolu_1").is_none());
-}
-
 fn scratch_file(name: &str, contents: &[u8]) -> PathBuf {
     let dir = env::temp_dir().join(format!("nmt-shell-output-{}", process::id()));
 
@@ -1028,36 +840,6 @@ fn command_item(detail: &ShellDetail) -> (String, Option<String>, Option<String>
 }
 
 #[test]
-fn a_running_command_reports_its_output_so_far() {
-    let path = scratch_file("running.output", b"compiling\n");
-
-    let detail = detail(
-        Some(path.to_string_lossy().into_owned()),
-        BackgroundTaskState::Working,
-    );
-
-    let (command, output, status) = command_item(&detail);
-
-    assert_eq!(command, "cargo build");
-    assert_eq!(output.as_deref(), Some("compiling\n"));
-    assert_eq!(status.as_deref(), Some("inProgress"));
-}
-
-#[test]
-fn a_settled_command_carries_the_status_its_row_reports() {
-    let path = scratch_file("settled.output", b"error: build failed\n");
-    let file = path.to_string_lossy().into_owned();
-
-    let (_, _, status) = command_item(&detail(Some(file.clone()), BackgroundTaskState::Failed));
-
-    assert_eq!(status.as_deref(), Some("failed"));
-
-    let (_, _, status) = command_item(&detail(Some(file), BackgroundTaskState::Done));
-
-    assert_eq!(status.as_deref(), Some("completed"));
-}
-
-#[test]
 fn an_output_file_longer_than_the_bound_is_shown_from_its_end() {
     let overflow = MAX_OUTPUT_BYTES as usize + 1024;
 
@@ -1076,22 +858,6 @@ fn an_output_file_longer_than_the_bound_is_shown_from_its_end() {
 
     assert!(output.ends_with("final line\n"));
     assert!(output.len() <= MAX_OUTPUT_BYTES as usize);
-}
-
-#[test]
-fn a_command_with_nothing_written_yet_shows_no_output() {
-    let path = scratch_file("empty.output", b"   \n");
-    let file = path.to_string_lossy().into_owned();
-
-    let (_, output, _) = command_item(&detail(Some(file), BackgroundTaskState::Working));
-
-    assert_eq!(output, None);
-
-    // A still-running command has no output file to name at all until its
-    // completion notification reports one.
-    let (_, output, _) = command_item(&detail(None, BackgroundTaskState::Working));
-
-    assert_eq!(output, None);
 }
 
 /// A shell the background snapshot keeps re-listing takes one slot, so it

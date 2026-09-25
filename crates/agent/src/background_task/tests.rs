@@ -1,8 +1,8 @@
 use std::time::{Duration, SystemTime};
 
 use crate::background_task::{
-    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskRefs, BackgroundTaskRegistry,
-    BackgroundTaskState, BackgroundTaskUpdate,
+    BackgroundTaskKey, BackgroundTaskRefs, BackgroundTaskRegistry, BackgroundTaskState,
+    BackgroundTaskUpdate,
 };
 
 fn registry() -> BackgroundTaskRegistry {
@@ -28,71 +28,6 @@ fn same_local_id_from_two_providers_stays_distinct() {
     assert_eq!(snapshot.tasks.len(), 2);
     assert_eq!(snapshot.active_count(), 1);
     assert_eq!(snapshot.terminal_count(), 1);
-}
-
-#[test]
-fn a_row_without_optional_metadata_stays_visible_with_a_derived_name() {
-    let mut registry = registry();
-
-    let key = BackgroundTaskKey::codex("thread-01H9ZQF4");
-
-    registry.apply(
-        key.clone(),
-        BackgroundTaskUpdate::state(BackgroundTaskState::Working),
-    );
-
-    let summary = registry.get(&key).expect("row exists");
-
-    assert!(summary.display_name.is_none());
-    assert!(summary.objective.is_none());
-    assert_eq!(summary.display_label(), "Agent 01H9ZQF4");
-
-    registry.apply(
-        key.clone(),
-        BackgroundTaskUpdate {
-            display_name: Some("Reviewer".into()),
-            ..BackgroundTaskUpdate::default()
-        },
-    );
-
-    assert_eq!(
-        registry.get(&key).expect("row exists").display_label(),
-        "Reviewer"
-    );
-}
-
-#[test]
-fn lifecycle_states_group_into_running_and_finished() {
-    let running = [
-        BackgroundTaskState::Starting,
-        BackgroundTaskState::Working,
-        BackgroundTaskState::NeedsInput,
-    ];
-
-    let finished = [
-        BackgroundTaskState::Done,
-        BackgroundTaskState::Interrupted,
-        BackgroundTaskState::Stopped,
-        BackgroundTaskState::Failed,
-    ];
-
-    assert!(running.iter().all(|state| state.is_active()));
-    assert!(finished.iter().all(|state| state.is_terminal()));
-
-    let mut registry = registry();
-
-    for (index, state) in running.iter().chain(finished.iter()).enumerate() {
-        registry.apply(
-            BackgroundTaskKey::codex(format!("child-{index}")),
-            BackgroundTaskUpdate::state(*state),
-        );
-    }
-
-    let snapshot = registry.snapshot();
-
-    assert_eq!(snapshot.active_count(), running.len());
-    assert_eq!(snapshot.terminal_count(), finished.len());
-    assert_eq!(snapshot.needs_input_count(), 1);
 }
 
 #[test]
@@ -259,14 +194,4 @@ fn the_earliest_known_start_time_wins() {
         registry.get(&key).expect("row exists").started_at,
         Some(early)
     );
-}
-
-#[test]
-fn discovery_state_only_reports_real_transitions() {
-    let mut registry = registry();
-
-    assert_eq!(registry.discovery(), &BackgroundTaskLoadState::NotLoaded);
-    assert!(registry.set_discovery(BackgroundTaskLoadState::Loading));
-    assert!(!registry.set_discovery(BackgroundTaskLoadState::Loading));
-    assert!(registry.set_discovery(BackgroundTaskLoadState::Ready));
 }

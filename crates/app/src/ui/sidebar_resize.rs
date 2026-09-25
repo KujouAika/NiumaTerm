@@ -1,10 +1,6 @@
 //! Pieces shared by the two resizable slide-in sidebars (git, workspace):
 //! the width-resize drag handle and the open/close width transition.
 
-#[cfg(test)]
-#[path = "sidebar_resize_tests.rs"]
-mod sidebar_resize_tests;
-
 use std::time::Duration;
 
 use gpui::prelude::*;

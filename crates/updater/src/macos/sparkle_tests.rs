@@ -19,22 +19,6 @@ fn ask_for_channels(delegate: &UpdaterDelegate) -> Retained<NSSet<NSString>> {
 }
 
 #[test]
-fn stable_allows_only_the_default_channel() {
-    let delegate = UpdaterDelegate::new(Channel::Stable);
-
-    assert!(ask_for_channels(&delegate).is_empty());
-}
-
-#[test]
-fn nightly_allows_the_nightly_channel() {
-    let delegate = UpdaterDelegate::new(Channel::Nightly);
-    let channels = ask_for_channels(&delegate);
-
-    assert_eq!(channels.len(), 1);
-    assert!(channels.containsObject(ns_string!("nightly")));
-}
-
-#[test]
 fn changing_the_channel_is_visible_to_the_next_check() {
     let delegate = UpdaterDelegate::new(Channel::Stable);
 

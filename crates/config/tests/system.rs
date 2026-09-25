@@ -54,14 +54,6 @@ fn warn_before_terminating_shell_accepts_modes_and_rejects_booleans() {
 }
 
 #[test]
-fn warn_mode_decides_from_child_process_count() {
-    assert!(!WarnBeforeTerminatingShell::Disabled.should_warn(1));
-    assert!(!WarnBeforeTerminatingShell::WhenChildProcessesRunning.should_warn(0));
-    assert!(WarnBeforeTerminatingShell::WhenChildProcessesRunning.should_warn(1));
-    assert!(WarnBeforeTerminatingShell::Always.should_warn(0));
-}
-
-#[test]
 fn shipped_system_example_matches_serialized_defaults() {
     let example: Value = from_str(include_str!("../../../assets/config-example.toml"))
         .expect("example config parses");

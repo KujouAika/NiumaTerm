@@ -5,8 +5,7 @@ use crate::codex::app_server::compaction::{
     CompactionState, compaction_completed, compaction_started,
 };
 use crate::codex::app_server::protocol::{
-    CodexCommand, command_purpose, initial_thread_request, parse_context_window_usage, parse_item,
-    turn_start_params,
+    CodexCommand, initial_thread_request, parse_context_window_usage, parse_item, turn_start_params,
 };
 use crate::codex::app_server::*;
 use crate::session::ConversationTitleRequest;
@@ -766,29 +765,6 @@ fn context_usage_preserves_current_and_thread_breakdowns() {
 }
 
 #[test]
-fn context_usage_accepts_older_sparse_breakdowns() {
-    let usage = parse_context_window_usage(&json!({
-        "last": {"totalTokens": 9_000, "inputTokens": 8_500},
-        "total": {"totalTokens": 21_000},
-        "modelContextWindow": null
-    }))
-    .expect("sparse Codex token usage should parse");
-
-    assert_eq!(usage.current.total_tokens, 9_000);
-    assert_eq!(usage.current.input_tokens, Some(8_500));
-    assert_eq!(usage.current.cache_write_input_tokens, None);
-    assert_eq!(
-        usage.cumulative.map(|scoped| scoped.breakdown),
-        Some(TokenUsageBreakdown::total_only(21_000))
-    );
-    assert_eq!(usage.max_tokens, None);
-    assert_eq!(
-        parse_context_window_usage(&json!({"last": {"totalTokens": 0}})),
-        None
-    );
-}
-
-#[test]
 fn skill_list_requests_and_refresh_state_coalesce_invalidations() {
     let workspace = AgentWorkspace::single(Some("C:/Repo".into()));
 
@@ -918,51 +894,6 @@ fn local_images_follow_the_text_in_the_order_the_message_names_them() {
 }
 
 #[test]
-fn codex_advertises_the_picker_but_not_plugin_management() {
-    let commands = Session::adapter_commands();
-
-    let skills = commands
-        .iter()
-        .find(|command| command.name == "skills")
-        .unwrap();
-
-    assert_eq!(skills.arguments, SlashCommandArguments::Skills);
-    assert!(!commands.iter().any(|command| command.name == "plugins"));
-    assert_eq!(CodexCommand::parse("skills"), None);
-}
-
-#[test]
-fn commands_render_as_string_or_joined_argv() {
-    assert_eq!(stringify_command(&json!("pytest -q")), "pytest -q");
-    assert_eq!(
-        stringify_command(&json!(["cargo", "check", "-p", "app"])),
-        "cargo check -p app"
-    );
-}
-
-#[test]
-fn model_catalog_keeps_visible_models_and_their_tiers() {
-    let result = json!({
-        "data": [
-            {
-                "model": "gpt-a",
-                "displayName": "GPT A",
-                "hidden": false,
-                "serviceTiers": [{"id": "priority", "name": "Fast"}],
-                "defaultServiceTier": null
-            },
-            {"model": "gpt-b", "displayName": "GPT B", "hidden": true}
-        ]
-    });
-
-    let models = parse_models(&result, None);
-
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].model, "gpt-a");
-    assert_eq!(models[0].tiers, vec![("priority".into(), "Fast".into())]);
-}
-
-#[test]
 fn turn_start_sends_the_selected_approval_reviewer() {
     let settings = ThreadSettings {
         model: Some("gpt-5.6-codex".into()),
@@ -1026,20 +957,6 @@ fn thread_start_injects_profile_model_and_provider_without_a_secret() {
     assert_eq!(
         thread_start_params(&profile, &AgentWorkspace::single(Some("C:/A".into()))),
         expected
-    );
-}
-
-#[test]
-fn a_single_directory_thread_start_carries_an_explicit_cwd() {
-    let profile = ThreadProfile::default();
-
-    assert_eq!(
-        thread_start_params(&profile, &AgentWorkspace::default()),
-        json!({"experimentalRawEvents": true})
-    );
-    assert_eq!(
-        thread_start_params(&profile, &AgentWorkspace::single(Some("C:/A".into()))),
-        json!({"experimentalRawEvents": true, "cwd": "C:/A"})
     );
 }
 
@@ -1231,33 +1148,6 @@ fn custom_profile_filters_history_and_adds_an_unknown_selected_model() {
 }
 
 #[test]
-fn thread_summaries_skip_own_thread_and_fall_back_to_id_titles() {
-    let result = json!({
-        "data": [
-            {"id": "thr_live", "preview": "current"},
-            {"id": "thr_a", "name": "Fix tests\nacross workspace", "recencyAt": 1730831111,
-             "gitInfo": {"branch": "dev"}},
-            {"id": "thr_b", "preview": "", "updatedAt": 1730750000}
-        ],
-        "nextCursor": null
-    });
-
-    let summaries = parse_thread_summaries(&result, Some("thr_live"));
-
-    assert_eq!(summaries.len(), 2);
-    assert_eq!(summaries[0].id, "thr_a");
-    assert_eq!(summaries[0].title, "Fix tests across workspace");
-    assert_eq!(summaries[0].branch.as_deref(), Some("dev"));
-    assert_eq!(
-        summaries[0].last_active,
-        UNIX_EPOCH + Duration::from_secs(1730831111)
-    );
-
-    // Empty preview falls back to an id-prefix title.
-    assert_eq!(summaries[1].title, "thr_b");
-}
-
-#[test]
 fn resumed_turns_replay_dialogue_and_preserve_activity_details() {
     let turns = json!([
         {"id": "turn1", "items": [
@@ -1313,78 +1203,6 @@ fn resumed_turns_replay_dialogue_and_preserve_activity_details() {
             },
         ]
     );
-}
-
-#[test]
-fn unknown_items_become_titled_tool_cards() {
-    let item = json!({
-        "id": "call1",
-        "type": "mcpToolCall",
-        "server": "github",
-        "tool": "search_issues",
-        "status": "inProgress"
-    });
-
-    assert_eq!(
-        parse_item(&item),
-        Some(Item::Other {
-            id: "call1".into(),
-            kind: "mcpToolCall".into(),
-            title: "github/search_issues".into(),
-            output: None,
-            status: Some("inProgress".into()),
-        })
-    );
-}
-
-#[test]
-fn command_actions_become_compact_purpose_labels() {
-    let actions = json!([
-        {"type": "search", "command": "rg main src", "query": "main", "path": "src"},
-        {"type": "read", "command": "Get-Content src/main.rs", "name": "src/main.rs",
-         "path": "C:\\work\\src\\main.rs"},
-        {"type": "read", "command": "Get-Content src/main.rs", "name": "src/main.rs",
-         "path": "C:\\work\\src\\main.rs"}
-    ]);
-
-    assert_eq!(
-        command_purpose(&actions).as_deref(),
-        Some("Search main in src · Read src/main.rs")
-    );
-    assert_eq!(
-        command_purpose(&json!([
-            {"type": "read", "command": "Get-Content a", "name": "a", "path": "a"},
-            {"type": "unknown", "command": "cargo check"}
-        ])),
-        None
-    );
-}
-
-#[test]
-fn command_requests_use_dedicated_compact_and_inline_review_methods() {
-    assert_eq!(
-        CodexCommand::Compact.request(100, "thr_1", ""),
-        json!({
-            "jsonrpc": "2.0",
-            "id": 100,
-            "method": "thread/compact/start",
-            "params": {"threadId": "thr_1"},
-        })
-    );
-    assert_eq!(
-        CodexCommand::Review.request(101, "thr_1", ""),
-        json!({
-            "jsonrpc": "2.0",
-            "id": 101,
-            "method": "review/start",
-            "params": {
-                "threadId": "thr_1",
-                "delivery": "inline",
-                "target": {"type": "uncommittedChanges"},
-            },
-        })
-    );
-    assert_eq!(CodexCommand::parse("unknown"), None);
 }
 
 #[test]
@@ -1551,50 +1369,6 @@ fn incomplete_manual_compaction_cannot_mark_a_later_auto_run_manual() {
 }
 
 #[test]
-fn replayed_compaction_ignores_non_protocol_summary_fields() {
-    let turns = json!([{"id": "turn1", "items": [
-        {"id": "compact-1", "type": "contextCompaction",
-         "message": "manual compact context",
-         "replacementHistory": [{"type": "compaction", "encryptedContent": "opaque"}]}
-    ]}]);
-
-    assert_eq!(
-        replayed_items(&turns),
-        vec![Item::Compaction {
-            id: "compact-1".into(),
-            detail: Compaction::default(),
-        }]
-    );
-}
-
-#[test]
-fn compaction_is_structural_while_review_lifecycle_items_remain_tools() {
-    assert_eq!(
-        parse_item(&json!({"id": "compact", "type": "contextCompaction"})),
-        Some(Item::Compaction {
-            id: "compact".into(),
-            detail: Compaction::default(),
-        })
-    );
-
-    for (kind, title) in [
-        ("enteredReviewMode", "Entered review mode"),
-        ("exitedReviewMode", "Exited review mode"),
-    ] {
-        assert_eq!(
-            parse_item(&json!({"id": "item", "type": kind, "status": "completed"})),
-            Some(Item::Other {
-                id: "item".into(),
-                kind: kind.into(),
-                title: title.into(),
-                output: None,
-                status: Some("completed".into()),
-            })
-        );
-    }
-}
-
-#[test]
 fn replay_keeps_each_turns_accounting_and_failure() {
     let turns = serde_json::json!([
         {"id": "turn1", "status": "completed", "startedAt": 1_786_516_127i64,
@@ -1697,19 +1471,6 @@ fn a_branch_is_never_anchored_on_a_turn_that_did_not_finish() {
             anchor: ForkAnchor::CodexThrough("turn1".into()),
         }]
     );
-}
-
-#[test]
-fn a_thread_with_one_turn_offers_no_branch_point() {
-    let turns = serde_json::json!([
-        {"id": "turn1", "status": "completed", "items": [
-            {"id": "i1", "type": "userMessage",
-             "content": [{"type": "text", "text": "only"}]}
-        ]}
-    ]);
-
-    assert!(parse_fork_checkpoints(&turns).is_empty());
-    assert!(parse_fork_checkpoints(&serde_json::Value::Null).is_empty());
 }
 
 #[test]

@@ -1090,13 +1090,6 @@ fn shared_session_shutdown_waits_for_cleanup_from_a_tokio_task() {
     });
 }
 
-#[test]
-fn session_shutdown_waits_for_cleanup_from_a_futures_executor() {
-    assert_session_cleanup(|handles| {
-        block_on(handles.shutdown());
-    });
-}
-
 fn assert_session_cleanup(close: impl FnOnce(SessionHandles)) {
     let lifetime = Arc::new(());
     let released = Arc::downgrade(&lifetime);

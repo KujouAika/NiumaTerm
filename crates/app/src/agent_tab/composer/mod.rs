@@ -30,9 +30,6 @@ mod tests;
 
 use gpui::SharedString;
 
-#[cfg(test)]
-use crate::agent_tab::composer::palette::{feedback_is_current, feedback_is_transient};
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CommandFeedbackKind {
     Notice,

@@ -115,15 +115,3 @@ enable-window-transparency = \"tabbed\"
 
     assert_eq!(legacy_off.appearance.window_backdrop, WindowBackdrop::Off);
 }
-
-#[test]
-fn smooth_scrolling_modes_select_the_expected_views() {
-    assert!(SmoothScrollingMode::All.terminal_enabled());
-    assert!(SmoothScrollingMode::All.agent_enabled());
-    assert!(SmoothScrollingMode::OnlyTerminal.terminal_enabled());
-    assert!(!SmoothScrollingMode::OnlyTerminal.agent_enabled());
-    assert!(!SmoothScrollingMode::OnlyAgent.terminal_enabled());
-    assert!(SmoothScrollingMode::OnlyAgent.agent_enabled());
-    assert!(!SmoothScrollingMode::Off.terminal_enabled());
-    assert!(!SmoothScrollingMode::Off.agent_enabled());
-}

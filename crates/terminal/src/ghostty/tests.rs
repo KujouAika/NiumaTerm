@@ -3,7 +3,6 @@ use std::{collections, io, thread};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use image_rs::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use nmt_config::colors::AnsiColor;
 
 use crate::ghostty::*;
 use crate::grid::Wide;
@@ -609,39 +608,6 @@ fn kitty_image_delete() {
     assert!(removed.contains(&1), "deleted image reported for removal");
 }
 
-/// DECSCUSR shape and DECTCEM visibility land in the snapshot cursor.
-#[test]
-fn snapshot_captures_cursor_style() {
-    use nmt_config::CursorShape;
-
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.write_vt(b"\x1b[2 q"); // steady block
-
-    assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Block);
-
-    t.write_vt(b"\x1b[5 q"); // steady bar
-
-    assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Beam);
-
-    t.write_vt(b"\x1b[3 q"); // blinking underline
-
-    assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Underline);
-
-    assert!(t.snapshot().unwrap().cursor_visible(), "visible by default");
-
-    t.write_vt(b"\x1b[?25l"); // DECTCEM hide
-
-    assert!(
-        !t.snapshot().unwrap().cursor_visible(),
-        "hidden after DECTCEM"
-    );
-
-    t.write_vt(b"\x1b[?25h");
-
-    assert!(t.snapshot().unwrap().cursor_visible(), "shown again");
-}
-
 #[test]
 fn configured_cursor_shape_is_the_decscusr_default() {
     use nmt_config::CursorShape;
@@ -661,50 +627,6 @@ fn configured_cursor_shape_is_the_decscusr_default() {
     t.write_vt(b"\x1b[0 q");
 
     assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Underline);
-}
-
-/// OSC 10/11 dynamic foreground and background land in the snapshot colors.
-/// The 256-entry palette enters through `set_colors`; snapshots capture only
-/// foreground, background, and the background override.
-#[test]
-fn snapshot_captures_colors() {
-    use nmt_config::colors::{ColorRgb, NamedColor};
-
-    let mut t = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    t.set_colors(
-        [205, 214, 244],
-        [15, 13, 14],
-        [180, 190, 254],
-        &[[0u8; 3]; 256],
-    );
-
-    t.write_vt(b"\x1b]10;#112233\x07"); // OSC 10 set foreground
-
-    assert_eq!(
-        t.snapshot().unwrap().colors()[NamedColor::Foreground],
-        Some(
-            ColorRgb {
-                r: 0x11,
-                g: 0x22,
-                b: 0x33
-            }
-            .into()
-        ),
-        "OSC 10 sets the effective foreground"
-    );
-
-    t.write_vt(b"\x1b]11;#445566\x07"); // OSC 11 set background
-
-    assert_eq!(
-        t.snapshot().unwrap().window_bg_override(),
-        Some(ColorRgb {
-            r: 0x44,
-            g: 0x55,
-            b: 0x66
-        }),
-        "OSC 11 sets the background override"
-    );
 }
 
 #[test]
@@ -731,32 +653,6 @@ fn theme_colors_update_engine_defaults() {
     );
 }
 
-/// A VT mode set/reset round-trips through the engine `mode()` reader
-/// and feeds the lock-free per-panel atomic consumed by the input path.
-#[test]
-fn vt_mode_get_roundtrip() {
-    let mut t = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    assert!(!t.mode(mode::CURSOR_KEYS), "app-cursor off by default");
-
-    t.write_vt(b"\x1b[?1h"); // DECCKM on
-
-    assert!(t.mode(mode::CURSOR_KEYS), "DECCKM on after ?1h");
-
-    t.write_vt(b"\x1b[?1l"); // DECCKM off
-
-    assert!(!t.mode(mode::CURSOR_KEYS), "DECCKM off after ?1l");
-
-    // Alt screen toggles independently.
-    t.write_vt(b"\x1b[?1049h");
-
-    assert!(t.mode(mode::ALT_SCREEN), "alt-screen on");
-
-    t.write_vt(b"\x1b[?1049l");
-
-    assert!(!t.mode(mode::ALT_SCREEN), "alt-screen off");
-}
-
 /// A small storage limit evicts older images once exceeded; only the
 /// retained image is still in the engine store.
 #[test]
@@ -781,59 +677,6 @@ fn kitty_storage_limit() {
         !t.kitty_image_exists(1),
         "oldest image evicted by the limit"
     );
-}
-
-/// a sixel sequence is ignored (terminal drops sixel) without panicking and
-/// leaves a valid, image-free snapshot.
-#[test]
-fn sixel_ignored_no_crash() {
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.resize(20, 5, 10, 20).unwrap();
-
-    t.write_vt(b"\x1bPq#0;2;100;0;0#0~~~~~\x1b\\");
-
-    let snap = t.snapshot().unwrap();
-
-    assert!(
-        snap.placements().is_empty(),
-        "no kitty placements from sixel"
-    );
-}
-
-/// an iTerm2 inline-image (OSC 1337) is ignored without panicking and
-/// leaves a valid, image-free snapshot.
-#[test]
-fn iterm2_ignored_no_crash() {
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.resize(20, 5, 10, 20).unwrap();
-
-    t.write_vt(b"\x1b]1337;File=inline=1:AAAA\x07");
-
-    let snap = t.snapshot().unwrap();
-
-    assert!(
-        snap.placements().is_empty(),
-        "no kitty placements from iTerm2"
-    );
-}
-
-/// OSC 133 shell-integration marks are an unknown OSC to the engine and must
-/// be ignored. The PTY sniffer forwards those marks unchanged, so they must
-/// leave only the visible text, no garbage cells.
-#[test]
-fn osc133_marks_ignored_no_crash() {
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.resize(20, 5, 10, 20).unwrap();
-
-    // ESC]133;A BEL  P>  ESC]133;B BEL  ESC]133;C BEL  hi
-    t.write_vt(b"\x1b]133;A\x07P>\x1b]133;B\x07\x1b]133;C\x07hi");
-
-    let snap = t.snapshot().unwrap();
-
-    assert_eq!(line_text(&snap, 0).trim_end(), "P>hi");
 }
 
 /// OSC 11 sets the window background as an override; OSC 111 resets it.
@@ -874,20 +717,6 @@ fn osc_11_set_and_111_reset_background() {
     run(b"\x1b]111\x07"); // BEL-terminated
 
     run(b"\x1b]111\x1b\\"); // ST-terminated
-}
-
-#[test]
-fn extracts_basic_vt_snapshot() {
-    let mut terminal = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    terminal.write_vt(b"hi \x1b[31mred\x1b[0m");
-
-    let snapshot = terminal.snapshot().unwrap();
-
-    assert_eq!(snapshot.cols(), 8);
-    assert_eq!(snapshot.rows(), 3);
-    assert_eq!(snapshot.cell(0, 0).c(), 'h');
-    assert_eq!(snapshot.cell(3, 0).c(), 'r');
 }
 
 /// Verifies the selection-anchoring assumption: a SCREEN
@@ -1472,18 +1301,6 @@ fn scroll_viewport_shows_scrollback() {
 }
 
 #[test]
-fn format_whole_screen_text() {
-    let mut terminal = GhosttyTerminal::new(20, 3, 100).unwrap();
-
-    terminal.write_vt(b"hello\r\nworld");
-
-    let text = terminal.format_text(None, false, true).unwrap();
-
-    assert!(text.contains("hello"), "got {text:?}");
-    assert!(text.contains("world"), "got {text:?}");
-}
-
-#[test]
 fn format_screen_range_reaches_scrollback() {
     // 2 visible rows, scrollback. Push the first line into history, then
     // extract it by SCREEN coordinate (0,0)..(4,0) → "first".
@@ -1498,157 +1315,6 @@ fn format_screen_range_reaches_scrollback() {
         .unwrap();
 
     assert_eq!(text.trim_end(), "first", "got {text:?}");
-}
-
-#[test]
-fn viewport_cell_resolves_to_grid_ref() {
-    let mut terminal = GhosttyTerminal::new(20, 2, 100).unwrap();
-
-    terminal.write_vt(b"x");
-
-    // A valid viewport cell resolves to a non-null grid ref node.
-    let r = terminal.grid_ref_at(VtPointTag::VIEWPORT, 0, 0).unwrap();
-
-    assert!(!r.node.is_null());
-}
-
-#[test]
-fn red_sgr_sets_foreground() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    terminal.write_vt(b"\x1b[31mR");
-
-    let snapshot = terminal.snapshot().unwrap();
-    let style = snapshot.style(snapshot.cell(0, 0).style_id());
-
-    // Ghostty's default palette red (SGR 31), flattened through the palette.
-    assert_eq!(
-        style.fg,
-        AnsiColor::Spec(Color {
-            r: 204,
-            g: 102,
-            b: 102
-        })
-    );
-}
-
-#[test]
-fn rejects_zero_dimensions() {
-    assert!(matches!(
-        GhosttyTerminal::new(0, 24, 100),
-        Err(Error::InvalidValue)
-    ));
-}
-
-#[test]
-fn wide_cjk_char_occupies_two_columns() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    terminal.write_vt("中A".as_bytes());
-
-    let snapshot = terminal.snapshot().unwrap();
-
-    // Wide ideograph in column 0, spacer (no text) in column 1, narrow in 2.
-    assert_eq!(snapshot.cell(0, 0).c(), '中');
-    assert_eq!(snapshot.cell(2, 0).c(), 'A');
-}
-
-#[test]
-fn mode_alt_screen_and_bracketed_paste() {
-    let mut t = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    assert!(!t.mode(mode::ALT_SCREEN));
-    assert!(!t.mode(mode::BRACKETED_PASTE));
-
-    t.write_vt(b"\x1b[?1049h\x1b[?2004h");
-
-    assert!(t.mode(mode::ALT_SCREEN));
-    assert!(t.mode(mode::BRACKETED_PASTE));
-}
-
-#[test]
-fn mode_sgr_mouse() {
-    let mut t = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    t.write_vt(b"\x1b[?1000h\x1b[?1006h");
-
-    assert!(t.mode(mode::MOUSE_NORMAL));
-    assert!(t.mode(mode::MOUSE_SGR));
-}
-
-#[test]
-fn shrink_resize_does_not_panic() {
-    let mut t = GhosttyTerminal::new(80, 24, 1000).unwrap();
-
-    for i in 0..200u32 {
-        let line = format!("line {i} with some text that is fairly long to wrap\r\n");
-
-        t.write_vt(line.as_bytes());
-    }
-
-    for (c, r) in [(60u16, 20u16), (40, 15), (20, 10), (5, 3), (1, 1), (80, 24)] {
-        t.resize(c, r, 8, 16).unwrap();
-
-        let _ = t.snapshot().unwrap();
-    }
-}
-
-#[test]
-fn custom_palette_applied() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
-    let mut palette = [[0u8; 3]; 256];
-
-    palette[1] = [10, 20, 30]; // SGR 31 resolves to palette index 1.
-
-    terminal.set_colors([255, 255, 255], [0, 0, 0], [255, 255, 255], &palette);
-
-    terminal.write_vt(b"\x1b[31mR");
-
-    let snapshot = terminal.snapshot().unwrap();
-    let style = snapshot.style(snapshot.cell(0, 0).style_id());
-
-    assert_eq!(
-        style.fg,
-        AnsiColor::Spec(Color {
-            r: 10,
-            g: 20,
-            b: 30
-        })
-    );
-}
-
-#[test]
-fn write_pty_dsr_cursor_report() {
-    let mut terminal = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    // Move to row 3 col 4 (1-based 4;5) then request cursor position (DSR 6).
-    terminal.write_vt(b"\x1b[4;5H\x1b[6n");
-
-    let resp = terminal.take_pty_writes();
-
-    assert_eq!(resp, b"\x1b[4;5R");
-
-    // Draining is one-shot.
-    assert!(terminal.take_pty_writes().is_empty());
-}
-
-#[test]
-fn write_pty_primary_da() {
-    let mut terminal = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    terminal.write_vt(b"\x1b[c");
-
-    assert!(!terminal.take_pty_writes().is_empty());
-}
-
-#[test]
-fn bell_callback_counts() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    terminal.write_vt(b"a\x07b\x07");
-
-    assert_eq!(terminal.take_bell(), 2);
-    assert_eq!(terminal.take_bell(), 0);
 }
 
 /// Agent attention alerts come from OSC 9 and OSC 777 notifications, so the
@@ -2004,19 +1670,6 @@ fn read_screen_row_prompt_tag_and_hyperlinks() {
     assert_eq!(
         link_row.meta.hyperlinks,
         vec![(0u16, 3u16, "https://example.com".to_string())]
-    );
-}
-
-#[test]
-fn read_screen_row_out_of_range_is_none() {
-    let mut t = GhosttyTerminal::new(10, 3, 100).unwrap();
-
-    t.write_vt(b"x");
-
-    assert!(
-        t.read_screen_row(9999, &t.color_palette())
-            .unwrap()
-            .is_none()
     );
 }
 

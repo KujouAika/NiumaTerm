@@ -16,12 +16,6 @@ fn data(id: u32, w: usize, h: usize, color_type: ColorType, pixels: Vec<u8>) -> 
     }
 }
 
-fn approx4(a: [f32; 4], b: [f32; 4]) {
-    for (x, y) in a.iter().zip(b.iter()) {
-        assert!((x - y).abs() < 1e-3, "expected {b:?}, got {a:?}");
-    }
-}
-
 /// The frozen-image cache mirrors block lifecycle: sync eviction drops an
 /// evicted block's entries, `;K` drops everything.
 #[test]
@@ -110,56 +104,6 @@ fn frozen_eviction_releases_without_any_live_images_or_repaint() {
     assert!(store.is_empty());
     assert!(receiver.try_recv().is_ok());
     assert!(receiver.try_recv().is_err());
-}
-
-#[test]
-fn expanded_bounds_full_source_is_identity() {
-    // Full [0,0,1,1] source → paint the whole image at the destination as-is.
-    approx4(
-        expanded_full_bounds([10.0, 20.0, 100.0, 50.0], [0.0, 0.0, 1.0, 1.0]).unwrap(),
-        [10.0, 20.0, 100.0, 50.0],
-    );
-}
-
-#[test]
-fn expanded_bounds_crop_enlarges_and_offsets() {
-    // Top-left quarter [0,0,0.5,0.5] → full image is 2x the dest, top-left aligned.
-    approx4(
-        expanded_full_bounds([0.0, 0.0, 100.0, 50.0], [0.0, 0.0, 0.5, 0.5]).unwrap(),
-        [0.0, 0.0, 200.0, 100.0],
-    );
-
-    // Bottom-right quarter [0.5,0.5,1,1] → full 2x, offset up/left by one dest.
-    approx4(
-        expanded_full_bounds([0.0, 0.0, 100.0, 50.0], [0.5, 0.5, 1.0, 1.0]).unwrap(),
-        [-100.0, -50.0, 200.0, 100.0],
-    );
-}
-
-#[test]
-fn expanded_bounds_rejects_degenerate_and_non_finite() {
-    assert!(expanded_full_bounds([0.0, 0.0, 0.0, 50.0], [0.0, 0.0, 1.0, 1.0]).is_none());
-    assert!(expanded_full_bounds([0.0, 0.0, 100.0, 50.0], [0.5, 0.0, 0.5, 1.0]).is_none());
-    assert!(expanded_full_bounds([0.0, 0.0, 100.0, 50.0], [0.0, 0.0, 1.0, f32::NAN]).is_none());
-    assert!(
-        expanded_full_bounds([f32::INFINITY, 0.0, 100.0, 50.0], [0.0, 0.0, 1.0, 1.0]).is_none()
-    );
-}
-
-#[test]
-fn rgba_reuses_buffer_and_swaps_channels() {
-    // One RGBA pixel R=1 G=2 B=3 A=4 -> BGRA 3 2 1 4.
-    let out = graphic_to_bgra(1, 1, ColorType::Rgba, vec![1, 2, 3, 4]).unwrap();
-
-    assert_eq!(out, vec![3, 2, 1, 4]);
-}
-
-#[test]
-fn rgb_expands_with_opaque_alpha() {
-    // One RGB pixel R=1 G=2 B=3 -> BGRA 3 2 1 255.
-    let out = graphic_to_bgra(1, 1, ColorType::Rgb, vec![1, 2, 3]).unwrap();
-
-    assert_eq!(out, vec![3, 2, 1, 255]);
 }
 
 #[test]

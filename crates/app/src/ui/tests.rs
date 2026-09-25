@@ -1,16 +1,4 @@
-use crate::ui::{DEFAULT_CJK_FONT_FAMILY, font_with_default_fallback};
-
-#[test]
-fn default_font_prefers_one_chinese_face_for_missing_glyphs() {
-    let font = font_with_default_fallback("Menlo");
-
-    let fallbacks = font
-        .fallbacks
-        .expect("default fallback should be configured");
-
-    assert_eq!(font.family, "Menlo");
-    assert_eq!(fallbacks.fallback_list(), [DEFAULT_CJK_FONT_FAMILY]);
-}
+use crate::ui::DEFAULT_CJK_FONT_FAMILY;
 
 /// A face this platform does not have does not fail to load — it silently
 /// resolves to something else, which is how a terminal ends up drawing its

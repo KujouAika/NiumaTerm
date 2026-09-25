@@ -22,8 +22,6 @@ use crate::defaults::*;
 use crate::profile::Profile;
 use crate::system::{self, SystemConfig};
 use crate::terminal::TerminalConfig;
-#[cfg(test)]
-use crate::theme::AppearanceTheme;
 use crate::theme::{Theme, UiTheme};
 use crate::{CursorShape, agent, appearance, persistence, profile, set_active_colors, update};
 

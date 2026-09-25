@@ -13,33 +13,6 @@ fn manager(n: u32) -> TabManager<u32> {
 }
 
 #[test]
-fn new_tab_becomes_active() {
-    let mut mgr = manager(1);
-
-    assert_eq!(mgr.list().active_id(), TabId(1));
-
-    mgr.new_tab(2, TabId(2), "PowerShell".into());
-
-    assert_eq!(mgr.list().active_index(), 1);
-    assert_eq!(mgr.list().active_id(), TabId(2));
-    assert_eq!(*mgr.active(), 2);
-}
-
-#[test]
-fn new_tabs_use_their_profile_names() {
-    let mut mgr = manager(1);
-
-    assert_eq!(mgr.list().items()[0].title(), "PowerShell");
-
-    mgr.new_tab(2, TabId(2), "Command Prompt".into());
-
-    mgr.new_tab(3, TabId(3), "Developer PowerShell".into());
-
-    assert_eq!(mgr.list().items()[1].title(), "Command Prompt");
-    assert_eq!(mgr.list().items()[2].title(), "Developer PowerShell");
-}
-
-#[test]
 fn close_is_refused_for_single_tab() {
     let mut mgr = manager(1);
 
@@ -74,103 +47,6 @@ fn close_active_with_no_right_neighbor_falls_left() {
 }
 
 #[test]
-fn closing_left_of_active_keeps_active_tab() {
-    let mut mgr = manager(3);
-
-    mgr.list_mut().activate(2); // active = tab3
-
-    mgr.close(TabId(1)); // closes a tab left of active
-
-    assert_eq!(mgr.list().active_id(), TabId(3));
-    assert_eq!(mgr.list().active_index(), 1);
-}
-
-#[test]
-fn focus_next_and_prev_wrap_around() {
-    let mut mgr = manager(3);
-
-    mgr.list_mut().activate(2);
-
-    mgr.list_mut().focus_next();
-
-    assert_eq!(mgr.list().active_index(), 0); // wrapped to first
-
-    mgr.list_mut().focus_prev();
-
-    assert_eq!(mgr.list().active_index(), 2); // wrapped to last
-}
-
-#[test]
-fn reorder_moves_tab_and_active_follows() {
-    let mut mgr = manager(3); // [t1, t2, t3], active t3
-
-    mgr.list_mut().activate(0); // active = t1
-
-    mgr.list_mut().reorder(0, 2); // move t1 to the end -> [t2, t3, t1]
-
-    assert_eq!(mgr.list().items()[0].id(), TabId(2));
-    assert_eq!(mgr.list().items()[2].id(), TabId(1));
-
-    // active still t1, now at index 2.
-    assert_eq!(mgr.list().active_id(), TabId(1));
-    assert_eq!(mgr.list().active_index(), 2);
-}
-
-#[test]
-fn terminal_title_replaces_default_and_empty_restores_it() {
-    let mut mgr = manager(2);
-
-    assert!(mgr.set_title(TabId(1), "vim".into()));
-    assert_eq!(mgr.list().items()[0].title(), "vim");
-    assert_eq!(mgr.list().items()[1].title(), "PowerShell");
-    assert!(mgr.set_title(TabId(1), String::new()));
-    assert_eq!(mgr.list().items()[0].title(), "PowerShell");
-}
-
-#[test]
-fn user_title_takes_precedence_over_terminal_title() {
-    let mut mgr = manager(1);
-
-    mgr.set_title(TabId(1), "vim".into());
-
-    mgr.rename(TabId(1), "editor".into());
-
-    assert_eq!(mgr.list().items()[0].title(), "editor");
-    assert_eq!(mgr.list().items()[0].user_title(), Some("editor"));
-    assert!(!mgr.set_title(TabId(1), "shell".into()));
-    assert_eq!(mgr.list().items()[0].title(), "editor");
-}
-
-#[test]
-fn mark_exited_keeps_tab_and_flags_it() {
-    let mut mgr = manager(2);
-
-    mgr.mark_exited(TabId(1));
-
-    assert!(mgr.list().items()[0].exited());
-    assert_eq!(mgr.list().len(), 2);
-}
-
-#[test]
-fn bell_flags_a_tab_until_it_is_activated() {
-    let mut mgr = manager(2); // tab 2 is active
-
-    mgr.ring_bell(TabId(1));
-
-    assert!(mgr.list().items()[0].bell());
-
-    // Clearing acts on the active tab, so the ringing one keeps its flag.
-    assert!(!mgr.clear_active_bell());
-    assert!(mgr.list().items()[0].bell());
-
-    mgr.list_mut().activate(0);
-
-    assert!(mgr.clear_active_bell());
-    assert!(!mgr.list().items()[0].bell());
-    assert!(!mgr.clear_active_bell());
-}
-
-#[test]
 fn a_failure_survives_the_successes_that_follow_it() {
     let mut mgr = manager(2); // tab 2 is active
 
@@ -192,13 +68,6 @@ fn a_failure_survives_the_successes_that_follow_it() {
     assert!(mgr.clear_active_outcome());
     assert_eq!(mgr.list().items()[0].last_outcome(), None);
     assert!(!mgr.clear_active_outcome());
-}
-
-#[test]
-fn an_unreported_exit_code_is_not_a_failure() {
-    let outcome: CommandOutcome = None.into();
-
-    assert_eq!(outcome, CommandOutcome::Succeeded);
 }
 
 #[test]

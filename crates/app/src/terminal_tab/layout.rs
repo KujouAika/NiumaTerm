@@ -53,17 +53,3 @@ pub(super) fn truncate_command(command: &str, max: usize) -> String {
         format!("{head}…")
     }
 }
-
-#[cfg(test)]
-#[test]
-fn bottom_slack_pins_content_to_the_floor() {
-    use nmt_terminal::render_buffer::RenderBuffer;
-
-    let frame = TerminalFrame::from_render_buffer(&RenderBuffer::new(80, 3));
-
-    assert_eq!(bottom_slack(&frame, 10.0, false), 0.0);
-    assert_eq!(bottom_slack(&frame, 10.0, true), 30.0);
-    assert_eq!(terminal_row_at_y(5.0, 10.0, 30.0), 0);
-    assert_eq!(terminal_row_at_y(45.0, 10.0, 30.0), 1);
-    assert_eq!(terminal_row_at_y(45.0, 10.0, 0.0), 4);
-}

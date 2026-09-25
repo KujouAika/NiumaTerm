@@ -61,10 +61,7 @@ use crate::claude_code::sessions::task_history::{
     load_child_transcript_at, load_task_history_at, parse_task_history,
 };
 #[cfg(test)]
-use crate::claude_code::sessions::titles::{
-    compaction_summary_text, recorded_title, resolved_session_title, session_title,
-    user_prompt_text,
-};
+use crate::claude_code::sessions::titles::{compaction_summary_text, user_prompt_text};
 
 /// Whether the selected user message has a persisted file-history snapshot.
 /// `Unknown` is reserved for snapshot records whose schema is not understood;

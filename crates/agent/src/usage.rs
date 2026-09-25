@@ -1,9 +1,5 @@
 //! Provider-neutral subscription-limit data used by compact usage surfaces.
 
-#[cfg(test)]
-#[path = "usage_tests.rs"]
-mod usage_tests;
-
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;

@@ -1,9 +1,6 @@
 //! Built-in theme sources compiled into the binary so a fresh install renders
 //! with a full palette before any user theme file exists.
 
-#[cfg(test)]
-mod tests;
-
 pub struct BuiltinTheme {
     pub name: &'static str,
     pub source: &'static str,

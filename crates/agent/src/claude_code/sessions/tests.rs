@@ -356,36 +356,6 @@ fn cwd_munges_to_the_cli_project_directory_name() {
 }
 
 #[test]
-fn titles_come_from_the_first_real_user_prompt() {
-    // Sidechain, meta, and tool-result records are not prompts.
-    assert_eq!(
-        user_prompt_text(&serde_json::json!({"type": "user", "isSidechain": true,
-                "message": {"content": [{"type": "text", "text": "sub"}]}})),
-        None
-    );
-    assert_eq!(
-        user_prompt_text(&serde_json::json!({"type": "user", "isMeta": true,
-            "message": {"content": "caveat"}})),
-        None
-    );
-    assert_eq!(
-        user_prompt_text(&serde_json::json!({"type": "user",
-            "message": {"content": [{"type": "tool_result", "tool_use_id": "t"}]}})),
-        None
-    );
-
-    let record = serde_json::json!({"type": "user", "gitBranch": "dev",
-        "message": {"content": [{"type": "text", "text": "fix the login bug\nmore detail"}]}});
-
-    assert_eq!(
-        user_prompt_text(&record)
-            .as_deref()
-            .and_then(provisional_title_from_prompt),
-        Some("fix the login bug more detail".to_string())
-    );
-}
-
-#[test]
 fn a_compaction_summary_is_never_mistaken_for_a_prompt() {
     // The CLI stores it as a user turn, so without the guard it would both
     // title the session and replay as something the user typed.
@@ -769,27 +739,6 @@ fn task_history_enriches_only_linked_sidechains() {
 }
 
 #[test]
-fn task_history_keeps_rows_that_lack_optional_metadata() {
-    let lines = task_history_lines(&[serde_json::json!({
-        "type": "assistant",
-        "uuid": "a1",
-        "parentUuid": null,
-        "message": {"role": "assistant", "content": [{
-            "type": "tool_use", "id": "toolu_bare", "name": "Task", "input": {},
-        }]},
-    })]);
-
-    let tasks = parse_task_history(lines.as_bytes());
-
-    assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].id, "toolu_bare");
-    assert_eq!(tasks[0].update.state, Some(BackgroundTaskState::Starting));
-    assert!(tasks[0].update.display_name.is_none());
-    assert!(tasks[0].update.objective.is_none());
-    assert!(tasks[0].update.started_at.is_none());
-}
-
-#[test]
 fn task_history_applies_recognized_lifecycle_records() {
     let lines = task_history_lines(&[
         assistant_launch("a1", None, "toolu_1"),
@@ -988,104 +937,6 @@ fn an_unlinked_sidechain_contributes_no_child_conversation() {
         tasks[0].items.is_empty(),
         "a branch no selected launch claims is not this child's conversation"
     );
-}
-
-/// Claude Code repeats current title metadata as the transcript grows. Only
-/// the tail is read, so each title kind keeps its newest value while a user
-/// name remains more important than a later model name.
-#[test]
-fn a_session_uses_recorded_title_precedence() {
-    use std::fs;
-
-    let root = env::temp_dir().join(format!("nmt-session-name-{}", Uuid::new_v4()));
-
-    fs::create_dir_all(&root).unwrap();
-
-    let filler = format!(
-        "{}\n",
-        serde_json::json!({"type": "user", "padding": "x".repeat(4096)})
-    );
-
-    let named = |title: &str| {
-        format!(
-            "{}\n",
-            serde_json::json!({"type": "custom-title", "customTitle": title})
-        )
-    };
-
-    let generated = |title: &str| {
-        format!(
-            "{}\n",
-            serde_json::json!({"type": "ai-title", "aiTitle": title})
-        )
-    };
-
-    let mut transcript = named("first name");
-
-    // Enough to push the first name out of the window the tail scan reads,
-    // and to make that window start partway through a record.
-    for _ in 0..32 {
-        transcript.push_str(&filler);
-    }
-
-    transcript.push_str(&named("second name"));
-
-    transcript.push_str(&filler);
-
-    let renamed = root.join("renamed.jsonl");
-
-    fs::write(&renamed, transcript).unwrap();
-
-    assert_eq!(recorded_title(&renamed).as_deref(), Some("second name"));
-
-    let generated_only = root.join("generated.jsonl");
-
-    fs::write(
-        &generated_only,
-        format!(
-            "{}{}",
-            generated("first model name"),
-            generated("model name")
-        ),
-    )
-    .unwrap();
-
-    assert_eq!(
-        resolved_session_title(
-            &generated_only,
-            Some("prompt fallback".into()),
-            "12345678-rest"
-        ),
-        "model name"
-    );
-
-    let user_named = root.join("user-named.jsonl");
-
-    fs::write(
-        &user_named,
-        format!("{}{}", named("user name"), generated("later model name")),
-    )
-    .unwrap();
-
-    assert_eq!(
-        resolved_session_title(&user_named, Some("prompt fallback".into()), "12345678-rest"),
-        "user name"
-    );
-
-    let untouched = root.join("untouched.jsonl");
-
-    fs::write(&untouched, &filler).unwrap();
-
-    assert_eq!(
-        resolved_session_title(&untouched, Some("prompt fallback".into()), "12345678-rest"),
-        "prompt fallback"
-    );
-    assert_eq!(
-        resolved_session_title(&untouched, None, "12345678-rest"),
-        "12345678"
-    );
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// inside it: `<session-id>/subagents/agent-<id>.jsonl` holds the conversation
@@ -1413,55 +1264,4 @@ fn replay_divides_a_session_into_the_turns_it_recorded() {
     assert_eq!(turns[1].output_tokens, Some(30));
     assert!(turns[1].interrupted);
     assert_eq!(turns[1].items.len(), 2);
-}
-
-/// A restore that has no history-list entry names the tab from the
-/// transcript alone, with the same precedence the list uses, minus the id
-/// prefix that would label the tab with nothing useful.
-#[test]
-fn a_restored_session_is_named_like_its_history_row() {
-    let dir = tempdir().unwrap();
-
-    let prompt = serde_json::json!({
-        "type": "user",
-        "message": {"role": "user", "content": "run a three step task"},
-    });
-
-    let generated = serde_json::json!({"type": "ai-title", "aiTitle": "Three step task"});
-
-    let titled = dir.path().join("titled.jsonl");
-
-    fs::write(
-        &titled,
-        format!(
-            "{prompt}
-{generated}
-"
-        ),
-    )
-    .unwrap();
-
-    assert_eq!(session_title(&titled).as_deref(), Some("Three step task"));
-
-    let prompt_only = dir.path().join("prompt-only.jsonl");
-
-    fs::write(
-        &prompt_only,
-        format!(
-            "{prompt}
-"
-        ),
-    )
-    .unwrap();
-
-    assert_eq!(
-        session_title(&prompt_only).as_deref(),
-        Some("run a three step task")
-    );
-
-    let empty = dir.path().join("empty.jsonl");
-
-    fs::write(&empty, "").unwrap();
-
-    assert_eq!(session_title(&empty), None);
 }

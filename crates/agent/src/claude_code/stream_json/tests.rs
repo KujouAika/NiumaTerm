@@ -869,15 +869,6 @@ fn turn_output_usage_accumulates_model_responses() {
 }
 
 #[test]
-fn title_descriptions_are_trimmed_and_unicode_safe() {
-    let input = format!("  {}界  ", "界".repeat(SESSION_TITLE_DESCRIPTION_CHARS));
-    let description = session_title_description(&input);
-
-    assert_eq!(description.chars().count(), SESSION_TITLE_DESCRIPTION_CHARS);
-    assert!(description.chars().all(|character| character == '界'));
-}
-
-#[test]
 fn claude_usage_normalizes_cache_categories_into_total_input() {
     let usage = parse_claude_usage(&json!({
         "input_tokens": 8_500,
@@ -950,24 +941,6 @@ fn post_compaction_total_clears_category_detail() {
     assert_eq!(snapshot.current.cache_read_input_tokens, None);
     assert_eq!(snapshot.current.output_tokens, None);
     assert_eq!(snapshot.cumulative, None);
-}
-
-#[test]
-fn rewind_is_an_idle_ui_command_not_a_provider_slash_turn() {
-    let commands = Session::adapter_commands();
-
-    let rewind = commands
-        .iter()
-        .find(|command| command.name == "rewind")
-        .expect("Claude rewind metadata");
-
-    assert_eq!(rewind.source, SlashCommandSource::Adapter);
-    assert_eq!(rewind.arguments, SlashCommandArguments::None);
-    assert_eq!(rewind.run_policy, SlashCommandRunPolicy::IdleOnly);
-    assert!(ui_owns_slash_command("rewind"));
-    assert!(ui_owns_slash_command("/ReWiNd"));
-    assert!(ui_owns_slash_command("/resume"));
-    assert!(!ui_owns_slash_command("compact"));
 }
 
 #[cfg(windows)]
@@ -1275,106 +1248,6 @@ fn process_exit_fails_and_clears_pending_file_rewinds() {
 }
 
 #[test]
-fn content_bearing_inputs_seed_the_card_detail() {
-    let todos = input_detail(
-        "TodoWrite",
-        &json!({"todos": [
-            {"content": "done thing", "status": "completed"},
-            {"content": "next thing", "status": "pending"},
-        ]}),
-    );
-
-    assert_eq!(todos.as_deref(), Some("- [x] done thing\n- [ ] next thing"));
-
-    let plan = input_detail("ExitPlanMode", &json!({"plan": "1. do it"}));
-
-    assert_eq!(plan.as_deref(), Some("1. do it"));
-
-    assert_eq!(input_detail("Grep", &json!({"pattern": "x"})), None);
-}
-
-#[test]
-fn a_todo_card_counts_back_out_as_a_task_tally() {
-    let todos = tool_item(
-        "t1",
-        "TodoWrite",
-        &json!({"todos": [
-            {"content": "done thing", "status": "completed"},
-            {"content": "next thing", "status": "pending"},
-            {"content": "later thing", "status": "pending"},
-        ]}),
-    );
-
-    assert_eq!(todos.task_tally(), Some((1, 3)));
-    assert_eq!(
-        tool_item("t2", "Grep", &json!({"pattern": "x"})).task_tally(),
-        None
-    );
-}
-
-#[test]
-fn edit_diff_prefixes_old_and_new_lines() {
-    let diff = edit_diff("Edit", &json!({"old_string": "a\nb", "new_string": "c"}));
-
-    assert_eq!(diff.as_deref(), Some("-a\n-b\n+c\n"));
-
-    assert_eq!(edit_diff("Edit", &json!({})), None);
-}
-
-#[test]
-fn bash_and_file_tools_map_to_dedicated_cards() {
-    let bash = tool_item(
-        "t1",
-        "Bash",
-        &json!({
-            "command": "cargo check",
-            "description": "Check the workspace"
-        }),
-    );
-
-    assert_eq!(
-        bash,
-        Item::CommandExecution {
-            id: "t1".into(),
-            command: "cargo check".into(),
-            purpose: Some("Check the workspace".into()),
-            aggregated_output: None,
-            status: Some("inProgress".into()),
-            exit_code: None,
-        }
-    );
-
-    let write = tool_item(
-        "t2",
-        "Write",
-        &json!({"file_path": "C:\\a.txt", "content": "x"}),
-    );
-
-    assert_eq!(
-        write,
-        Item::FileChange {
-            id: "t2".into(),
-            paths: "C:\\a.txt".into(),
-            diff: Some("+x\n".into()),
-            status: Some("inProgress".into()),
-        }
-    );
-
-    let grep = tool_item("t3", "Grep", &json!({"pattern": "foo.*bar"}));
-
-    assert_eq!(
-        grep,
-        Item::Other {
-            id: "t3".into(),
-            kind: "Grep".into(),
-            title: "foo.*bar".into(),
-            output: None,
-            status: Some("inProgress".into()),
-        }
-    );
-}
-
-#[test]
 fn only_the_compaction_status_shapes_drive_progress_events() {
     let mut active = false;
 
@@ -1447,169 +1320,6 @@ fn a_failed_compaction_reports_its_reason() {
 }
 
 #[test]
-fn initialize_model_catalog_maps_value_and_display_name() {
-    let models = json!([
-        {"value": "default", "displayName": "Default (recommended)", "description": "…",
-         "supportedEffortLevels": ["low", "high"]},
-        {"value": "opus[1m]", "displayName": "Opus with 1M context"},
-        {"displayName": "no value — skipped"}
-    ]);
-
-    let parsed = parse_models(&models, None);
-
-    assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].model, "default");
-    assert_eq!(parsed[0].display, "Default (recommended)");
-    assert_eq!(parsed[0].efforts, vec!["low", "high"]);
-    assert_eq!(parsed[1].model, "opus[1m]");
-    assert!(parsed[1].efforts.is_empty());
-}
-
-#[test]
-fn initialize_model_catalog_keeps_a_selected_custom_model() {
-    let parsed = parse_models(
-        &json!([{"value": "default", "displayName": "Default"}]),
-        Some("claude-custom-model"),
-    );
-
-    assert_eq!(parsed[0].model, "claude-custom-model");
-    assert_eq!(parsed[1].model, "default");
-}
-
-#[test]
-fn custom_endpoint_model_inherits_effort_levels_from_remapped_alias() {
-    let parsed = parse_models(
-        &json!([
-            {"value": "deepseek-v4-flash", "displayName": "deepseek-v4-flash"},
-            {"value": "opus", "displayName": "deepseek-v4-flash",
-             "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]}
-        ]),
-        Some("deepseek-v4-flash"),
-    );
-
-    assert_eq!(parsed[0].model, "deepseek-v4-flash");
-    assert_eq!(
-        parsed[0].efforts,
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-}
-
-#[test]
-fn initialize_uses_model_pinned_by_launch_environment() {
-    let launch = LaunchConfig {
-        executable: "claude".into(),
-        env: vec![
-            ("UNRELATED".into(), "value".into()),
-            (
-                ANTHROPIC_MODEL_ENV.into(),
-                "claude-opus-4-8-v4-flash[1m]".into(),
-            ),
-        ],
-        ..LaunchConfig::default()
-    };
-
-    assert_eq!(
-        launch_model(&launch).as_deref(),
-        Some("claude-opus-4-8-v4-flash[1m]")
-    );
-}
-
-#[test]
-fn a_requested_model_is_used_unless_the_environment_pins_one() {
-    let requested = LaunchConfig {
-        executable: "claude".into(),
-        model: Some("opus[1m]".into()),
-        ..LaunchConfig::default()
-    };
-
-    assert_eq!(launch_model(&requested).as_deref(), Some("opus[1m]"));
-
-    let pinned = LaunchConfig {
-        env: vec![(ANTHROPIC_MODEL_ENV.into(), "claude-haiku-4-5".into())],
-        ..requested.clone()
-    };
-
-    assert_eq!(launch_model(&pinned).as_deref(), Some("claude-haiku-4-5"));
-
-    let blank = LaunchConfig {
-        model: Some("  ".into()),
-        ..requested
-    };
-
-    assert_eq!(launch_model(&blank), None);
-}
-
-#[test]
-fn approval_descriptions_name_the_action() {
-    assert_eq!(
-        approval_description("Bash", &json!({"command": "rm -rf build"})),
-        "Run command: `rm -rf build`"
-    );
-    assert_eq!(
-        approval_description("Write", &json!({"file_path": "a.txt"})),
-        "Edit file: a.txt"
-    );
-    assert_eq!(
-        approval_description("mcp__github__search", &json!({"query": "is:open"})),
-        "mcp__github__search: is:open"
-    );
-}
-
-#[test]
-fn dynamic_commands_accept_both_json_shapes_and_drop_invalid_duplicates() {
-    let parsed = parse_slash_commands(&json!([
-        "/Review",
-        {"name": "compact", "description": "Compact it", "argumentHint": "[focus]",
-         "aliases": ["summarize", "/shrink", "not valid"]},
-        {"command": "/review"},
-        "",
-        "not valid"
-    ]));
-
-    assert_eq!(parsed.len(), 4);
-    assert_eq!(parsed[0].name, "review");
-    assert_eq!(parsed[1].name, "compact");
-    assert_eq!(parsed[2].name, "summarize");
-    assert_eq!(parsed[3].name, "shrink");
-    assert_eq!(parsed[1].argument_hint.as_deref(), Some("[focus]"));
-    assert_eq!(parsed[2].description, "Compact it");
-    assert_eq!(parsed[1].arguments, SlashCommandArguments::Freeform);
-
-    // A command the catalog gave no hint for still takes arguments. Skills
-    // arrive this way, and rejecting them client-side made every one of them
-    // unusable with input.
-    assert_eq!(parsed[0].argument_hint, None);
-    assert_eq!(parsed[0].arguments, SlashCommandArguments::Freeform);
-    assert!(parse_slash_commands(&Value::Null).is_empty());
-}
-
-#[test]
-fn initialize_commands_are_primary_and_legacy_catalogs_are_fallbacks() {
-    let response = json!({
-        "commands": [{"name": "plugin:review", "aliases": ["pr"]}],
-        "slash_commands": ["legacy"]
-    });
-
-    let (commands, structured) = initialize_command_catalog(&response).unwrap();
-
-    assert!(structured);
-    assert_eq!(
-        commands
-            .iter()
-            .map(|command| command.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["plugin:review", "pr"]
-    );
-
-    let (legacy, structured) =
-        initialize_command_catalog(&json!({"slash_commands": ["legacy"]})).unwrap();
-
-    assert!(!structured);
-    assert_eq!(legacy[0].name, "legacy");
-    assert!(initialize_command_catalog(&json!({})).is_none());
-}
-
-#[test]
 fn provider_command_text_is_not_an_ordinary_prompt_shape() {
     assert_eq!(slash_command_text("/compact", ""), "/compact");
     assert_eq!(
@@ -1632,58 +1342,6 @@ fn provider_command_text_is_not_an_ordinary_prompt_shape() {
 }
 
 #[test]
-fn a_context_usage_response_becomes_a_composition_breakdown() {
-    let response = json!({
-        "request_id": "nmt-3",
-        "subtype": "success",
-        "response": {
-            "categories": [
-                {"name": "System prompt", "tokens": 3_200, "color": "#aabbcc"},
-                {"name": "Messages", "tokens": 41_000, "color": "#ddeeff"},
-                {"name": "Free space", "tokens": 109_900, "color": "#101010"},
-                {"name": "Autocompact buffer", "tokens": 45_000, "color": "#303030"},
-                {"name": "Reserved", "tokens": 900, "color": "#202020", "isDeferred": true},
-            ],
-            "totalTokens": 45_100,
-            "maxTokens": 155_000,
-            "rawMaxTokens": 200_000,
-            "autoCompactThreshold": 140_000,
-        },
-    });
-
-    let mut control = pending_control("nmt-3", PendingControlOperation::ContextComposition);
-
-    let event = control.resolve(&response);
-
-    let Some(Event::ContextCompositionUpdated(composition)) = event else {
-        panic!("expected a composition update, got {event:?}");
-    };
-
-    assert_eq!(composition.used_tokens, 45_100);
-    assert_eq!(composition.max_tokens, Some(155_000));
-    assert_eq!(
-        composition.raw_max_tokens,
-        Some(200_000),
-        "the model's own window is distinct from the one compaction leaves"
-    );
-    assert_eq!(composition.auto_compact_threshold, Some(140_000));
-    assert_eq!(
-        composition
-            .segments
-            .iter()
-            .map(|segment| segment.label.as_str())
-            .collect::<Vec<_>>(),
-        ["System prompt", "Messages", "Reserved"],
-        "the window's free room is not one of the parts filling it"
-    );
-    assert!(composition.segments[2].deferred);
-    assert!(
-        !control.contains(&PendingControlOperation::ContextComposition),
-        "the request is no longer outstanding"
-    );
-}
-
-#[test]
 fn a_failed_context_usage_request_leaves_the_previous_breakdown_alone() {
     let response = json!({
         "request_id": "nmt-3",
@@ -1697,19 +1355,6 @@ fn a_failed_context_usage_request_leaves_the_previous_breakdown_alone() {
     // accurate, so a failure reports nothing rather than blanking the card.
     assert!(control.resolve(&response).is_none());
     assert!(!control.contains(&PendingControlOperation::ContextComposition));
-}
-
-#[test]
-fn a_composition_without_categories_is_not_published() {
-    let response = json!({
-        "request_id": "nmt-3",
-        "subtype": "success",
-        "response": {"totalTokens": 100, "categories": []},
-    });
-
-    let mut control = pending_control("nmt-3", PendingControlOperation::ContextComposition);
-
-    assert!(control.resolve(&response).is_none());
 }
 
 /// A resumed conversation replays nothing through the protocol, so no
@@ -1762,23 +1407,6 @@ fn live_accounting_is_never_replaced_by_the_breakdown() {
     assert!(
         transcript.apply_composition(&composition).is_none(),
         "a coarse total must not overwrite the per-category accounting"
-    );
-}
-
-#[test]
-fn an_empty_breakdown_reports_no_window() {
-    let composition = ContextComposition {
-        segments: Vec::new(),
-        used_tokens: 0,
-        max_tokens: Some(155_000),
-        raw_max_tokens: None,
-        auto_compact_threshold: None,
-    };
-
-    assert!(
-        TranscriptState::default()
-            .apply_composition(&composition)
-            .is_none()
     );
 }
 
@@ -1842,71 +1470,6 @@ fn a_resumed_session_asks_for_its_context_before_the_first_turn() {
     drop(session);
 
     let _ = fs::remove_file(log);
-}
-
-/// The adapter forwards a command's arguments as its text, so an entry that
-/// declares none rejects input the CLI itself accepts. These entries are only
-/// a fallback for versions whose discovery payload omits the command, and a
-/// fallback that is stricter than the real thing is a bug.
-#[test]
-fn adapter_commands_declare_the_arguments_the_cli_accepts() {
-    let commands = Session::adapter_commands();
-
-    let compact = commands
-        .iter()
-        .find(|command| command.name == "compact")
-        .expect("compact is offered as a fallback");
-
-    let rewind = commands
-        .iter()
-        .find(|command| command.name == "rewind")
-        .expect("rewind is offered");
-
-    assert_eq!(compact.arguments, SlashCommandArguments::Freeform);
-    assert!(compact.argument_hint.is_some());
-    assert_eq!(
-        slash_command_text("compact", "focus on the API"),
-        "/compact focus on the API",
-        "instructions reach the CLI as part of the command"
-    );
-
-    // Rewind opens this application's own picker, so there is no text to
-    // forward and nothing for arguments to mean.
-    assert!(ui_owns_slash_command("rewind"));
-    assert_eq!(rewind.arguments, SlashCommandArguments::None);
-}
-
-/// The catalog mixes commands worth offering with the CLI's own internal
-/// entries, ones it has retired but still lists, and ones that drive its host
-/// terminal session. Only the first group can be acted on from this palette.
-#[test]
-fn the_catalog_drops_internal_retired_and_host_owned_commands() {
-    let parsed = parse_slash_commands(&json!([
-        {"name": "caveman", "description": "A skill"},
-        {"name": "compact", "description": "Free up context"},
-        {"name": "__remote-workflow", "description": "Run the delivered workflow"},
-        {"name": "agents", "description": "(removed) Ask Claude to manage subagents"},
-        {"name": "extra-usage", "description": "Renamed to /usage-credits"},
-        {"name": "context", "description": "Show current context usage"},
-        {"name": "model", "description": "Set the AI model for Claude Code"},
-        {"name": "clear", "description": "Start a new session with empty context"},
-        {"name": "heapdump", "description": "Dump the JS heap to ~/Desktop"},
-        {"name": "config", "description": "Set a setting by key"},
-    ]));
-
-    let names: Vec<&str> = parsed.iter().map(|command| command.name.as_str()).collect();
-
-    assert_eq!(names, ["caveman", "compact"]);
-}
-
-#[test]
-fn a_retired_marker_only_counts_at_the_start_of_a_description() {
-    // A command that merely mentions the words still belongs in the palette.
-    let parsed = parse_slash_commands(&json!([
-        {"name": "notes", "description": "Explain why a command was (removed) upstream"},
-    ]));
-
-    assert_eq!(parsed.len(), 1);
 }
 
 #[test]

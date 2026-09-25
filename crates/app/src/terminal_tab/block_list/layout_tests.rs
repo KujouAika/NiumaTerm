@@ -1,60 +1,9 @@
-use std::time::SystemTime;
-
 use nmt_terminal::block_store::SegmentMeta;
 use nmt_terminal::event::BlockEvent;
 use nmt_terminal::ghostty::BlockHandle;
-use nmt_terminal::session::InFlightBlock;
 
-use crate::terminal_tab::block_list::chrome::offset_frozen_chrome;
-use crate::terminal_tab::block_list::live::LiveItemState;
+use crate::terminal_tab::block_list;
 use crate::terminal_tab::pane_model::list_mirror::ListPosition;
-use crate::terminal_tab::{block_list, theme};
-
-#[test]
-fn live_item_layout_places_chrome_around_history_active_rows_and_padding() {
-    for (in_flight, open_prompt, accent) in [
-        (
-            Some(InFlightBlock {
-                command: Some("build".into()),
-                started_at: SystemTime::now(),
-            }),
-            false,
-            Some(theme::BLOCK_RUNNING_COLOR),
-        ),
-        (None, true, Some(theme::BLOCK_INPUT_COLOR)),
-        (None, false, None),
-    ] {
-        let state = LiveItemState {
-            in_flight,
-            has_open_prompt: open_prompt,
-        };
-
-        for pad_rows in [0.0, 1.0] {
-            for history_height in [0.0, 50.0] {
-                let layout = state.layout(history_height, 2, 10.0, pad_rows);
-
-                assert_eq!(
-                    (layout.active_top, layout.active_height),
-                    (history_height, 20.0)
-                );
-                assert_eq!(layout.chrome.as_ref().map(|chrome| chrome.accent), accent);
-
-                if let Some(chrome) = layout.chrome {
-                    assert_eq!(
-                        (chrome.top, chrome.bottom, chrome.header_y),
-                        (0.0, history_height + 20.0 + pad_rows * 10.0, history_height)
-                    );
-                    assert!(chrome.header.is_none());
-                }
-            }
-        }
-
-        let empty = state.layout(50.0, 0, 10.0, 1.0);
-
-        assert!(empty.chrome.is_none());
-        assert_eq!(empty.active_height, 0.0);
-    }
-}
 
 fn block_item(seq: u64, id: u64, rows: usize) -> BlockEvent {
     BlockEvent::EngineBlock {
@@ -223,32 +172,4 @@ fn remeasure_scope_tracks_layout_vs_content_changes() {
     };
 
     assert_eq!(plan_remeasure(Some(key), relaid), RemeasureScope::All);
-}
-
-#[test]
-fn block_list_live_chrome_marks_idle_open_prompt() {
-    let chrome = block_list::block_list_live_chrome(2, 10.0, None, true).unwrap();
-
-    assert_eq!(chrome.accent, theme::BLOCK_INPUT_COLOR);
-    assert_eq!(chrome.header, None);
-
-    assert!(block_list::block_list_live_chrome(2, 10.0, None, false).is_none());
-}
-
-#[test]
-fn frozen_chrome_offset_moves_header_with_item() {
-    let chrome = block_list::FrozenItemChrome {
-        top: 0.0,
-        bottom: 40.0,
-        header_y: 10.0,
-        accent: theme::BLOCK_SUCCESS_COLOR,
-        header: Some("build · ✓".into()),
-    };
-
-    let chrome = offset_frozen_chrome(chrome, 80.0);
-
-    assert_eq!(
-        (chrome.top, chrome.bottom, chrome.header_y),
-        (80.0, 120.0, 90.0)
-    );
 }

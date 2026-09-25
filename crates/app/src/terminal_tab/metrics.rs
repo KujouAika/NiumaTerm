@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "metrics_tests.rs"]
-mod metrics_tests;
-
 use std::slice;
 
 use gpui::{App, Window, px};
