@@ -1694,3 +1694,43 @@ fn scrollback_is_bounded_by_the_configured_line_count() {
     assert!(history(10_000) > bounded);
     assert_eq!(history(0), 0);
 }
+
+/// A checkpoint must rebuild the state a late-joining engine needs to decode
+/// the live stream that follows it: input modes, cursor position, and the
+/// palette. Text alone would leave the new engine encoding keys and placing
+/// output differently from the engine that produced the checkpoint.
+#[test]
+fn vt_state_checkpoint_restores_modes_cursor_and_palette() {
+    let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    source.write_vt(b"hello\r\nworld");
+    source.write_vt(b"\x1b[?1h\x1b[?2004h\x1b[?1006h\x1b[?25l");
+    source.write_vt(b"\x1b]4;1;rgb:12/34/56\x07");
+    source.write_vt(b"\x1b[4;7H");
+
+    let checkpoint = source.format_vt_state().unwrap();
+
+    let mut replica = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    replica.write_vt(&checkpoint);
+
+    for id in [
+        mode::CURSOR_KEYS,
+        mode::BRACKETED_PASTE,
+        mode::MOUSE_SGR,
+        mode::CURSOR_VISIBLE,
+    ] {
+        assert_eq!(replica.mode(id), source.mode(id), "mode {id}");
+    }
+
+    let source_snapshot = source.snapshot().unwrap();
+    let replica_snapshot = replica.snapshot().unwrap();
+
+    assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
+    assert_eq!(line_text(&replica_snapshot, 0), "hello");
+    assert_eq!(line_text(&replica_snapshot, 1), "world");
+
+    let palette = replica.color_palette()[1];
+
+    assert_eq!((palette.r, palette.g, palette.b), (0x12, 0x34, 0x56));
+}

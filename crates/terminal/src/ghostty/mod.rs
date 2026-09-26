@@ -67,14 +67,15 @@ use std::{array, mem, path, ptr, slice};
 use libghostty_vt_sys::RowSemanticPrompt as VtRowSemanticPrompt;
 use libghostty_vt_sys::{
     BlockRef as VtBlockRef, ColorRgb as VtColorRgb, FormatterFormat as VtFormatterFormat,
-    GridRef as VtGridRef, KITTY_KEY_DISAMBIGUATE, KITTY_KEY_REPORT_ALL,
-    KITTY_KEY_REPORT_ALTERNATES, KITTY_KEY_REPORT_ASSOCIATED, KITTY_KEY_REPORT_EVENTS,
-    KittyGraphics as VtKittyGraphics, KittyGraphicsImageData as VtKittyGraphicsImageData,
-    Point as VtPoint, PointCoordinate as VtPointCoordinate, PointTag as VtPointTag,
-    PointValue as VtPointValue, Result as VtResult, Selection as VtSelection, String as VtString,
-    Terminal as VtTerminal, TerminalCursorStyle as VtTerminalCursorStyle,
-    TerminalData as VtTerminalData, TerminalModeConfig as VtTerminalModeConfig,
-    TerminalOption as VtTerminalOption, TerminalScrollViewport as VtTerminalScrollViewport,
+    FormatterTerminalExtra as VtFormatterTerminalExtra, GridRef as VtGridRef,
+    KITTY_KEY_DISAMBIGUATE, KITTY_KEY_REPORT_ALL, KITTY_KEY_REPORT_ALTERNATES,
+    KITTY_KEY_REPORT_ASSOCIATED, KITTY_KEY_REPORT_EVENTS, KittyGraphics as VtKittyGraphics,
+    KittyGraphicsImageData as VtKittyGraphicsImageData, Point as VtPoint,
+    PointCoordinate as VtPointCoordinate, PointTag as VtPointTag, PointValue as VtPointValue,
+    Result as VtResult, Selection as VtSelection, String as VtString, Terminal as VtTerminal,
+    TerminalCursorStyle as VtTerminalCursorStyle, TerminalData as VtTerminalData,
+    TerminalModeConfig as VtTerminalModeConfig, TerminalOption as VtTerminalOption,
+    TerminalScrollViewport as VtTerminalScrollViewport,
     TerminalScrollViewportTag as VtTerminalScrollViewportTag,
     TerminalScrollViewportValue as VtTerminalScrollViewportValue,
     TerminalScrollbar as VtTerminalScrollbar, ghostty_block_ref_cols, ghostty_kitty_graphics_image,
@@ -95,7 +96,7 @@ use crate::event::ProgressReport;
 use crate::ghostty::callbacks::{
     Callbacks, KITTY_IMAGE_STORAGE_LIMIT_BYTES, install_callbacks, register_png_decoder,
 };
-use crate::ghostty::format::format_terminal;
+use crate::ghostty::format::{format_terminal, full_state_extra};
 use crate::ghostty::grid_read::visit_row_cells;
 use crate::ghostty::kitty::{KittyState, kitty_image_graphic_data, set_kitty_storage_limit};
 use crate::ghostty::render_state::RenderStateReader;
@@ -847,6 +848,7 @@ impl GhosttyTerminal {
         format_terminal(
             self.terminal,
             VtFormatterFormat::PLAIN,
+            vt_sized!(VtFormatterTerminalExtra),
             selection,
             unwrap,
             trim,
@@ -858,7 +860,14 @@ impl GhosttyTerminal {
     /// bytes reconstructs the current screen, styles, modes, palette, and cursor,
     /// which lets a newly attached client start from a consistent checkpoint.
     pub fn format_vt_state(&mut self) -> Result<Vec<u8>> {
-        format_terminal(self.terminal, VtFormatterFormat::VT, None, false, false)
+        format_terminal(
+            self.terminal,
+            VtFormatterFormat::VT,
+            full_state_extra(),
+            None,
+            false,
+            false,
+        )
     }
 
     /// Selection-to-string for a SCREEN-coordinate range (inclusive endpoints).
