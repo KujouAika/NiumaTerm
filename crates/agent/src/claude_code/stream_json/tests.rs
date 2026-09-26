@@ -1743,3 +1743,26 @@ fn an_api_error_message_is_not_shown_as_a_reply() {
 
     assert!(events.is_empty());
 }
+
+#[test]
+fn context_window_variant_inherits_effort_levels_from_its_base_model() {
+    let catalog = serde_json::json!([
+        {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5",
+         "supportedEffortLevels": ["low", "high"]},
+        {"value": "haiku", "resolvedModel": "claude-haiku-4-5", "displayName": "Haiku 4.5"},
+    ]);
+
+    let efforts = |selected: &str| {
+        parse_models(&catalog, Some(selected))
+            .into_iter()
+            .find(|entry| entry.model == selected)
+            .map(|entry| entry.efforts)
+    };
+
+    assert_eq!(efforts("opus[1m]"), Some(vec!["low".into(), "high".into()]));
+    assert_eq!(
+        efforts("claude-opus-5-5[1m]"),
+        Some(vec!["low".into(), "high".into()])
+    );
+    assert_eq!(efforts("haiku[1m]"), Some(Vec::new()));
+}

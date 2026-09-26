@@ -331,15 +331,7 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
                         .unwrap_or(&model)
                         .to_string();
 
-                    let efforts = entry["supportedEffortLevels"]
-                        .as_array()
-                        .map(|levels| {
-                            levels
-                                .iter()
-                                .filter_map(|v| v.as_str().map(str::to_owned))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let efforts = supported_efforts(entry);
 
                     Some(ModelInfo {
                         model,
@@ -354,6 +346,25 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
         .unwrap_or_default();
 
     list_selected_model(&mut parsed, selected_model);
+
+    // A context-window variant such as `opus[1m]` reasons like its base
+    // model, but the catalog lists only the base alias, so the bare entry
+    // inserted for it would otherwise hide the effort picker. The base is
+    // matched by alias or by resolved id, since `claude-opus-5-5[1m]` names
+    // the id rather than the alias.
+    if let Some(selected) = parsed.iter_mut().find(|entry| {
+        entry.efforts.is_empty() && Some(entry.model.as_str()) == selected_model.map(str::trim)
+    }) && let Some((base, _)) = selected
+        .model
+        .strip_suffix(']')
+        .and_then(|model| model.rsplit_once('['))
+        && let Some(entry) = models.as_array().and_then(|list| {
+            list.iter()
+                .find(|entry| entry["value"] == base || entry["resolvedModel"] == base)
+        })
+    {
+        selected.efforts = supported_efforts(entry);
+    }
 
     // A custom endpoint's discovered model lists no supportedEffortLevels,
     // while the built-in aliases remapped to it (ANTHROPIC_DEFAULT_* env
@@ -380,6 +391,18 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
     }
 
     parsed
+}
+
+fn supported_efforts(entry: &Value) -> Vec<String> {
+    entry["supportedEffortLevels"]
+        .as_array()
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn context_window_usage(
