@@ -1734,3 +1734,45 @@ fn vt_state_checkpoint_restores_modes_cursor_and_palette() {
 
     assert_eq!((palette.r, palette.g, palette.b), (0x12, 0x34, 0x56));
 }
+
+/// A checkpoint taken while a full-screen program holds the alternate screen
+/// must still carry the primary screen, or a replica shows an empty shell
+/// once the program exits.
+#[test]
+fn vt_state_checkpoint_keeps_primary_screen_under_alt_screen() {
+    let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    source.write_vt(b"shell$ ls\r\nfile.txt\r\nshell$ ");
+    source.write_vt(b"\x1b[?1049h");
+    source.write_vt(b"editor view");
+
+    let checkpoint = source.format_vt_state().unwrap();
+
+    let mut replica = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    replica.write_vt(&checkpoint);
+
+    let source_alt = source.snapshot().unwrap();
+    let replica_alt = replica.snapshot().unwrap();
+
+    // The formatter writes leading blanks as spaces where the source still
+    // has never-written cells, so rows compare by visible text.
+    assert_eq!(line_text(&source_alt, 2).trim(), "editor view");
+    assert_eq!(line_text(&replica_alt, 2).trim(), "editor view");
+
+    source.write_vt(b"\x1b[?1049l");
+    replica.write_vt(b"\x1b[?1049l");
+
+    let source_snapshot = source.snapshot().unwrap();
+    let replica_snapshot = replica.snapshot().unwrap();
+
+    for row in 0..3 {
+        assert_eq!(
+            line_text(&replica_snapshot, row).trim(),
+            line_text(&source_snapshot, row).trim(),
+            "row {row}"
+        );
+    }
+
+    assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
+}
