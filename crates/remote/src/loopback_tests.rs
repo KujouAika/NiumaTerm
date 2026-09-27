@@ -72,7 +72,7 @@ fn paired_client_runs_a_command_in_a_host_terminal() {
     let code = host.start_pairing().unwrap();
 
     runtime().block_on(async {
-        let mut paired = pair(&address, &code, &client_key, info("Client"))
+        let mut paired = pair(Some(&address), &code, &client_key, info("Client"), None)
             .await
             .unwrap();
 
@@ -125,14 +125,14 @@ fn unpaired_and_revoked_devices_are_refused() {
         host.start_pairing().unwrap();
 
         assert!(
-            pair(&address, &wrong, &client_key, info("Guess"))
+            pair(Some(&address), &wrong, &client_key, info("Guess"), None)
                 .await
                 .is_err()
         );
 
         let code = host.start_pairing().unwrap();
 
-        let mut paired = pair(&address, &code, &client_key, info("Client"))
+        let mut paired = pair(Some(&address), &code, &client_key, info("Client"), None)
             .await
             .unwrap();
 
@@ -144,5 +144,31 @@ fn unpaired_and_revoked_devices_are_refused() {
         host.remove_device(&client_key.id()).unwrap();
 
         assert!(connect(&mut paired, &client_key, "0.0.0").await.is_err());
+    });
+}
+
+/// Needs a network interface that carries multicast, which CI runners and
+/// some VPNs lack.
+#[test]
+#[ignore = "needs LAN multicast"]
+fn pairing_without_an_address_finds_the_host_showing_the_code() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host(&host_dir);
+    let client_key = DeviceKey::generate().unwrap();
+    let code = host.start_pairing().unwrap();
+
+    runtime().block_on(async {
+        let mut paired = pair(None, &code, &client_key, info("Client"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(paired.id, host.device_id());
+
+        // A stale address falls back to finding the host by its id.
+        paired.lan_hints = vec!["127.0.0.1:1".into()];
+
+        connect(&mut paired, &client_key, "0.0.0").await.unwrap();
+
+        assert_ne!(paired.lan_hints[0], "127.0.0.1:1");
     });
 }

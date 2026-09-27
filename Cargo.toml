@@ -111,6 +111,8 @@ tokio-util = "0.7"
 # that turns a short pairing code into a key no offline search can recover.
 snow = "0.10"
 spake2 = "0.4"
+# LAN discovery of hosts (DNS-SD), which mobile platforms browse natively.
+mdns-sd = "0.21"
 
 # GPUI fork
 collections = { path = "third_party/gpui/collections" }

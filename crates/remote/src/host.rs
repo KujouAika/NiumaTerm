@@ -48,6 +48,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tracing::{debug, info, warn};
 
+use crate::discovery::Advertiser;
 use crate::link::{Outbound, pump, recv_binary, send_binary};
 use crate::store::{self, PairedDevice, now_ms};
 
@@ -90,6 +91,9 @@ struct Shared {
     config: HostConfig,
     state: Mutex<State>,
     unauthenticated: Arc<Semaphore>,
+
+    /// Absent when multicast is unavailable; clients then enter the address.
+    advertiser: Option<Advertiser>,
 }
 
 #[derive(Default)]
@@ -151,6 +155,10 @@ impl HostService {
 
         let local_addr = listener.local_addr()?;
 
+        let advertiser = Advertiser::start(&config.device.name, key.id(), local_addr.port())
+            .inspect_err(|error| warn!(%error, "LAN discovery is unavailable"))
+            .ok();
+
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 devices: store::load_devices(&dir),
@@ -160,6 +168,7 @@ impl HostService {
             dir,
             config,
             unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED)),
+            advertiser,
         });
 
         let task = runtime().spawn(accept_loop(Arc::clone(&shared), listener));
@@ -185,11 +194,15 @@ impl HostService {
 
         self.shared.state.lock().code = Some(IssuedCode::new(code.clone(), now_ms()));
 
+        self.shared.advertise_slot(Some(code.slot()));
+
         Ok(code)
     }
 
     pub fn cancel_pairing(&self) {
         self.shared.state.lock().code = None;
+
+        self.shared.advertise_slot(None);
     }
 
     /// The code still accepting attempts, and when it expires.
@@ -436,6 +449,12 @@ impl Connection {
 }
 
 impl Shared {
+    fn advertise_slot(&self, slot: Option<&str>) {
+        if let Some(advertiser) = &self.advertiser {
+            advertiser.set_pairing_slot(slot);
+        }
+    }
+
     fn terminal(&self, session: &str) -> Result<Arc<HostTerminal>, RpcError> {
         self.state
             .lock()
@@ -639,6 +658,10 @@ where
                     && !issued.record_failure(now_ms())
                 {
                     state.code = None;
+
+                    drop(state);
+
+                    shared.advertise_slot(None);
                 }
             }
 
@@ -673,6 +696,8 @@ where
 
         state.devices.clone()
     };
+
+    shared.advertise_slot(None);
 
     store::save_devices(&shared.dir, &devices)?;
 

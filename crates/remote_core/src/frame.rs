@@ -14,6 +14,12 @@
 
 pub mod kind {
     pub const CONTROL_JSON: u8 = 0x01;
+
+    /// Liveness probe on stream 0, answered with `PONG` by the channel
+    /// itself; the payload is echoed and otherwise meaningless.
+    pub const PING: u8 = 0x02;
+
+    pub const PONG: u8 = 0x03;
     pub const CHECKPOINT: u8 = 0x10;
     pub const OUTPUT: u8 = 0x11;
     pub const INPUT: u8 = 0x12;

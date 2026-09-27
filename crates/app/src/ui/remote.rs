@@ -19,7 +19,7 @@ use nmt_remote::store::{
 };
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind};
-use nmt_remote_core::pairing::PairingCode;
+use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use rust_i18n::t;
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -186,13 +186,34 @@ pub(crate) fn remove_device(id: &DeviceId, cx: &mut App) {
     remote.report(result);
 }
 
-/// Pair with the computer named in the connect form.
+/// Pair with the computer named in the connect form. The code field also
+/// takes a pasted pairing link, which carries the code, the host's
+/// addresses, and the host key to insist on. An empty address searches the
+/// LAN for the host showing the code.
 pub(crate) fn pair_with_host(cx: &mut App) {
     let remote = cx.global::<Remote>();
-    let address = with_default_port(remote.address.trim());
+    let typed_address = remote.address.trim();
 
-    let code = match PairingCode::parse(&remote.code) {
-        Ok(code) => code,
+    let parsed = if remote.code.trim().starts_with("niumaterm:") {
+        PairingLink::parse(&remote.code).map(|link| {
+            let address = if typed_address.is_empty() {
+                link.addresses.first().cloned()
+            } else {
+                Some(with_default_port(typed_address))
+            };
+
+            (link.code, address, Some(link.host_key))
+        })
+    } else {
+        PairingCode::parse(&remote.code).map(|code| {
+            let address = (!typed_address.is_empty()).then(|| with_default_port(typed_address));
+
+            (code, address, None)
+        })
+    };
+
+    let (code, address, expected_host_key) = match parsed {
+        Ok(parsed) => parsed,
         Err(error) => {
             cx.global_mut::<Remote>().report(Err(error.into()));
 
@@ -214,13 +235,16 @@ pub(crate) fn pair_with_host(cx: &mut App) {
 
     remote.busy = true;
 
-    remote.status = Some(
-        t!("remote-pairing-with", address = &address)
+    remote.status = Some(match &address {
+        Some(address) => t!("remote-pairing-with", address = address)
             .into_owned()
             .into(),
-    );
+        None => t!("remote-searching").into_owned().into(),
+    });
 
-    let task = runtime().spawn(async move { pair(&address, &code, &key, device).await });
+    let task = runtime().spawn(async move {
+        pair(address.as_deref(), &code, &key, device, expected_host_key).await
+    });
 
     cx.spawn(async move |cx| {
         let result = task

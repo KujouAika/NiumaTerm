@@ -136,20 +136,26 @@ fn device_item(device: PairedDevice) -> SettingItem {
 fn computers_group(state: &Remote) -> SettingGroup {
     let mut group = SettingGroup::new()
         .title(t!("settings-remote-computers"))
-        .item(SettingItem::new(
-            t!("settings-remote-connect-address"),
-            SettingField::input(
-                |cx| cx.global::<Remote>().address.clone(),
-                |value, cx| cx.global_mut::<Remote>().address = value,
-            ),
-        ))
-        .item(SettingItem::new(
-            t!("settings-remote-connect-code"),
-            SettingField::input(
-                |cx| cx.global::<Remote>().code.clone(),
-                |value, cx| cx.global_mut::<Remote>().code = value,
-            ),
-        ))
+        .item(
+            SettingItem::new(
+                t!("settings-remote-connect-address"),
+                SettingField::input(
+                    |cx| cx.global::<Remote>().address.clone(),
+                    |value, cx| cx.global_mut::<Remote>().address = value,
+                ),
+            )
+            .description(t!("settings-remote-connect-address-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-remote-connect-code"),
+                SettingField::input(
+                    |cx| cx.global::<Remote>().code.clone(),
+                    |value, cx| cx.global_mut::<Remote>().code = value,
+                ),
+            )
+            .description(t!("settings-remote-connect-code-description").into_owned()),
+        )
         .item(SettingItem::render(|options, _, cx| {
             h_flex()
                 .w_full()

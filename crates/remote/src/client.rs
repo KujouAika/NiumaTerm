@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use std::{error, fmt};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::{Sink, Stream};
-use nmt_remote_core::channel::ClientHandshake;
+use nmt_remote_core::channel::{Channel, ClientHandshake};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::DeviceKey;
-use nmt_remote_core::messages::{ClientHello, DeviceInfo};
+use nmt_remote_core::messages::{ClientHello, DeviceInfo, HostHello};
 use nmt_remote_core::pairing::{ClientPairing, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
 use nmt_remote_core::rpc::{self, Attached, Control, RpcError, SessionRef, TerminalOpen};
@@ -26,12 +27,33 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tracing::debug;
 
+use crate::discovery::{self, Target};
 use crate::link::{Outbound, pump, recv_binary, send_binary};
 use crate::network_pty::NetworkPty;
 use crate::store::{PairedHost, now_ms};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a lookup browses the LAN before giving up.
+const DISCOVERY_WAIT: Duration = Duration::from_secs(3);
+
+/// Addresses remembered per host, most recently working first.
+const MAX_LAN_HINTS: usize = 4;
+
 const FEATURES: &[&str] = &["terminal"];
+
+/// The host completed the preface but closed instead of answering the
+/// handshake: this device is not, or no longer, paired with it.
+#[derive(Debug)]
+struct Refused;
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the host refused this device; pair again")
+    }
+}
+
+impl error::Error for Refused {}
 
 /// What a terminal stream delivers to its [`NetworkPty`].
 pub(crate) enum StreamEvent {
@@ -61,17 +83,28 @@ struct PendingCall {
     stream: Option<UnboundedSender<StreamEvent>>,
 }
 
-/// Pair with the host showing `code` at `address` (`host:port`).
+/// Pair with the host showing `code`, at `address` (`host:port`) or, when
+/// none is given, wherever the LAN advertises that code's slot. A key from a
+/// pairing link makes the exchange fail unless that exact host answers.
 pub async fn pair(
-    address: &str,
+    address: Option<&str>,
     code: &PairingCode,
     key: &DeviceKey,
     device: DeviceInfo,
+    expected_host_key: Option<[u8; 32]>,
 ) -> Result<PairedHost> {
-    timeout(CONNECT_TIMEOUT, async {
-        let (mut ws, offer, answer) = open(address, PrefaceKind::Pairing).await?;
+    let address = match address {
+        Some(address) => address.to_owned(),
+        None => discovery::find(Target::PairingSlot(code.slot()), DISCOVERY_WAIT)
+            .await
+            .context("no computer on this network is showing that code; enter its address")?,
+    };
 
-        let (pairing, hello) = ClientPairing::start(code, &offer, &answer, device, None)?;
+    timeout(CONNECT_TIMEOUT, async {
+        let (mut ws, offer, answer) = open(&address, PrefaceKind::Pairing).await?;
+
+        let (pairing, hello) =
+            ClientPairing::start(code, &offer, &answer, device, expected_host_key)?;
 
         send_binary(&mut ws, hello).await?;
 
@@ -95,52 +128,72 @@ pub async fn pair(
         Ok(PairedHost::new(
             paired.public_key,
             paired.accepted.host.name,
-            address.to_owned(),
+            address.clone(),
         ))
     })
     .await
     .map_err(|_| anyhow!("pairing timed out"))?
 }
 
-/// Open a channel to a paired host. `host` records the handshake time and
-/// the host's current name; the caller stores it afterwards.
+/// Open a channel to a paired host: its known LAN addresses first, then
+/// wherever DNS-SD finds it now (DHCP may have moved it). `host` records the
+/// handshake time, the host's current name, and the address that worked; the
+/// caller stores it afterwards.
 pub async fn connect(
     host: &mut PairedHost,
     key: &DeviceKey,
     app_version: &str,
 ) -> Result<Arc<RemoteHost>> {
-    let address = host
-        .lan_hints
-        .first()
-        .cloned()
-        .context("no known address for this host")?;
+    let mut last_error = anyhow!("no known address for this host");
+    let mut established = None;
 
-    let hello = ClientHello {
-        proto_minor: PROTO_MINOR,
-        app_version: app_version.to_owned(),
-        features: FEATURES.iter().map(|&feature| feature.into()).collect(),
-        hello_ms: host.next_hello_ms(),
-    };
+    'search: for rediscover in [false, true] {
+        let candidates = if rediscover {
+            match discovery::find(Target::Device(&host.id), DISCOVERY_WAIT).await {
+                Some(address) if !host.lan_hints.contains(&address) => vec![address],
+                _ => break,
+            }
+        } else {
+            host.lan_hints.clone()
+        };
 
-    let (ws, channel, host_hello) = timeout(CONNECT_TIMEOUT, async {
-        let (mut ws, offer, answer) = open(&address, PrefaceKind::Channel).await?;
+        for address in candidates {
+            // A fresh hello per attempt: the host may have recorded the
+            // previous one before the attempt failed.
+            let hello = ClientHello {
+                proto_minor: PROTO_MINOR,
+                app_version: app_version.to_owned(),
+                features: FEATURES.iter().map(|&feature| feature.into()).collect(),
+                hello_ms: host.next_hello_ms(),
+            };
 
-        let (handshake, msg1) =
-            ClientHandshake::start(key, &host.public_key, &offer, &answer, &hello)?;
-
-        send_binary(&mut ws, msg1).await?;
-
-        // An unpaired or revoked device gets no reply, only a closed socket.
-        let msg2 = recv_binary(&mut ws)
+            match timeout(
+                CONNECT_TIMEOUT,
+                handshake(&address, key, &host.public_key, &hello),
+            )
             .await
-            .context("the host refused this device; pair again")?;
+            {
+                Ok(Ok(result)) => {
+                    host.lan_hints.retain(|known| known != &address);
+                    host.lan_hints.insert(0, address);
+                    host.lan_hints.truncate(MAX_LAN_HINTS);
 
-        let (channel, host_hello) = handshake.finish(&msg2)?;
+                    established = Some(result);
 
-        anyhow::Ok((ws, channel, host_hello))
-    })
-    .await
-    .map_err(|_| anyhow!("connecting to {address} timed out"))??;
+                    break 'search;
+                }
+                // The right host answered and said no; another address
+                // would reach the same host.
+                Ok(Err(error)) if error.is::<Refused>() => return Err(error),
+                Ok(Err(error)) => last_error = error,
+                Err(_) => last_error = anyhow!("connecting to {address} timed out"),
+            }
+        }
+    }
+
+    let Some((ws, channel, host_hello)) = established else {
+        return Err(last_error);
+    };
 
     host.name = host_hello.name;
     host.last_seen = now_ms();
@@ -250,6 +303,35 @@ impl RemoteHost {
     pub(crate) fn detach(&self, stream: u32) {
         self.routes.lock().streams.remove(&stream);
     }
+}
+
+/// Run the channel handshake with the host at `address`.
+async fn handshake(
+    address: &str,
+    key: &DeviceKey,
+    host_key: &[u8; 32],
+    hello: &ClientHello,
+) -> Result<(
+    impl Stream<Item = Result<Message, WsError>>
+    + Sink<Message, Error = WsError>
+    + Unpin
+    + Send
+    + 'static,
+    Channel,
+    HostHello,
+)> {
+    let (mut ws, offer, answer) = open(address, PrefaceKind::Channel).await?;
+
+    let (handshake, msg1) = ClientHandshake::start(key, host_key, &offer, &answer, hello)?;
+
+    send_binary(&mut ws, msg1).await?;
+
+    // An unpaired or revoked device gets no reply, only a closed socket.
+    let msg2 = recv_binary(&mut ws).await.map_err(|_| Refused)?;
+
+    let (channel, host_hello) = handshake.finish(&msg2)?;
+
+    Ok((ws, channel, host_hello))
 }
 
 /// Connect a WebSocket to `address` and agree on a protocol major.

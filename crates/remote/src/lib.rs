@@ -6,6 +6,7 @@
 pub use crate::network_pty::NetworkPty;
 
 pub mod client;
+pub mod discovery;
 pub mod host;
 pub mod store;
 
@@ -13,6 +14,8 @@ mod link;
 mod network_pty;
 mod secret;
 
+#[cfg(test)]
+mod link_tests;
 #[cfg(test)]
 mod loopback_tests;
 #[cfg(test)]
