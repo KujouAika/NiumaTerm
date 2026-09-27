@@ -11,7 +11,7 @@ use nmt_platform::{AsyncPty, PtyOptions, create_pty_with_env, runtime};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::PairingCode;
-use nmt_remote_core::rpc::{Origin, SessionKind};
+use nmt_remote_core::rpc::{EndReason, Origin, SessionKind};
 use nmt_terminal::event::VoidListener;
 use nmt_terminal::termio::{SessionHandles, SessionOptions, start_session};
 use serde_json::json;
@@ -22,7 +22,7 @@ use crate::client::pair;
 use crate::connection::{AgentUpdate, RemoteHost, Status};
 use crate::host::{HostConfig, HostService};
 use crate::local_view;
-use crate::sessions::{AgentControl, AgentRequest, SessionRegistry, TerminalControl};
+use crate::sessions::{AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl};
 use crate::store::PairedHost;
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -595,5 +595,145 @@ fn a_host_view_of_a_remote_created_terminal_shares_it_with_the_device() {
         .expect("a closed view stops listing its device");
 
         assert_eq!(host.terminal_count(), 1);
+    });
+}
+
+#[test]
+fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let remote = remote(paired, key);
+
+        // Before the application answers host requests, a device hears that
+        // the host cannot start anything.
+        assert!(remote.host_info().await.is_err());
+
+        let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+        registry.serve_host_requests(requests);
+
+        let opened = Arc::clone(&registry);
+
+        runtime().spawn(async move {
+            while let Some(request) = requests_rx.recv().await {
+                match request {
+                    HostRequest::Info { reply } => {
+                        let _ = reply.send(Ok(json!({
+                            "agents": [{ "name": "Codex", "harness": "codex" }],
+                            "workspaces": [{ "name": "work", "path": "C:/work" }],
+                        })));
+                    }
+                    HostRequest::OpenAgent { params, reply } => {
+                        if params["workspace"] != "C:/work" {
+                            let _ = reply.send(Err("not a host workspace".into()));
+
+                            continue;
+                        }
+
+                        let session = fake_agent(&opened);
+
+                        let _ = reply.send(Ok(json!({ "session": session })));
+                    }
+                }
+            }
+        });
+
+        let info = remote.host_info().await.unwrap();
+
+        assert_eq!(info.agents[0].harness, "codex");
+        assert_eq!(info.workspaces[0].path, "C:/work");
+
+        // Only a listed workspace is accepted.
+        assert!(
+            remote
+                .open_agent("Codex".into(), "C:/elsewhere".into())
+                .await
+                .is_err()
+        );
+
+        let session = remote
+            .open_agent("Codex".into(), "C:/work".into())
+            .await
+            .unwrap();
+
+        let sessions = remote.list_sessions().await.unwrap();
+
+        assert!(sessions.iter().any(|info| info.session == session));
+
+        let (_link, mut updates) = remote.agent_view(session);
+
+        assert!(matches!(
+            next_update(&mut updates).await,
+            AgentUpdate::Snapshot(_)
+        ));
+    });
+}
+
+async fn wait_ended(remote: &RemoteHost, session: &str, wanted: Option<EndReason>) {
+    let mut changes = remote.ended_changes();
+
+    timeout(WAIT, async {
+        while remote.ended(session) != wanted {
+            let _ = changes.changed().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the view never became {wanted:?}"));
+}
+
+#[test]
+fn the_host_takes_a_session_back_and_the_device_takes_it_again() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let remote = remote(paired, key);
+
+        let mut pty = remote.open_terminal(80, 24).await.unwrap();
+
+        let session = pty.session().to_owned();
+
+        run_marker(&mut pty, "BEFORE").await;
+
+        registry.take_back(&session);
+
+        // The view stays open and says why, and nobody is listed as
+        // controlling the session any more.
+        wait_ended(&remote, &session, Some(EndReason::TakenBack)).await;
+
+        assert!(registry.viewers(&session).is_empty());
+
+        remote.reconnect(&session);
+
+        wait_ended(&remote, &session, None).await;
+
+        // Taking it up again replays the terminal and passes input again.
+        let mut buf = [0; 4096];
+
+        timeout(WAIT, async {
+            loop {
+                poll_fn(|cx| pty.poll_read(cx, &mut buf)).await.unwrap();
+
+                if pty.take_stream_reset() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the view replays from a checkpoint");
+
+        run_marker(&mut pty, "AFTER").await;
+
+        assert_eq!(registry.viewers(&session), vec![String::from("Client")]);
+
+        registry.close_remote(&session);
+
+        wait_ended(&remote, &session, Some(EndReason::Closed)).await;
     });
 }

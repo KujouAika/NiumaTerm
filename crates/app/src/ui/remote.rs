@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context as _, Result, anyhow};
 use app::agent_tab::execution::SessionOwner;
 use app::agent_tab::{AgentKind, AgentPane, AgentPaneEvent, remote as agent_remote};
+use app::remote_control::HostControl;
 use app::terminal_tab::view::{HostShare, TerminalPane};
 use gpui::{
     App, BorrowAppContext as _, Entity, EntityId, Global, SharedString, Subscription, Task, Window,
@@ -21,7 +22,9 @@ use nmt_platform::runtime;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
-use nmt_remote::sessions::{AgentControl, AgentRequest, SessionRegistry, TerminalControl};
+use nmt_remote::sessions::{
+    AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl,
+};
 use nmt_remote::store::{
     PairedDevice, PairedHost, load_hosts, load_or_create_identity, load_relay_access_key,
     remote_dir, save_hosts, save_relay_access_key,
@@ -30,13 +33,18 @@ use nmt_remote::{NetworkPty, local_view};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
-use nmt_remote_core::rpc::{SessionInfo, SessionKind};
+use nmt_remote_core::rpc::{
+    AgentOpen, AgentProfileInfo, HostInfo, SessionInfo, SessionKind, SessionRef, WorkspaceInfo,
+};
 use rust_i18n::t;
+use serde_json::Value;
 use tokio::select;
 use tokio::sync::mpsc::{self, UnboundedSender, WeakUnboundedSender};
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::last_active_window;
+use crate::ui::settings::AgentProfile;
 use crate::ui::{AppSettings, AppWindow};
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
@@ -73,6 +81,9 @@ pub(crate) struct Remote {
 
     /// The session lists of paired hosts, as last fetched.
     host_sessions: HashMap<DeviceId, Vec<SessionInfo>>,
+
+    /// What each paired host lets this computer start, as last fetched.
+    host_offers: HashMap<DeviceId, HostInfo>,
 
     /// Host records updated by a connection, saved on the UI thread.
     record_updates: UnboundedSender<PairedHost>,
@@ -115,11 +126,23 @@ struct SharedAgent {
 /// Install the global and start hosting when the setting is on.
 pub(crate) fn initialize(cx: &mut App) {
     let (record_updates, mut records) = mpsc::unbounded_channel::<PairedHost>();
+    let (host_requests, mut host_requests_rx) = mpsc::unbounded_channel();
+
+    let registry = SessionRegistry::new();
+
+    registry.serve_host_requests(host_requests);
+
+    cx.spawn(async move |cx| {
+        while let Some(request) = host_requests_rx.recv().await {
+            cx.update(|cx| answer_host(request, cx));
+        }
+    })
+    .detach();
 
     cx.set_global(Remote {
         key: None,
         host: None,
-        registry: SessionRegistry::new(),
+        registry,
         shared_tabs: HashMap::new(),
         viewed_sessions: HashMap::new(),
         shared_agents: HashMap::new(),
@@ -127,6 +150,7 @@ pub(crate) fn initialize(cx: &mut App) {
         hosts: load_hosts(&remote_dir()),
         connections: HashMap::new(),
         host_sessions: HashMap::new(),
+        host_offers: HashMap::new(),
         record_updates,
         address: SharedString::default(),
         code: SharedString::default(),
@@ -317,6 +341,10 @@ impl Remote {
             .map_or(Status::Idle, |host| *host.status().borrow())
     }
 
+    pub(crate) fn host_offers(&self, id: &DeviceId) -> Option<&HostInfo> {
+        self.host_offers.get(id)
+    }
+
     pub(crate) fn host_sessions(&self, id: &DeviceId) -> Option<&[SessionInfo]> {
         self.host_sessions.get(id).map(Vec::as_slice)
     }
@@ -477,6 +505,10 @@ pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
     // Devices already see the terminal this pane views; the tab only follows
     // who is watching it.
     if let Some(session) = viewed {
+        let control = host_control(&cx.global::<Remote>().registry, &session);
+
+        pane.update(cx, |pane, cx| pane.control_from_host(control, cx));
+
         cx.global_mut::<Remote>()
             .viewed_sessions
             .insert(pane_id, session);
@@ -513,11 +545,15 @@ pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
         Box::new(move |cols, rows| registry.note_local_resize(&session, cols, rows))
     };
 
-    pane.update(cx, |pane, _| {
+    let control = host_control(&registry, &session);
+
+    pane.update(cx, |pane, cx| {
         pane.share_with_host(HostShare {
             claimed_remotely,
             on_size,
-        })
+        });
+
+        pane.control_from_host(control, cx);
     });
 
     cx.global_mut::<Remote>()
@@ -587,6 +623,10 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: 
 
     let serve = agent_remote::serve(session.downgrade(), requests_rx, cx);
 
+    let control = host_control(&registry, &id);
+
+    pane.update(cx, |pane, cx| pane.control_from_host(control, cx));
+
     let titles = {
         let registry = Arc::clone(&registry);
         let id = id.clone();
@@ -621,6 +661,21 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: 
         cx.global_mut::<Remote>().shared_agents.remove(&pane_id);
     })
     .detach();
+}
+
+/// What a shared host tab needs to show who controls `session` from another
+/// computer and to take it back.
+fn host_control(registry: &Arc<SessionRegistry>, session: &str) -> HostControl {
+    let viewers = Arc::clone(registry);
+    let taker = Arc::clone(registry);
+    let listed = session.to_owned();
+    let taken = session.to_owned();
+
+    HostControl {
+        controllers: Arc::new(move || viewers.viewers(&listed)),
+        changes: registry.subscribe_viewers(),
+        take_back: Arc::new(move || taker.take_back(&taken)),
+    }
 }
 
 /// The id paired devices know a shared agent tab by, saved with the tab.
@@ -906,20 +961,177 @@ pub(crate) fn refresh_sessions(id: &DeviceId, cx: &mut App) {
         }
     };
 
-    let task = runtime().spawn(async move { connection.list_sessions().await });
+    let task = runtime().spawn(async move {
+        let sessions = connection.list_sessions().await?;
+
+        // A host from before agents could be started remotely answers
+        // `unsupported`; it still lists its sessions.
+        let offers = connection.host_info().await.ok();
+
+        anyhow::Ok((sessions, offers))
+    });
+
     let id = id.clone();
 
     cx.spawn(async move |cx| {
         let result = task.await.context("listing stopped").and_then(|list| list);
 
         cx.update_global::<Remote, _>(|remote, _| match result {
-            Ok(sessions) => {
-                remote.host_sessions.insert(id, sessions);
+            Ok((sessions, offers)) => {
+                remote.host_sessions.insert(id.clone(), sessions);
+
+                match offers {
+                    Some(offers) => remote.host_offers.insert(id, offers),
+                    None => remote.host_offers.remove(&id),
+                };
             }
             Err(error) => remote.report(Err(error)),
         });
     })
     .detach();
+}
+
+/// Start an agent on a paired host from one of the profiles and workspaces
+/// it offers, and open a tab following it in `window`. The agent runs in a
+/// host tab, so closing this view leaves it running there.
+pub(crate) fn open_agent(
+    id: &DeviceId,
+    profile: &AgentProfileInfo,
+    workspace: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(app) = app_window(window, cx) else {
+        return;
+    };
+
+    let Some(kind) = AgentKind::from_id(&profile.harness) else {
+        cx.global_mut::<Remote>()
+            .report(Err(anyhow!(t!("remote-agent-unknown").into_owned())));
+
+        return;
+    };
+
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
+        Err(error) => {
+            cx.global_mut::<Remote>().report(Err(error));
+
+            return;
+        }
+    };
+
+    cx.global_mut::<Remote>().busy = true;
+
+    let opened = Arc::clone(&connection);
+    let name = profile.name.clone();
+    let title = profile.name.clone();
+
+    let task = runtime().spawn(async move { opened.open_agent(name, workspace).await });
+
+    window
+        .spawn(cx, async move |cx| {
+            let result = task
+                .await
+                .context("starting stopped")
+                .and_then(|opened| opened);
+
+            let _ = cx.update(|window, cx| match result {
+                Ok(session) => {
+                    cx.global_mut::<Remote>().report(Ok(()));
+
+                    let (owner, pane) = agent_remote::open(connection, session, kind, window, cx);
+
+                    app.update(cx, |app, cx| {
+                        app.open_remote_agent_tab(owner, pane, title, window, cx)
+                    });
+                }
+                Err(error) => cx.global_mut::<Remote>().report(Err(error)),
+            });
+        })
+        .detach();
+}
+
+/// The name a profile goes by for paired devices: its own, or its agent's
+/// for a profile left unnamed.
+fn offered_profile_name(profile: &AgentProfile) -> String {
+    if profile.name.trim().is_empty() {
+        profile.kind.display().to_owned()
+    } else {
+        profile.name.clone()
+    }
+}
+
+/// Answer a paired device's request of the application. The most recently
+/// active window serves it, since that is where the person at the host
+/// works.
+fn answer_host(request: HostRequest, cx: &mut App) {
+    match request {
+        HostRequest::Info { reply } => {
+            let _ = reply.send(host_offers(cx));
+        }
+        HostRequest::OpenAgent { params, reply } => {
+            let _ = reply.send(open_agent_for_device(params, cx));
+        }
+    }
+}
+
+fn host_offers(cx: &mut App) -> Result<Value, String> {
+    let agents = cx
+        .global::<AppSettings>()
+        .config()
+        .agent_profiles
+        .list
+        .iter()
+        .map(|profile| {
+            let harness: &str = profile.kind.into();
+
+            AgentProfileInfo {
+                name: offered_profile_name(profile),
+                harness: harness.to_owned(),
+            }
+        })
+        .collect();
+
+    let workspaces = last_active_window(cx)
+        .and_then(|(_, view)| view.upgrade())
+        .map(|view| view.read(cx).device_workspaces())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, path)| WorkspaceInfo { name, path })
+        .collect();
+
+    serde_json::to_value(HostInfo { agents, workspaces }).map_err(|error| error.to_string())
+}
+
+fn open_agent_for_device(params: Value, cx: &mut App) -> Result<Value, String> {
+    let AgentOpen { profile, workspace } =
+        serde_json::from_value(params).map_err(|error| error.to_string())?;
+
+    let profile = cx
+        .global::<AppSettings>()
+        .config()
+        .agent_profiles
+        .list
+        .iter()
+        .find(|candidate| offered_profile_name(candidate) == profile)
+        .cloned()
+        .ok_or_else(|| format!("no agent profile named {profile}"))?;
+
+    let (handle, view) = last_active_window(cx).ok_or("no window is open")?;
+
+    let session = handle
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.open_agent_tab_for_device(&profile, &workspace, window, cx)
+            })
+        })
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+        .ok_or_else(|| format!("{workspace} is not a workspace on this computer"))?;
+
+    serde_json::to_value(SessionRef { session }).map_err(|error| error.to_string())
 }
 
 /// Open a new terminal on a paired host in a tab of `window`. The tab owns

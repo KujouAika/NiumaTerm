@@ -10,9 +10,9 @@ use nmt_remote_core::identity::DeviceId;
 use nmt_remote_core::rpc::{Origin, SessionInfo, SessionKind};
 use rust_i18n::t;
 
-use crate::ui::AppSettings;
 use crate::ui::remote::{self, Remote};
 use crate::ui::settings::fields::settings_switch;
+use crate::ui::{AppSettings, modern_dropdown};
 
 pub(super) fn remote_page(cx: &App) -> SettingPage {
     let page = SettingPage::new(t!("settings-remote-title")).default_open(true);
@@ -381,6 +381,46 @@ fn host_item(host: PairedHost) -> SettingItem {
         let forget_id = host.id.clone();
         let list_id = host.id.clone();
 
+        // Listing the host's sessions also fetches what it lets this
+        // computer start; the menu appears once there is something to pick.
+        let offers = cx
+            .global::<Remote>()
+            .host_offers(&host.id)
+            .filter(|offers| !offers.agents.is_empty() && !offers.workspaces.is_empty())
+            .cloned();
+
+        let new_agent = offers.map(|offers| {
+            let host_id = host.id.clone();
+
+            modern_dropdown(
+                Button::new(SharedString::from(format!(
+                    "remote-new-agent-{}",
+                    host.id.as_str()
+                )))
+                .outline()
+                .label(t!("settings-remote-new-agent"))
+                .disabled(cx.global::<Remote>().busy()),
+                move |mut menu, _, _| {
+                    for workspace in &offers.workspaces {
+                        for agent in &offers.agents {
+                            let host_id = host_id.clone();
+                            let chosen = agent.clone();
+                            let path = workspace.path.clone();
+
+                            menu = menu.item(
+                                format!("{} · {}", agent.name, workspace.name),
+                                move |window, cx| {
+                                    remote::open_agent(&host_id, &chosen, path.clone(), window, cx)
+                                },
+                            );
+                        }
+                    }
+
+                    menu
+                },
+            )
+        });
+
         let status = match cx.global::<Remote>().host_status(&host.id) {
             Status::Idle => t!("settings-remote-status-idle"),
             Status::Connecting => t!("settings-remote-status-connecting"),
@@ -425,6 +465,7 @@ fn host_item(host: PairedHost) -> SettingItem {
                         .label(t!("settings-remote-forget"))
                         .on_click(move |_, _, cx: &mut App| remote::forget_host(&forget_id, cx)),
                     )
+                    .children(new_agent)
                     .child(
                         Button::new(SharedString::from(format!(
                             "remote-open-{}",

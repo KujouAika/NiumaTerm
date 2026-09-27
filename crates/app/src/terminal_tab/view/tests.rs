@@ -33,6 +33,10 @@ fn pane(cx: &mut VisualTestContext) -> Entity<TerminalPane> {
         image_releases_attached: false,
         block_list: BlockListState::new(ListAlignment::Top),
         host_share: None,
+        host_control: None,
+        close_tab: None,
+        sheet_focus: cx.focus_handle(),
+        sheet_shown: false,
     })
 }
 

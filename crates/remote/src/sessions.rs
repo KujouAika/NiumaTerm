@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use anyhow::{Result, anyhow};
 use nmt_config::{CursorShape, active_colors};
 use nmt_platform::{PtyOptions, WinsizeBuilder, create_pty_with_env, default_shell};
-use nmt_remote_core::rpc::{Origin, SessionInfo, SessionKind};
+use nmt_remote_core::rpc::{EndReason, Origin, SessionInfo, SessionKind};
 use nmt_terminal::event::{EventListener, Msg, MsgSender, TerminalEvent};
 use nmt_terminal::session::TerminalSessionConfig;
 use nmt_terminal::termio::{SessionOptions, SessionWorker, start_session};
@@ -53,6 +53,19 @@ pub enum AgentRequest {
     },
 }
 
+/// What the host service needs from the application rather than from one
+/// session: what a device may start, and starting it. Both are answered on
+/// the UI thread, and their values are opaque JSON here.
+pub enum HostRequest {
+    Info {
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    OpenAgent {
+        params: Value,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+}
+
 struct AgentEntry {
     info: SessionInfo,
     control: AgentControl,
@@ -77,6 +90,9 @@ struct Inner {
     /// Paired devices viewing each session, one entry per open view, so a
     /// device with two views of one session stays listed until both close.
     viewers: BTreeMap<String, Vec<Viewer>>,
+
+    /// Where host requests go, once the application answers them.
+    host: Option<UnboundedSender<HostRequest>>,
 }
 
 /// A paired device viewing a session.
@@ -84,6 +100,15 @@ struct Inner {
 pub(crate) struct Viewer {
     pub key: [u8; 32],
     pub name: String,
+
+    /// Reaches the channel carrying the device's views, to end them.
+    pub kicks: UnboundedSender<Kick>,
+}
+
+/// The host ending a device's views of `session`.
+pub(crate) struct Kick {
+    pub session: String,
+    pub reason: EndReason,
 }
 
 struct Entry {
@@ -160,6 +185,15 @@ impl SessionRegistry {
         self.notify();
     }
 
+    /// Answer host requests on `requests` from now on.
+    pub fn serve_host_requests(&self, requests: UnboundedSender<HostRequest>) {
+        self.inner.lock().host = Some(requests);
+    }
+
+    pub(crate) fn host_requests(&self) -> Option<UnboundedSender<HostRequest>> {
+        self.inner.lock().host.clone()
+    }
+
     pub fn agent(&self, session: &str) -> Option<AgentControl> {
         self.inner
             .lock()
@@ -168,7 +202,13 @@ impl SessionRegistry {
             .map(|entry| entry.control.clone())
     }
 
+    /// Withdraw a session the host closed. Devices viewing it hear that the
+    /// host closed it.
     pub fn unregister(&self, session: &str) {
+        self.remove(session, true);
+    }
+
+    fn remove(&self, session: &str, kick_viewers: bool) {
         let (terminal, agent, viewers) = {
             let mut inner = self.inner.lock();
 
@@ -181,6 +221,10 @@ impl SessionRegistry {
 
         let watched = viewers.is_some();
 
+        if kick_viewers {
+            kick(session, viewers.unwrap_or_default(), EndReason::Closed);
+        }
+
         drop((terminal, agent));
 
         self.notify();
@@ -188,6 +232,20 @@ impl SessionRegistry {
         if watched {
             self.viewers_changed.send_modify(|version| *version += 1);
         }
+    }
+
+    /// The person at the host takes `session` back: every device viewing it
+    /// loses its view and hears why. The session keeps running.
+    pub fn take_back(&self, session: &str) {
+        let viewers = self.inner.lock().viewers.remove(session);
+
+        let Some(viewers) = viewers else {
+            return;
+        };
+
+        kick(session, viewers, EndReason::TakenBack);
+
+        self.viewers_changed.send_modify(|version| *version += 1);
     }
 
     pub(crate) fn add_viewer(&self, session: &str, viewer: Viewer) {
@@ -390,10 +448,13 @@ impl SessionRegistry {
         }
 
         let removed = inner.sessions.remove(session);
+        let viewers = inner.viewers.remove(session).unwrap_or_default();
 
         drop(inner);
 
         info!(%session, "closing a remote terminal");
+
+        kick(session, viewers, EndReason::Closed);
 
         drop(removed);
 
@@ -413,6 +474,14 @@ impl SessionRegistry {
                 .filter(|(_, entry)| entry.info.origin == Origin::Remote)
                 .map(|(id, _)| id.clone())
                 .collect();
+
+            for id in &ids {
+                kick(
+                    id,
+                    inner.viewers.remove(id).unwrap_or_default(),
+                    EndReason::Closed,
+                );
+            }
 
             ids.iter()
                 .filter_map(|id| inner.sessions.remove(id))
@@ -567,12 +636,32 @@ impl SessionRegistry {
     }
 }
 
+/// Tell each channel among `viewers` once that its views of `session` end.
+fn kick(session: &str, viewers: Vec<Viewer>, reason: EndReason) {
+    let mut told: Vec<UnboundedSender<Kick>> = Vec::new();
+
+    for viewer in viewers {
+        if told.iter().any(|sender| sender.same_channel(&viewer.kicks)) {
+            continue;
+        }
+
+        let _ = viewer.kicks.send(Kick {
+            session: session.to_owned(),
+            reason,
+        });
+
+        told.push(viewer.kicks);
+    }
+}
+
 impl EventListener for HeadlessEvents {
     fn send_event(&self, event: TerminalEvent) {
+        // The shell ending is not the host closing the session: devices
+        // see the exit in their own views, as they would for a local shell.
         if let TerminalEvent::CloseTerminal(_) = event
             && let Some(registry) = self.registry.upgrade()
         {
-            registry.unregister(&self.session);
+            registry.remove(&self.session, false);
         }
     }
 }

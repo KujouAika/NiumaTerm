@@ -18,8 +18,9 @@ use nmt_platform::runtime;
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::rpc::{
-    self, AgentAttached, AgentCall, AgentOps, Control, ErrorCode, RpcError, SessionInfo,
-    SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
+    self, AgentAttached, AgentCall, AgentOpen, AgentOps, Control, EndReason, ErrorCode, HostInfo,
+    RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, StreamRef, TerminalOpen,
+    TerminalResize,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
@@ -131,6 +132,13 @@ pub struct RemoteHost {
     /// Bumped when the host reports its session list changed.
     sessions: watch::Sender<u64>,
 
+    /// Views the host ended, and why. They stay open, showing that, and
+    /// are not reattached after a reconnect until the user asks.
+    ended: Mutex<HashMap<String, EndReason>>,
+
+    /// Bumped when a view is ended or taken up again.
+    ended_changes: watch::Sender<u64>,
+
     /// Wakes the supervisor: a view or request needs a link now.
     wake: Notify,
 
@@ -197,6 +205,8 @@ impl RemoteHost {
             agents: Mutex::new(HashMap::new()),
             status: watch::channel(Status::Idle).0,
             sessions: watch::channel(0).0,
+            ended: Mutex::new(HashMap::new()),
+            ended_changes: watch::channel(0).0,
             wake: Notify::new(),
             next_id: AtomicU64::new(1),
             supervisor: Mutex::new(None),
@@ -224,6 +234,50 @@ impl RemoteHost {
     /// Bumped whenever the host's session list changes.
     pub fn session_changes(&self) -> watch::Receiver<u64> {
         self.sessions.subscribe()
+    }
+
+    /// Why the host ended this device's view of `session`, while it stays
+    /// ended.
+    pub fn ended(&self, session: &str) -> Option<EndReason> {
+        self.ended.lock().get(session).copied()
+    }
+
+    /// Bumped when a view is ended or taken up again.
+    pub fn ended_changes(&self) -> watch::Receiver<u64> {
+        self.ended_changes.subscribe()
+    }
+
+    /// Take up again a view the host ended, which takes the session back
+    /// from the person at the host.
+    pub fn reconnect(self: &Arc<Self>, session: &str) {
+        if self.ended.lock().remove(session).is_none() {
+            return;
+        }
+
+        self.ended_changes.send_modify(|version| *version += 1);
+
+        let link = self.link.lock().clone();
+
+        let Some(link) = link else {
+            self.wake.notify_one();
+
+            return;
+        };
+
+        if self.views.lock().contains_key(session) {
+            self.attach(&link, session.to_owned());
+        }
+
+        if self.agents.lock().contains_key(session) {
+            self.attach_agent(&link, session.to_owned());
+        }
+    }
+
+    /// Record that the host ended `session`'s view here.
+    fn end_view(&self, session: &str, reason: EndReason) {
+        self.ended.lock().insert(session.to_owned(), reason);
+
+        self.ended_changes.send_modify(|version| *version += 1);
     }
 
     /// Stop the connection for good, as when the host is forgotten.
@@ -278,6 +332,8 @@ impl RemoteHost {
     }
 
     fn detach_agent(&self, session: &str) {
+        self.ended.lock().remove(session);
+
         if self.agents.lock().remove(session).is_some() {
             self.notify(
                 rpc::AGENT_DETACH,
@@ -312,13 +368,29 @@ impl RemoteHost {
                 return;
             }
 
+            // A session that ended while this view was away is over; the
+            // view stays open to say so.
             if let Ok(Err(error)) = response.await
                 && error.code == ErrorCode::NotFound
-                && let Some(agent) = host.agents.lock().remove(&session)
+                && host.agents.lock().contains_key(&session)
             {
-                let _ = agent.send(AgentUpdate::Ended);
+                host.end_view(&session, EndReason::Closed);
             }
         });
+    }
+
+    /// What this device may start on the host.
+    pub async fn host_info(&self) -> Result<HostInfo> {
+        self.call(rpc::HOST_INFO, &Value::Null).await
+    }
+
+    /// Start an agent tab on the host and return its session id.
+    pub async fn open_agent(&self, profile: String, workspace: String) -> Result<String> {
+        let SessionRef { session } = self
+            .call(rpc::AGENT_OPEN, &AgentOpen { profile, workspace })
+            .await?;
+
+        Ok(session)
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
@@ -411,6 +483,8 @@ impl RemoteHost {
 
     /// The view closed; the session keeps running on the host.
     pub(crate) fn detach(&self, session: &str) {
+        self.ended.lock().remove(session);
+
         let Some(view) = self.views.lock().remove(session) else {
             return;
         };
@@ -519,12 +593,13 @@ impl RemoteHost {
                 return;
             }
 
-            // A session that ended while this view was away is over.
+            // A session that ended while this view was away is over; the
+            // view stays open to say so.
             if let Ok(Err(error)) = response.await
                 && error.code == ErrorCode::NotFound
-                && let Some(view) = host.views.lock().remove(&session)
+                && host.views.lock().contains_key(&session)
             {
-                let _ = view.events.send(StreamEvent::Exit);
+                host.end_view(&session, EndReason::Closed);
             }
         });
     }
@@ -578,13 +653,28 @@ impl RemoteHost {
 
                     info!(host = %self.id, "connected to the remote host");
 
-                    let sessions: Vec<_> = self.views.lock().keys().cloned().collect();
+                    // Views the host ended wait for the user to take them up.
+                    let ended = self.ended.lock().clone();
+
+                    let sessions: Vec<_> = self
+                        .views
+                        .lock()
+                        .keys()
+                        .filter(|session| !ended.contains_key(*session))
+                        .cloned()
+                        .collect();
 
                     for session in sessions {
                         self.attach(&link, session);
                     }
 
-                    let agents: Vec<_> = self.agents.lock().keys().cloned().collect();
+                    let agents: Vec<_> = self
+                        .agents
+                        .lock()
+                        .keys()
+                        .filter(|session| !ended.contains_key(*session))
+                        .cloned()
+                        .collect();
 
                     for session in agents {
                         self.attach_agent(&link, session);
@@ -715,6 +805,22 @@ impl RemoteHost {
                 }
                 Ok(Control::Notification { method, .. }) if method == rpc::SESSIONS_CHANGED => {
                     self.sessions.send_modify(|version| *version += 1);
+                }
+                Ok(Control::Notification { method, params }) if method == rpc::SESSION_ENDED => {
+                    let Ok(SessionEnded { session, reason }) = serde_json::from_value(params)
+                    else {
+                        return;
+                    };
+
+                    // The host already dropped the stream; output for it is
+                    // not coming, and input has nowhere to go.
+                    if let Some(view) = self.views.lock().get_mut(&session)
+                        && let Some(stream) = view.stream.take()
+                    {
+                        link.streams.lock().remove(&stream);
+                    }
+
+                    self.end_view(&session, reason);
                 }
                 Ok(Control::Notification { method, params }) if method == rpc::AGENT_OPS => {
                     if let Ok(AgentOps { session, ops }) = serde_json::from_value(params)

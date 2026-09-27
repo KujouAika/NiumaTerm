@@ -28,11 +28,13 @@ mod workspace_dirs;
 mod tests;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::{collections, io, iter, path, time};
 
 use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::{TeamPane, TeamRuntime};
 use app::agent_tab::{AgentPane, AgentPaneEvent};
+use app::remote_control::CloseTab as SheetClose;
 use app::terminal_tab::session::HostEvent;
 use app::terminal_tab::view::{AgentInterrupted, TerminalPane};
 use dirs::home_dir;
@@ -336,6 +338,12 @@ pub(super) fn explicit_cwd(cwd: &str) -> Option<String> {
 /// The directory list an Agent Tab of `roots` starts with. Placeholder entries
 /// are dropped for the same reason [`explicit_cwd`] drops them: they name no
 /// directory a harness could be pointed at.
+/// What a pane's control sheet closes its tab with: the close shortcut's
+/// action, so the sheet closes the tab the same way the keyboard would.
+fn close_tab() -> SheetClose {
+    Arc::new(|window, cx| window.dispatch_action(Box::new(CloseTab), cx))
+}
+
 pub(super) fn agent_workspace(roots: Option<&WorkspaceRoots>) -> AgentWorkspace {
     let Some(roots) = roots else {
         return AgentWorkspace::default();
@@ -1090,7 +1098,15 @@ impl AppWindow {
 
         let surface = tab.surface();
         let is_settings = surface.is_settings();
-        let is_agent = surface.is_agent();
+
+        // Closing a tab that follows a paired host's agent ends only this
+        // view; the conversation runs on there, so there is nothing to warn
+        // about.
+        let is_agent = surface.is_agent()
+            && !surface
+                .agent()
+                .is_some_and(|pane| pane.read(cx).remote_address().is_some());
+
         let count = self.close_process_count(surface, cx);
 
         let last_tab = self
@@ -1958,6 +1974,68 @@ impl AppWindow {
         );
     }
 
+    /// The workspaces a paired device may start an agent in: this window's
+    /// normal workspaces, by name and primary directory.
+    pub(crate) fn device_workspaces(&self) -> Vec<(String, String)> {
+        self.workspaces
+            .summaries()
+            .into_iter()
+            .filter(|workspace| {
+                workspace.kind == WorkspaceKind::Normal && !workspace.cwd.is_empty()
+            })
+            .map(|workspace| (workspace.name, workspace.cwd))
+            .collect()
+    }
+
+    /// Start an agent tab for a paired device in the workspace whose primary
+    /// directory is `path`, without switching to it: the person at the host
+    /// keeps what they are looking at. Returns the id devices know the tab
+    /// by, or `None` when no workspace here has that directory.
+    pub(crate) fn open_agent_tab_for_device(
+        &mut self,
+        profile: &AgentProfile,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let workspace_id = self
+            .workspaces
+            .summaries()
+            .into_iter()
+            .find(|workspace| workspace.kind == WorkspaceKind::Normal && workspace.cwd == path)?
+            .id;
+
+        let workspace = agent_workspace(self.workspaces.roots_of(workspace_id));
+        let id = Self::alloc_id(&mut self.next_id);
+
+        let title = if profile.name.trim().is_empty() {
+            profile.kind.display().to_string()
+        } else {
+            profile.name.clone()
+        };
+
+        let owner = AgentSession::create(profile.clone(), workspace, None, cx);
+        let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
+
+        Self::watch_agent_tab(&pane, None, cx);
+
+        self.register_agent_tab(&pane, cx);
+
+        owner.start(None, cx);
+
+        let shared = ui::remote::shared_agent_id(&pane, cx);
+
+        self.workspaces.tabs_of_mut(workspace_id)?.append_tab(
+            TabSurface::Agent(AgentTab { owner, pane }),
+            TabId(id),
+            title,
+        );
+
+        cx.notify();
+
+        shared
+    }
+
     /// Open an agent tab: an agent chat conversation in place of a terminal.
     /// The conversation's agent process starts in the workspace cwd.
     pub(crate) fn open_agent_tab(
@@ -2647,6 +2725,8 @@ impl AppWindow {
         cx.observe(pane, |this, pane, cx| this.on_pane_notified(pane, cx))
             .detach();
 
+        pane.update(cx, |pane, _| pane.close_tab_with(close_tab()));
+
         ui::remote::share_tab(pane, cx);
 
         cx.subscribe(pane, Self::on_agent_interrupted).detach();
@@ -3101,6 +3181,8 @@ impl AppWindow {
         };
 
         cx.subscribe(&session, Self::on_agent_pane_event).detach();
+
+        pane.update(cx, |pane, _| pane.close_tab_with(close_tab()));
 
         ui::remote::share_agent_tab(pane, shared, cx);
     }

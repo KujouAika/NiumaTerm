@@ -24,7 +24,7 @@ use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOps, Attached, Control, ErrorCode, Origin, RpcError,
-    SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
+    SessionEnded, SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
 };
 use nmt_remote_core::{Error as CoreError, PROTO_MINOR};
 use parking_lot::Mutex;
@@ -45,7 +45,7 @@ use tracing::{debug, warn};
 use crate::discovery::Advertiser;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
 use crate::relay::{RelayCommand, RelaySocket, run_host_link};
-use crate::sessions::{AgentRequest, SessionRegistry, TerminalControl, Viewer};
+use crate::sessions::{AgentRequest, HostRequest, Kick, SessionRegistry, TerminalControl, Viewer};
 use crate::store::{self, PairedDevice, now_ms};
 use crate::stream::StreamFlow;
 
@@ -349,7 +349,11 @@ impl Connection {
                 Ok(Control::Request { id, method, params })
                     if matches!(
                         method.as_str(),
-                        rpc::AGENT_ATTACH | rpc::AGENT_DETACH | rpc::AGENT_CALL
+                        rpc::AGENT_ATTACH
+                            | rpc::AGENT_DETACH
+                            | rpc::AGENT_CALL
+                            | rpc::HOST_INFO
+                            | rpc::AGENT_OPEN
                     ) =>
                 {
                     self.agent_request(id, &method, params);
@@ -466,8 +470,46 @@ impl Connection {
 }
 
 impl Connection {
-    /// Agent sessions answer on the UI thread, so their replies go out from
-    /// tasks once they arrive, not in order with other requests.
+    /// The host ended this device's views of a session: detach them here
+    /// and tell the device why, so it shows that rather than an exit.
+    fn kicked(&mut self, kick: Kick) {
+        let streams: Vec<u32> = self
+            .streams
+            .iter()
+            .filter(|(_, (session, _))| *session == kick.session)
+            .map(|(stream, _)| *stream)
+            .collect();
+
+        for stream in streams {
+            if let Some((_, flow)) = self.streams.remove(&stream) {
+                flow.close();
+            }
+        }
+
+        if let Some(task) = self.agents.remove(&kick.session) {
+            task.abort();
+        }
+
+        let notice = Control::Notification {
+            method: rpc::SESSION_ENDED.into(),
+            params: serde_json::json!(SessionEnded {
+                session: kick.session,
+                reason: kick.reason,
+            }),
+        };
+
+        self.queue.send(Outbound::new(
+            CONTROL_STREAM,
+            kind::CONTROL_JSON,
+            notice.encode(),
+        ));
+    }
+}
+
+impl Connection {
+    /// Agent sessions and the application answer on the UI thread, so
+    /// their replies go out from tasks once they arrive, not in order with
+    /// other requests.
     fn agent_request(&mut self, id: u64, method: &str, params: Value) {
         let queue = self.queue.clone();
         let registry = &self.shared.config.registry;
@@ -479,6 +521,42 @@ impl Connection {
         };
 
         match method {
+            rpc::HOST_INFO | rpc::AGENT_OPEN => {
+                let Some(host) = registry.host_requests() else {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(ErrorCode::Unsupported, method)),
+                    );
+                };
+
+                let (reply, answer) = oneshot::channel();
+
+                let request = match method {
+                    rpc::HOST_INFO => HostRequest::Info { reply },
+                    _ => HostRequest::OpenAgent { params, reply },
+                };
+
+                if host.send(request).is_err() {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(ErrorCode::Unsupported, method)),
+                    );
+                }
+
+                tokio::spawn(async move {
+                    // A refused open names a profile or workspace the host
+                    // does not offer, which is the request's fault.
+                    let outcome = match answer.await {
+                        Ok(Ok(value)) => Ok(value),
+                        Ok(Err(message)) => Err(RpcError::new(ErrorCode::InvalidParams, message)),
+                        Err(_) => Err(RpcError::new(ErrorCode::Internal, "the host stopped")),
+                    };
+
+                    respond(&queue, id, outcome);
+                });
+            }
             rpc::AGENT_ATTACH => {
                 let attach = parse::<SessionRef>(params).and_then(|SessionRef { session }| {
                     control(&session).map(|control| (session, control))
@@ -569,6 +647,20 @@ impl Connection {
                     Ok(call) => call,
                     Err(error) => return respond(&queue, id, Err(error)),
                 };
+
+                // Only a device viewing the session drives it. One the host
+                // took the session back from lost its view, and with it the
+                // right to send commands until it attaches again.
+                if !self.agents.contains_key(&call.session) {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(
+                            ErrorCode::Denied,
+                            "this device does not have the session",
+                        )),
+                    );
+                }
 
                 let (answer, outcome) = oneshot::channel();
 
@@ -942,12 +1034,15 @@ where
 
     (shared.config.on_change)();
 
+    let (kicks, mut kicks_rx) = mpsc::unbounded_channel();
+
     let mut connection = Connection {
         shared: Arc::clone(&shared),
         queue,
         viewer: Viewer {
             key: client_key,
             name,
+            kicks,
         },
         streams: HashMap::new(),
         next_stream: 1,
@@ -955,8 +1050,14 @@ where
         agents: HashMap::new(),
     };
 
-    while let Some(message) = in_rx.recv().await {
-        connection.handle(message);
+    loop {
+        tokio::select! {
+            message = in_rx.recv() => match message {
+                Some(message) => connection.handle(message),
+                None => break,
+            },
+            Some(kick) = kicks_rx.recv() => connection.kicked(kick),
+        }
     }
 
     shared

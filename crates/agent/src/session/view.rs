@@ -20,9 +20,11 @@ use uuid::Uuid;
 
 use crate::chat::{
     AgentPreset, ApprovalPreset, ContextComposition, ContextWindowUsage, Item, ModelInfo, Question,
-    QuestionMode, QueuedPrompt, SessionStats, SkillCatalog, SlashCommandInfo, ThreadSettings,
+    QuestionMode, QueuedPrompt, SessionStats, SessionSummary, SkillCatalog, SlashCommandInfo,
+    ThreadSettings,
 };
 use crate::progress::{GoalStatus, TaskList};
+use crate::session::branch::BranchPicker;
 use crate::session::commands::PendingSlashCommand;
 use crate::session::controller::SessionController;
 use crate::session::input::{QuestionError, QuestionKey, QuestionStatus};
@@ -215,6 +217,12 @@ pub struct ViewSlots {
     pub tasks: TasksView,
 
     pub naming: NamingView,
+
+    /// The branch picker, which every view shows while one is open.
+    pub branch: BranchPicker,
+
+    /// Conversations the host listed for a view in another process.
+    pub history: Vec<SessionSummary>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -240,6 +248,8 @@ pub enum ViewSlot {
     Goal(Option<GoalStatus>),
     Tasks(TasksView),
     Naming(NamingView),
+    Branch(BranchPicker),
+    History(Vec<SessionSummary>),
 }
 
 impl AgentView {
@@ -278,6 +288,8 @@ impl ViewSlots {
             ViewSlot::Goal(self.goal),
             ViewSlot::Tasks(self.tasks),
             ViewSlot::Naming(self.naming),
+            ViewSlot::Branch(self.branch),
+            ViewSlot::History(self.history),
         ]
     }
 
@@ -323,6 +335,14 @@ impl ViewSlots {
 
         if self.naming != previous.naming {
             changed.push(ViewSlot::Naming(self.naming.clone()));
+        }
+
+        if self.branch != previous.branch {
+            changed.push(ViewSlot::Branch(self.branch.clone()));
+        }
+
+        if self.history != previous.history {
+            changed.push(ViewSlot::History(self.history.clone()));
         }
 
         changed

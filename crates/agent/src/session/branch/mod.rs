@@ -5,13 +5,15 @@ mod tests;
 
 use std::mem::replace;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{ForkCheckpoint, ReplayTurn, SlashCommandOutcome};
 use crate::claude_code::sessions;
 use crate::claude_code::sessions::{ClaudeCheckpoint, ClaudeFork, FileRestoreAvailability};
 use crate::session::lifecycle::{SessionRuntime, Status};
 use crate::session::{AgentKind, Backend, OperationError, RecoveryIdentity, UnsupportedOperation};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptTarget {
     pub prompt: String,
 
@@ -31,7 +33,7 @@ pub fn checkpoint_at_depth<'a, T>(
         .filter(|checkpoint| prompt_of(checkpoint) == target.prompt)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RewindAction {
     Files,
     Conversation,
@@ -39,7 +41,7 @@ pub enum RewindAction {
     Cancel,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileProgress {
     NotConfirmed,
     Restored,
@@ -112,6 +114,54 @@ pub enum BranchView<'a> {
     Working,
 }
 
+/// The picker as a view in another process shows it: [`BranchView`] owning
+/// its content.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BranchPicker {
+    #[default]
+    Idle,
+    LoadingRewind,
+    RewindCheckpoints(Vec<ClaudeCheckpoint>),
+    RewindAction(ClaudeCheckpoint, FileProgress),
+    LoadingFork,
+    ForkCheckpoints(Vec<ForkCheckpoint>),
+    Working,
+}
+
+impl From<BranchView<'_>> for BranchPicker {
+    fn from(view: BranchView<'_>) -> Self {
+        match view {
+            BranchView::Idle => Self::Idle,
+            BranchView::LoadingRewind => Self::LoadingRewind,
+            BranchView::RewindCheckpoints(checkpoints) => {
+                Self::RewindCheckpoints(checkpoints.to_vec())
+            }
+            BranchView::RewindAction(checkpoint, files) => {
+                Self::RewindAction(checkpoint.clone(), files)
+            }
+            BranchView::LoadingFork => Self::LoadingFork,
+            BranchView::ForkCheckpoints(checkpoints) => Self::ForkCheckpoints(checkpoints.to_vec()),
+            BranchView::Working => Self::Working,
+        }
+    }
+}
+
+/// The command a view in another process takes one [`BranchStep`] with.
+pub const BRANCH_METHOD: &str = "branch";
+
+/// One step of a branch operation, as a view in another process asks the
+/// host to take it. The host takes it the way its own pane does, and every
+/// view shows the one picker that follows.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum BranchStep {
+    BeginRewind(Option<PromptTarget>),
+    SelectCheckpoint(ClaudeCheckpoint),
+    Rewind(RewindAction),
+    BeginFork(Option<PromptTarget>),
+    Fork(ForkCheckpoint),
+    Cancel,
+}
+
 pub(crate) enum BranchReplay {
     Unrelated,
     Ignore,
@@ -174,6 +224,9 @@ enum State {
         previous: Status,
         prompt: String,
     },
+    /// A replica's copy of the host's picker. The host runs the operation;
+    /// a replica only shows it and holds its composer while it runs.
+    Mirror(BranchPicker),
 }
 
 #[derive(Default)]
@@ -219,6 +272,12 @@ impl ConversationBranch {
     /// Retire visible state without admitting a still-outstanding protocol reply.
     pub fn clear(&mut self) {
         self.state = None;
+    }
+
+    /// Show the host's picker. Only a replica, which runs no operation of
+    /// its own, takes these.
+    pub(crate) fn mirror(&mut self, picker: BranchPicker) {
+        self.state = (picker != BranchPicker::Idle).then_some(State::Mirror(picker));
     }
 
     fn next_operation(&mut self, runtime: &SessionRuntime) -> Result<Operation, BranchError> {
@@ -791,6 +850,21 @@ impl<'a> From<&'a ConversationBranch> for BranchView<'a> {
             Some(State::LoadingFork { .. }) => BranchView::LoadingFork,
             Some(State::ForkPicker { checkpoints, .. }) => BranchView::ForkCheckpoints(checkpoints),
             Some(State::Branching { .. }) => BranchView::Working,
+            Some(State::Mirror(picker)) => match picker {
+                BranchPicker::Idle => BranchView::Idle,
+                BranchPicker::LoadingRewind => BranchView::LoadingRewind,
+                BranchPicker::RewindCheckpoints(checkpoints) => {
+                    BranchView::RewindCheckpoints(checkpoints)
+                }
+                BranchPicker::RewindAction(checkpoint, files) => {
+                    BranchView::RewindAction(checkpoint, *files)
+                }
+                BranchPicker::LoadingFork => BranchView::LoadingFork,
+                BranchPicker::ForkCheckpoints(checkpoints) => {
+                    BranchView::ForkCheckpoints(checkpoints)
+                }
+                BranchPicker::Working => BranchView::Working,
+            },
             Some(State::Local(local)) => match &local.phase {
                 LocalPhase::Loading(_) => BranchView::LoadingRewind,
                 LocalPhase::Checkpoints(checkpoints) => BranchView::RewindCheckpoints(checkpoints),

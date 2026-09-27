@@ -142,6 +142,11 @@ impl<S> TabManager<S> {
         id
     }
 
+    /// Append a tab without switching to it.
+    pub fn append_tab(&mut self, surface: S, id: TabId, default_title: String) {
+        self.tabs.push(Tab::new(surface, id, default_title));
+    }
+
     /// Close the tab with `id`, returning its surface so the caller can drop it
     /// (releasing the PTY/IO thread). Refuses the last tab (`None`). After closing
     /// the active tab the active falls to the right neighbor, or the left when

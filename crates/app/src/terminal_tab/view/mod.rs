@@ -13,11 +13,11 @@ use std::time::Duration;
 use futures::StreamExt;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Entity, EntityInputHandler, EventEmitter,
-    ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size, UTF16Selection, Window,
-    actions, div, list, point, px, rgb, size,
+    AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, EntityInputHandler,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, KeyUpEvent,
+    Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size, UTF16Selection,
+    Window, actions, div, list, point, px, rgb, size,
 };
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
@@ -27,6 +27,7 @@ use nmt_config::{CursorShape, active_colors};
 use nmt_remote::NetworkPty;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::local_view::LocalView;
+use nmt_remote_core::rpc::EndReason;
 use nmt_terminal::clipboard::{Clipboard, ClipboardType};
 use nmt_terminal::event::MsgSender;
 use nmt_terminal::input::{KeyPhase, WheelDelta};
@@ -35,6 +36,7 @@ use nmt_terminal::session::{HostEvent, SessionChange, SurfaceMouseButton, Termin
 use rust_i18n::t;
 use tracing::warn;
 
+use crate::remote_control::{CloseTab, ControlSheet, HostControl};
 use crate::terminal_tab::block_list::live::LiveItemState;
 use crate::terminal_tab::frame::TerminalFrame;
 use crate::terminal_tab::frame_source::TerminalFrameSource;
@@ -126,6 +128,20 @@ pub struct TerminalPane {
     image_releases_attached: bool,
     pub(super) block_list: BlockListState,
     host_share: Option<HostShare>,
+
+    /// Who controls this host tab from another computer, and taking it
+    /// back. While anyone does, the pane stops following the terminal's
+    /// output and a sheet covers it.
+    host_control: Option<HostControl>,
+
+    close_tab: Option<CloseTab>,
+
+    /// Holds the keyboard while a control sheet covers the pane.
+    sheet_focus: FocusHandle,
+
+    /// Whether the last frame showed a control sheet. Input is refused
+    /// while it did: the session belongs to the other side.
+    sheet_shown: bool,
 }
 
 pub struct AgentInterrupted;
@@ -205,6 +221,7 @@ impl TerminalPane {
         let title = host.name();
 
         let mut status = host.status();
+        let mut ended = host.ended_changes();
 
         let source = TerminalFrameSource::remote(
             wake.clone(),
@@ -233,6 +250,17 @@ impl TerminalPane {
             // from the network runtime rather than a frame.
             cx.spawn(async move |this, cx| {
                 while status.changed().await.is_ok() {
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+
+            // The host ending or taking back this view changes what covers
+            // the pane.
+            cx.spawn(async move |this, cx| {
+                while ended.changed().await.is_ok() {
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
@@ -317,6 +345,10 @@ impl TerminalPane {
             image_releases_attached: false,
             block_list: BlockListState::new(block_list_alignment(fixed_bottom_requested)),
             host_share: None,
+            host_control: None,
+            close_tab: None,
+            sheet_focus: cx.focus_handle(),
+            sheet_shown: false,
         }
     }
 
@@ -349,6 +381,10 @@ impl TerminalPane {
 
     fn on_wake(&mut self, change: SessionChange, cx: &mut Context<Self>) {
         match change {
+            // While another computer controls the session, the engine keeps
+            // its state and the pane stops drawing it; the frame catches up
+            // when control comes back.
+            SessionChange::Content if self.controlled() => {}
             SessionChange::Content => self.invalidate(cx),
             SessionChange::HostEvents => {
                 self.model.invalidate();
@@ -434,12 +470,135 @@ impl TerminalPane {
     }
 
     /// The tab is closing: end its remote session if this client owns it.
+    /// A session the host ended or took back is no longer this client's.
     pub fn end_remote_session(&self) {
         if let Some(remote) = &self.identity.remote
             && remote.ends_with_tab
+            && remote.host.ended(&remote.session).is_none()
         {
             remote.host.terminate(&remote.session);
         }
+    }
+
+    /// Follow who controls this shared host tab from another computer.
+    pub fn control_from_host(&mut self, control: HostControl, cx: &mut Context<Self>) {
+        let mut changes = control.changes.clone();
+
+        cx.spawn(async move |this, cx| {
+            while changes.changed().await.is_ok() {
+                if this.update(cx, |this, cx| this.invalidate(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        self.host_control = Some(control);
+    }
+
+    /// How the sheets' close buttons close this pane's tab.
+    pub fn close_tab_with(&mut self, close: CloseTab) {
+        self.close_tab = Some(close);
+    }
+
+    fn controlled(&self) -> bool {
+        self.host_control
+            .as_ref()
+            .is_some_and(|control| !(control.controllers)().is_empty())
+    }
+
+    /// Take the session back from the devices controlling it, and the PTY
+    /// size with it.
+    fn take_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(control) = &self.host_control {
+            (control.take_back)();
+        }
+
+        if let Some(share) = &self.host_share {
+            share.claimed_remotely.store(true, Ordering::Relaxed);
+        }
+
+        self.reclaim_shared_size();
+
+        self.invalidate(cx);
+    }
+
+    /// The sheet over the pane, if one belongs there: another computer
+    /// controls this host tab, or the host ended this view of its session.
+    fn control_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let close = self.close_tab.clone();
+
+        let close_tab = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            if let Some(close) = &close {
+                close(window, cx);
+            }
+        };
+
+        let controllers = self
+            .host_control
+            .as_ref()
+            .map(|control| (control.controllers)())
+            .unwrap_or_default();
+
+        let sheet = if !controllers.is_empty() {
+            Some(
+                ControlSheet::new(
+                    t!("remote-controlled-by", devices = controllers.join(", ")).into_owned(),
+                    self.sheet_focus.clone(),
+                )
+                .button(
+                    t!("remote-take-back"),
+                    true,
+                    cx.listener(|this, _, _, cx| this.take_back(cx)),
+                )
+                .button(t!("remote-end-session"), false, close_tab),
+            )
+        } else if let Some(remote) = &self.identity.remote
+            && let Some(reason) = remote.host.ended(&remote.session)
+        {
+            let name = remote.host.name();
+
+            match reason {
+                EndReason::Closed => Some(
+                    ControlSheet::new(
+                        t!("remote-session-closed", name = name).into_owned(),
+                        self.sheet_focus.clone(),
+                    )
+                    .button(t!("remote-close-tab"), true, close_tab),
+                ),
+                EndReason::TakenBack | EndReason::Unknown => {
+                    let host = Arc::clone(&remote.host);
+                    let session = remote.session.clone();
+
+                    Some(
+                        ControlSheet::new(
+                            t!("remote-taken-back", name = name).into_owned(),
+                            self.sheet_focus.clone(),
+                        )
+                        .button(t!("remote-reconnect"), true, move |_, _, _| {
+                            host.reconnect(&session)
+                        })
+                        .button(t!("remote-end-session"), false, close_tab),
+                    )
+                }
+            }
+        } else {
+            None
+        };
+
+        // The sheet takes the keyboard from the terminal while it is up and
+        // gives it back when it goes, if the terminal had it.
+        match (sheet.is_some(), self.sheet_shown) {
+            (true, false) if self.focus.contains_focused(window, cx) => {
+                window.focus(&self.sheet_focus, cx)
+            }
+            (false, true) if self.sheet_focus.is_focused(window) => window.focus(&self.focus, cx),
+            _ => {}
+        }
+
+        self.sheet_shown = sheet.is_some();
+
+        sheet.map(|sheet| sheet.render(cx))
     }
 
     /// A remote view resized this shared terminal; typing here takes the
@@ -723,7 +882,7 @@ impl TerminalPane {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.prefer_character_input {
+        if event.prefer_character_input || self.sheet_shown {
             return;
         }
 
@@ -752,6 +911,10 @@ impl TerminalPane {
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         let mut key = terminal_key(&event.keystroke);
 
         key.phase = KeyPhase::Release;
@@ -806,6 +969,10 @@ impl TerminalPane {
     /// dispatch before the pane's `on_key_down` listener. These actions are
     /// bound in the deeper `Terminal` context, which wins over `Root`.
     fn on_send_tab(&mut self, _: &SendTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         self.feed_terminal_key(
             &Keystroke {
                 modifiers: Modifiers::none(),
@@ -818,6 +985,10 @@ impl TerminalPane {
     }
 
     fn on_send_shift_tab(&mut self, _: &SendShiftTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         self.feed_terminal_key(
             &Keystroke {
                 modifiers: Modifiers::shift(),
@@ -830,6 +1001,10 @@ impl TerminalPane {
     }
 
     fn on_file_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         window.focus(&self.focus, cx);
 
         if self
@@ -1033,6 +1208,10 @@ impl EntityInputHandler for TerminalPane {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.sheet_shown {
+            return;
+        }
+
         self.reclaim_shared_size();
 
         if self.model.write_text_input(TextInput::Commit(text)) {
@@ -1144,7 +1323,16 @@ impl Render for TerminalPane {
         // here, so background tabs and chrome offsets are handled correctly.
         let cell = self.cell_metrics(window, cx);
 
-        let frame = self.model.begin_frame();
+        // While another computer controls the session the pane keeps the
+        // last frame it drew, as a plain grid under the sheet, rather than
+        // following output nobody here is meant to read.
+        let controlled = self.controlled();
+
+        let frame = match controlled {
+            true => self.model.frame_cache.current().unwrap_or_default(),
+            false => self.model.begin_frame(),
+        };
+
         let show_block_chrome = self.model.settings.command_blocks;
 
         self.block_list
@@ -1158,7 +1346,10 @@ impl Render for TerminalPane {
             .map(|b| b.size.height.as_f32())
             .unwrap_or(0.0);
 
-        let block_list_element = self.render_block_list_content(&frame, cell, viewport_px, cx);
+        let block_list_element = match controlled {
+            true => None,
+            false => self.render_block_list_content(&frame, cell, viewport_px, cx),
+        };
 
         // Auto-hide: the scrollbar stays solid briefly, then fades out.
         let scrollbar_opacity = self.model.scrollbar.opacity();
@@ -1172,6 +1363,8 @@ impl Render for TerminalPane {
         // Keep the transparent track hit-testable so hovering the scrollbar
         // region can reveal it after the activity fade has completed.
         let scrollbar = scrollbar_element(scrollbar_info, scrollbar_opacity.unwrap_or(0.0), cx);
+
+        let sheet = self.control_sheet(window, cx);
 
         div()
             // Stateful id: hover-end tracking (the link-underline clear
@@ -1233,6 +1426,7 @@ impl Render for TerminalPane {
                 TerminalView::new(frame, cell, self.focus.clone(), cx.entity()).into_any_element()
             })
             .children(scrollbar)
+            .children(sheet)
             // Ctrl-hover link underline. Rects are content-origin-relative;
             // absolute children position from the padding box, so shift by
             // the content padding.

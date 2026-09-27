@@ -8,6 +8,7 @@ pub mod agent_tab;
 pub mod assets;
 pub mod design;
 pub mod platform_style;
+pub mod remote_control;
 pub mod syntax;
 pub mod terminal_tab;
 pub mod utils;

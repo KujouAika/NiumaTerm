@@ -601,7 +601,7 @@ pub(crate) fn show_startup_error_dialog(message: &str) {
 
 /// The most recently active window's view, falling back to the newest open
 /// window when none was activated yet (or the active one just closed).
-fn last_active_window(cx: &App) -> Option<(AnyWindowHandle, WeakEntity<AppWindow>)> {
+pub(crate) fn last_active_window(cx: &App) -> Option<(AnyWindowHandle, WeakEntity<AppWindow>)> {
     let registry = cx.global::<WindowRegistry>();
     let last = cx.global::<LastActiveWindow>().0;
 

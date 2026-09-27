@@ -42,6 +42,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -66,7 +67,7 @@ use crate::claude_code::sessions::titles::{compaction_summary_text, user_prompt_
 /// Whether the selected user message has a persisted file-history snapshot.
 /// `Unknown` is reserved for snapshot records whose schema is not understood;
 /// the provider remains the final authority when that happens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileRestoreAvailability {
     Available,
     Unavailable,
@@ -74,7 +75,7 @@ pub enum FileRestoreAvailability {
 }
 
 /// One human prompt that can serve as a Claude rewind target.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeCheckpoint {
     pub user_message_id: String,
     pub parent_message_id: Option<String>,

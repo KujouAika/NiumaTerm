@@ -47,8 +47,9 @@ use std::time::{Duration, Instant};
 use futures::channel::oneshot;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, FocusHandle, Image, IntoElement, MouseButton,
-    MouseUpEvent, Pixels, Render, SharedString, WeakEntity, Window, div, px, relative, size,
+    AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Image, IntoElement,
+    MouseButton, MouseUpEvent, Pixels, Render, SharedString, WeakEntity, Window, div, px, relative,
+    size,
 };
 use gpui_base::TextSelection;
 use gpui_component::input::{
@@ -67,8 +68,8 @@ use nmt_agent::codex::app_server;
 use nmt_agent::codex::app_server::SideStart;
 use nmt_agent::session::SettingsOutcome;
 use nmt_agent::session::branch::{
-    BranchCompletion, BranchError, BranchFailure, BranchUpdate, BranchView, FileProgress,
-    PromptTarget,
+    BranchCompletion, BranchError, BranchFailure, BranchStep, BranchUpdate, BranchView,
+    FileProgress, PromptTarget,
 };
 use nmt_agent::session::children::ChildTranscript;
 use nmt_agent::session::command::{
@@ -81,6 +82,7 @@ use nmt_agent::session::controller::{
     SessionController, SessionEffect, SessionFailure, SessionReady, SubmissionBlock,
 };
 use nmt_agent::session::delivery::RecoverablePrompt;
+use nmt_agent::session::history::HistoryStep;
 use nmt_agent::session::input::{
     ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionDraft, QuestionKey, Submission,
 };
@@ -93,6 +95,7 @@ use nmt_agent::transcript::TextField;
 use nmt_agent::workflow::WorkflowRun;
 use nmt_agent::{AgentEvent, AgentEventKind, AgentRoute, AgentWorkspace};
 use nmt_config::profile::AgentProfile;
+use nmt_remote_core::rpc::EndReason;
 use rust_i18n::t;
 use tracing::info;
 
@@ -145,6 +148,7 @@ use crate::agent_tab::view::recent_sessions::{ListControl, RecentSessionsMode, S
 use crate::agent_tab::view::selection_menu::show_selected_text_menu;
 use crate::agent_tab::view::side_questions::{SideChatWindow, SideThread, side_chat_window};
 use crate::agent_tab::workflows::WorkflowUi;
+use crate::remote_control::{CloseTab, ControlSheet, HostControl};
 
 #[derive(Clone)]
 pub enum AgentPaneEvent {
@@ -248,6 +252,20 @@ pub struct AgentPane {
     /// Set when the conversation runs on a paired host: commands go there,
     /// and the session's controller follows it.
     remote: Option<RemoteAgent>,
+
+    /// Who controls this host tab from another computer, and taking it
+    /// back. While anyone does, the transcript stops following and a sheet
+    /// covers the pane; the session keeps its state.
+    host_control: Option<HostControl>,
+
+    close_tab: Option<CloseTab>,
+
+    /// Holds the keyboard while a control sheet covers the pane.
+    sheet_focus: FocusHandle,
+
+    /// Whether the last frame showed a control sheet. Sending is refused
+    /// while it did: the conversation belongs to the other side.
+    sheet_shown: bool,
 }
 
 impl AgentPane {
@@ -303,7 +321,14 @@ impl AgentPane {
             return false;
         }
 
-        if !self.session.borrow_mut().cancel_branch_picker() {
+        // A replica's picker is the host's; closing it is the host's step.
+        if self.remote.is_some() {
+            if !self.session.borrow().branch().picker_is_open() {
+                return false;
+            }
+
+            self.send_branch_step(BranchStep::Cancel, cx);
+        } else if !self.session.borrow_mut().cancel_branch_picker() {
             return false;
         }
 
@@ -349,7 +374,9 @@ impl AgentPane {
             return false;
         }
 
-        if let Err(error) = self.session.borrow_mut().begin_fork(target) {
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::BeginFork(target), cx);
+        } else if let Err(error) = self.session.borrow_mut().begin_fork(target) {
             let message = match error {
                 BranchError::Busy => SharedString::from(t!("agent-fork-idle-only")),
                 _ => self.branch_error_message(error, cx).into(),
@@ -437,6 +464,12 @@ impl AgentPane {
             return;
         }
 
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::Fork(checkpoint), cx);
+
+            return;
+        }
+
         let update = self.session.borrow_mut().fork(checkpoint);
 
         self.on_fork_update(update, cx);
@@ -501,6 +534,22 @@ impl AgentPane {
             return false;
         }
 
+        // The host reads the checkpoints, which live beside its transcript.
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::BeginRewind(target), cx);
+
+            self.palette.selected = 0;
+            self.palette.dismissed = false;
+
+            self.palette.set_feedback(
+                CommandFeedbackKind::Status,
+                SharedString::from(t!("agent-rewind-loading-checkpoints")),
+                cx,
+            );
+
+            return true;
+        }
+
         let cwd = self.cwd(cx);
 
         let outcome = self.session.borrow_mut().begin_rewind(cwd, target);
@@ -551,6 +600,12 @@ impl AgentPane {
         }
 
         self.branch.draft = Some(self.input.read(cx).text().to_string());
+
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::Rewind(action), cx);
+
+            return;
+        }
 
         let update = self.session.borrow_mut().rewind(action);
 
@@ -809,6 +864,10 @@ impl AgentPane {
     /// Send what the composer holds, warning first when the conversation has
     /// been idle long enough for the provider's prompt cache to have expired.
     pub(super) fn send_user_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         if self.team_member {
             let text = self.input.read(cx).text().to_string();
 
@@ -964,6 +1023,19 @@ impl AgentPane {
             );
 
             return false;
+        }
+
+        // The host lists its conversations; the list appears as they arrive.
+        if self.remote.is_some() {
+            self.history_ui.open_awaiting_rows();
+
+            self.load_filesystem_history(cx);
+
+            self.palette.feedback = None;
+
+            cx.notify();
+
+            return true;
         }
 
         if !self.history_ui.open() {
@@ -1412,6 +1484,13 @@ impl AgentPane {
 
                 return;
             }
+            PaletteAction::RewindCheckpoint(checkpoint) if self.remote.is_some() => {
+                self.palette.selected = 0;
+
+                self.send_branch_step(BranchStep::SelectCheckpoint(checkpoint), cx);
+
+                return;
+            }
             PaletteAction::RewindCheckpoint(checkpoint) => {
                 let selected = self.session.borrow_mut().select_checkpoint(checkpoint);
 
@@ -1551,17 +1630,13 @@ impl AgentPane {
             return false;
         }
 
-        // These start, replace, or branch the conversation's process, or
-        // read its history from disk, and all of that belongs to the host.
+        // These start a new conversation process, search the history, or
+        // open a second transcript, and a remote view has no path to any of
+        // them yet. Rewind, fork, and resume run on the host.
         if self.remote.is_some()
             && matches!(
                 route,
-                SlashRoute::NewConversation
-                    | SlashRoute::Resume
-                    | SlashRoute::Rewind
-                    | SlashRoute::Fork
-                    | SlashRoute::Find(_)
-                    | SlashRoute::Side(_)
+                SlashRoute::NewConversation | SlashRoute::Find(_) | SlashRoute::Side(_)
             )
         {
             self.palette.set_feedback(
@@ -2585,6 +2660,13 @@ impl AgentPane {
                 self.on_fork_update(update, cx)
             }
             SessionEffect::Branch(update) => self.on_rewind_update(update, cx),
+            SessionEffect::BranchClosed => {
+                self.branch.draft = None;
+
+                self.release_transcript_from_picker(cx);
+
+                cx.notify();
+            }
             SessionEffect::Error {
                 message,
                 fatal,
@@ -2861,6 +2943,16 @@ impl AgentPane {
     /// height with placeholder rows, then title parsing, which swaps in the
     /// real rows.
     fn load_filesystem_history(&mut self, cx: &mut Context<Self>) {
+        // A remote view's conversations are the host's, whatever the harness
+        // keeps them in, and this computer's disk says nothing about them.
+        if self.remote.is_some() {
+            let step = HistoryStep::List(self.history_ui.data.scope);
+
+            self.send_history_step(step, cx);
+
+            return;
+        }
+
         let Some(session_host) = self.host.upgrade() else {
             return;
         };
@@ -2905,6 +2997,22 @@ impl AgentPane {
         if self.history_ui.mode == RecentSessionsMode::Loading
             || self.session.borrow().branch().holds_composer()
         {
+            return;
+        }
+
+        if self.remote.is_some() {
+            let step = HistoryStep::Resume(summary.clone());
+
+            self.history_ui.mode = RecentSessionsMode::Hidden;
+
+            self.palette.set_feedback(
+                CommandFeedbackKind::Notice,
+                t!("agent-session-opening-recent").to_string(),
+                cx,
+            );
+
+            self.send_history_step(step, cx);
+
             return;
         }
 
@@ -3153,6 +3261,10 @@ impl AgentPane {
             workflows: WorkflowUi::default(),
             blocking_overlay: BlockingOverlay::default(),
             remote: None,
+            host_control: None,
+            close_tab: None,
+            sheet_focus: cx.focus_handle(),
+            sheet_shown: false,
         };
 
         {
@@ -3399,6 +3511,183 @@ impl AgentPane {
         let outcome = command.run(&mut self.session.borrow_mut());
 
         Some(present(self, outcome, cx))
+    }
+
+    /// Ask the host to list or resume its conversations for this replica.
+    /// Rows and the resumed conversation follow from the host's view; only
+    /// a refusal is shown here.
+    fn send_history_step(&mut self, step: HistoryStep, cx: &mut Context<Self>) {
+        let Some(remote) = &self.remote else {
+            return;
+        };
+
+        let sent = remote.history(&step);
+
+        cx.spawn(async move |this, cx| {
+            let outcome = sent
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|outcome| outcome);
+
+            let message = match outcome {
+                Ok(Ok(())) => return,
+                Ok(Err(message)) => message,
+                Err(error) => format!("{error:#}"),
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                this.palette
+                    .set_feedback(CommandFeedbackKind::Error, message, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Ask the host to take a branch step for this replica. The picker
+    /// follows from the host's view; only a refusal is shown here.
+    fn send_branch_step(&mut self, step: BranchStep, cx: &mut Context<Self>) {
+        let Some(remote) = &self.remote else {
+            return;
+        };
+
+        let sent = remote.branch(&step);
+
+        cx.spawn(async move |this, cx| {
+            let outcome = sent
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|outcome| outcome);
+
+            let message = match outcome {
+                Ok(Ok(())) => return,
+                Ok(Err(message)) => message,
+                Err(error) => format!("{error:#}"),
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                this.palette
+                    .set_feedback(CommandFeedbackKind::Error, message, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Follow who controls this shared host tab from another computer.
+    pub fn control_from_host(&mut self, control: HostControl, cx: &mut Context<Self>) {
+        let mut changes = control.changes.clone();
+
+        cx.spawn(async move |this, cx| {
+            while changes.changed().await.is_ok() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        self.host_control = Some(control);
+    }
+
+    /// How the sheets' close buttons close this pane's tab.
+    pub fn close_tab_with(&mut self, close: CloseTab) {
+        self.close_tab = Some(close);
+    }
+
+    /// The sheet over the pane, if one belongs there: another computer
+    /// controls this host tab, or the host ended this view of its session.
+    fn control_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let close = self.close_tab.clone();
+
+        let close_tab = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            if let Some(close) = &close {
+                close(window, cx);
+            }
+        };
+
+        let controllers = self
+            .host_control
+            .as_ref()
+            .map(|control| (control.controllers)())
+            .unwrap_or_default();
+
+        let sheet = if !controllers.is_empty() {
+            let take_back = self
+                .host_control
+                .as_ref()
+                .map(|control| Arc::clone(&control.take_back));
+
+            Some(
+                ControlSheet::new(
+                    t!("remote-controlled-by", devices = controllers.join(", ")).into_owned(),
+                    self.sheet_focus.clone(),
+                )
+                .button(t!("remote-take-back"), true, move |_, _, _| {
+                    if let Some(take_back) = &take_back {
+                        take_back();
+                    }
+                })
+                .button(t!("remote-end-session"), false, close_tab),
+            )
+        } else if let Some(remote) = &self.remote
+            && let Some(reason) = remote.ended()
+        {
+            let name = remote.host_name();
+
+            match reason {
+                EndReason::Closed => Some(
+                    ControlSheet::new(
+                        t!("remote-session-closed", name = name).into_owned(),
+                        self.sheet_focus.clone(),
+                    )
+                    .button(t!("remote-close-tab"), true, close_tab),
+                ),
+                EndReason::TakenBack | EndReason::Unknown => Some(
+                    ControlSheet::new(
+                        t!("remote-taken-back", name = name).into_owned(),
+                        self.sheet_focus.clone(),
+                    )
+                    .button(
+                        t!("remote-reconnect"),
+                        true,
+                        cx.listener(|this, _, _, _| {
+                            if let Some(remote) = &this.remote {
+                                remote.reconnect();
+                            }
+                        }),
+                    )
+                    .button(t!("remote-end-session"), false, close_tab),
+                ),
+            }
+        } else {
+            None
+        };
+
+        // While the other side has the conversation, the transcript stops
+        // following it and the sheet takes the keyboard; both come back
+        // when the sheet goes.
+        match (sheet.is_some(), self.sheet_shown) {
+            (true, false) => {
+                self.transcript
+                    .update(cx, |transcript, _| transcript.freeze());
+
+                if self.focus.contains_focused(window, cx) {
+                    window.focus(&self.sheet_focus, cx);
+                }
+            }
+            (false, true) => {
+                self.transcript
+                    .update(cx, |transcript, cx| transcript.thaw(cx));
+
+                if self.sheet_focus.is_focused(window) {
+                    window.focus(&self.focus, cx);
+                }
+            }
+            _ => {}
+        }
+
+        self.sheet_shown = sheet.is_some();
+
+        sheet.map(|sheet| sheet.render(cx))
     }
 
     /// The host and session of a pane following a paired host's session.
@@ -3935,6 +4224,10 @@ impl AgentPane {
     }
 
     fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         // A branch or rewind picker owns Escape ahead of anything
         // under it, and closing one changes nothing else.
         if self.cancel_branch_picker(cx) {
@@ -4293,6 +4586,8 @@ impl Render for AgentPane {
 
         let blocking_layer = self.blocking_overlay.render(blocking_body, now, window, cx);
 
+        let sheet = self.control_sheet(window, cx);
+
         v_flex()
             .size_full()
             .relative()
@@ -4315,6 +4610,7 @@ impl Render for AgentPane {
             .font(cx.global::<AgentSettings>().font())
             .text_size(px(cx.global::<AgentSettings>().font_size))
             .children(multi_root_notice)
+            .children(self.remote.as_ref().and_then(|remote| remote.banner(cx)))
             .children(update_banner)
             .child(
                 div()
@@ -4531,6 +4827,7 @@ impl Render for AgentPane {
             .children(side_chat)
             // Painted last so it sits over the transcript and the composer.
             .children(blocking_layer)
+            .children(sheet)
             .into_any_element()
     }
 }

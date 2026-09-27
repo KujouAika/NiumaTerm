@@ -29,6 +29,20 @@ pub const AGENT_CALL: &str = "agent.call";
 /// Notification: changes to an attached agent view.
 pub const AGENT_OPS: &str = "agent.ops";
 
+/// What a device may start on the host: its agent profiles and the
+/// workspaces open there. Only names and paths travel; credentials, hooks,
+/// and agent binaries stay on the host.
+pub const HOST_INFO: &str = "host.info";
+
+/// Start an agent tab on the host from a profile and a workspace that
+/// `host.info` lists. The reply names the new session.
+pub const AGENT_OPEN: &str = "agent.open";
+
+/// Notification: the host ended this device's views of a session. Only one
+/// side controls a session at a time, so the host taking it back ends the
+/// device's views, as does the host closing the session.
+pub const SESSION_ENDED: &str = "session.ended";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {
@@ -145,6 +159,56 @@ impl Control {
 pub struct TerminalOpen {
     pub cols: u16,
     pub rows: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEnded {
+    pub session: String,
+    pub reason: EndReason,
+}
+
+/// Why the host ended a device's views of a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndReason {
+    /// The person at the host took the session back; it keeps running
+    /// there, and the device may take it again.
+    TakenBack,
+    /// The session is gone from the host.
+    Closed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostInfo {
+    pub agents: Vec<AgentProfileInfo>,
+    pub workspaces: Vec<WorkspaceInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentProfileInfo {
+    pub name: String,
+
+    /// The agent the profile runs, as a session's `harness` names it.
+    pub harness: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    pub name: String,
+
+    /// The workspace's primary directory on the host.
+    pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentOpen {
+    pub profile: String,
+
+    /// A workspace path from `host.info`. The host refuses any other, so a
+    /// device can start agents only where the host user already works.
+    pub workspace: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

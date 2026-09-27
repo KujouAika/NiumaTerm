@@ -1,7 +1,22 @@
 use std::mem::take;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{SessionScope, SessionSummary};
 use crate::claude_code::sessions;
+
+/// The command a view in another process lists and resumes the host's
+/// conversations with, one [`HistoryStep`] at a time.
+pub const HISTORY_METHOD: &str = "history";
+
+/// What a view in another process asks of the host's conversation history.
+/// The host holds the transcripts, and the rows it lists reach every view
+/// through the published view.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum HistoryStep {
+    List(SessionScope),
+    Resume(SessionSummary),
+}
 
 #[derive(Default)]
 pub struct SessionHistory {

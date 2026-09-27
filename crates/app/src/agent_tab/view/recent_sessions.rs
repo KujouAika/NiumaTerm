@@ -163,6 +163,20 @@ impl SessionHistoryUi {
         true
     }
 
+    /// Open the list before its rows exist, for rows another computer is
+    /// still listing. It shows once the first of them arrive.
+    pub(crate) fn open_awaiting_rows(&mut self) {
+        self.data.sessions.clear();
+
+        self.data.showing_search = false;
+
+        self.mode = RecentSessionsMode::Open;
+        self.selected = 0;
+
+        self.pointer_inside = false;
+        self.pointer = None;
+    }
+
     pub(crate) fn publish_filesystem_count(
         &mut self,
         request: &FilesystemHistoryRequest,

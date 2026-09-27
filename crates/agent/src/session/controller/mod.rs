@@ -26,8 +26,8 @@ use crate::chat::{
 use crate::claude_code::sessions::{ClaudeCheckpoint, ClaudeFork};
 use crate::progress::TaskList;
 use crate::session::branch::{
-    BranchCompletion, BranchError, BranchFailure, BranchReplay, BranchUpdate, CheckpointRead,
-    ConversationBranch, ForkRequest, PromptTarget, RewindAction,
+    BranchCompletion, BranchError, BranchFailure, BranchReplay, BranchUpdate, BranchView,
+    CheckpointRead, ConversationBranch, ForkRequest, PromptTarget, RewindAction,
 };
 use crate::session::children::{ChildAgents, ChildTranscript};
 use crate::session::command::{Prompt, SubmitRefusal, Submitted};
@@ -109,6 +109,10 @@ pub struct SessionController {
     children: ChildAgents,
     workflows: WorkflowData,
     side: SideQuestions,
+
+    /// The conversations last listed for a view in another process, which
+    /// reach it through the published view.
+    listed_history: Vec<SessionSummary>,
 }
 
 impl SessionController {
@@ -128,6 +132,7 @@ impl SessionController {
             delivery: MessageDelivery::new(kind),
             restore: ConversationRestore::default(),
             naming: ConversationNaming::default(),
+            listed_history: Vec::new(),
             controls: ConversationSettings {
                 seed: SettingsSeed::Defaults,
                 ..ConversationSettings::default()
@@ -646,6 +651,21 @@ impl SessionController {
         if let Some(backend) = self.runtime.backend_mut() {
             backend.request_history(scope);
         }
+    }
+
+    /// Start a listing for a view in another process. Rows from an earlier
+    /// listing, perhaps of another scope, would otherwise mix into it.
+    pub fn clear_listed_history(&mut self) {
+        self.listed_history.clear();
+    }
+
+    /// Rows the host read itself, for a harness whose history is on disk.
+    pub fn list_history(&mut self, sessions: Vec<SessionSummary>) {
+        self.listed_history = sessions;
+    }
+
+    pub fn listed_history(&self) -> &[SessionSummary] {
+        &self.listed_history
     }
 
     pub fn request_more_history(&mut self) {
@@ -1269,7 +1289,11 @@ impl SessionController {
                     SessionEffect::Unchanged
                 }
             }
-            Event::History(sessions) => SessionEffect::History(sessions),
+            Event::History(sessions) => {
+                self.listed_history.extend(sessions.iter().cloned());
+
+                SessionEffect::History(sessions)
+            }
             Event::SessionSearchResults(sessions) => SessionEffect::SearchResults(sessions),
             Event::QueuedPrompts(prompts) => {
                 for text in self.delivery.snapshot(prompts) {
@@ -1730,6 +1754,8 @@ impl SessionController {
                 named: self.naming.named,
                 title: self.naming.title.clone(),
             },
+            branch: BranchView::from(&self.branch).into(),
+            history: self.listed_history.clone(),
         }
     }
 
@@ -1840,6 +1866,8 @@ impl SessionController {
                 self.naming.named = naming.named;
                 self.naming.title = naming.title;
             }
+            ViewSlot::Branch(picker) => self.branch.mirror(picker),
+            ViewSlot::History(sessions) => self.listed_history = sessions,
         }
     }
 
@@ -1981,6 +2009,9 @@ pub enum SessionEffect {
         error: Option<String>,
     },
     Branch(BranchUpdate),
+    /// A branch operation ended without this view taking the step that
+    /// ended it: cancelled or finished from another computer.
+    BranchClosed,
     ApprovalRequested,
     ApprovalResolved,
     InputRequested {

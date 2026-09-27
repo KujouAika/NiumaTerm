@@ -1,11 +1,13 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::background_task::{BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskSnapshot};
 use crate::chat::{
-    Event, GenerationSample, Item, ModelInfo, Question, QuestionInput, QuestionMode,
-    QuestionRequest, QuestionResolution, SendOutcome, SlashCommandOutcome, ThreadSettings,
+    Event, ForkAnchor, ForkCheckpoint, GenerationSample, Item, ModelInfo, Question, QuestionInput,
+    QuestionMode, QuestionRequest, QuestionResolution, SendOutcome, SessionSummary,
+    SlashCommandOutcome, ThreadSettings,
 };
 use crate::progress::{GoalStatus, Task, TaskList, TaskStatus};
+use crate::session::branch::BranchView;
 use crate::session::command::{
     AgentCommand as _, Prompt, PromptImage, SubmitPrompt, SubmitRefusal, Submitted,
 };
@@ -1039,6 +1041,83 @@ fn a_replica_follows_a_conversation_through_published_changes() {
 
     // Time passing on its own is not a change.
     assert!(publisher.changes(&host).is_empty());
+}
+
+#[test]
+fn a_replica_shows_the_host_branch_picker_until_it_closes() {
+    let mut host = started(AgentKind::Codex, "view", Vec::new());
+    let mut replica = SessionController::new(AgentKind::Codex);
+    let mut publisher = ViewPublisher::default();
+
+    if let Some(Backend::Test(backend)) = host.runtime.backend_mut() {
+        backend.fork_accepted = true;
+    }
+
+    follow(&mut replica, publisher.snapshot(&host).into_ops());
+
+    host.begin_fork(None).unwrap();
+
+    let checkpoint = ForkCheckpoint {
+        prompt: "first prompt".into(),
+        timestamp: None,
+        anchor: ForkAnchor::CodexThrough("turn-1".into()),
+    };
+
+    apply(
+        &mut host,
+        Event::ForkCheckpoints(Ok(vec![checkpoint.clone()])),
+    );
+
+    follow(&mut replica, through_json(publisher.changes(&host)));
+
+    assert_in_step(&host, &replica);
+
+    // The replica shows the host's rows and keeps its composer held, but
+    // runs nothing of its own.
+    assert!(matches!(
+        BranchView::from(replica.branch()),
+        BranchView::ForkCheckpoints([row]) if *row == checkpoint
+    ));
+    assert!(replica.branch().holds_composer());
+
+    assert!(host.cancel_branch_picker());
+
+    follow(&mut replica, through_json(publisher.changes(&host)));
+
+    assert!(!replica.branch().holds_composer());
+}
+
+#[test]
+fn a_replica_receives_the_conversations_the_host_listed_for_it() {
+    let mut host = started(AgentKind::Codex, "view", Vec::new());
+    let mut replica = SessionController::new(AgentKind::Codex);
+    let mut publisher = ViewPublisher::default();
+
+    follow(&mut replica, publisher.snapshot(&host).into_ops());
+
+    let summary = |id: &str| SessionSummary {
+        id: id.into(),
+        title: id.into(),
+        branch: None,
+        cwd: None,
+        last_active: SystemTime::UNIX_EPOCH,
+        snippet: None,
+    };
+
+    // Protocol pages add up; a new listing starts over.
+    apply(&mut host, Event::History(vec![summary("a")]));
+    apply(&mut host, Event::History(vec![summary("b")]));
+
+    follow(&mut replica, through_json(publisher.changes(&host)));
+
+    assert_eq!(replica.listed_history(), [summary("a"), summary("b")]);
+
+    host.clear_listed_history();
+    host.list_history(vec![summary("c")]);
+
+    follow(&mut replica, through_json(publisher.changes(&host)));
+
+    assert_eq!(replica.listed_history(), [summary("c")]);
 }
 
 fn prompt(text: &str, images: usize) -> Prompt {

@@ -468,6 +468,10 @@ impl WorkspaceManager {
         self.workspaces.find(id).map(|ws| &ws.tabs)
     }
 
+    pub fn tabs_of_mut(&mut self, id: WorkspaceId) -> Option<&mut TabManager<TabSurface>> {
+        self.workspaces.find_mut(id).map(|ws| &mut ws.tabs)
+    }
+
     /// Tab sets of every workspace (the window-close process sweep).
     pub fn all_tabs(&self) -> impl Iterator<Item = &TabManager<TabSurface>> {
         self.workspaces.items().iter().map(|ws| &ws.tabs)
