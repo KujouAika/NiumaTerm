@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext, Bounds, Entity, EntityInputHandler, KeyDownEvent, KeyUpEvent, Keystroke,
-    ListAlignment, Modifiers, TestAppContext, VisualTestContext, point, px, size,
+    ListAlignment, Modifiers, TestAppContext, VisualTestContext, div, point, px, size,
 };
 use nmt_agent::AgentRoute;
 use nmt_config::local_state::TabState;
@@ -303,4 +303,46 @@ fn typing_respects_scroll_setting_for_key_and_ime_input(cx: &mut TestAppContext)
             assert!(pane.model.viewport().is_scrolled());
         })
     });
+}
+
+/// The block list keeps a scroll handler in state the pane owns. A strong
+/// pane handle in it would keep a closed tab's pane, session, and shell
+/// alive, so a pane that rendered its block list must still be released.
+#[gpui::test]
+fn a_rendered_block_list_does_not_keep_its_pane_alive(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    let pane = pane(cx);
+
+    // Elements live in a per-frame arena; building the list inside a draw
+    // releases it the way a real frame does.
+    cx.draw(
+        point(px(0.0), px(0.0)),
+        size(px(800.0), px(400.0)),
+        |_, cx| {
+            pane.update(cx, |pane, cx| {
+                let frame = pane.model.begin_frame();
+
+                let cell = CellMetrics {
+                    width_px: 8.0,
+                    height_px: 18.0,
+                };
+
+                let element = pane.render_block_list_content(&frame, cell, 400.0, cx);
+
+                assert!(element.is_some());
+                assert!(pane.block_list.scroll_handler_set);
+            });
+
+            div()
+        },
+    );
+
+    let weak = pane.downgrade();
+
+    drop(pane);
+
+    // Released entities are freed when an update's effects flush.
+    cx.update(|_, _| {});
+
+    weak.assert_released();
 }

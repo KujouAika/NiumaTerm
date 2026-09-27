@@ -408,10 +408,13 @@ impl TerminalPane {
         }
 
         if !self.block_list.scroll_handler_set {
-            let pane = cx.entity();
+            // The list state lives in this pane, so a strong handle here would
+            // keep the pane, and with it the session and its shell, alive after
+            // its tab closes.
+            let pane = cx.entity().downgrade();
 
             self.block_list.list.set_scroll_handler(move |_, _, cx| {
-                pane.update(cx, |pane, cx| pane.mark_scrollbar_activity(cx));
+                let _ = pane.update(cx, |pane, cx| pane.mark_scrollbar_activity(cx));
             });
 
             self.block_list.scroll_handler_set = true;
