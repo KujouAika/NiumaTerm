@@ -25,12 +25,13 @@ use crate::ui::composition::{
     hover_action, toolbar_button,
 };
 use crate::ui::platform_style::{Host, PlatformStyle as _, TabDensity};
+use crate::ui::remote::Remote;
 use crate::ui::shell::{
     InlineRename, InlineRenameSession, InlineRenameStyle, TabSurface, pending_tab_icon,
 };
 use crate::ui::tab_bar::drag::{DragLabelPreview, DragStyle, TabDrag};
 use crate::ui::tab_bar::menu::new_tab_menu;
-use crate::ui::tab_bar::progress_visual;
+use crate::ui::tab_bar::{progress_visual, viewers_mark};
 use crate::ui::terminal_status::{TerminalVisual, terminal_dot, terminal_presentation};
 use crate::ui::{AppSettings, AppWindow, UI_RADIUS, modern_dropdown};
 use crate::workspace::TerminalActivity;
@@ -140,6 +141,7 @@ impl TabStrip {
                 exited: tab.exited(),
                 progress: tab.progress(),
                 terminal: AppWindow::tab_terminal_activity(tab, cx),
+                viewers: cx.global::<Remote>().viewers_of(tab.surface().pane_ids()),
             })
             .collect();
 
@@ -225,6 +227,7 @@ impl TabStrip {
                     exited,
                     progress,
                     terminal,
+                    viewers,
                 } = item;
 
                 // `×` closes this tab; `stop_propagation` keeps the click from
@@ -419,6 +422,11 @@ impl TabStrip {
                                     px(TAB_DOT),
                                 )
                             }))
+                            .children(viewers_mark(
+                                ("tab-viewers", id as usize),
+                                &viewers,
+                                cx,
+                            ))
                         })
                         .into_any_element()
                 };
@@ -744,6 +752,9 @@ struct TabItem {
     exited: bool,
     progress: Option<ProgressReport>,
     terminal: TerminalActivity,
+
+    /// Names of the paired devices viewing the tab.
+    viewers: Vec<String>,
 }
 
 /// Diameter of a tab's status dot, matching the unread and bell marks that

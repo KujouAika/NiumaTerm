@@ -18,23 +18,24 @@ use gpui::{
 };
 use gpui_component::Root;
 use nmt_platform::runtime;
-use nmt_remote::NetworkPty;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
-use nmt_remote::sessions::{AgentControl, SessionRegistry, TerminalControl};
+use nmt_remote::sessions::{AgentControl, AgentRequest, SessionRegistry, TerminalControl};
 use nmt_remote::store::{
     PairedDevice, PairedHost, load_hosts, load_or_create_identity, load_relay_access_key,
     remote_dir, save_hosts, save_relay_access_key,
 };
+use nmt_remote::{NetworkPty, local_view};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use nmt_remote_core::rpc::{SessionInfo, SessionKind};
 use rust_i18n::t;
 use tokio::select;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedSender, WeakUnboundedSender};
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::ui::{AppSettings, AppWindow};
 
@@ -55,9 +56,17 @@ pub(crate) struct Remote {
     /// Host session ids of shared tabs, by pane entity.
     shared_tabs: HashMap<EntityId, String>,
 
-    /// What serves each shared agent tab, by pane entity: the task answering
-    /// paired devices and the subscription keeping its listed title current.
-    shared_agents: HashMap<EntityId, (Task<()>, Subscription)>,
+    /// The remote-created terminal each host view of one shows, by pane
+    /// entity, so the view's tab can mark the devices watching it too.
+    viewed_sessions: HashMap<EntityId, String>,
+
+    /// What serves each shared agent tab, by pane entity.
+    shared_agents: HashMap<EntityId, SharedAgent>,
+
+    /// Agent tabs offered while still waiting to be restored, by the id
+    /// devices know them by: the task that restores one on a device's first
+    /// request.
+    restoring_agents: HashMap<String, Task<()>>,
 
     hosts: Vec<PairedHost>,
     connections: HashMap<DeviceId, Arc<RemoteHost>>,
@@ -86,9 +95,22 @@ pub(crate) struct Remote {
     status: Option<SharedString>,
 
     busy: bool,
+
+    /// Set once the startup windows restored their tabs. Hosting waits for
+    /// it: a device reconnecting after this app restarted asks for tabs by
+    /// the ids they are restored under, and would find none before then.
+    tabs_restored: bool,
 }
 
 impl Global for Remote {}
+
+/// One shared agent tab: the id paired devices know it by, the task
+/// answering them, and the subscription keeping its listed title current.
+struct SharedAgent {
+    id: String,
+    _serve: Task<()>,
+    _titles: Subscription,
+}
 
 /// Install the global and start hosting when the setting is on.
 pub(crate) fn initialize(cx: &mut App) {
@@ -99,7 +121,9 @@ pub(crate) fn initialize(cx: &mut App) {
         host: None,
         registry: SessionRegistry::new(),
         shared_tabs: HashMap::new(),
+        viewed_sessions: HashMap::new(),
         shared_agents: HashMap::new(),
+        restoring_agents: HashMap::new(),
         hosts: load_hosts(&remote_dir()),
         connections: HashMap::new(),
         host_sessions: HashMap::new(),
@@ -117,6 +141,7 @@ pub(crate) fn initialize(cx: &mut App) {
         hosted_relay: None,
         status: None,
         busy: false,
+        tabs_restored: false,
     });
 
     cx.spawn(async move |cx| {
@@ -133,6 +158,12 @@ pub(crate) fn initialize(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Start hosting, if the setting is on, now that the startup windows have
+/// restored their tabs.
+pub(crate) fn tabs_restored(cx: &mut App) {
+    cx.global_mut::<Remote>().tabs_restored = true;
 
     sync_hosting(cx);
 }
@@ -143,6 +174,10 @@ pub(crate) fn initialize(cx: &mut App) {
 pub(crate) fn sync_hosting(cx: &mut App) {
     let enabled = cx.global::<AppSettings>().config().remote.enabled;
     let remote = cx.global::<Remote>();
+
+    if !remote.tabs_restored {
+        return;
+    }
 
     let relay_changed = remote.host.is_some() && remote.hosted_relay != configured_relay(cx);
 
@@ -235,6 +270,38 @@ impl Remote {
             .unwrap_or_default()
     }
 
+    /// Names of the paired devices connected to this host now.
+    pub(crate) fn connected_devices(&self) -> Vec<String> {
+        self.host
+            .as_ref()
+            .map(HostService::connected_devices)
+            .unwrap_or_default()
+    }
+
+    /// Names of the paired devices viewing any of these host panes.
+    pub(crate) fn viewers_of(&self, panes: impl IntoIterator<Item = EntityId>) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+
+        for pane in panes {
+            let session = self
+                .shared_tabs
+                .get(&pane)
+                .or_else(|| self.viewed_sessions.get(&pane))
+                .or_else(|| self.shared_agents.get(&pane).map(|shared| &shared.id));
+
+            for name in session
+                .map(|session| self.registry.viewers(session))
+                .unwrap_or_default()
+            {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+
+        names
+    }
+
     /// Terminals paired devices started here, which the host user can end.
     pub(crate) fn remote_created_sessions(&self) -> Vec<SessionInfo> {
         self.registry.remote_sessions()
@@ -303,12 +370,14 @@ fn start_host(relay: Option<RelayAccess>, cx: &mut App) -> Result<HostService> {
     // thread cannot do.
     let (changed, mut changes) = mpsc::unbounded_channel();
     let mut sessions = registry.subscribe();
+    let mut viewers = registry.subscribe_viewers();
 
     cx.spawn(async move |cx| {
         loop {
             select! {
                 change = changes.recv() => if change.is_none() { break },
                 change = sessions.changed() => if change.is_err() { break },
+                change = viewers.changed() => if change.is_err() { break },
             }
 
             cx.update_global::<Remote, _>(|_, _| {});
@@ -368,12 +437,32 @@ pub(crate) fn close_remote_created(session: &str, cx: &mut App) {
     cx.global_mut::<Remote>().registry.close_remote(session);
 }
 
+/// Open a tab on a terminal a paired device started here, alongside that
+/// device's own view.
+pub(crate) fn open_remote_created(session: &SessionInfo, window: &mut Window, cx: &mut App) {
+    let Some(app) = app_window(window, cx) else {
+        return;
+    };
+
+    let registry = Arc::clone(&cx.global::<Remote>().registry);
+
+    // The terminal may have ended since the page listed it; the page then
+    // refreshes without it.
+    let Some(view) = local_view::open(&registry, &session.session) else {
+        return;
+    };
+
+    let title = session.title.clone();
+
+    app.update(cx, |app, cx| app.open_local_view(view, title, window, cx));
+}
+
 /// Offer a host tab's terminal to paired devices for as long as the pane
 /// lives. Remote panes are not offered again.
 pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
     let pane_id = pane.entity_id();
 
-    let (title, (cols, rows), messenger, remote) = {
+    let (title, (cols, rows), messenger, remote, viewed) = {
         let pane = pane.read(cx);
 
         (
@@ -381,8 +470,24 @@ pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
             pane.grid_size(),
             pane.session_messenger(),
             pane.is_remote(),
+            pane.remote_created_session().map(str::to_owned),
         )
     };
+
+    // Devices already see the terminal this pane views; the tab only follows
+    // who is watching it.
+    if let Some(session) = viewed {
+        cx.global_mut::<Remote>()
+            .viewed_sessions
+            .insert(pane_id, session);
+
+        cx.observe_release(pane, move |_, cx| {
+            cx.global_mut::<Remote>().viewed_sessions.remove(&pane_id);
+        })
+        .detach();
+
+        return;
+    }
 
     if remote {
         return;
@@ -427,9 +532,11 @@ pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
     .detach();
 }
 
-/// Offer a host agent tab to paired devices for as long as the pane lives.
-/// A pane following another computer's session is not offered again.
-pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, cx: &mut App) {
+/// Offer a host agent tab to paired devices for as long as the pane lives,
+/// under `id` when the tab was offered before (a restored tab) and a new id
+/// otherwise. A pane following another computer's session is not offered
+/// again.
+pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: &mut App) {
     let pane_id = pane.entity_id();
 
     let (session, remote) = {
@@ -460,11 +567,25 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, cx: &mut App) {
         (title, harness.to_owned())
     };
 
+    let id = id.unwrap_or_else(|| format!("a-{}", Uuid::new_v4().simple()));
+
+    // The task that held this tab's place until now forwards what it already
+    // received and ends once the registry lets go of its channel.
+    if let Some(placeholder) = cx.global_mut::<Remote>().restoring_agents.remove(&id) {
+        placeholder.detach();
+    }
+
     let registry = Arc::clone(&cx.global::<Remote>().registry);
     let (requests, requests_rx) = mpsc::unbounded_channel();
 
-    let id = registry.register_agent(title.clone(), harness, AgentControl { requests });
-    let task = agent_remote::serve(session.downgrade(), requests_rx, cx);
+    registry.register_agent(
+        id.clone(),
+        title.clone(),
+        harness,
+        AgentControl { requests },
+    );
+
+    let serve = agent_remote::serve(session.downgrade(), requests_rx, cx);
 
     let titles = {
         let registry = Arc::clone(&registry);
@@ -485,9 +606,14 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, cx: &mut App) {
         })
     };
 
-    cx.global_mut::<Remote>()
-        .shared_agents
-        .insert(pane_id, (task, titles));
+    cx.global_mut::<Remote>().shared_agents.insert(
+        pane_id,
+        SharedAgent {
+            id: id.clone(),
+            _serve: serve,
+            _titles: titles,
+        },
+    );
 
     cx.observe_release(pane, move |_, cx| {
         registry.unregister(&id);
@@ -495,6 +621,103 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, cx: &mut App) {
         cx.global_mut::<Remote>().shared_agents.remove(&pane_id);
     })
     .detach();
+}
+
+/// The id paired devices know a shared agent tab by, saved with the tab.
+pub(crate) fn shared_agent_id(pane: &Entity<AgentPane>, cx: &App) -> Option<String> {
+    cx.global::<Remote>()
+        .shared_agents
+        .get(&pane.entity_id())
+        .map(|shared| shared.id.clone())
+}
+
+/// Offer an agent tab that is still waiting to be restored under the id
+/// devices knew it by before this app restarted, so a device that followed
+/// it reattaches instead of losing its view. Restored tabs start only when
+/// activated, so the first request from a device calls `restore`, which
+/// starts the tab and reports whether it could; every request then goes on
+/// to the live tab.
+pub(crate) fn offer_restoring_agent(
+    id: String,
+    title: String,
+    harness: String,
+    restore: impl FnOnce(&mut App) -> bool + 'static,
+    cx: &mut App,
+) {
+    let registry = Arc::clone(&cx.global::<Remote>().registry);
+
+    let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+    // Weak, so the channel closes once the live tab replaces this offer.
+    let own = requests.downgrade();
+
+    registry.register_agent(id.clone(), title, harness, AgentControl { requests });
+
+    let task = cx.spawn({
+        let id = id.clone();
+
+        async move |cx| {
+            let mut restore = Some(restore);
+
+            while let Some(request) = requests_rx.recv().await {
+                let forwarded = cx.update(|cx| {
+                    let restoring = cx
+                        .global_mut::<Remote>()
+                        .restoring_agents
+                        .remove(&id)
+                        .map(Task::detach)
+                        .is_some();
+
+                    if restoring
+                        && let Some(restore) = restore.take()
+                        && !restore(cx)
+                    {
+                        return false;
+                    }
+
+                    // The offer still standing means the tab did not take
+                    // over its id, so there is nothing to forward to.
+                    match registry.agent(&id) {
+                        Some(control)
+                            if !own
+                                .upgrade()
+                                .is_some_and(|own| own.same_channel(&control.requests)) =>
+                        {
+                            control.requests.send(request).is_ok()
+                        }
+                        _ => false,
+                    }
+                });
+
+                if !forwarded {
+                    withdraw_offer(&registry, &id, &own);
+
+                    break;
+                }
+            }
+        }
+    });
+
+    cx.global_mut::<Remote>().restoring_agents.insert(id, task);
+}
+
+/// Withdraw the offer of an agent tab closed before it was ever restored.
+pub(crate) fn withdraw_restoring_agent(id: &str, cx: &mut App) {
+    let remote = cx.global_mut::<Remote>();
+
+    if remote.restoring_agents.remove(id).is_some() {
+        remote.registry.unregister(id);
+    }
+}
+
+/// Unregister `id` if it is still the offer holding `own`, not a live tab
+/// that took its place.
+fn withdraw_offer(registry: &SessionRegistry, id: &str, own: &WeakUnboundedSender<AgentRequest>) {
+    if let (Some(own), Some(control)) = (own.upgrade(), registry.agent(id))
+        && own.same_channel(&control.requests)
+    {
+        registry.unregister(id);
+    }
 }
 
 /// Keep the name paired devices see for a host tab current.

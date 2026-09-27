@@ -25,6 +25,7 @@ fn pane(cx: &mut VisualTestContext) -> Entity<TerminalPane> {
             restorable: TabState::default(),
             agent_route: AgentRoute::parse("test-input").unwrap(),
             remote: None,
+            remote_created: None,
         },
         model,
         content_bounds: None,

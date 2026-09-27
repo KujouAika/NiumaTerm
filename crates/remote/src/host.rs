@@ -45,7 +45,7 @@ use tracing::{debug, warn};
 use crate::discovery::Advertiser;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
 use crate::relay::{RelayCommand, RelaySocket, run_host_link};
-use crate::sessions::{AgentRequest, SessionRegistry, TerminalControl};
+use crate::sessions::{AgentRequest, SessionRegistry, TerminalControl, Viewer};
 use crate::store::{self, PairedDevice, now_ms};
 use crate::stream::StreamFlow;
 
@@ -76,8 +76,9 @@ pub struct HostConfig {
     /// receive it, key included, inside the encrypted pairing exchange.
     pub relay: Option<RelayAccess>,
 
-    /// Runs on a runtime thread after pairing records change, so a view that
-    /// lists them can refresh.
+    /// Runs on a runtime thread after pairing records change and when a
+    /// device connects or disconnects, so a view that lists them can
+    /// refresh.
     pub on_change: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -115,15 +116,21 @@ struct State {
     connections: Vec<([u8; 32], AbortHandle)>,
 }
 
-/// A stream id with what attaching it needs: the session's control handle
-/// and its PTY size watch.
-type PendingAttach = (u32, TerminalControl, watch::Receiver<(u16, u16)>);
+/// A stream id with what attaching it needs: the session, its control
+/// handle, and its PTY size watch.
+type PendingAttach = (u32, String, TerminalControl, watch::Receiver<(u16, u16)>);
 
 /// Per-channel request handling.
 struct Connection {
     shared: Arc<Shared>,
     queue: SendQueue,
-    streams: HashMap<u32, Arc<StreamFlow>>,
+
+    /// The device on the other end, listed as a viewer of what it attaches.
+    viewer: Viewer,
+
+    /// Attached terminal streams and the session each shows.
+    streams: HashMap<u32, (String, Arc<StreamFlow>)>,
+
     next_stream: u32,
 
     /// An attach whose response must be queued before its checkpoint.
@@ -273,6 +280,23 @@ impl HostService {
         self.shared.state.lock().devices.clone()
     }
 
+    /// Names of the paired devices connected now, each device once.
+    pub fn connected_devices(&self) -> Vec<String> {
+        let state = self.shared.state.lock();
+
+        state
+            .devices
+            .iter()
+            .filter(|device| {
+                state
+                    .connections
+                    .iter()
+                    .any(|(key, _)| *key == device.public_key)
+            })
+            .map(|device| device.name.clone())
+            .collect()
+    }
+
     /// Revoke a device: forget its key and close its open channels.
     pub fn remove_device(&self, id: &DeviceId) -> Result<()> {
         let devices = {
@@ -339,10 +363,15 @@ impl Connection {
                         Control::Response { id, outcome }.encode(),
                     ));
 
-                    if let Some((stream, control, size)) = self.pending_attach.take() {
+                    if let Some((stream, session, control, size)) = self.pending_attach.take() {
                         let flow = StreamFlow::attach(stream, &control, size, self.queue.clone());
 
-                        self.streams.insert(stream, flow);
+                        self.shared
+                            .config
+                            .registry
+                            .add_viewer(&session, self.viewer.clone());
+
+                        self.streams.insert(stream, (session, flow));
                     }
                 }
                 // Clients send only requests in this protocol revision.
@@ -350,7 +379,7 @@ impl Connection {
                 Err(error) => debug!(%error, "ignoring an undecodable control message"),
             },
             (stream, kind::INPUT) => {
-                if let Some(flow) = self.streams.get(&stream) {
+                if let Some((_, flow)) = self.streams.get(&stream) {
                     flow.input(message.payload);
                 }
             }
@@ -391,7 +420,7 @@ impl Connection {
                 let stream = self.next_stream;
 
                 self.next_stream += 1;
-                self.pending_attach = Some((stream, control, size));
+                self.pending_attach = Some((stream, session, control, size));
 
                 reply(&Attached { stream, cols, rows })
             }
@@ -423,8 +452,10 @@ impl Connection {
             rpc::STREAM_CLOSE => {
                 let StreamRef { stream } = parse(params)?;
 
-                if let Some(flow) = self.streams.remove(&stream) {
+                if let Some((session, flow)) = self.streams.remove(&stream) {
                     flow.close();
+
+                    registry.remove_viewer(&session, &self.viewer.key);
                 }
 
                 Ok(Value::Null)
@@ -510,14 +541,19 @@ impl Connection {
                     }
                 });
 
-                if let Some(previous) = self.agents.insert(session, task.abort_handle()) {
-                    previous.abort();
+                // A repeated attach replaces the view, so the device is
+                // still one viewer.
+                match self.agents.insert(session.clone(), task.abort_handle()) {
+                    Some(previous) => previous.abort(),
+                    None => registry.add_viewer(&session, self.viewer.clone()),
                 }
             }
             rpc::AGENT_DETACH => {
                 let outcome = parse::<SessionRef>(params).map(|SessionRef { session }| {
                     if let Some(task) = self.agents.remove(&session) {
                         task.abort();
+
+                        registry.remove_viewer(&session, &self.viewer.key);
                     }
 
                     Value::Null
@@ -864,7 +900,9 @@ where
 
     let (in_tx, mut in_rx) = mpsc::unbounded_channel();
 
-    let pump = tokio::spawn(pump(ws, channel, queue_rx, in_tx));
+    // The host answers probes and waits out quiet links; a device whose
+    // network changed runs the fast check from its side.
+    let pump = tokio::spawn(pump(ws, channel, queue_rx, in_tx, Arc::default()));
     let pump_id = pump.id();
 
     // Clients that listed sessions refresh when the list changes.
@@ -889,15 +927,28 @@ where
         }
     });
 
-    shared
-        .state
-        .lock()
-        .connections
-        .push((client_key, pump.abort_handle()));
+    let name = {
+        let mut state = shared.state.lock();
+
+        state.connections.push((client_key, pump.abort_handle()));
+
+        state
+            .devices
+            .iter()
+            .find(|device| device.public_key == client_key)
+            .map(|device| device.name.clone())
+            .unwrap_or_default()
+    };
+
+    (shared.config.on_change)();
 
     let mut connection = Connection {
         shared: Arc::clone(&shared),
         queue,
+        viewer: Viewer {
+            key: client_key,
+            name,
+        },
         streams: HashMap::new(),
         next_stream: 1,
         pending_attach: None,
@@ -914,15 +965,23 @@ where
         .connections
         .retain(|(_, task)| task.id() != pump_id);
 
+    (shared.config.on_change)();
+
     watcher.abort();
 
+    let registry = &shared.config.registry;
+
     // The views this channel carried detach; their sessions keep running.
-    for flow in connection.streams.values() {
+    for (session, flow) in connection.streams.values() {
         flow.close();
+
+        registry.remove_viewer(session, &client_key);
     }
 
-    for task in connection.agents.values() {
+    for (session, task) in &connection.agents {
         task.abort();
+
+        registry.remove_viewer(session, &client_key);
     }
 
     match pump.await {

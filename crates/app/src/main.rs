@@ -412,6 +412,8 @@ fn on_finish_launching(
         open_window(cx, initial, None);
     }
 
+    ui::remote::tabs_restored(cx);
+
     agent_updates::schedule_automatic_checks(cx);
 
     #[cfg(windows)]

@@ -15,9 +15,39 @@ mod vertical;
 #[cfg(test)]
 mod tests;
 
-use gpui::{App, Hsla};
-use gpui_component::ActiveTheme as _;
+use gpui::prelude::*;
+use gpui::{AnyElement, App, ElementId, Hsla, SharedString, div};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use nmt_terminal::event::{ProgressReport, ProgressState};
+use rust_i18n::t;
+
+/// The mark on a host tab that paired devices are viewing, naming them on
+/// hover. Someone on another computer may be reading or typing into the tab,
+/// which the person at the host should be able to tell at a glance.
+fn viewers_mark(id: impl Into<ElementId>, viewers: &[String], cx: &App) -> Option<AnyElement> {
+    if viewers.is_empty() {
+        return None;
+    }
+
+    let label: SharedString = t!("remote-tab-viewers", devices = viewers.join(", "))
+        .into_owned()
+        .into();
+
+    let mark = div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .child(
+            Icon::new(IconName::Eye)
+                .xsmall()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx));
+
+    Some(mark.into_any_element())
+}
 
 /// Color and fill of an OSC 9;4 progress track. Shared by the title-bar strip
 /// and the sidebar's tab rows so one report reads the same in either style.

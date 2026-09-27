@@ -59,6 +59,7 @@ use nmt_platform::default_shell_name;
 use nmt_platform::filesystem::path_identity;
 use nmt_platform::window::native_active_state;
 use nmt_remote::NetworkPty;
+use nmt_remote::local_view::LocalView;
 use rust_i18n::t;
 use tracing::warn;
 
@@ -70,9 +71,10 @@ use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::git_status::GitStatusModel;
 use crate::ui::pane_tree::{PaneId, SplitDirection};
 use crate::ui::persistence::{
-    default_session, materialize_active_tab, restore_session, session_state,
+    default_session, materialize_active_tab, materialize_tab, restore_session, session_state,
 };
 use crate::ui::platform_style::{Host, PlatformStyle as _};
+use crate::ui::remote::Remote;
 use crate::ui::right_panel::{RightPanel, RightPanelKind};
 use crate::ui::settings::{
     AgentProfile, AppSettings, SettingsSurface, TabBarStyle, settings_title,
@@ -94,7 +96,7 @@ use crate::ui::shell::workspace_dirs::{
     RootAvailability, open_new_workspace_dialog, open_workspace_dirs_dialog,
 };
 use crate::ui::tab_bar::{TabStrip, VerticalTabList, WorkspaceTabs};
-use crate::ui::terminal_launch::{spawn_default_pane, spawn_remote_pane};
+use crate::ui::terminal_launch::{spawn_default_pane, spawn_local_view_pane, spawn_remote_pane};
 use crate::ui::terminal_layout::TerminalLayout;
 use crate::ui::title_bar::{PanelToggle, TitleBarInputs, TitleCenter};
 use crate::ui::workflows::WorkflowsView;
@@ -423,6 +425,10 @@ impl AppWindow {
 
         cx.observe_global::<AgentUpdates>(|_, cx| cx.notify())
             .detach();
+
+        // Tabs mark the paired devices viewing them, and the title bar counts
+        // the connected ones.
+        cx.observe_global::<Remote>(|_, cx| cx.notify()).detach();
 
         // Stash the window geometry on every move/resize; main.rs flushes it
         // to local_state.toml on quit. Fires for both, and the Maximized
@@ -1184,6 +1190,10 @@ impl AppWindow {
             pane.read(cx).end_remote_session();
         }
 
+        if let Some(shared) = tree.restoring_agent() {
+            ui::remote::withdraw_restoring_agent(shared, cx);
+        }
+
         let return_to = tree.git().and_then(|git| git.return_to);
 
         drop(tree);
@@ -1519,6 +1529,14 @@ impl AppWindow {
             })
             .unwrap_or_default();
 
+        let restoring: Vec<String> = self
+            .workspaces
+            .tabs_of(id)
+            .into_iter()
+            .flat_map(|tabs| tabs.list().items())
+            .filter_map(|tab| tab.surface().restoring_agent().map(str::to_owned))
+            .collect();
+
         let settings = self.workspaces.kind_of(id) == Some(WorkspaceKind::Settings);
 
         let was_active = self.workspaces.list().active_id() == id;
@@ -1526,6 +1544,10 @@ impl AppWindow {
         if self.workspaces.close_workspace(id).is_some() {
             for route in routes {
                 self.agent_notifications.remove_route(&route, cx);
+            }
+
+            for shared in restoring {
+                ui::remote::withdraw_restoring_agent(&shared, cx);
             }
 
             if settings {
@@ -1845,6 +1867,38 @@ impl AppWindow {
         );
     }
 
+    /// Open a tab on a terminal a paired device started on this computer.
+    pub(crate) fn open_local_view(
+        &mut self,
+        view: LocalView,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_settings_workspace();
+
+        let id = Self::alloc_id(&mut self.next_id);
+
+        let pane = match spawn_local_view_pane(cx, id, view, title.clone()) {
+            Ok(pane) => pane,
+            Err(error) => {
+                warn!("a view of a remote-created terminal failed to start: {error}");
+
+                return;
+            }
+        };
+
+        Self::watch_pane(&pane, cx);
+
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
+            title,
+            window,
+            cx,
+        );
+    }
+
     /// Open a tab on a terminal that runs on another computer. With
     /// `ends_with_tab`, closing the tab ends the session on the host.
     pub(crate) fn open_remote_terminal(
@@ -1893,7 +1947,7 @@ impl AppWindow {
 
         let id = Self::alloc_id(&mut self.next_id);
 
-        Self::watch_agent_tab(&pane, cx);
+        Self::watch_agent_tab(&pane, None, cx);
 
         self.insert_tab(
             TabId(id),
@@ -1945,7 +1999,7 @@ impl AppWindow {
         let owner = AgentSession::create(profile.clone(), workspace, None, cx);
         let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
 
-        Self::watch_agent_tab(&pane, cx);
+        Self::watch_agent_tab(&pane, None, cx);
 
         self.register_agent_tab(&pane, cx);
 
@@ -3036,14 +3090,42 @@ impl AppWindow {
             .map(|tab| tab.id())
     }
 
-    pub(crate) fn watch_agent_tab(pane: &Entity<AgentPane>, cx: &mut Context<Self>) {
+    /// `shared` is the id paired devices knew a restored tab by.
+    pub(crate) fn watch_agent_tab(
+        pane: &Entity<AgentPane>,
+        shared: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = pane.read(cx).agent_session() else {
             return;
         };
 
         cx.subscribe(&session, Self::on_agent_pane_event).detach();
 
-        ui::remote::share_agent_tab(pane, cx);
+        ui::remote::share_agent_tab(pane, shared, cx);
+    }
+
+    /// Start the still-pending tab that paired devices know by `id`, in
+    /// place and without activating it, because a device asked for the
+    /// agent session it holds. Returns whether such a tab was started.
+    pub(crate) fn restore_shared_agent(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self
+            .workspaces
+            .find_tab_id(|surface| surface.restoring_agent() == Some(id))
+        else {
+            return false;
+        };
+
+        let restored = materialize_tab(&mut self.workspaces, tab, &mut self.next_id, window, cx);
+
+        cx.notify();
+
+        restored
     }
 
     fn on_agent_pane_event(
@@ -3197,6 +3279,7 @@ impl AppWindow {
             side_chat: self
                 .active_agent()
                 .and_then(|pane| pane.read(cx).side_chat_shown()),
+            connected_devices: cx.global::<Remote>().connected_devices(),
         }
     }
 

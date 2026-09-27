@@ -61,6 +61,11 @@ struct AgentEntry {
 pub struct SessionRegistry {
     inner: Mutex<Inner>,
     changed: watch::Sender<u64>,
+
+    /// Bumped when a paired device starts or stops viewing a session. Kept
+    /// apart from `changed`, which paired devices hear about: who is
+    /// watching is shown on the host only.
+    viewers_changed: watch::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -68,6 +73,17 @@ struct Inner {
     sessions: BTreeMap<String, Entry>,
     agents: BTreeMap<String, AgentEntry>,
     next: u64,
+
+    /// Paired devices viewing each session, one entry per open view, so a
+    /// device with two views of one session stays listed until both close.
+    viewers: BTreeMap<String, Vec<Viewer>>,
+}
+
+/// A paired device viewing a session.
+#[derive(Clone)]
+pub(crate) struct Viewer {
+    pub key: [u8; 32],
+    pub name: String,
 }
 
 struct Entry {
@@ -95,6 +111,7 @@ impl SessionRegistry {
         Arc::new(Self {
             inner: Mutex::new(Inner::default()),
             changed: watch::channel(0).0,
+            viewers_changed: watch::channel(0).0,
         })
     }
 
@@ -109,13 +126,18 @@ impl SessionRegistry {
         self.insert(Origin::Tab, title, cols, rows, control, None)
     }
 
-    /// Offer a host agent tab. `harness` names the agent it runs.
-    pub fn register_agent(&self, title: String, harness: String, control: AgentControl) -> String {
+    /// Offer a host agent tab under `session`, which the tab keeps across
+    /// restarts so a device following it reattaches to the restored tab.
+    /// Registering an id again replaces its control, as when a tab offered
+    /// before it was restored goes live. `harness` names the agent it runs.
+    pub fn register_agent(
+        &self,
+        session: String,
+        title: String,
+        harness: String,
+        control: AgentControl,
+    ) {
         let mut inner = self.inner.lock();
-
-        inner.next += 1;
-
-        let session = format!("a{}", inner.next);
 
         inner.agents.insert(
             session.clone(),
@@ -136,11 +158,9 @@ impl SessionRegistry {
         drop(inner);
 
         self.notify();
-
-        session
     }
 
-    pub(crate) fn agent(&self, session: &str) -> Option<AgentControl> {
+    pub fn agent(&self, session: &str) -> Option<AgentControl> {
         self.inner
             .lock()
             .agents
@@ -149,15 +169,86 @@ impl SessionRegistry {
     }
 
     pub fn unregister(&self, session: &str) {
-        let (terminal, agent) = {
+        let (terminal, agent, viewers) = {
             let mut inner = self.inner.lock();
 
-            (inner.sessions.remove(session), inner.agents.remove(session))
+            (
+                inner.sessions.remove(session),
+                inner.agents.remove(session),
+                inner.viewers.remove(session),
+            )
         };
+
+        let watched = viewers.is_some();
 
         drop((terminal, agent));
 
         self.notify();
+
+        if watched {
+            self.viewers_changed.send_modify(|version| *version += 1);
+        }
+    }
+
+    pub(crate) fn add_viewer(&self, session: &str, viewer: Viewer) {
+        self.inner
+            .lock()
+            .viewers
+            .entry(session.to_owned())
+            .or_default()
+            .push(viewer);
+
+        self.viewers_changed.send_modify(|version| *version += 1);
+    }
+
+    /// One view of `session` by the device with `key` closed.
+    pub(crate) fn remove_viewer(&self, session: &str, key: &[u8; 32]) {
+        let mut inner = self.inner.lock();
+
+        let Some(viewers) = inner.viewers.get_mut(session) else {
+            return;
+        };
+
+        let Some(index) = viewers.iter().position(|viewer| &viewer.key == key) else {
+            return;
+        };
+
+        viewers.remove(index);
+
+        if viewers.is_empty() {
+            inner.viewers.remove(session);
+        }
+
+        drop(inner);
+
+        self.viewers_changed.send_modify(|version| *version += 1);
+    }
+
+    /// Names of the paired devices viewing `session`, each device once.
+    pub fn viewers(&self, session: &str) -> Vec<String> {
+        let inner = self.inner.lock();
+
+        let Some(viewers) = inner.viewers.get(session) else {
+            return Vec::new();
+        };
+
+        let mut seen: Vec<&[u8; 32]> = Vec::new();
+
+        viewers
+            .iter()
+            .filter(|viewer| {
+                let first = !seen.contains(&&viewer.key);
+
+                seen.push(&viewer.key);
+
+                first
+            })
+            .map(|viewer| viewer.name.clone())
+            .collect()
+    }
+
+    pub fn subscribe_viewers(&self) -> watch::Receiver<u64> {
+        self.viewers_changed.subscribe()
     }
 
     pub fn set_title(&self, session: &str, title: String) {

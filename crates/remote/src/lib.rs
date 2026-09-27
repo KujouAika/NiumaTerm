@@ -9,10 +9,12 @@ pub mod client;
 pub mod connection;
 pub mod discovery;
 pub mod host;
+pub mod local_view;
 pub mod sessions;
 pub mod store;
 
 mod link;
+mod netwatch;
 mod network_pty;
 mod relay;
 mod secret;

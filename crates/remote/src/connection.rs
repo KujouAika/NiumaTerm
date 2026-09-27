@@ -34,6 +34,7 @@ use tracing::{debug, info};
 
 use crate::client::{Refused, establish};
 use crate::link::{Outbound, SendQueue, pump};
+use crate::netwatch;
 use crate::network_pty::NetworkPty;
 use crate::store::PairedHost;
 
@@ -531,6 +532,7 @@ impl RemoteHost {
     async fn supervise(self: Arc<Self>) {
         let mut backoff = MIN_BACKOFF;
         let mut ever_connected = false;
+        let mut network = netwatch::changes();
 
         loop {
             if !self.has_views() {
@@ -565,7 +567,10 @@ impl RemoteHost {
                         streams: Arc::default(),
                     };
 
-                    let pump = tokio::spawn(pump(ws, channel, queue_rx, inbound));
+                    let probe = Arc::new(Notify::new());
+
+                    let pump =
+                        tokio::spawn(pump(ws, channel, queue_rx, inbound, Arc::clone(&probe)));
 
                     *self.link.lock() = Some(link.clone());
 
@@ -585,7 +590,9 @@ impl RemoteHost {
                         self.attach_agent(&link, session);
                     }
 
-                    self.dispatch(&link, inbound_rx).await;
+                    network.mark_unchanged();
+
+                    self.dispatch(&link, inbound_rx, &mut network, &probe).await;
 
                     pump.abort();
 
@@ -609,12 +616,18 @@ impl RemoteHost {
                 Err(error) => {
                     debug!(host = %self.id, %error, "connecting to the remote host failed");
 
-                    // A new view or request retries at once; otherwise the
-                    // backoff spreads retries of many clients apart.
+                    // A new view or request retries at once, and so does a
+                    // network change, which may have brought the host back;
+                    // otherwise the backoff spreads retries of many clients
+                    // apart.
+                    network.mark_unchanged();
+
                     select! {
                         () = sleep(jitter(backoff)) => {}
 
                         () = self.wake.notified() => {}
+
+                        _ = network.changed() => {}
                     }
 
                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -623,13 +636,27 @@ impl RemoteHost {
         }
     }
 
-    /// Route one link's inbound messages until it closes or goes idle.
-    async fn dispatch(&self, link: &Link, mut inbound: UnboundedReceiver<FrameMessage>) {
+    /// Route one link's inbound messages until it closes or goes idle. A
+    /// network change probes the link, which closes it if it no longer
+    /// reaches the host.
+    async fn dispatch(
+        &self,
+        link: &Link,
+        mut inbound: UnboundedReceiver<FrameMessage>,
+        network: &mut watch::Receiver<u64>,
+        probe: &Notify,
+    ) {
         let mut idle_since: Option<Instant> = None;
 
         loop {
             let message = select! {
                 message = inbound.recv() => message,
+                Ok(()) = network.changed() => {
+                    probe.notify_one();
+
+                    continue;
+                }
+
                 () = sleep(Duration::from_secs(5)) => {
                     let idle = !self.has_views() && link.calls.lock().is_empty();
 

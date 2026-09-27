@@ -136,6 +136,7 @@ fn relay_apply_item(state: &Remote) -> SettingItem {
 fn remote_created_item(session: SessionInfo) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         let id = session.session.clone();
+        let opened = session.clone();
 
         h_flex()
             .w_full()
@@ -153,10 +154,24 @@ fn remote_created_item(session: SessionInfo) -> SettingItem {
                     ),
             )
             .child(
-                Button::new(SharedString::from(format!("remote-close-{id}")))
-                    .outline()
-                    .label(t!("settings-remote-close-session"))
-                    .on_click(move |_, _, cx: &mut App| remote::close_remote_created(&id, cx)),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new(SharedString::from(format!("remote-open-{id}")))
+                            .outline()
+                            .label(t!("settings-remote-open-here"))
+                            .on_click(move |_, window, cx: &mut App| {
+                                remote::open_remote_created(&opened, window, cx)
+                            }),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("remote-close-{id}")))
+                            .outline()
+                            .label(t!("settings-remote-close-session"))
+                            .on_click(move |_, _, cx: &mut App| {
+                                remote::close_remote_created(&id, cx)
+                            }),
+                    ),
             )
             .into_any_element()
     })

@@ -13,6 +13,7 @@ use nmt_remote_core::frame::{
     CONTROL_STREAM, Frame, Message as FrameMessage, Reassembler, encode_message, kind,
 };
 use tokio::select;
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Instant, sleep_until};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
@@ -133,6 +134,11 @@ const PING_TIMEOUT: Duration = Duration::from_secs(10);
 /// momentary stall does not tear down working sessions.
 const MAX_MISSED_PINGS: u32 = 2;
 
+/// How long a probe asked for after a network change may go unanswered.
+/// The change itself is the evidence that the socket may be dead, so one
+/// miss closes the channel instead of the two a quiet link gets.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Run an established channel until either side closes it: seal and send
 /// `outbound`, open and reassemble what arrives into `inbound`. One task owns
 /// both directions because the Noise transport keeps both ciphers in one
@@ -141,12 +147,16 @@ const MAX_MISSED_PINGS: u32 = 2;
 /// The pump also keeps the channel honest about liveness: a network that
 /// drops packets without closing the socket (sleep, a pulled cable, a NAT
 /// timeout) would otherwise leave both sides waiting forever. It answers
-/// probes itself, so the layers above never see them.
+/// probes itself, so the layers above never see them. `probe` asks for one
+/// at once, as after the machine's network changed: a socket bound to an
+/// address that is gone stays silent, and waiting out the idle timer would
+/// leave the views frozen for most of a minute.
 pub(crate) async fn pump<S>(
     mut ws: S,
     mut channel: Channel,
     mut outbound: QueueReceiver,
     inbound: UnboundedSender<FrameMessage>,
+    probe: Arc<Notify>,
 ) -> Result<()>
 where
     S: Stream<Item = Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
@@ -202,6 +212,14 @@ where
                 if let Some(hook) = &next.on_sent {
                     hook.sent(next.payload.len());
                 }
+            }
+
+            () = probe.notified() => {
+                missed = MAX_MISSED_PINGS - 1;
+                probing = true;
+                deadline = Instant::now() + PROBE_TIMEOUT;
+
+                send_frames(&mut ws, &mut channel, CONTROL_STREAM, kind::PING, &[]).await?;
             }
 
             () = sleep_until(deadline) => {

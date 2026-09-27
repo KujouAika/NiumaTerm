@@ -12,6 +12,7 @@ use nmt_config::local_state::{
 };
 
 use crate::ui::pane_tree::PaneNode;
+use crate::ui::remote::shared_agent_id;
 use crate::ui::settings::AppSettings;
 use crate::ui::shell::TabSurface;
 use crate::workspace::{WorkspaceId, WorkspaceKind, WorkspaceManager};
@@ -177,6 +178,7 @@ pub(crate) fn session_state(
                                     .remembered_settings()
                                     .map(saved_settings_from_thread),
                                 agent_conversation: session.saved_conversation(),
+                                shared_agent: shared_agent_id(&tab.pane, cx),
                                 ..TabState::default()
                             }
                         }

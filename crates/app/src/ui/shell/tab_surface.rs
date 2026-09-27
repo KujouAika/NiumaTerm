@@ -4,7 +4,7 @@ use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::TeamPane;
 use app::agent_tab::{AgentKind, AgentPane};
 use app::terminal_tab::view::TerminalPane;
-use gpui::{App, Entity};
+use gpui::{App, Entity, EntityId};
 use gpui_component::{Icon, IconName, Sizable as _};
 use nmt_agent::AgentRoute;
 use nmt_config::local_state::{PaneNodeState, TabState};
@@ -185,6 +185,14 @@ impl TabSurface {
         }
     }
 
+    /// The id paired devices know a still-pending agent tab by.
+    pub(crate) fn restoring_agent(&self) -> Option<&str> {
+        match self {
+            Self::Pending(state) => state.shared_agent.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn git(&self) -> Option<&GitTab> {
         match self {
             Self::Git(tab) => Some(tab),
@@ -229,6 +237,15 @@ impl TabSurface {
             TabSurface::Live(tree) => Some(tree),
             _ => None,
         }
+    }
+
+    /// Entity ids of the panes this tab shows, terminal and agent alike.
+    pub(crate) fn pane_ids(&self) -> Vec<EntityId> {
+        self.leaves()
+            .into_iter()
+            .map(|(_, pane)| pane.entity_id())
+            .chain(self.agent().map(Entity::entity_id))
+            .collect()
     }
 
     pub(super) fn agent(&self) -> Option<&Entity<AgentPane>> {

@@ -26,6 +26,7 @@ use nmt_config::local_state::TabState;
 use nmt_config::{CursorShape, active_colors};
 use nmt_remote::NetworkPty;
 use nmt_remote::connection::{RemoteHost, Status};
+use nmt_remote::local_view::LocalView;
 use nmt_terminal::clipboard::{Clipboard, ClipboardType};
 use nmt_terminal::event::MsgSender;
 use nmt_terminal::input::{KeyPhase, WheelDelta};
@@ -85,6 +86,11 @@ struct PaneIdentity {
     /// The PTY runs on another computer. Such a tab is restored by
     /// reattaching to its session, not by relaunching a shell here.
     remote: Option<RemoteTab>,
+
+    /// The session id of a terminal a paired device started on this
+    /// computer, when the PTY is a view of it. Paired devices already see
+    /// that terminal, so the pane is not offered to them a second time.
+    remote_created: Option<String>,
 }
 
 /// A terminal session on another computer, shown in this pane.
@@ -177,6 +183,7 @@ impl TerminalPane {
             restorable: launch.restorable,
             agent_route: launch.agent_route,
             remote: None,
+            remote_created: None,
         };
 
         Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
@@ -218,6 +225,7 @@ impl TerminalPane {
                 session,
                 ends_with_tab,
             }),
+            remote_created: None,
         };
 
         Ok(cx.new(|cx| {
@@ -234,6 +242,40 @@ impl TerminalPane {
 
             Self::from_source(cx, identity, wake, wake_rx, source)
         }))
+    }
+
+    /// A pane showing a terminal a paired device started on this computer.
+    /// Closing it leaves the terminal running for that device.
+    pub fn spawn_local_view(
+        cx: &mut impl AppContext,
+        surface_id: u64,
+        pty: LocalView,
+        title: String,
+        agent_route: AgentRoute,
+        cursor_shape: CursorShape,
+    ) -> Result<Entity<Self>, String> {
+        let (wake, wake_rx) = wake::wake_channel();
+        let session = pty.session().to_owned();
+
+        let source = TerminalFrameSource::remote(
+            wake.clone(),
+            surface_id,
+            pty,
+            (metrics::COLS, metrics::ROWS),
+            cursor_shape,
+            active_colors(),
+        )?;
+
+        let identity = PaneIdentity {
+            id: surface_id,
+            profile_name: title,
+            restorable: TabState::default(),
+            agent_route,
+            remote: None,
+            remote_created: Some(session),
+        };
+
+        Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
     }
 
     fn from_source(
@@ -328,6 +370,11 @@ impl TerminalPane {
 
     pub fn is_remote(&self) -> bool {
         self.identity.remote.is_some()
+    }
+
+    /// The remote-created terminal this pane views, if any.
+    pub fn remote_created_session(&self) -> Option<&str> {
+        self.identity.remote_created.as_deref()
     }
 
     fn cell_metrics(&mut self, window: &mut Window, cx: &App) -> metrics::CellMetrics {

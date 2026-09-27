@@ -18,10 +18,10 @@ use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::NetworkPty;
 use crate::client::pair;
 use crate::connection::{AgentUpdate, RemoteHost, Status};
 use crate::host::{HostConfig, HostService};
+use crate::local_view;
 use crate::sessions::{AgentControl, AgentRequest, SessionRegistry, TerminalControl};
 use crate::store::PairedHost;
 
@@ -105,7 +105,7 @@ fn remote(paired: PairedHost, key: Arc<DeviceKey>) -> Arc<RemoteHost> {
 
 /// Read until `marker` shows up, reporting whether a stream reset came
 /// along the way.
-async fn read_until(pty: &mut NetworkPty, marker: &str) -> bool {
+async fn read_until(pty: &mut impl AsyncPty, marker: &str) -> bool {
     let mut seen = Vec::new();
     let mut buf = [0; 4096];
     let mut restarted = false;
@@ -127,7 +127,7 @@ async fn read_until(pty: &mut NetworkPty, marker: &str) -> bool {
     restarted
 }
 
-async fn run_marker(pty: &mut NetworkPty, tag: &str) {
+async fn run_marker(pty: &mut impl AsyncPty, tag: &str) {
     let (command, output) = marker_command(tag);
 
     poll_fn(|cx| pty.poll_write(cx, &command)).await.unwrap();
@@ -479,7 +479,16 @@ fn fake_agent(registry: &SessionRegistry) -> String {
         }
     });
 
-    registry.register_agent("Agent".into(), "Claude".into(), AgentControl { requests })
+    let session = String::from("a-test");
+
+    registry.register_agent(
+        session.clone(),
+        "Agent".into(),
+        "Claude".into(),
+        AgentControl { requests },
+    );
+
+    session
 }
 
 async fn next_update(updates: &mut UnboundedReceiver<AgentUpdate>) -> AgentUpdate {
@@ -535,5 +544,56 @@ fn an_agent_view_gets_a_snapshot_then_changes_and_again_after_a_drop() {
         registry.unregister(&session);
 
         drop(link);
+    });
+}
+
+#[test]
+fn a_host_view_of_a_remote_created_terminal_shares_it_with_the_device() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let remote = remote(paired, key);
+
+        let mut device = remote.open_terminal(80, 24).await.unwrap();
+
+        let session = device.session().to_owned();
+
+        assert!(read_until(&mut device, "c").await);
+
+        assert_eq!(host.connected_devices(), vec![String::from("Client")]);
+        assert_eq!(registry.viewers(&session), vec![String::from("Client")]);
+
+        let mut local = local_view::open(&registry, &session).expect("the terminal is running");
+
+        // The host view starts from a checkpoint, like a remote one.
+        assert!(read_until(&mut local, "c").await);
+
+        // What the host types reaches the device, which sees one terminal.
+        let (command, output) = marker_command("LOCAL");
+
+        poll_fn(|cx| local.poll_write(cx, &command)).await.unwrap();
+
+        read_until(&mut local, &output).await;
+        read_until(&mut device, &output).await;
+
+        // Closing the host view leaves the terminal running for the device.
+        drop(local);
+
+        run_marker(&mut device, "STILL").await;
+
+        drop(device);
+
+        timeout(WAIT, async {
+            while !registry.viewers(&session).is_empty() {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("a closed view stops listing its device");
+
+        assert_eq!(host.terminal_count(), 1);
     });
 }

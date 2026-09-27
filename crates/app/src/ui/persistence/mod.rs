@@ -30,7 +30,7 @@ use crate::tabs::{TabId, TabManager};
 use crate::ui::AppWindow;
 use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::pane_tree::{PaneId, PaneNode, PaneTree};
-use crate::ui::remote::{paired_host_name, restore_agent, restore_view};
+use crate::ui::remote::{offer_restoring_agent, paired_host_name, restore_agent, restore_view};
 use crate::ui::settings::{AgentProfile, AppSettings, builtin_agent_profile};
 use crate::ui::shell::tab_surface::{AgentTab, GitTab, TerminalPaneTree};
 use crate::ui::shell::{TabSurface, agent_workspace};
@@ -265,7 +265,59 @@ pub(super) fn restore_session(
     // observers, notification pumps) never see a pending active tab.
     materialize_active_tab(&mut workspaces, next_id, window, cx);
 
+    offer_restoring_agents(&workspaces, window, cx);
+
     Some(workspaces)
+}
+
+/// Offer paired devices the agent tabs still waiting to be restored, under
+/// the ids they knew them by, so their views survive this restart.
+fn offer_restoring_agents(
+    workspaces: &WorkspaceManager,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) {
+    let offers: Vec<_> = workspaces
+        .all_tabs()
+        .flat_map(|tabs| tabs.list().items())
+        .filter_map(|tab| {
+            let TabSurface::Pending(state) = tab.surface() else {
+                return None;
+            };
+
+            let SavedTab::Agent(kind) = saved_tab(state) else {
+                return None;
+            };
+
+            let harness: &str = kind.into();
+
+            Some((
+                state.shared_agent.clone()?,
+                tab.title().to_owned(),
+                harness.to_owned(),
+            ))
+        })
+        .collect();
+
+    let this = cx.entity().downgrade();
+    let handle = window.window_handle();
+
+    for (id, title, harness) in offers {
+        let this = this.clone();
+        let restored = id.clone();
+
+        let restore = move |cx: &mut App| {
+            handle
+                .update(cx, |_, window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.restore_shared_agent(&restored, window, cx)
+                    })
+                })
+                .is_ok_and(|restored| restored.unwrap_or(false))
+        };
+
+        offer_restoring_agent(id, title, harness, restore, cx);
+    }
 }
 
 /// Spawn the shells of a still-pending active tab and swap its surface to
@@ -298,7 +350,58 @@ pub(super) fn materialize_active_tab(
         | TabSurface::TeamUnavailable { .. } => return false,
     };
 
-    let surface = match saved_tab(&state) {
+    let roots = workspaces.active_roots().cloned();
+    let surface = restored_surface(state, roots.as_ref(), next_id, window, cx);
+
+    *workspaces.active_tabs_mut().active_mut() = surface;
+
+    true
+}
+
+/// Start the pending tab `id` in place, in whichever workspace holds it,
+/// without activating it. Returns whether a pending tab was started.
+pub(super) fn materialize_tab(
+    workspaces: &mut WorkspaceManager,
+    id: TabId,
+    next_id: &mut u64,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) -> bool {
+    let Some(workspace) = workspaces.workspace_of_tab(id) else {
+        return false;
+    };
+
+    let state = match workspaces
+        .tabs_of(workspace)
+        .and_then(|tabs| tabs.list().find(id))
+        .map(|tab| tab.surface())
+    {
+        Some(TabSurface::Pending(state)) => (**state).clone(),
+        _ => return false,
+    };
+
+    let roots = workspaces.roots_of(workspace).cloned();
+    let surface = restored_surface(state, roots.as_ref(), next_id, window, cx);
+
+    if let Some(tab) = workspaces
+        .tabs_for_tab_mut(id)
+        .and_then(|tabs| tabs.list_mut().find_mut(id))
+    {
+        *tab.surface_mut() = surface;
+    }
+
+    true
+}
+
+/// The live surface a saved tab reopens as, in a workspace with `roots`.
+fn restored_surface(
+    state: TabState,
+    roots: Option<&WorkspaceRoots>,
+    next_id: &mut u64,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) -> TabSurface {
+    match saved_tab(&state) {
         SavedTab::Git(cwd) => {
             let view = cx.new(|cx| GitSidebar::new(cwd.to_owned(), window, cx));
 
@@ -309,7 +412,7 @@ pub(super) fn materialize_active_tab(
         }
         SavedTab::Team(saved_id) => restore_team_tab(saved_id, &state, window, cx),
         SavedTab::Agent(kind) => {
-            let workspace = agent_workspace(workspaces.active_roots());
+            let workspace = agent_workspace(roots);
 
             let profile = restored_agent_profile(
                 state.agent_profile.as_deref(),
@@ -351,7 +454,7 @@ pub(super) fn materialize_active_tab(
 
             let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
 
-            AppWindow::watch_agent_tab(&pane, cx);
+            AppWindow::watch_agent_tab(&pane, state.shared_agent.clone(), cx);
 
             owner.start(None, cx);
 
@@ -361,7 +464,7 @@ pub(super) fn materialize_active_tab(
             match state.agent.as_deref().and_then(AgentKind::from_id) {
                 Some(kind) => match restore_agent(host, session, kind, window, cx) {
                     Some((owner, pane)) => {
-                        AppWindow::watch_agent_tab(&pane, cx);
+                        AppWindow::watch_agent_tab(&pane, None, cx);
 
                         TabSurface::Agent(AgentTab { owner, pane })
                     }
@@ -378,11 +481,7 @@ pub(super) fn materialize_active_tab(
             }
         }
         SavedTab::Terminal => TabSurface::Live(restore_terminal_tree(state, next_id, cx)),
-    };
-
-    *workspaces.active_tabs_mut().active_mut() = surface;
-
-    true
+    }
 }
 
 /// A saved terminal tab's pane layout, rebuilt with one fresh shell per leaf.

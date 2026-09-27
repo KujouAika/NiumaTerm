@@ -169,6 +169,12 @@ pub struct TabState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_session: Option<String>,
 
+    /// The id paired devices know this host agent tab by. The restored tab
+    /// keeps it, so a device that followed the tab before a restart
+    /// reattaches to it instead of losing its view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_agent: Option<String>,
+
     /// Thread controls this agent tab was last running under. Absent for a
     /// tab the user never adjusted, which reopens on its profile's defaults.
     /// Declared with `panes` below the scalars: TOML requires tables after
