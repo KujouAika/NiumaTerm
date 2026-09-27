@@ -9,26 +9,29 @@ mod tests;
 
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{
     Question, QuestionMode, QuestionRequest, QuestionResolution, QuestionResponse, ThreadSettings,
 };
 use crate::session::SessionRuntime;
 use crate::session::lifecycle::Status;
+use crate::session::view::{ApprovalView, PendingView};
 
 /// Distinguishes a draft from a later request reusing its provider ID or list position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct QuestionKey {
     index: usize,
     generation: u64,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionError {
     Disconnected,
     Rejected(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionAction {
     Answer,
     Skip,
@@ -364,6 +367,36 @@ impl SessionInput {
         self.batches.clear();
     }
 
+    pub fn view(&self) -> PendingView {
+        PendingView {
+            epoch: self.epoch,
+            sequence: self.sequence,
+            disconnected: self.disconnected,
+            approval: self.approval.as_ref().map(|approval| ApprovalView {
+                description: approval.description.clone(),
+                submitted: approval.submitted,
+            }),
+            drafts: self.batches.iter().map(QuestionDraft::view).collect(),
+        }
+    }
+
+    pub fn replace(&mut self, view: PendingView) {
+        self.epoch = view.epoch;
+        self.sequence = view.sequence;
+        self.disconnected = view.disconnected;
+
+        self.approval = view.approval.map(|approval| Approval {
+            description: approval.description,
+            submitted: approval.submitted,
+        });
+
+        self.batches = view
+            .drafts
+            .into_iter()
+            .map(QuestionDraft::from_view)
+            .collect();
+    }
+
     pub fn approval(&self) -> Option<&str> {
         self.approval
             .as_ref()
@@ -427,7 +460,7 @@ struct Approval {
     submitted: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalOutcome {
     Ignored,
     Rejected,

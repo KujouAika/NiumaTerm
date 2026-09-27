@@ -3,10 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::GenerationSample;
+use crate::session::view::{LiveView, Since};
 
 /// Completed response totals for both the current turn and the observed session.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GenerationStats {
     responses: HashSet<String>,
     output_tokens: u64,
@@ -169,6 +172,22 @@ impl LiveTurn {
         self.started.take().map(|started| (started, output_tokens))
     }
 
+    pub fn view(&self) -> LiveView {
+        LiveView {
+            started: Since::of(self.started),
+            output_tokens: self.output_tokens,
+            detail: self.detail.clone(),
+            compacting: self.compacting,
+        }
+    }
+
+    pub fn replace(&mut self, view: LiveView) {
+        self.started = view.started.instant();
+        self.output_tokens = view.output_tokens;
+        self.detail = view.detail;
+        self.compacting = view.compacting;
+    }
+
     /// Drop the running turn without settling it.
     pub fn discard(&mut self) {
         self.started = None;
@@ -180,7 +199,7 @@ impl LiveTurn {
 
 /// One entry per finished turn: whether it settled, how long it took, what it
 /// produced, and whether the user stopped it.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TurnLedger {
     /// Turns that have finished, whether in this process or in a session this
     /// view replayed. Folding keys off this rather than off a known duration,

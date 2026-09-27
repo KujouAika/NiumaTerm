@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::background_task::{BackgroundTaskKey, BackgroundTaskSnapshot};
 use crate::chat::{
@@ -44,13 +45,19 @@ use crate::session::restore::{
 use crate::session::settings::ConversationSettings;
 use crate::session::side::{SideQuestionOutcome, SideQuestions};
 use crate::session::update_readiness::{ConversationWork, Readiness, prepare_stop};
+use crate::session::view::{
+    CatalogView, ImageRef, QueueView, SettingsView, Since, StatusView, TasksView, UsageView,
+    ViewEntry, ViewSlot, ViewSlots,
+};
 use crate::session::workflows::{RefreshPlan, WorkflowData, WorkflowReader};
 use crate::session::{
     AgentKind, Backend, ConversationTitleRequest, OperationError, RecoveryIdentity, RenameOutcome,
     SettingsOutcome, TaskHistory, TaskHistoryRead, TranscriptLoad, UnsupportedOperation,
 };
-use crate::transcript::TextField;
-use crate::transcript::conversation::{ConversationImage, ConversationState, hidden};
+use crate::transcript::conversation::{
+    ConversationImage, ConversationState, EntryMetadata, hidden,
+};
+use crate::transcript::{TextField, TranscriptEntry};
 use crate::workflow::{WorkflowRefreshRequest, WorkflowRefreshResult, WorkflowRun, WorkflowSource};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1563,6 +1570,167 @@ impl SessionController {
             resume_failed,
             cancelled_commands,
         }
+    }
+
+    /// This conversation's state as a view in another process renders it.
+    pub fn view_slots(&self) -> ViewSlots {
+        let conversation = self.conversation.borrow();
+
+        ViewSlots {
+            status: StatusView {
+                status: self.runtime.status(),
+                epoch: self.runtime.epoch(),
+                start_failure: self.runtime.start_failure().map(str::to_owned),
+                turn: self.delivery.turn(),
+                active: self.delivery.is_active(),
+                live: conversation.live.view(),
+                submitted_at: Since::of(conversation.submitted_at),
+                first_output_latency: conversation.first_output_latency,
+                last_response_at: Since::of(conversation.last_response_at),
+            },
+            usage: UsageView {
+                context_window_usage: conversation.context_window_usage,
+                context_composition: conversation.context_composition.clone(),
+                session_stats: conversation.session_stats,
+                generation: conversation.generation_stats.clone(),
+            },
+            turns: conversation.turns.clone(),
+            settings: SettingsView {
+                settings: self.controls.settings.clone(),
+                models: self.controls.models.clone(),
+                approval_presets: self.controls.approval_presets.clone(),
+                agent_presets: self.controls.agent_presets.clone(),
+                plan_mode: self.plan_mode,
+            },
+            catalogs: CatalogView {
+                commands: self.command_catalog.clone(),
+                skills: self.skill_catalog.clone(),
+            },
+            pending: self.input.view(),
+            queue: QueueView {
+                prompts: self.delivery.pending().clone(),
+                commands: self.commands.queue.clone(),
+                awaiting_turn: self.commands.awaiting_turn,
+            },
+            goal: self.goal.clone(),
+            tasks: TasksView {
+                list: self.task_list.clone(),
+                snapshots: self.task_snapshots,
+            },
+            named: self.naming.named,
+        }
+    }
+
+    /// The transcript from entry `from` on, with images by reference.
+    pub fn transcript_view(&self, from: usize) -> Vec<ViewEntry> {
+        let conversation = self.conversation.borrow();
+
+        conversation
+            .content
+            .entries()
+            .get(from..)
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| ViewEntry {
+                turn: entry.turn,
+                item: entry.item.clone(),
+                at: entry.metadata.at,
+                images: entry
+                    .metadata
+                    .images
+                    .iter()
+                    .map(|image| ImageRef {
+                        id: image.id,
+                        len: image.bytes.len() as u64,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// An image of the transcript, for a view that has only its reference.
+    pub fn conversation_image(&self, id: Uuid) -> Option<Arc<ConversationImage>> {
+        self.conversation
+            .borrow()
+            .content
+            .entries()
+            .iter()
+            .flat_map(|entry| entry.metadata.images.iter())
+            .find(|image| image.id == id)
+            .cloned()
+    }
+
+    /// Follow a slot of a conversation running in another process. Only a
+    /// replica, which has no backend, takes these.
+    pub fn apply_slot(&mut self, slot: ViewSlot) {
+        match slot {
+            ViewSlot::Status(status) => {
+                self.runtime
+                    .mirror(status.status, status.epoch, status.start_failure);
+
+                let prompts = self.delivery.pending().clone();
+
+                self.delivery.mirror(status.turn, status.active, prompts);
+
+                let mut conversation = self.conversation.borrow_mut();
+
+                conversation.live.replace(status.live);
+
+                conversation.submitted_at = status.submitted_at.instant();
+                conversation.first_output_latency = status.first_output_latency;
+                conversation.last_response_at = status.last_response_at.instant();
+
+                conversation.changed_turn(status.turn);
+            }
+            ViewSlot::Usage(usage) => {
+                let mut conversation = self.conversation.borrow_mut();
+
+                conversation.context_window_usage = usage.context_window_usage;
+                conversation.context_composition = usage.context_composition;
+                conversation.session_stats = usage.session_stats;
+                conversation.generation_stats = usage.generation;
+            }
+            ViewSlot::Turns(turns) => {
+                let mut conversation = self.conversation.borrow_mut();
+
+                conversation.turns = turns;
+
+                let first = conversation.content.entries().len().saturating_sub(1);
+
+                conversation.changed(first, None);
+            }
+            ViewSlot::Settings(settings) => {
+                self.controls.settings = settings.settings;
+                self.controls.models = settings.models;
+                self.controls.approval_presets = settings.approval_presets;
+                self.controls.agent_presets = settings.agent_presets;
+                self.plan_mode = settings.plan_mode;
+            }
+            ViewSlot::Catalogs(catalogs) => {
+                self.command_catalog = catalogs.commands;
+                self.skill_catalog = catalogs.skills;
+            }
+            ViewSlot::Pending(pending) => self.input.replace(pending),
+            ViewSlot::Queue(queue) => {
+                let (turn, active) = (self.delivery.turn(), self.delivery.is_active());
+
+                self.delivery.mirror(turn, active, queue.prompts);
+
+                self.commands.queue = queue.commands;
+                self.commands.awaiting_turn = queue.awaiting_turn;
+            }
+            ViewSlot::Goal(goal) => self.goal = goal,
+            ViewSlot::Tasks(tasks) => {
+                self.task_list = tasks.list;
+                self.task_snapshots = tasks.snapshots;
+            }
+            ViewSlot::Named(named) => self.naming.named = named,
+        }
+    }
+
+    /// Follow a transcript change of a conversation in another process.
+    pub fn splice_transcript(&mut self, from: usize, entries: Vec<TranscriptEntry<EntryMetadata>>) {
+        self.conversation.borrow_mut().splice(from, entries);
     }
 
     /// Retain the backend while retiring conversation-specific state. Restarted

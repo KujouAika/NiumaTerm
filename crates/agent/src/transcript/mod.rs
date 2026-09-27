@@ -111,6 +111,17 @@ impl<M> TranscriptContent<M> {
         self.item_index.clear();
     }
 
+    /// Drop every entry from `len` on.
+    pub fn truncate(&mut self, len: usize) {
+        self.entries.truncate(len);
+
+        self.item_index.retain(|_, positions| {
+            positions.retain(|position| *position < len);
+
+            !positions.is_empty()
+        });
+    }
+
     pub fn contains_item(&self, id: &str) -> bool {
         self.item_index.contains_key(id)
     }

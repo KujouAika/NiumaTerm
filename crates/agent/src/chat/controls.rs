@@ -37,7 +37,7 @@ pub struct ThreadSettings {
 /// name them itself. This exists for one whose preset table is part of the
 /// deployment, where a hard-coded list would offer values the deployment does
 /// not serve and hide the ones it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalPreset {
     /// Submitted back verbatim when the user picks it.
     pub value: String,
@@ -52,7 +52,7 @@ pub struct ApprovalPreset {
 /// preset is a policy the session switches between at will, while this decides
 /// which plugins compose the agent and can therefore only be chosen before the
 /// conversation has run anything.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPreset {
     /// Submitted back verbatim when the user picks it.
     pub value: String,
@@ -84,7 +84,7 @@ pub(crate) fn list_selected_model(models: &mut Vec<ModelInfo>, selected: Option<
 }
 
 /// One entry of a backend's model catalog.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub model: String,
     pub display: String,

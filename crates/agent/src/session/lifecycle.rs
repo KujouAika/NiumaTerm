@@ -7,6 +7,7 @@
 #[path = "lifecycle_tests.rs"]
 mod lifecycle_tests;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::background_task::BackgroundTaskKey;
@@ -14,7 +15,7 @@ use crate::chat::{Event, SendOutcome};
 use crate::session::backend::{Backend, RecoveryIdentity};
 use crate::session::children::ChildAgents;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     Starting,
     Idle,
@@ -52,7 +53,7 @@ pub enum StartOutcome {
     Superseded(Option<Box<Backend>>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InterruptOutcome {
     Unavailable,
     Accepted,
@@ -116,6 +117,14 @@ impl SessionRuntime {
 
     pub fn last_recovery_snapshot(&self) -> Option<&RecoverySnapshot> {
         self.last_recovery_snapshot.as_ref()
+    }
+
+    /// Follow a runtime in another process, for a replica without a
+    /// backend of its own.
+    pub fn mirror(&mut self, status: Status, epoch: u64, start_failure: Option<String>) {
+        self.status = status;
+        self.epoch = epoch;
+        self.start_failure = start_failure;
     }
 
     pub fn begin_start(&mut self) -> u64 {

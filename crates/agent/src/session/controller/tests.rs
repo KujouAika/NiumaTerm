@@ -12,6 +12,7 @@ use crate::session::input::{ApprovalOutcome, QuestionAction, QuestionKey, Submis
 use crate::session::lifecycle::{InterruptOutcome, StartOutcome, Status};
 use crate::session::restore::SettingsSeed;
 use crate::session::test_support::TestBackend;
+use crate::session::view::{AgentView, ViewOp, ViewPublisher};
 use crate::session::{AgentKind, Backend, PromptRequest, SettingsOutcome};
 
 #[test]
@@ -929,4 +930,121 @@ fn an_answered_model_pick_puts_the_pickers_on_what_the_session_runs() {
         session.controls.settings.model.as_deref(),
         Some("picked-model")
     );
+}
+
+/// Apply what a publisher sent, as a view in another process does.
+fn follow(replica: &mut SessionController, ops: Vec<ViewOp>) {
+    for op in ops {
+        match op {
+            ViewOp::Splice { from, entries } => replica.splice_transcript(
+                from,
+                entries
+                    .into_iter()
+                    .map(|entry| entry.into_entry(Vec::new()))
+                    .collect(),
+            ),
+            ViewOp::Slot { slot } => replica.apply_slot(*slot),
+        }
+    }
+}
+
+fn snapshot_ops(view: AgentView) -> Vec<ViewOp> {
+    let mut ops = vec![ViewOp::Splice {
+        from: 0,
+        entries: view.transcript,
+    }];
+
+    ops.extend(
+        view.slots
+            .into_slots()
+            .into_iter()
+            .map(|slot| ViewOp::Slot {
+                slot: Box::new(slot),
+            }),
+    );
+
+    ops
+}
+
+fn assert_in_step(host: &SessionController, replica: &SessionController) {
+    assert_eq!(replica.view_slots(), host.view_slots());
+    assert_eq!(replica.transcript_view(0), host.transcript_view(0));
+}
+
+#[test]
+fn a_replica_follows_a_conversation_through_published_changes() {
+    let mut host = started(AgentKind::Codex, "view", vec![SendOutcome::StartedTurn]);
+    let mut replica = SessionController::new(AgentKind::Codex);
+    let mut publisher = ViewPublisher::default();
+
+    send(&mut host, "first prompt");
+
+    // The snapshot travels as JSON.
+    let json = serde_json::to_string(&publisher.snapshot(&host)).unwrap();
+
+    follow(
+        &mut replica,
+        snapshot_ops(serde_json::from_str(&json).unwrap()),
+    );
+
+    assert_in_step(&host, &replica);
+
+    apply(&mut host, Event::TurnStarted);
+
+    apply(
+        &mut host,
+        Event::ItemStarted(Item::AgentMessage {
+            id: "reply".into(),
+            text: None,
+            questions: None,
+        }),
+    );
+
+    apply(
+        &mut host,
+        Event::AgentMessageDelta {
+            item_id: "reply".into(),
+            delta: "streamed ".into(),
+        },
+    );
+
+    apply(
+        &mut host,
+        Event::ApprovalRequested {
+            description: "Allow command".into(),
+        },
+    );
+
+    follow(&mut replica, publisher.changes(&host));
+
+    assert_in_step(&host, &replica);
+
+    assert_eq!(replica.input().approval(), Some("Allow command"));
+    assert!(replica.conversation().borrow().live.is_working());
+
+    // Streaming resends only the entry being written.
+    apply(
+        &mut host,
+        Event::AgentMessageDelta {
+            item_id: "reply".into(),
+            delta: "text".into(),
+        },
+    );
+
+    let ops = publisher.changes(&host);
+
+    assert!(matches!(&ops[..], [ViewOp::Splice { from: 1, entries }] if entries.len() == 1));
+
+    follow(&mut replica, ops);
+
+    apply(&mut host, Event::TurnCompleted { error: None });
+
+    follow(&mut replica, publisher.changes(&host));
+
+    assert_in_step(&host, &replica);
+
+    assert_eq!(replica.runtime().status(), Status::Idle);
+
+    // Time passing on its own is not a change.
+    assert!(publisher.changes(&host).is_empty());
 }

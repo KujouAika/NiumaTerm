@@ -4,9 +4,11 @@
 //! decides what the palette offers after the name, so both travel with the
 //! command rather than being inferred from it.
 
+use serde::{Deserialize, Serialize};
+
 /// Which layer contributed a slash command. The UI uses this only for
 /// deterministic precedence when two layers advertise the same name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlashCommandSource {
     Local,
     Adapter,
@@ -14,7 +16,7 @@ pub enum SlashCommandSource {
 }
 
 /// Shape of the input accepted after a command name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlashCommandArguments {
     None,
     Freeform,
@@ -23,7 +25,7 @@ pub enum SlashCommandArguments {
 }
 
 /// When a command may run relative to a model turn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlashCommandRunPolicy {
     Immediate,
     QueueUntilIdle,
@@ -31,7 +33,7 @@ pub enum SlashCommandRunPolicy {
 }
 
 /// Backend-neutral command metadata used by the composer palette.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlashCommandInfo {
     /// Normalized protocol name without the leading slash.
     pub name: String,
@@ -45,7 +47,7 @@ pub struct SlashCommandInfo {
 
 /// One provider-discovered skill. `path` is part of the identity because
 /// Codex can publish the same skill name from multiple configuration scopes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
@@ -58,7 +60,7 @@ pub struct SkillInfo {
 /// Complete skill-directory state for the current backend session. Errors
 /// can coexist with usable entries when one configured working directory or
 /// skill file fails to load.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillCatalog {
     pub skills: Vec<SkillInfo>,
     pub errors: Vec<String>,
@@ -66,7 +68,7 @@ pub struct SkillCatalog {
 
 /// Exact provider identity selected by the UI for a structured skill input.
 /// The catalog is revalidated before this reference is sent to the backend.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillReference {
     pub name: String,
     pub path: String,
@@ -74,7 +76,7 @@ pub struct SkillReference {
 
 /// Immediate result of asking a backend to execute a slash command. Turn
 /// lifecycle remains event-driven: `Accepted` does not imply `TurnStarted`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlashCommandOutcome {
     Accepted,
     Completed {

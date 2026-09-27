@@ -1,6 +1,8 @@
 //! Questions retain their own identity because several batches can outlive a turn.
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionInput {
     #[default]
     SelectionOnly,
@@ -8,13 +10,13 @@ pub enum QuestionInput {
     Secret,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionOption {
     pub label: String,
     pub description: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     pub header: Option<String>,
     pub question: String,
@@ -23,7 +25,7 @@ pub struct Question {
     pub input: QuestionInput,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionMode {
     Blocking,
     /// The request can be skipped after a visible countdown until the user interacts.

@@ -19,6 +19,7 @@ mod usage;
 #[cfg(test)]
 mod tests;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::background_task::{
@@ -28,7 +29,7 @@ use crate::progress::TaskList;
 use crate::workflow::WorkflowSnapshot;
 
 /// Why a context compaction ran.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompactionTrigger {
     /// The backend reached its own context threshold and compacted unprompted.
     Automatic,
@@ -40,7 +41,7 @@ pub enum CompactionTrigger {
 /// a summary. Every field is optional because backends report different subsets
 /// live and in their persisted transcript, and the boundary is worth showing
 /// even when only part of the accounting is known.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compaction {
     pub trigger: Option<CompactionTrigger>,
 
@@ -64,7 +65,7 @@ pub struct Compaction {
 /// A typed view of one transcript item, used for both started and completed
 /// notifications. `Option` fields mean "absent in this payload — keep what
 /// streaming already produced".
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Item {
     /// User text is present for persisted replay and optional for live echoes,
     /// which a UI that already rendered the submitted prompt can skip.
@@ -335,7 +336,7 @@ pub struct MessageImage {
 /// without naming the individual messages leaves it absent, and the row is
 /// then read-only rather than carrying a control that could not address
 /// anything.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedPrompt {
     pub id: Option<String>,
     pub text: String,
@@ -567,7 +568,7 @@ pub enum Event {
 }
 
 /// Outcome of a session's `send_user_message`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SendOutcome {
     /// A new turn was started.
     StartedTurn,

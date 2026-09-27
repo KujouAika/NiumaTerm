@@ -2,11 +2,14 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{Question, QuestionInput, QuestionMode, QuestionRequest};
 use crate::session::RecoveryIdentity;
 use crate::session::input::{QuestionError, QuestionKey};
+use crate::session::view::{DraftView, Since};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionStatus {
     Pending,
     Submitting,
@@ -110,6 +113,41 @@ impl QuestionDraft {
             },
             started: Instant::now(),
             touched: false,
+        }
+    }
+
+    pub fn view(&self) -> DraftView {
+        DraftView {
+            id: self.id.clone(),
+            questions: self.questions.clone(),
+            mode: self.mode,
+            status: self.status,
+            error: self.error.clone(),
+            selected: self.selected.clone(),
+            text: self.text.clone(),
+            custom: self.custom.clone(),
+            key: self.key,
+            started: Since::of(Some(self.started)),
+            touched: self.touched,
+        }
+    }
+
+    /// A draft mirrored from another process. Its conversation identity
+    /// stays there, with the only code that restores questions.
+    pub fn from_view(view: DraftView) -> Self {
+        Self {
+            id: view.id,
+            identity: None,
+            questions: view.questions,
+            mode: view.mode,
+            status: view.status,
+            error: view.error,
+            selected: view.selected,
+            text: view.text,
+            custom: view.custom,
+            key: view.key,
+            started: view.started.instant().unwrap_or_else(Instant::now),
+            touched: view.touched,
         }
     }
 

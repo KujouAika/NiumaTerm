@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 use std::mem::take;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{SlashCommandOutcome, SlashCommandRunPolicy};
 use crate::session::Backend;
 use crate::session::lifecycle::Status;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingSlashCommand {
     pub name: String,
     pub arguments: String,

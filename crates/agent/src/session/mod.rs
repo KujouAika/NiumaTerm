@@ -23,6 +23,7 @@ pub mod settings;
 pub mod side;
 pub mod team_capabilities;
 pub mod update_readiness;
+pub mod view;
 pub mod workflows;
 
 mod backend;

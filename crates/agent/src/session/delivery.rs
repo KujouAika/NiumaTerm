@@ -74,6 +74,13 @@ impl MessageDelivery {
         &self.pending
     }
 
+    /// Follow the delivery state of a conversation in another process.
+    pub fn mirror(&mut self, turn: u64, active: bool, pending: VecDeque<QueuedPrompt>) {
+        self.turn = turn;
+        self.active = active;
+        self.pending = pending;
+    }
+
     /// A refusal changes no delivery state and never builds recovery data.
     /// Recovery is retained only for the prompt that starts a new turn.
     pub fn submit(

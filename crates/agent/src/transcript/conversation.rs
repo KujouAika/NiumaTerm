@@ -251,6 +251,20 @@ impl ConversationState {
         self.changed(first, None);
     }
 
+    /// Replace every entry from `from` on, as a replica following another
+    /// process's conversation does.
+    pub fn splice(&mut self, from: usize, entries: Vec<TranscriptEntry<EntryMetadata>>) {
+        let from = from.min(self.content.entries().len());
+
+        self.content.truncate(from);
+
+        for entry in entries {
+            self.content.append(entry);
+        }
+
+        self.changed(from, None);
+    }
+
     pub fn retain_last(&mut self, count: usize) -> usize {
         let dropped = self.content.retain_last(count);
 
