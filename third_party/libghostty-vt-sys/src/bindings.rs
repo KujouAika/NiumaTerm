@@ -3944,6 +3944,8 @@ pub struct BlockFormatOptions {
     pub unwrap: bool,
     #[doc = " Trim trailing blanks from each line."]
     pub trim: bool,
+    #[doc = " Emit VT sequences (styles, hyperlinks) instead of plain text."]
+    pub vt: bool,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
@@ -3963,6 +3965,8 @@ const _: () = {
         [::std::mem::offset_of!(BlockFormatOptions, unwrap) - 34usize];
     ["Offset of field: BlockFormatOptions::trim"]
         [::std::mem::offset_of!(BlockFormatOptions, trim) - 35usize];
+    ["Offset of field: BlockFormatOptions::vt"]
+        [::std::mem::offset_of!(BlockFormatOptions, vt) - 36usize];
 };
 unsafe extern "C" {
     #[doc = " Export a cell range of the snapshot as plain UTF-8 text — the\n copy/deep-search floor. Cross-block copy concatenates per-block\n exports. ANY THREAD (holding the ref).\n\n The buffer is allocated with the given allocator (the default when\n NULL) and ownership transfers to the caller: free it with\n ghostty_free(allocator, ptr, len).\n\n         out-of-range or inverted row range, GHOSTTY_OUT_OF_MEMORY on\n         allocation failure\n"]

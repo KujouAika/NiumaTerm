@@ -859,15 +859,56 @@ impl GhosttyTerminal {
     /// Export the complete terminal state as a VT stream. Replaying the returned
     /// bytes reconstructs the current screen, styles, modes, palette, and cursor,
     /// which lets a newly attached client start from a consistent checkpoint.
+    ///
+    /// The stream starts with a reset so it also applies over a used engine.
+    /// Finished blocks live outside the screen the formatter reads, so they are
+    /// written first and scrolled into history: without them a checkpoint in
+    /// block mode carries only the output since the last finished command.
+    /// A replica receives that history as plain scrollback, not as blocks.
     pub fn format_vt_state(&mut self) -> Result<Vec<u8>> {
-        format_terminal(
+        let mut out = b"\x1bc\x1b[3J".to_vec();
+
+        let mut history = Vec::new();
+
+        for index in 0..self.block_count() {
+            let Some(block) = self.block_at(index).and_then(|h| self.block_acquire(h)) else {
+                continue;
+            };
+
+            let vt = block.format_vt()?;
+            let end = vt.trim_ascii_end().len();
+
+            if !history.is_empty() {
+                history.extend_from_slice(b"\r\n");
+            }
+
+            history.extend_from_slice(&vt[..end]);
+            history.extend_from_slice(b"\x1b[0m");
+        }
+
+        if !history.is_empty() {
+            out.extend_from_slice(&history);
+
+            // One line feed per screen row moves the last history row just
+            // above the viewport, leaving a blank screen with no blank line
+            // between history and the screen content formatted next.
+            for _ in 0..self.rows() {
+                out.extend_from_slice(b"\r\n");
+            }
+
+            out.extend_from_slice(b"\x1b[H");
+        }
+
+        out.extend(format_terminal(
             self.terminal,
             VtFormatterFormat::VT,
             full_state_extra(),
             None,
             false,
             false,
-        )
+        )?);
+
+        Ok(out)
     }
 
     /// Selection-to-string for a SCREEN-coordinate range (inclusive endpoints).

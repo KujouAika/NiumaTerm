@@ -1,0 +1,36 @@
+diff --git a/include/ghostty/vt/block.h b/include/ghostty/vt/block.h
+index b3a64dc2e..0877f95b2 100644
+--- a/include/ghostty/vt/block.h
++++ b/include/ghostty/vt/block.h
+@@ -405,6 +405,8 @@ typedef struct {
+   bool unwrap;
+   /** Trim trailing blanks from each line. */
+   bool trim;
++  /** Emit VT sequences (styles, hyperlinks) instead of plain text. */
++  bool vt;
+ } GhosttyBlockFormatOptions;
+ 
+ /**
+diff --git a/src/terminal/c/block.zig b/src/terminal/c/block.zig
+index 9952474ad..c454bb555 100644
+--- a/src/terminal/c/block.zig
++++ b/src/terminal/c/block.zig
+@@ -338,6 +338,9 @@ pub const BlockFormatOptions = extern struct {
+     unwrap: bool,
+     /// Trim trailing blanks from each line.
+     trim: bool,
++    /// Emit VT sequences (styles, hyperlinks) instead of plain text, so a
++    /// replayed export keeps its colors and attributes.
++    vt: bool = false,
+ };
+ 
+ /// Export a cell range of the snapshot as plain UTF-8 text — the
+@@ -370,7 +373,7 @@ pub fn block_ref_format_alloc(
+     } }) orelse return .invalid_value;
+ 
+     var formatter: formatterpkg.ScreenFormatter = .init(block.screen, .{
+-        .emit = .plain,
++        .emit = if (opts.vt) .vt else .plain,
+         .unwrap = opts.unwrap,
+         .trim = opts.trim,
+     });

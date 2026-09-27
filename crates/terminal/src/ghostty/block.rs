@@ -174,6 +174,37 @@ impl BlockRef {
         unwrap: bool,
         trim: bool,
     ) -> Result<String> {
+        self.format_alloc(tl, br, unwrap, trim, false)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Export the whole block as a VT stream with styles and hyperlinks.
+    /// Soft-wrapped rows are joined so a replay at the same width wraps them
+    /// again instead of turning them into hard line breaks.
+    pub fn format_vt(&self) -> Result<Vec<u8>> {
+        let rows = self.row_count();
+
+        if rows == 0 {
+            return Ok(Vec::new());
+        }
+
+        self.format_alloc(
+            (0, 0),
+            (rows - 1, self.cols().saturating_sub(1)),
+            true,
+            false,
+            true,
+        )
+    }
+
+    fn format_alloc(
+        &self,
+        tl: (usize, u16),
+        br: (usize, u16),
+        unwrap: bool,
+        trim: bool,
+        vt: bool,
+    ) -> Result<Vec<u8>> {
         let mut opts = vt_sized!(VtBlockFormatOptions);
 
         opts.tl_row = tl.0;
@@ -182,6 +213,7 @@ impl BlockRef {
         opts.br_col = br.1;
         opts.unwrap = unwrap;
         opts.trim = trim;
+        opts.vt = vt;
 
         let mut out_ptr: *mut u8 = ptr::null_mut();
         let mut out_len: usize = 0;
@@ -190,19 +222,17 @@ impl BlockRef {
             ghostty_block_ref_format_alloc(self.raw, ptr::null(), opts, &mut out_ptr, &mut out_len)
         })?;
 
-        let text = if out_ptr.is_null() || out_len == 0 {
-            String::new()
+        let bytes = if out_ptr.is_null() || out_len == 0 {
+            Vec::new()
         } else {
-            let bytes = unsafe { slice::from_raw_parts(out_ptr, out_len) };
-
-            String::from_utf8_lossy(bytes).into_owned()
+            unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec()
         };
 
         if !out_ptr.is_null() {
             unsafe { ghostty_free(ptr::null(), out_ptr, out_len) };
         }
 
-        Ok(text)
+        Ok(bytes)
     }
 }
 

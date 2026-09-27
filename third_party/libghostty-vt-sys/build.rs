@@ -9,7 +9,7 @@ const GHOSTTY_COMMIT: &str = "b0c421fcd2e290629d4285c181b52fe2f2095f06";
 /// Identifier for the locally-applied ghostty source patches. Bump this whenever
 /// [`patch_ghostty_source`] changes so a cached clone is re-fetched and re-patched.
 /// Folded into the fetch stamp alongside `GHOSTTY_COMMIT`.
-const GHOSTTY_PATCH_VERSION: &str = "reflow-trim-blank-v9-grow-cursor-y-v3-kitty-screen-pos-v3-blockset-v5-alt-primary-v1-baseb0c421f";
+const GHOSTTY_PATCH_VERSION: &str = "reflow-trim-blank-v9-grow-cursor-y-v3-kitty-screen-pos-v3-blockset-v5-alt-primary-v1-block-vt-v1-baseb0c421f";
 const PREBUILT_ENV: &str = "NMT_USE_PREBUILT_LIBGHOSTTY";
 
 /// Locate an LLVM binutils tool (`llvm-objcopy` / `llvm-nm`) on Windows.

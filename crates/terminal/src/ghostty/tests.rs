@@ -1776,3 +1776,47 @@ fn vt_state_checkpoint_keeps_primary_screen_under_alt_screen() {
 
     assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
 }
+
+/// Finished blocks are not part of the screen the formatter reads. A block
+/// mode checkpoint must still carry them, styled and ahead of the current
+/// screen, or an attached replica starts without any command history.
+#[test]
+fn vt_state_checkpoint_carries_finished_blocks() {
+    let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    source.write_vt(b"$ ls\r\n\x1b[1mfile.txt\x1b[0m\r\n");
+    source.finish_block().unwrap().expect("block created");
+    source.write_vt(b"$ ");
+
+    let mut replica = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    // Stale content proves the checkpoint applies over a used engine.
+    replica.write_vt(b"stale\r\nstale\r\nstale\r\nstale\r\nstale\r\nstale\r\n");
+    replica.write_vt(&source.format_vt_state().unwrap());
+
+    let palette = replica.color_palette();
+
+    let row_text = |row: u32| -> String {
+        replica
+            .read_screen_row(row, &palette)
+            .unwrap()
+            .map(|read| read.cells.iter().map(|c| c.text.as_str()).collect())
+            .unwrap_or_default()
+    };
+
+    let rows: Vec<String> = (0..8).map(row_text).collect();
+
+    assert_eq!(rows[0].trim(), "$ ls", "{rows:?}");
+    assert_eq!(rows[1].trim(), "file.txt", "{rows:?}");
+    assert_eq!(rows[2].trim(), "$", "{rows:?}");
+
+    let file_row = replica.read_screen_row(1, &palette).unwrap().unwrap();
+
+    assert!(file_row.cells[0].style.bold, "block styles survive");
+
+    let source_snapshot = source.snapshot().unwrap();
+    let replica_snapshot = replica.snapshot().unwrap();
+
+    assert_eq!(line_text(&replica_snapshot, 0).trim(), "$");
+    assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
+}

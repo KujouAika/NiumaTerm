@@ -104,3 +104,13 @@ the whole terminal with modes enabled and no pin map; every other formatter
 use is byte-for-byte upstream. Regressions: the Zig test `TerminalFormatter vt
 restores primary screen under alternate screen` and
 `ghostty::tests::vt_state_checkpoint_keeps_primary_screen_under_alt_screen`.
+
+## 0007-block-format-vt.patch
+
+`ghostty_block_ref_format_alloc` exported finished blocks as plain text only,
+so a VT checkpoint that re-emits frozen command history would lose its colors
+and attributes. The patch appends a `vt` flag to `GhosttyBlockFormatOptions`
+that switches the block's screen formatter to VT output. The field sits in the
+struct's existing tail padding, so the struct size and the sized-struct check
+are unchanged and callers that leave it zero keep the plain export.
+Regression: `ghostty::tests::vt_state_checkpoint_carries_finished_blocks`.
