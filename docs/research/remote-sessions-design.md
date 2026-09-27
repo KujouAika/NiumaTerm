@@ -943,7 +943,7 @@ Settled on 2026-09-26:
 
 ## 21. Implementation status
 
-Updated 2026-09-27.
+Updated 2026-09-28.
 
 | Milestone | State |
 | --- | --- |
@@ -959,11 +959,18 @@ Known gaps in M3:
 - A view whose PTY another view resized renders the host's size on its
   own grid instead of cropping or padding; it takes the size back on its
   next input.
-- Remote-created sessions can be closed from the host's settings page but
-  not yet opened in a local tab ("Open here").
-- Host tabs do not yet show which devices are attached, and there is no
-  status bar count of connected devices.
 - `scrollback_rows` is not implemented; checkpoints carry all history.
+
+Closed after M6:
+
+- "Open here" on the settings page opens a remote-created terminal in a
+  host tab. The tab reads the headless session in-process, from a
+  checkpoint and then the live output, and is not offered to devices a
+  second time.
+- Host tabs carry a mark while paired devices view them, naming the
+  devices on hover, and the title bar counts the connected devices. The
+  registry keeps one viewer entry per open view; who is watching stays on
+  the host and is not sent to devices.
 
 As built in M6:
 
@@ -986,14 +993,23 @@ Known gaps in M6:
   refuses the slash commands that reach them.
 - File and `@` completion (`fs.list`, `fs.complete`) is not offered, so
   a remote composer completes nothing from the host's workspace.
-- A host that restarts registers its tabs under new ids, so a device's
-  open view of an earlier tab ends instead of reattaching.
+
+Closed after M6: host agent tabs keep their session id across restarts.
+The id is saved with the tab, and a restored tab that is still pending
+(restored tabs start only when activated) is offered under it; a device's
+first request starts that tab in place. Hosting starts only after the
+startup windows restored their tabs, so a reconnecting device never asks
+before they exist. Host terminal tabs still get new ids, which is right:
+their shells do not survive the restart.
 
 Known gaps in M4:
 
 - A pairing slot taken by another host on the same relay is only logged;
   the host does not pick a new code.
-- Clients do not yet retry at once on OS network changes; they wait for
-  the next backoff step.
 - Pairing links carry the host's LAN address as seen by the host, which a
   device behind another NAT cannot use; the relay covers that case.
+
+Closed after M6: on Windows, clients hear about IP address changes. A
+waiting client retries at once, and a connected one probes its link with
+a single ping that closes it after 5 s without an answer, instead of
+waiting out the 30 s idle timer and two missed probes.
