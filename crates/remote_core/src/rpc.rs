@@ -11,6 +11,11 @@ pub const TERMINAL_OPEN: &str = "terminal.open";
 pub const TERMINAL_ATTACH: &str = "terminal.attach";
 pub const TERMINAL_RESIZE: &str = "terminal.resize";
 pub const TERMINAL_CLOSE: &str = "terminal.close";
+pub const STREAM_CLOSE: &str = "stream.close";
+pub const SESSIONS_LIST: &str = "sessions.list";
+
+/// Notification: the host's session list changed; clients list it again.
+pub const SESSIONS_CHANGED: &str = "sessions.changed";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
@@ -154,4 +159,34 @@ pub struct TerminalResize {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Exit {
     pub code: Option<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamRef {
+    pub stream: u32,
+}
+
+/// Where a host session came from. Only remote-created sessions can be ended
+/// remotely; a host tab belongs to the person at the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    Tab,
+    Remote,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub session: String,
+    pub title: String,
+    pub origin: Origin,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionList {
+    pub sessions: Vec<SessionInfo>,
 }

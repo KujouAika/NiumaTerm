@@ -3,7 +3,10 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
+use nmt_remote::connection::Status;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
+use nmt_remote_core::identity::DeviceId;
+use nmt_remote_core::rpc::{Origin, SessionInfo};
 use rust_i18n::t;
 
 use crate::ui::remote::{self, Remote};
@@ -56,7 +59,42 @@ fn hosting_group(state: &Remote) -> SettingGroup {
         group = group.item(device_item(device));
     }
 
+    for session in state.remote_created_sessions() {
+        group = group.item(remote_created_item(session));
+    }
+
     group
+}
+
+/// A terminal a paired device started here. It runs with nobody at the host
+/// watching, so the host user can end it.
+fn remote_created_item(session: SessionInfo) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        let id = session.session.clone();
+
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .child(Label::new(session.title.clone()).text_sm())
+                    .child(
+                        Label::new(t!("settings-remote-started-remotely"))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            .child(
+                Button::new(SharedString::from(format!("remote-close-{id}")))
+                    .outline()
+                    .label(t!("settings-remote-close-session"))
+                    .on_click(move |_, _, cx: &mut App| remote::close_remote_created(&id, cx)),
+            )
+            .into_any_element()
+    })
 }
 
 fn pairing_item(state: &Remote) -> SettingItem {
@@ -179,15 +217,70 @@ fn computers_group(state: &Remote) -> SettingGroup {
 
     for host in state.hosts() {
         group = group.item(host_item(host.clone()));
+
+        for session in state.host_sessions(&host.id).unwrap_or_default() {
+            group = group.item(host_session_item(host.id.clone(), session.clone()));
+        }
     }
 
     group
+}
+
+/// A session running on a paired host, which this computer can view.
+fn host_session_item(host: DeviceId, session: SessionInfo) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        let id = session.session.clone();
+        let host = host.clone();
+
+        let origin = match session.origin {
+            Origin::Tab => t!("settings-remote-origin-tab"),
+            _ => t!("settings-remote-started-remotely"),
+        };
+
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .pl_4()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .child(Label::new(session.title.clone()).text_sm())
+                    .child(
+                        Label::new(format!("{origin}    {}x{}", session.cols, session.rows))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            .child(
+                Button::new(SharedString::from(format!(
+                    "remote-view-{}-{id}",
+                    host.as_str()
+                )))
+                .outline()
+                .label(t!("settings-remote-open-session"))
+                .on_click(move |_, window, cx: &mut App| {
+                    remote::open_session(&host, &id, window, cx)
+                }),
+            )
+            .into_any_element()
+    })
 }
 
 fn host_item(host: PairedHost) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         let open_id = host.id.clone();
         let forget_id = host.id.clone();
+        let list_id = host.id.clone();
+
+        let status = match cx.global::<Remote>().host_status(&host.id) {
+            Status::Idle => t!("settings-remote-status-idle"),
+            Status::Connecting => t!("settings-remote-status-connecting"),
+            Status::Connected => t!("settings-remote-status-connected"),
+            Status::Reconnecting => t!("settings-remote-status-reconnecting"),
+            Status::Refused => t!("settings-remote-status-refused"),
+        };
 
         h_flex()
             .w_full()
@@ -199,7 +292,7 @@ fn host_item(host: PairedHost) -> SettingItem {
                     .flex_1()
                     .child(Label::new(host.name.clone()).text_sm())
                     .child(
-                        Label::new(host.lan_hints.join(", "))
+                        Label::new(format!("{status}    {}", host.lan_hints.join(", ")))
                             .text_xs()
                             .text_color(cx.theme().muted_foreground),
                     ),
@@ -207,6 +300,15 @@ fn host_item(host: PairedHost) -> SettingItem {
             .child(
                 h_flex()
                     .gap_2()
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "remote-list-{}",
+                            host.id.as_str()
+                        )))
+                        .outline()
+                        .label(t!("settings-remote-sessions"))
+                        .on_click(move |_, _, cx: &mut App| remote::refresh_sessions(&list_id, cx)),
+                    )
                     .child(
                         Button::new(SharedString::from(format!(
                             "remote-forget-{}",

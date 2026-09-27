@@ -7,21 +7,28 @@ use std::collections::HashMap;
 use std::env;
 use std::net::UdpSocket;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context as _, Result, anyhow};
-use gpui::{App, BorrowAppContext as _, Entity, Global, SharedString, Window};
+use app::terminal_tab::view::{HostShare, TerminalPane};
+use gpui::{App, BorrowAppContext as _, Entity, EntityId, Global, SharedString, Window};
 use gpui_component::Root;
 use nmt_platform::runtime;
-use nmt_remote::client::{RemoteHost, connect, pair};
+use nmt_remote::NetworkPty;
+use nmt_remote::client::pair;
+use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
+use nmt_remote::sessions::{SessionRegistry, TerminalControl};
 use nmt_remote::store::{
     PairedDevice, PairedHost, load_hosts, load_or_create_identity, remote_dir, save_hosts,
 };
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
+use nmt_remote_core::rpc::SessionInfo;
 use rust_i18n::t;
-use tokio::sync::mpsc;
+use tokio::select;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::warn;
 
 use crate::ui::{AppSettings, AppWindow};
@@ -31,12 +38,26 @@ const APP_VERSION: &str = env!("NIUMATERM_VERSION");
 /// Grid a new remote terminal starts with; the tab's layout resizes it.
 const INITIAL_GRID: (u16, u16) = (100, 30);
 
-#[derive(Default)]
 pub(crate) struct Remote {
     key: Option<Arc<DeviceKey>>,
     host: Option<HostService>,
+
+    /// Host tabs and headless terminals offered to paired devices. Tabs
+    /// register whether or not hosting is on, so turning it on offers the
+    /// tabs already open.
+    registry: Arc<SessionRegistry>,
+
+    /// Host session ids of shared tabs, by pane entity.
+    shared_tabs: HashMap<EntityId, String>,
+
     hosts: Vec<PairedHost>,
     connections: HashMap<DeviceId, Arc<RemoteHost>>,
+
+    /// The session lists of paired hosts, as last fetched.
+    host_sessions: HashMap<DeviceId, Vec<SessionInfo>>,
+
+    /// Host records updated by a connection, saved on the UI thread.
+    record_updates: UnboundedSender<PairedHost>,
 
     /// Drafts of the "connect to a computer" form.
     pub(crate) address: SharedString,
@@ -53,10 +74,37 @@ impl Global for Remote {}
 
 /// Install the global and start hosting when the setting is on.
 pub(crate) fn initialize(cx: &mut App) {
+    let (record_updates, mut records) = mpsc::unbounded_channel::<PairedHost>();
+
     cx.set_global(Remote {
+        key: None,
+        host: None,
+        registry: SessionRegistry::new(),
+        shared_tabs: HashMap::new(),
         hosts: load_hosts(&remote_dir()),
-        ..Remote::default()
+        connections: HashMap::new(),
+        host_sessions: HashMap::new(),
+        record_updates,
+        address: SharedString::default(),
+        code: SharedString::default(),
+        status: None,
+        busy: false,
     });
+
+    cx.spawn(async move |cx| {
+        while let Some(record) = records.recv().await {
+            cx.update_global::<Remote, _>(|remote, _| {
+                if let Some(saved) = remote.hosts.iter_mut().find(|host| host.id == record.id) {
+                    *saved = record;
+
+                    if let Err(error) = save_hosts(&remote_dir(), &remote.hosts) {
+                        warn!(%error, "failed to save a paired host");
+                    }
+                }
+            });
+        }
+    })
+    .detach();
 
     sync_hosting(cx);
 }
@@ -93,8 +141,23 @@ impl Remote {
             .unwrap_or_default()
     }
 
+    /// Terminals paired devices started here, which the host user can end.
+    pub(crate) fn remote_created_sessions(&self) -> Vec<SessionInfo> {
+        self.registry.remote_sessions()
+    }
+
     pub(crate) fn hosts(&self) -> &[PairedHost] {
         &self.hosts
+    }
+
+    pub(crate) fn host_status(&self, id: &DeviceId) -> Status {
+        self.connections
+            .get(id)
+            .map_or(Status::Idle, |host| *host.status().borrow())
+    }
+
+    pub(crate) fn host_sessions(&self, id: &DeviceId) -> Option<&[SessionInfo]> {
+        self.host_sessions.get(id).map(Vec::as_slice)
     }
 
     pub(crate) fn status(&self) -> Option<&SharedString> {
@@ -129,13 +192,21 @@ fn start_host(cx: &mut App) -> Result<HostService> {
     let key = device_key(cx)?;
     let config = cx.global::<AppSettings>().config();
     let (shell, args) = cx.global::<AppSettings>().default_profile_command();
+    let registry = Arc::clone(&cx.global::<Remote>().registry);
 
-    // Pairing changes arrive on a runtime thread; touching the global from
-    // the UI thread notifies its observers, which a runtime thread cannot do.
+    // Pairing and session changes arrive on runtime threads; touching the
+    // global from the UI thread notifies its observers, which a runtime
+    // thread cannot do.
     let (changed, mut changes) = mpsc::unbounded_channel();
+    let mut sessions = registry.subscribe();
 
     cx.spawn(async move |cx| {
-        while changes.recv().await.is_some() {
+        loop {
+            select! {
+                change = changes.recv() => if change.is_none() { break },
+                change = sessions.changed() => if change.is_err() { break },
+            }
+
             cx.update_global::<Remote, _>(|_, _| {});
         }
     })
@@ -149,6 +220,7 @@ fn start_host(cx: &mut App) -> Result<HostService> {
             device: device_info(&config.remote.device_name),
             shell,
             args,
+            registry,
             on_change: Arc::new(move || {
                 let _ = changed.send(());
             }),
@@ -184,6 +256,79 @@ pub(crate) fn remove_device(id: &DeviceId, cx: &mut App) {
     };
 
     remote.report(result);
+}
+
+/// End a terminal a paired device started here.
+pub(crate) fn close_remote_created(session: &str, cx: &mut App) {
+    cx.global_mut::<Remote>().registry.close_remote(session);
+}
+
+/// Offer a host tab's terminal to paired devices for as long as the pane
+/// lives. Remote panes are not offered again.
+pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
+    let pane_id = pane.entity_id();
+
+    let (title, (cols, rows), messenger, remote) = {
+        let pane = pane.read(cx);
+
+        (
+            pane.profile_name().to_owned(),
+            pane.grid_size(),
+            pane.session_messenger(),
+            pane.is_remote(),
+        )
+    };
+
+    if remote {
+        return;
+    }
+
+    let registry = Arc::clone(&cx.global::<Remote>().registry);
+    let claimed_remotely = Arc::new(AtomicBool::new(false));
+
+    let session = registry.register_tab(
+        title,
+        cols,
+        rows,
+        TerminalControl {
+            messenger,
+            claimed_remotely: Arc::clone(&claimed_remotely),
+        },
+    );
+
+    let on_size = {
+        let registry = Arc::clone(&registry);
+        let session = session.clone();
+
+        Box::new(move |cols, rows| registry.note_local_resize(&session, cols, rows))
+    };
+
+    pane.update(cx, |pane, _| {
+        pane.share_with_host(HostShare {
+            claimed_remotely,
+            on_size,
+        })
+    });
+
+    cx.global_mut::<Remote>()
+        .shared_tabs
+        .insert(pane_id, session.clone());
+
+    cx.observe_release(pane, move |_, cx| {
+        registry.unregister(&session);
+
+        cx.global_mut::<Remote>().shared_tabs.remove(&pane_id);
+    })
+    .detach();
+}
+
+/// Keep the name paired devices see for a host tab current.
+pub(crate) fn tab_title_changed(pane: &Entity<TerminalPane>, title: &str, cx: &mut App) {
+    let remote = cx.global::<Remote>();
+
+    if let Some(session) = remote.shared_tabs.get(&pane.entity_id()) {
+        remote.registry.set_title(session, title.to_owned());
+    }
 }
 
 /// Pair with the computer named in the connect form. The code field also
@@ -254,6 +399,12 @@ pub(crate) fn pair_with_host(cx: &mut App) {
 
         cx.update_global::<Remote, _>(|remote, _| match result {
             Ok(paired) => {
+                // A new pairing replaces a connection that the host may
+                // have refused under the old record.
+                if let Some(old) = remote.connections.remove(&paired.id) {
+                    old.shutdown();
+                }
+
                 remote.hosts.retain(|host| host.id != paired.id);
                 remote.hosts.push(paired);
 
@@ -273,21 +424,107 @@ pub(crate) fn forget_host(id: &DeviceId, cx: &mut App) {
     let remote = cx.global_mut::<Remote>();
 
     remote.hosts.retain(|host| &host.id != id);
-    remote.connections.remove(id);
+    remote.host_sessions.remove(id);
+
+    if let Some(connection) = remote.connections.remove(id) {
+        connection.shutdown();
+    }
 
     let saved = save_hosts(&remote_dir(), &remote.hosts);
 
     remote.report(saved.map_err(Into::into));
 }
 
-/// Open a terminal on a paired host in a new tab of `window`.
+/// The lasting connection to a paired host, started on first use.
+fn connection(id: &DeviceId, cx: &mut App) -> Result<Arc<RemoteHost>> {
+    if let Some(connection) = cx.global::<Remote>().connections.get(id) {
+        return Ok(Arc::clone(connection));
+    }
+
+    let key = device_key(cx)?;
+    let remote = cx.global::<Remote>();
+
+    let record = remote
+        .hosts
+        .iter()
+        .find(|host| &host.id == id)
+        .cloned()
+        .context("this computer is no longer paired")?;
+
+    let updates = remote.record_updates.clone();
+
+    let connection = RemoteHost::new(record, key, APP_VERSION.into(), move |record| {
+        let _ = updates.send(record);
+    });
+
+    // The settings page shows each host's link state and session list.
+    let mut status = connection.status();
+    let mut sessions = connection.session_changes();
+
+    let watched = id.clone();
+
+    cx.spawn(async move |cx| {
+        loop {
+            let listed = select! {
+                change = status.changed() => { if change.is_err() { break } false }
+
+                change = sessions.changed() => { if change.is_err() { break } true }
+            };
+
+            cx.update(|cx| {
+                if listed {
+                    refresh_sessions(&watched, cx);
+                } else {
+                    cx.update_global::<Remote, _>(|_, _| {});
+                }
+            });
+        }
+    })
+    .detach();
+
+    cx.global_mut::<Remote>()
+        .connections
+        .insert(id.clone(), Arc::clone(&connection));
+
+    Ok(connection)
+}
+
+/// Fetch a paired host's session list for the settings page.
+pub(crate) fn refresh_sessions(id: &DeviceId, cx: &mut App) {
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
+        Err(error) => {
+            cx.global_mut::<Remote>().report(Err(error));
+
+            return;
+        }
+    };
+
+    let task = runtime().spawn(async move { connection.list_sessions().await });
+    let id = id.clone();
+
+    cx.spawn(async move |cx| {
+        let result = task.await.context("listing stopped").and_then(|list| list);
+
+        cx.update_global::<Remote, _>(|remote, _| match result {
+            Ok(sessions) => {
+                remote.host_sessions.insert(id, sessions);
+            }
+            Err(error) => remote.report(Err(error)),
+        });
+    })
+    .detach();
+}
+
+/// Open a new terminal on a paired host in a tab of `window`. The tab owns
+/// the session: closing it ends the terminal on the host.
 pub(crate) fn open_terminal(id: &DeviceId, window: &mut Window, cx: &mut App) {
     let Some(app) = app_window(window, cx) else {
         return;
     };
 
-    let key = match device_key(cx) {
-        Ok(key) => key,
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
         Err(error) => {
             cx.global_mut::<Remote>().report(Err(error));
 
@@ -297,35 +534,18 @@ pub(crate) fn open_terminal(id: &DeviceId, window: &mut Window, cx: &mut App) {
 
     let remote = cx.global_mut::<Remote>();
 
-    let Some(mut host) = remote.hosts.iter().find(|host| &host.id == id).cloned() else {
-        return;
-    };
-
-    let existing = remote
-        .connections
-        .get(id)
-        .filter(|connection| connection.is_connected())
-        .cloned();
-
     remote.busy = true;
 
     remote.status = Some(
-        t!("remote-connecting-to", name = &host.name)
+        t!("remote-connecting-to", name = connection.name())
             .into_owned()
             .into(),
     );
 
     let task = runtime().spawn(async move {
-        let connection = match existing {
-            Some(connection) => connection,
-            None => connect(&mut host, &key, APP_VERSION).await?,
-        };
-
-        let pty = connection
+        connection
             .open_terminal(INITIAL_GRID.0, INITIAL_GRID.1)
-            .await?;
-
-        anyhow::Ok((host, connection, pty))
+            .await
     });
 
     window
@@ -336,28 +556,61 @@ pub(crate) fn open_terminal(id: &DeviceId, window: &mut Window, cx: &mut App) {
                 .and_then(|opened| opened);
 
             let _ = cx.update(|window, cx| match result {
-                Ok((host, connection, pty)) => {
-                    let name = host.name.clone();
-                    let remote = cx.global_mut::<Remote>();
-
-                    remote.connections.insert(host.id.clone(), connection);
-
-                    if let Some(saved) = remote.hosts.iter_mut().find(|saved| saved.id == host.id) {
-                        *saved = host;
-                    }
-
-                    let saved = save_hosts(&remote_dir(), &remote.hosts);
-
-                    remote.report(saved.map_err(Into::into));
+                Ok(pty) => {
+                    cx.global_mut::<Remote>().report(Ok(()));
 
                     app.update(cx, |app, cx| {
-                        app.open_remote_terminal(pty, name, window, cx)
+                        app.open_remote_terminal(pty, true, window, cx)
                     });
                 }
                 Err(error) => cx.global_mut::<Remote>().report(Err(error)),
             });
         })
         .detach();
+}
+
+/// Open a view of an existing session on a paired host. Closing the tab
+/// leaves the session running there.
+pub(crate) fn open_session(id: &DeviceId, session: &str, window: &mut Window, cx: &mut App) {
+    let Some(app) = app_window(window, cx) else {
+        return;
+    };
+
+    match connection(id, cx) {
+        Ok(connection) => {
+            let pty = connection.view(session.to_owned());
+
+            app.update(cx, |app, cx| {
+                app.open_remote_terminal(pty, false, window, cx)
+            });
+        }
+        Err(error) => cx.global_mut::<Remote>().report(Err(error)),
+    }
+}
+
+/// The name of the paired host with this device id.
+pub(crate) fn paired_host_name(id: &str, cx: &App) -> Option<String> {
+    cx.global::<Remote>()
+        .hosts
+        .iter()
+        .find(|host| host.id.as_str() == id)
+        .map(|host| host.name.clone())
+}
+
+/// A view of a saved remote tab's session, reattached on restore. `None`
+/// when the host is no longer paired.
+pub(crate) fn restore_view(host: &str, session: &str, cx: &mut App) -> Option<NetworkPty> {
+    let id = cx
+        .global::<Remote>()
+        .hosts
+        .iter()
+        .find(|paired| paired.id.as_str() == host)
+        .map(|paired| paired.id.clone())?;
+
+    connection(&id, cx)
+        .inspect_err(|error| warn!(%error, "cannot restore a remote tab"))
+        .ok()
+        .map(|connection| connection.view(session.to_owned()))
 }
 
 /// The device key, loaded from secret storage on first use.

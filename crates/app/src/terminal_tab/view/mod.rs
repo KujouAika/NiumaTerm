@@ -6,6 +6,8 @@ mod tests;
 
 use std::io;
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -14,16 +16,18 @@ use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Entity, EntityInputHandler, EventEmitter,
     ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, UTF16Selection, Window, actions, div, list,
-    point, px, rgb, size,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size, UTF16Selection, Window,
+    actions, div, list, point, px, rgb, size,
 };
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use nmt_agent::AgentRoute;
 use nmt_config::local_state::TabState;
 use nmt_config::{CursorShape, active_colors};
-use nmt_platform::AsyncPty;
+use nmt_remote::NetworkPty;
+use nmt_remote::connection::{RemoteHost, Status};
 use nmt_terminal::clipboard::{Clipboard, ClipboardType};
+use nmt_terminal::event::MsgSender;
 use nmt_terminal::input::{KeyPhase, WheelDelta};
 use nmt_terminal::session::interaction::{CopyCompletion, PendingCopy};
 use nmt_terminal::session::{HostEvent, SessionChange, SurfaceMouseButton, TerminalSessionConfig};
@@ -78,9 +82,28 @@ struct PaneIdentity {
     restorable: TabState,
     agent_route: AgentRoute,
 
-    /// The PTY runs on another computer. Such a tab cannot be restored by
-    /// relaunching its shell here.
-    remote: bool,
+    /// The PTY runs on another computer. Such a tab is restored by
+    /// reattaching to its session, not by relaunching a shell here.
+    remote: Option<RemoteTab>,
+}
+
+/// A terminal session on another computer, shown in this pane.
+pub struct RemoteTab {
+    pub host: Arc<RemoteHost>,
+    pub session: String,
+
+    /// Closing the tab ends the session: this client started it, and nothing
+    /// else would show it afterwards. A host tab, or another client's
+    /// session, only loses this view.
+    pub ends_with_tab: bool,
+}
+
+/// A host tab offered to paired devices. Remote views may resize the shared
+/// PTY; the tab takes the size back when its user types, and reports its
+/// own resizes so remote views can do the same.
+pub struct HostShare {
+    pub claimed_remotely: Arc<AtomicBool>,
+    pub on_size: Box<dyn Fn(u16, u16)>,
 }
 
 pub struct TerminalPane {
@@ -96,6 +119,7 @@ pub struct TerminalPane {
     wake: wake::WakeSignal,
     image_releases_attached: bool,
     pub(super) block_list: BlockListState,
+    host_share: Option<HostShare>,
 }
 
 pub struct AgentInterrupted;
@@ -152,23 +176,28 @@ impl TerminalPane {
             profile_name: launch.profile_name,
             restorable: launch.restorable,
             agent_route: launch.agent_route,
-            remote: false,
+            remote: None,
         };
 
         Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
     }
 
-    /// A pane showing a terminal that runs on another computer. `pty` was
-    /// opened on the host with the default grid; layout resizes it.
-    pub fn spawn_remote<T: AsyncPty + Send + 'static>(
+    /// A pane showing a terminal that runs on another computer. Layout
+    /// resizes the host PTY to the pane.
+    pub fn spawn_remote(
         cx: &mut impl AppContext,
         surface_id: u64,
-        pty: T,
-        title: String,
+        pty: NetworkPty,
+        ends_with_tab: bool,
         agent_route: AgentRoute,
         cursor_shape: CursorShape,
     ) -> Result<Entity<Self>, String> {
         let (wake, wake_rx) = wake::wake_channel();
+        let host = Arc::clone(pty.host());
+        let session = pty.session().to_owned();
+        let title = host.name();
+
+        let mut status = host.status();
 
         let source = TerminalFrameSource::remote(
             wake.clone(),
@@ -184,10 +213,27 @@ impl TerminalPane {
             profile_name: title,
             restorable: TabState::default(),
             agent_route,
-            remote: true,
+            remote: Some(RemoteTab {
+                host,
+                session,
+                ends_with_tab,
+            }),
         };
 
-        Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
+        Ok(cx.new(|cx| {
+            // The connection banner follows the link, whose changes come
+            // from the network runtime rather than a frame.
+            cx.spawn(async move |this, cx| {
+                while status.changed().await.is_ok() {
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+
+            Self::from_source(cx, identity, wake, wake_rx, source)
+        }))
     }
 
     fn from_source(
@@ -228,6 +274,7 @@ impl TerminalPane {
             wake,
             image_releases_attached: false,
             block_list: BlockListState::new(block_list_alignment(fixed_bottom_requested)),
+            host_share: None,
         }
     }
 
@@ -280,7 +327,7 @@ impl TerminalPane {
     }
 
     pub fn is_remote(&self) -> bool {
-        self.identity.remote
+        self.identity.remote.is_some()
     }
 
     fn cell_metrics(&mut self, window: &mut Window, cx: &App) -> metrics::CellMetrics {
@@ -311,8 +358,72 @@ impl TerminalPane {
             bounds.size.height.as_f32(),
             cell,
         ) {
+            if let Some(share) = &self.host_share {
+                let (cols, rows) = self.model.source.grid_size();
+
+                (share.on_size)(cols, rows);
+            }
+
             cx.notify();
         }
+    }
+
+    /// Offer this tab's terminal to paired devices.
+    pub fn share_with_host(&mut self, share: HostShare) {
+        self.host_share = Some(share);
+    }
+
+    /// The handle that drives this pane's PTY loop from other threads.
+    pub fn session_messenger(&self) -> MsgSender {
+        self.model.source.session.messenger()
+    }
+
+    pub fn grid_size(&self) -> (u16, u16) {
+        self.model.source.grid_size()
+    }
+
+    pub fn remote_tab(&self) -> Option<&RemoteTab> {
+        self.identity.remote.as_ref()
+    }
+
+    /// The tab is closing: end its remote session if this client owns it.
+    pub fn end_remote_session(&self) {
+        if let Some(remote) = &self.identity.remote
+            && remote.ends_with_tab
+        {
+            remote.host.terminate(&remote.session);
+        }
+    }
+
+    /// A remote view resized this shared terminal; typing here takes the
+    /// size back so the person at the host sees the terminal fit.
+    fn reclaim_shared_size(&mut self) {
+        let Some(share) = &self.host_share else {
+            return;
+        };
+
+        if share.claimed_remotely.swap(false, Ordering::Relaxed)
+            && self.model.source.reassert_size()
+        {
+            let (cols, rows) = self.model.source.grid_size();
+
+            (share.on_size)(cols, rows);
+        }
+    }
+
+    /// What the remote tab's banner says, or `None` while connected.
+    fn remote_banner(&self) -> Option<SharedString> {
+        let remote = self.identity.remote.as_ref()?;
+        let name = remote.host.name();
+
+        let text = match *remote.host.status().borrow() {
+            Status::Connected => return None,
+            Status::Idle | Status::Connecting => t!("remote-banner-connecting", name = name),
+            Status::Reconnecting => t!("remote-banner-reconnecting", name = name),
+            Status::Refused => t!("remote-banner-refused", name = name),
+        };
+
+        Some(text.into_owned().into())
     }
 
     fn invalidate(&mut self, cx: &mut Context<Self>) {
@@ -350,6 +461,15 @@ impl TerminalPane {
     }
 
     pub fn tab_state(&self) -> TabState {
+        if let Some(remote) = &self.identity.remote {
+            return TabState {
+                remote_host: Some(remote.host.id().as_str().to_owned()),
+                remote_session: Some(remote.session.clone()),
+                grid_size: Some(self.model.source.grid_size()),
+                ..TabState::default()
+            };
+        }
+
         let mut state = self.identity.restorable.clone();
 
         state.grid_size = Some(self.model.source.grid_size());
@@ -559,6 +679,8 @@ impl TerminalPane {
         if event.prefer_character_input {
             return;
         }
+
+        self.reclaim_shared_size();
 
         let interrupts_agent = matches!(event.keystroke.key.as_str(), "escape" | "esc")
             && !event.keystroke.modifiers.modified();
@@ -864,6 +986,8 @@ impl EntityInputHandler for TerminalPane {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.reclaim_shared_size();
+
         if self.model.write_text_input(TextInput::Commit(text)) {
             self.react_to_pty_input(cx);
 
@@ -1065,6 +1189,18 @@ impl Render for TerminalPane {
             // Ctrl-hover link underline. Rects are content-origin-relative;
             // absolute children position from the padding box, so shift by
             // the content padding.
+            .children(self.remote_banner().map(|text| {
+                div()
+                    .absolute()
+                    .top(px(metrics::PADDING_PX))
+                    .right(px(metrics::PADDING_PX))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(self.model.theme.foreground.into()).opacity(0.85))
+                    .text_color(rgb(self.model.theme.background.into()))
+                    .child(text)
+            }))
             .when_some(self.model.hovered_link(), |this, link| {
                 this.cursor_pointer()
                     .children(link.rects.iter().map(|rect| {

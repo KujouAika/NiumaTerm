@@ -11,13 +11,11 @@ use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use futures::{Sink, Stream};
-use nmt_config::{CursorShape, active_colors};
-use nmt_platform::{PtyOptions, WinsizeBuilder, create_pty_with_env, default_shell, runtime};
+use nmt_platform::runtime;
 use nmt_remote_core::channel::{Channel, HostHandshake};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
@@ -25,32 +23,29 @@ use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted};
 use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
 use nmt_remote_core::rpc::{
-    self, Attached, Control, ErrorCode, Exit, RpcError, SessionRef, TerminalOpen, TerminalResize,
+    self, Attached, Control, ErrorCode, Origin, RpcError, SessionList, SessionRef, StreamRef,
+    TerminalOpen, TerminalResize,
 };
 use nmt_remote_core::{Error as CoreError, PROTO_MINOR};
-use nmt_terminal::event::{
-    CheckpointRequest, EventListener, Msg, MsgSender, OutputSink, TerminalEvent,
-};
-use nmt_terminal::session::TerminalSessionConfig;
-use nmt_terminal::termio::{SessionOptions, SessionWorker, start_session};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{self, UnboundedSender};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::timeout;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::discovery::Advertiser;
-use crate::link::{Outbound, pump, recv_binary, send_binary};
+use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
+use crate::sessions::{SessionRegistry, TerminalControl};
 use crate::store::{self, PairedDevice, now_ms};
+use crate::stream::StreamFlow;
 
 pub const DEFAULT_PORT: u16 = 47470;
 
@@ -71,6 +66,9 @@ pub struct HostConfig {
     pub shell: Option<String>,
 
     pub args: Vec<String>,
+
+    /// The sessions offered to paired devices, host tabs included.
+    pub registry: Arc<SessionRegistry>,
 
     /// Runs on a runtime thread after pairing records change, so a view that
     /// lists them can refresh.
@@ -100,43 +98,24 @@ struct Shared {
 struct State {
     devices: Vec<PairedDevice>,
     code: Option<IssuedCode>,
-    terminals: HashMap<String, Arc<HostTerminal>>,
-    next_terminal: u64,
 
     /// Open channels by client key, so removing a device closes them.
     connections: Vec<([u8; 32], AbortHandle)>,
 }
 
-/// A terminal a remote device opened, running headless on the host.
-struct HostTerminal {
-    messenger: MsgSender,
-    worker: Mutex<Option<SessionWorker>>,
-    size: Mutex<(u16, u16)>,
-    exit: Arc<ExitWatch>,
-}
-
-/// Delivers EXIT to every stream attached to a terminal whose shell ended,
-/// including streams attached after it ended.
-#[derive(Default)]
-struct ExitWatch {
-    exited: AtomicBool,
-    watchers: Mutex<Vec<(UnboundedSender<Outbound>, u32)>>,
-}
-
-/// Host-side events of a headless terminal. Nobody on the host is looking at
-/// it, so bell, clipboard, and notification requests are dropped; only the
-/// shell ending matters.
-struct HostEvents(Arc<ExitWatch>);
+/// A stream id with what attaching it needs: the session's control handle
+/// and its PTY size watch.
+type PendingAttach = (u32, TerminalControl, watch::Receiver<(u16, u16)>);
 
 /// Per-channel request handling.
 struct Connection {
     shared: Arc<Shared>,
-    out: UnboundedSender<Outbound>,
-    streams: HashMap<u32, Arc<HostTerminal>>,
+    queue: SendQueue,
+    streams: HashMap<u32, Arc<StreamFlow>>,
     next_stream: u32,
 
     /// An attach whose response must be queued before its checkpoint.
-    pending_attach: Option<(u32, Arc<HostTerminal>)>,
+    pending_attach: Option<PendingAttach>,
 }
 
 impl HostService {
@@ -215,9 +194,17 @@ impl HostService {
             .then(|| (issued.code().clone(), issued.expires_at_ms()))
     }
 
+    /// Cut every open channel, as a network drop would.
+    #[cfg(test)]
+    pub(crate) fn drop_connections(&self) {
+        for (_, task) in self.shared.state.lock().connections.drain(..) {
+            task.abort();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn terminal_count(&self) -> usize {
-        self.shared.state.lock().terminals.len()
+        self.shared.config.registry.remote_sessions().len()
     }
 
     pub fn devices(&self) -> Vec<PairedDevice> {
@@ -261,54 +248,11 @@ impl Drop for HostService {
     fn drop(&mut self) {
         self.task.abort();
 
-        let mut state = self.shared.state.lock();
-
-        for (_, task) in state.connections.drain(..) {
+        for (_, task) in self.shared.state.lock().connections.drain(..) {
             task.abort();
         }
 
-        for terminal in state.terminals.values() {
-            terminal.shutdown();
-        }
-
-        state.terminals.clear();
-    }
-}
-
-impl HostTerminal {
-    /// Dropping the worker asks the PTY task to stop, which ends the shell.
-    fn shutdown(&self) {
-        self.worker.lock().take();
-    }
-}
-
-impl ExitWatch {
-    fn watch(&self, out: UnboundedSender<Outbound>, stream: u32) {
-        let mut watchers = self.watchers.lock();
-
-        if self.exited.load(Ordering::Acquire) {
-            send_exit(&out, stream);
-        } else {
-            watchers.push((out, stream));
-        }
-    }
-
-    fn fire(&self) {
-        let mut watchers = self.watchers.lock();
-
-        self.exited.store(true, Ordering::Release);
-
-        for (out, stream) in watchers.drain(..) {
-            send_exit(&out, stream);
-        }
-    }
-}
-
-impl EventListener for HostEvents {
-    fn send_event(&self, event: TerminalEvent) {
-        if let TerminalEvent::CloseTerminal(_) = event {
-            self.0.fire();
-        }
+        self.shared.config.registry.close_all_remote();
     }
 }
 
@@ -319,14 +263,16 @@ impl Connection {
                 Ok(Control::Request { id, method, params }) => {
                     let outcome = self.request(&method, params);
 
-                    self.send(
+                    self.queue.send(Outbound::new(
                         CONTROL_STREAM,
                         kind::CONTROL_JSON,
                         Control::Response { id, outcome }.encode(),
-                    );
+                    ));
 
-                    if let Some((stream, terminal)) = self.pending_attach.take() {
-                        self.subscribe(stream, &terminal);
+                    if let Some((stream, control, size)) = self.pending_attach.take() {
+                        let flow = StreamFlow::attach(stream, &control, size, self.queue.clone());
+
+                        self.streams.insert(stream, flow);
                     }
                 }
                 // Clients send only requests in this protocol revision.
@@ -334,8 +280,8 @@ impl Connection {
                 Err(error) => debug!(%error, "ignoring an undecodable control message"),
             },
             (stream, kind::INPUT) => {
-                if let Some(terminal) = self.streams.get(&stream) {
-                    let _ = terminal.messenger.send(Msg::Input(message.payload.into()));
+                if let Some(flow) = self.streams.get(&stream) {
+                    flow.input(message.payload);
                 }
             }
             // Unknown frame kinds come from a newer peer and are skipped.
@@ -344,107 +290,77 @@ impl Connection {
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
+        let registry = &self.shared.config.registry;
+
         match method {
+            rpc::SESSIONS_LIST => reply(&SessionList {
+                sessions: registry.list(),
+            }),
             rpc::TERMINAL_OPEN => {
                 let open: TerminalOpen = parse(params)?;
 
-                let session = self
-                    .shared
-                    .open_terminal(open.cols.max(1), open.rows.max(1))
+                let session = registry
+                    .open_headless(
+                        self.shared.config.shell.clone(),
+                        self.shared.config.args.clone(),
+                        open.cols.max(1),
+                        open.rows.max(1),
+                    )
                     .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))?;
 
                 reply(&SessionRef { session })
             }
             rpc::TERMINAL_ATTACH => {
                 let SessionRef { session } = parse(params)?;
-                let terminal = self.shared.terminal(&session)?;
+
+                let (control, size) = registry
+                    .attach_info(&session)
+                    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, &session))?;
+
+                let (cols, rows) = *size.borrow();
                 let stream = self.next_stream;
-                let (cols, rows) = *terminal.size.lock();
 
                 self.next_stream += 1;
-
-                self.streams.insert(stream, Arc::clone(&terminal));
-
-                self.pending_attach = Some((stream, terminal));
+                self.pending_attach = Some((stream, control, size));
 
                 reply(&Attached { stream, cols, rows })
             }
             rpc::TERMINAL_RESIZE => {
                 let resize: TerminalResize = parse(params)?;
-                let terminal = self.shared.terminal(&resize.session)?;
-                let (cols, rows) = (resize.cols.max(1), resize.rows.max(1));
 
-                *terminal.size.lock() = (cols, rows);
-
-                // The host engine derives its cell size from these pixels for
-                // image placement; a remote view's real cell size is unknown
-                // here, so a typical one stands in.
-                let _ = terminal.messenger.send(Msg::Resize(WinsizeBuilder {
-                    cols,
-                    rows,
-                    width: cols.saturating_mul(8),
-                    height: rows.saturating_mul(16),
-                }));
+                if !registry.resize(&resize.session, resize.cols.max(1), resize.rows.max(1)) {
+                    return Err(RpcError::new(ErrorCode::NotFound, resize.session));
+                }
 
                 Ok(Value::Null)
             }
             rpc::TERMINAL_CLOSE => {
                 let SessionRef { session } = parse(params)?;
-                let terminal = self.shared.state.lock().terminals.remove(&session);
 
-                if let Some(terminal) = terminal {
-                    info!(%session, "closing a remote terminal");
+                match registry.origin(&session) {
+                    None => Err(RpcError::new(ErrorCode::NotFound, session)),
+                    Some(Origin::Remote) => {
+                        registry.close_remote(&session);
 
-                    terminal.shutdown();
+                        Ok(Value::Null)
+                    }
+                    Some(_) => Err(RpcError::new(
+                        ErrorCode::Denied,
+                        "a host tab is closed on the host",
+                    )),
+                }
+            }
+            rpc::STREAM_CLOSE => {
+                let StreamRef { stream } = parse(params)?;
 
-                    self.streams
-                        .retain(|_, attached| !Arc::ptr_eq(attached, &terminal));
+                if let Some(flow) = self.streams.remove(&stream) {
+                    flow.close();
                 }
 
                 Ok(Value::Null)
             }
             _ => Err(RpcError::new(ErrorCode::Unsupported, method)),
         }
-    }
-
-    /// Register the stream for every byte after a checkpoint. The checkpoint
-    /// and the live output are queued on the PTY task in order, and after the
-    /// attach response, so the client sees the stream id first.
-    fn subscribe(&self, stream: u32, terminal: &HostTerminal) {
-        let output = self.out.clone();
-        let checkpoint = self.out.clone();
-
-        let _ = terminal.messenger.send(Msg::Subscribe {
-            sink: OutputSink(Box::new(move |bytes| {
-                output
-                    .send(Outbound {
-                        stream,
-                        kind: kind::OUTPUT,
-                        payload: bytes.to_vec(),
-                    })
-                    .is_ok()
-            })),
-            checkpoint: CheckpointRequest(Box::new(move |result| match result {
-                Ok(state) => {
-                    let _ = checkpoint.send(Outbound {
-                        stream,
-                        kind: kind::CHECKPOINT,
-                        payload: state.vt,
-                    });
-                }
-                Err(error) => warn!(?error, "remote attach checkpoint failed"),
-            })),
-        });
-
-        terminal.exit.watch(self.out.clone(), stream);
-    }
-
-    fn send(&self, stream: u32, kind: u8, payload: Vec<u8>) {
-        let _ = self.out.send(Outbound {
-            stream,
-            kind,
-            payload,
-        });
     }
 }
 
@@ -453,78 +369,6 @@ impl Shared {
         if let Some(advertiser) = &self.advertiser {
             advertiser.set_pairing_slot(slot);
         }
-    }
-
-    fn terminal(&self, session: &str) -> Result<Arc<HostTerminal>, RpcError> {
-        self.state
-            .lock()
-            .terminals
-            .get(session)
-            .cloned()
-            .ok_or_else(|| RpcError::new(ErrorCode::NotFound, session))
-    }
-
-    fn open_terminal(&self, cols: u16, rows: u16) -> Result<String> {
-        let config = TerminalSessionConfig {
-            shell: self.config.shell.clone(),
-            args: self.config.args.clone(),
-            ..TerminalSessionConfig::default()
-        }
-        .with_shell_integration();
-
-        let shell = config.shell.clone().unwrap_or_else(default_shell);
-        let home = dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
-
-        let pty = create_pty_with_env(PtyOptions {
-            shell: &shell,
-            args: &config.args,
-            working_directory: home.as_deref(),
-            columns: cols,
-            rows,
-            environment_overrides: &config.environment_overrides,
-            starting_title: None,
-            bootstrap: config.bootstrap.as_deref(),
-        })
-        .map_err(|error| anyhow!("starting {shell}: {error}"))?;
-
-        let exit = Arc::new(ExitWatch::default());
-
-        // The host engine answers terminal queries next to the PTY, so the
-        // program gets exactly one reply without a network round trip.
-        let handles = start_session(
-            pty,
-            HostEvents(Arc::clone(&exit)),
-            SessionOptions {
-                cols,
-                rows,
-                route_id: 0,
-                colors: active_colors(),
-                cursor_shape: CursorShape::Block,
-                scrollback_lines: config.scrollback_lines,
-                engine_blocks: config.engine_blocks,
-                terminal_responses: true,
-            },
-        )
-        .map_err(|error| anyhow!("starting the terminal engine: {error}"))?;
-
-        let terminal = Arc::new(HostTerminal {
-            messenger: handles.messenger,
-            worker: Mutex::new(Some(handles.worker)),
-            size: Mutex::new((cols, rows)),
-            exit,
-        });
-
-        let mut state = self.state.lock();
-
-        state.next_terminal += 1;
-
-        let session = format!("t{}", state.next_terminal);
-
-        state.terminals.insert(session.clone(), terminal);
-
-        info!(%session, cols, rows, "opened a remote terminal");
-
-        Ok(session)
     }
 }
 
@@ -787,12 +631,34 @@ where
         + Send
         + 'static,
 {
-    let (out_tx, out_rx) = mpsc::unbounded_channel();
+    let (queue, queue_rx) = SendQueue::new();
 
     let (in_tx, mut in_rx) = mpsc::unbounded_channel();
 
-    let pump = tokio::spawn(pump(ws, channel, out_rx, in_tx));
+    let pump = tokio::spawn(pump(ws, channel, queue_rx, in_tx));
     let pump_id = pump.id();
+
+    // Clients that listed sessions refresh when the list changes.
+    let mut changes = shared.config.registry.subscribe();
+
+    let notices = queue.clone();
+
+    let watcher = tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            let notice = Control::Notification {
+                method: rpc::SESSIONS_CHANGED.into(),
+                params: Value::Null,
+            };
+
+            if !notices.send(Outbound::new(
+                CONTROL_STREAM,
+                kind::CONTROL_JSON,
+                notice.encode(),
+            )) {
+                break;
+            }
+        }
+    });
 
     shared
         .state
@@ -802,7 +668,7 @@ where
 
     let mut connection = Connection {
         shared: Arc::clone(&shared),
-        out: out_tx,
+        queue,
         streams: HashMap::new(),
         next_stream: 1,
         pending_attach: None,
@@ -818,8 +684,12 @@ where
         .connections
         .retain(|(_, task)| task.id() != pump_id);
 
-    // Closing the queue ends the pump if the peer has not already.
-    drop(connection);
+    watcher.abort();
+
+    // The views this channel carried detach; their sessions keep running.
+    for flow in connection.streams.values() {
+        flow.close();
+    }
 
     match pump.await {
         Ok(result) => result,
@@ -836,12 +706,4 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
 fn reply<T: Serialize>(value: &T) -> Result<Value, RpcError> {
     serde_json::to_value(value)
         .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
-}
-
-fn send_exit(out: &UnboundedSender<Outbound>, stream: u32) {
-    let _ = out.send(Outbound {
-        stream,
-        kind: kind::EXIT,
-        payload: serde_json::to_vec(&Exit::default()).unwrap_or_default(),
-    });
 }

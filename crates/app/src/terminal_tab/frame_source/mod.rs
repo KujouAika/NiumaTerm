@@ -43,6 +43,10 @@ pub struct TerminalFrameSource {
     pub(super) images: Arc<SessionBridge>,
     pub(super) snapshot: Arc<RenderBuffer>,
     grid_size: (u16, u16),
+
+    /// Pixel size of the last accepted resize, repeated when the pane takes
+    /// the PTY size back from a remote view.
+    pixels: (u16, u16),
 }
 
 impl TerminalFrameSource {
@@ -63,6 +67,7 @@ impl TerminalFrameSource {
             session,
             images,
             grid_size,
+            pixels: (0, 0),
         })
     }
 
@@ -111,6 +116,7 @@ impl TerminalFrameSource {
             session,
             images,
             grid_size,
+            pixels: (0, 0),
         })
     }
 
@@ -132,6 +138,7 @@ impl TerminalFrameSource {
             session,
             images,
             grid_size,
+            pixels: (0, 0),
         })
     }
 
@@ -160,9 +167,21 @@ impl TerminalFrameSource {
 
         if accepted {
             self.grid_size = (cols, rows);
+            self.pixels = (metrics::pixel_u16(width_px), metrics::pixel_u16(height_px));
         }
 
         accepted
+    }
+
+    /// Resize the PTY to this pane's grid even though the grid did not
+    /// change: another view sharing the session resized it.
+    pub(super) fn reassert_size(&mut self) -> bool {
+        self.session.resize(
+            self.grid_size.0,
+            self.grid_size.1,
+            self.pixels.0,
+            self.pixels.1,
+        )
     }
 
     pub(super) fn frame(

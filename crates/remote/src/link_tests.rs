@@ -10,7 +10,7 @@ use tokio::time::{sleep, timeout};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
-use crate::link::pump;
+use crate::link::{SendQueue, pump};
 
 fn channels() -> (Channel, Channel) {
     let client = DeviceKey::generate().unwrap();
@@ -57,8 +57,8 @@ async fn sockets() -> (WebSocketStream<DuplexStream>, WebSocketStream<DuplexStre
 async fn quiet_but_live_channels_stay_open() {
     let (client_channel, host_channel) = channels();
     let (client_ws, host_ws) = sockets().await;
-    let (_client_out, client_out_rx) = mpsc::unbounded_channel();
-    let (_host_out, host_out_rx) = mpsc::unbounded_channel();
+    let (_client_out, client_out_rx) = SendQueue::new();
+    let (_host_out, host_out_rx) = SendQueue::new();
     let (client_in, _client_in_rx) = mpsc::unbounded_channel();
     let (host_in, _host_in_rx) = mpsc::unbounded_channel();
 
@@ -77,7 +77,7 @@ async fn a_silent_peer_is_declared_dead() {
 
     // The peer socket exists but nothing ever reads or answers on it.
     let (client_ws, _silent) = sockets().await;
-    let (_out, out_rx) = mpsc::unbounded_channel();
+    let (_out, out_rx) = SendQueue::new();
     let (inbound, _inbound_rx) = mpsc::unbounded_channel();
 
     let result = timeout(

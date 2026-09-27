@@ -55,12 +55,12 @@ pub(crate) fn spawn_pane(
 }
 
 /// A pane for a terminal running on another computer, titled with that
-/// computer's name.
+/// computer's name. `ends_with_tab` makes closing the tab end the session.
 pub(crate) fn spawn_remote_pane(
     cx: &mut impl AppContext,
     id: u64,
     pty: NetworkPty,
-    host_name: String,
+    ends_with_tab: bool,
 ) -> Result<Entity<TerminalPane>, String> {
     let cursor_shape = cx.read_global(|settings: &TerminalSettings, _| settings.cursor_shape);
 
@@ -68,7 +68,7 @@ pub(crate) fn spawn_remote_pane(
         cx,
         id,
         pty,
-        host_name,
+        ends_with_tab,
         agent_process().allocate_route(),
         cursor_shape,
     )

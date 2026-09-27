@@ -44,6 +44,8 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                                 git_cwd: None,
                                 title: Some("vim notes.md".into()),
                                 agent_conversation: None,
+                                remote_host: None,
+                                remote_session: None,
                                 agent_settings: None,
                                 panes: None,
                                 grid_size: Some((132, 43)),
@@ -53,6 +55,8 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                                 agent_profile: Some("reviewer".into()),
                                 title: Some("Fix login redirect".into()),
                                 agent_conversation: Some("session-7".into()),
+                                remote_host: None,
+                                remote_session: None,
                                 agent_settings: Some(AgentTabSettings {
                                     model: Some("opus".into()),
                                     approval: Some("acceptEdits".into()),
@@ -182,6 +186,8 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
         git_cwd: None,
         title: None,
         agent_conversation: None,
+        remote_host: None,
+        remote_session: None,
         agent_settings: None,
         panes: Some(PaneNodeState::Split {
             axis: PaneSplitAxis::Horizontal,

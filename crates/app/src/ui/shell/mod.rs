@@ -993,6 +993,8 @@ impl AppWindow {
 
         self.agent_notifications.remove_route(&route, cx);
 
+        pane.read(cx).end_remote_session();
+
         // Dropping the pane entity drops its surface, releasing the IO thread
         // and ConPTY handle (same Drop chain as a tab close).
         drop(pane);
@@ -1176,6 +1178,10 @@ impl AppWindow {
 
         for route in tree.agent_routes(cx) {
             self.agent_notifications.remove_route(&route, cx);
+        }
+
+        for (_, pane) in tree.leaves() {
+            pane.read(cx).end_remote_session();
         }
 
         let return_to = tree.git().and_then(|git| git.return_to);
@@ -1839,19 +1845,21 @@ impl AppWindow {
         );
     }
 
-    /// Open a tab on a terminal that runs on another computer.
+    /// Open a tab on a terminal that runs on another computer. With
+    /// `ends_with_tab`, closing the tab ends the session on the host.
     pub(crate) fn open_remote_terminal(
         &mut self,
         pty: NetworkPty,
-        host_name: String,
+        ends_with_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.leave_settings_workspace();
 
         let id = Self::alloc_id(&mut self.next_id);
+        let host_name = pty.host().name();
 
-        let pane = match spawn_remote_pane(cx, id, pty, host_name.clone()) {
+        let pane = match spawn_remote_pane(cx, id, pty, ends_with_tab) {
             Ok(pane) => pane,
             Err(error) => {
                 warn!("remote terminal failed to start: {error}");
@@ -2560,6 +2568,8 @@ impl AppWindow {
         cx.observe(pane, |this, pane, cx| this.on_pane_notified(pane, cx))
             .detach();
 
+        ui::remote::share_tab(pane, cx);
+
         cx.subscribe(pane, Self::on_agent_interrupted).detach();
     }
 
@@ -2616,6 +2626,8 @@ impl AppWindow {
                         // The saved session carries the title, so a restore
                         // labels the tab with it before its shell runs.
                         let changed = tabs.set_title(tab_id, title.clone());
+
+                        ui::remote::tab_title_changed(&pane, title, cx);
 
                         chrome_changed |= changed;
                         session_changed |= changed;

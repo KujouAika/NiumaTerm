@@ -160,6 +160,15 @@ pub struct TabState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_conversation: Option<String>,
 
+    /// Device id of the host a remote terminal tab shows, and the session on
+    /// that host. Restore reattaches to the session, which kept running on
+    /// the host, instead of starting a shell here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<String>,
+
     /// Thread controls this agent tab was last running under. Absent for a
     /// tab the user never adjusted, which reopens on its profile's defaults.
     /// Declared with `panes` below the scalars: TOML requires tables after

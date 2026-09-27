@@ -24,13 +24,14 @@ fn pane(cx: &mut VisualTestContext) -> Entity<TerminalPane> {
             profile_name: "Test".into(),
             restorable: TabState::default(),
             agent_route: AgentRoute::parse("test-input").unwrap(),
-            remote: false,
+            remote: None,
         },
         model,
         content_bounds: None,
         wake: wake_channel().0,
         image_releases_attached: false,
         block_list: BlockListState::new(ListAlignment::Top),
+        host_share: None,
     })
 }
 

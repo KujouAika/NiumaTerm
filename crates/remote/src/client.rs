@@ -1,35 +1,23 @@
-//! The client side: pairs with a host and opens terminals on it.
+//! The client side of pairing and channel setup. [`crate::connection`]
+//! keeps a channel to a paired host alive on top of this.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::{error, fmt};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::{Sink, Stream};
 use nmt_remote_core::channel::{Channel, ClientHandshake};
-use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{ClientHello, DeviceInfo, HostHello};
 use nmt_remote_core::pairing::{ClientPairing, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
-use nmt_remote_core::rpc::{self, Attached, Control, RpcError, SessionRef, TerminalOpen};
 use nmt_remote_core::{PROTO_MAJOR, PROTO_MINOR};
-use parking_lot::Mutex;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::Value;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
-use tracing::debug;
 
 use crate::discovery::{self, Target};
-use crate::link::{Outbound, pump, recv_binary, send_binary};
-use crate::network_pty::NetworkPty;
+use crate::link::{recv_binary, send_binary};
 use crate::store::{PairedHost, now_ms};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,7 +33,7 @@ const FEATURES: &[&str] = &["terminal"];
 /// The host completed the preface but closed instead of answering the
 /// handshake: this device is not, or no longer, paired with it.
 #[derive(Debug)]
-struct Refused;
+pub(crate) struct Refused;
 
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -54,34 +42,6 @@ impl fmt::Display for Refused {
 }
 
 impl error::Error for Refused {}
-
-/// What a terminal stream delivers to its [`NetworkPty`].
-pub(crate) enum StreamEvent {
-    Output(Vec<u8>),
-    Exit,
-}
-
-/// An open channel to one host, shared by every remote terminal on it.
-pub struct RemoteHost {
-    out: UnboundedSender<Outbound>,
-    routes: Arc<Mutex<Routes>>,
-    next_id: AtomicU64,
-}
-
-#[derive(Default)]
-struct Routes {
-    calls: HashMap<u64, PendingCall>,
-    streams: HashMap<u32, UnboundedSender<StreamEvent>>,
-}
-
-struct PendingCall {
-    reply: oneshot::Sender<Result<Value, RpcError>>,
-
-    /// For an attach: the stream to route once the response names its id.
-    /// Routing it while handling the response, before the next frame, means
-    /// the checkpoint that follows can never arrive for an unknown stream.
-    stream: Option<UnboundedSender<StreamEvent>>,
-}
 
 /// Pair with the host showing `code`, at `address` (`host:port`) or, when
 /// none is given, wherever the LAN advertises that code's slot. A key from a
@@ -137,17 +97,24 @@ pub async fn pair(
 
 /// Open a channel to a paired host: its known LAN addresses first, then
 /// wherever DNS-SD finds it now (DHCP may have moved it). `host` records the
-/// handshake time, the host's current name, and the address that worked; the
-/// caller stores it afterwards.
-pub async fn connect(
+/// handshake time, the host's current name, and the address that worked;
+/// the caller stores it afterwards. [`Refused`] means the host no longer
+/// trusts this device.
+pub(crate) async fn establish(
     host: &mut PairedHost,
     key: &DeviceKey,
     app_version: &str,
-) -> Result<Arc<RemoteHost>> {
+) -> Result<(
+    impl Stream<Item = Result<Message, WsError>>
+    + Sink<Message, Error = WsError>
+    + Unpin
+    + Send
+    + 'static,
+    Channel,
+)> {
     let mut last_error = anyhow!("no known address for this host");
-    let mut established = None;
 
-    'search: for rediscover in [false, true] {
+    for rediscover in [false, true] {
         let candidates = if rediscover {
             match discovery::find(Target::Device(&host.id), DISCOVERY_WAIT).await {
                 Some(address) if !host.lan_hints.contains(&address) => vec![address],
@@ -173,14 +140,15 @@ pub async fn connect(
             )
             .await
             {
-                Ok(Ok(result)) => {
+                Ok(Ok((ws, channel, host_hello))) => {
                     host.lan_hints.retain(|known| known != &address);
                     host.lan_hints.insert(0, address);
                     host.lan_hints.truncate(MAX_LAN_HINTS);
 
-                    established = Some(result);
+                    host.name = host_hello.name;
+                    host.last_seen = now_ms();
 
-                    break 'search;
+                    return Ok((ws, channel));
                 }
                 // The right host answered and said no; another address
                 // would reach the same host.
@@ -191,118 +159,7 @@ pub async fn connect(
         }
     }
 
-    let Some((ws, channel, host_hello)) = established else {
-        return Err(last_error);
-    };
-
-    host.name = host_hello.name;
-    host.last_seen = now_ms();
-
-    let (out, out_rx) = mpsc::unbounded_channel();
-    let (in_tx, in_rx) = mpsc::unbounded_channel();
-    let routes = Arc::new(Mutex::new(Routes::default()));
-
-    tokio::spawn(async move {
-        if let Err(error) = pump(ws, channel, out_rx, in_tx).await {
-            debug!(%error, "remote channel ended");
-        }
-    });
-
-    tokio::spawn(dispatch(Arc::clone(&routes), in_rx));
-
-    Ok(Arc::new(RemoteHost {
-        out,
-        routes,
-        next_id: AtomicU64::new(1),
-    }))
-}
-
-impl RemoteHost {
-    /// Start a terminal on the host with the given grid and attach to it.
-    pub async fn open_terminal(self: &Arc<Self>, cols: u16, rows: u16) -> Result<NetworkPty> {
-        let SessionRef { session } = self
-            .call(rpc::TERMINAL_OPEN, &TerminalOpen { cols, rows }, None)
-            .await?;
-
-        let (events, events_rx) = mpsc::unbounded_channel();
-
-        let Attached { stream, .. } = self
-            .call(
-                rpc::TERMINAL_ATTACH,
-                &SessionRef {
-                    session: session.clone(),
-                },
-                Some(events),
-            )
-            .await?;
-
-        Ok(NetworkPty::new(
-            Arc::clone(self),
-            session,
-            stream,
-            events_rx,
-        ))
-    }
-
-    pub fn is_connected(&self) -> bool {
-        !self.out.is_closed()
-    }
-
-    async fn call<T: DeserializeOwned>(
-        &self,
-        method: &str,
-        params: &impl Serialize,
-        stream: Option<UnboundedSender<StreamEvent>>,
-    ) -> Result<T> {
-        let (reply, response) = oneshot::channel();
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-
-        self.routes
-            .lock()
-            .calls
-            .insert(id, PendingCall { reply, stream });
-
-        self.request(id, method, params)?;
-
-        let value = response
-            .await
-            .map_err(|_| anyhow!("the connection closed"))?
-            .map_err(|error| anyhow!("{method}: {}", error.message))?;
-
-        Ok(serde_json::from_value(value)?)
-    }
-
-    /// Send a request whose response nobody waits for. The host answers it
-    /// anyway; the dispatcher drops answers to unknown ids.
-    pub(crate) fn notify(&self, method: &str, params: &impl Serialize) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-
-        let _ = self.request(id, method, params);
-    }
-
-    fn request(&self, id: u64, method: &str, params: &impl Serialize) -> Result<()> {
-        let request = Control::Request {
-            id,
-            method: method.to_owned(),
-            params: serde_json::to_value(params)?,
-        };
-
-        self.send(CONTROL_STREAM, kind::CONTROL_JSON, request.encode())
-    }
-
-    pub(crate) fn send(&self, stream: u32, kind: u8, payload: Vec<u8>) -> Result<()> {
-        self.out
-            .send(Outbound {
-                stream,
-                kind,
-                payload,
-            })
-            .map_err(|_| anyhow!("the connection closed"))
-    }
-
-    pub(crate) fn detach(&self, stream: u32) {
-        self.routes.lock().streams.remove(&stream);
-    }
+    Err(last_error)
 }
 
 /// Run the channel handshake with the host at `address`.
@@ -364,48 +221,4 @@ async fn open(
     }
 
     Ok((ws, offer, answer))
-}
-
-async fn dispatch(routes: Arc<Mutex<Routes>>, mut inbound: UnboundedReceiver<FrameMessage>) {
-    while let Some(message) = inbound.recv().await {
-        let mut routes = routes.lock();
-
-        match (message.stream, message.kind) {
-            (CONTROL_STREAM, kind::CONTROL_JSON) => {
-                let Ok(Control::Response { id, outcome }) = Control::decode(&message.payload)
-                else {
-                    continue;
-                };
-
-                let Some(call) = routes.calls.remove(&id) else {
-                    continue;
-                };
-
-                if let (Ok(result), Some(events)) = (&outcome, call.stream)
-                    && let Some(stream) = result.get("stream").and_then(Value::as_u64)
-                {
-                    routes.streams.insert(stream as u32, events);
-                }
-
-                let _ = call.reply.send(outcome);
-            }
-            (stream, kind::CHECKPOINT | kind::OUTPUT) => {
-                if let Some(events) = routes.streams.get(&stream) {
-                    let _ = events.send(StreamEvent::Output(message.payload));
-                }
-            }
-            (stream, kind::EXIT) => {
-                if let Some(events) = routes.streams.remove(&stream) {
-                    let _ = events.send(StreamEvent::Exit);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // The channel is gone: pending calls fail and every stream ends.
-    let mut routes = routes.lock();
-
-    routes.calls.clear();
-    routes.streams.clear();
 }

@@ -45,6 +45,8 @@ fn tab(shell: Option<&str>, args: &[&str]) -> TabState {
         git_cwd: None,
         title: None,
         agent_conversation: None,
+        remote_host: None,
+        remote_session: None,
         agent_settings: None,
         panes: None,
         grid_size: None,

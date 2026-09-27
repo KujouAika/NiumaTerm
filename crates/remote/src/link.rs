@@ -2,6 +2,8 @@
 //! One WebSocket binary message carries one Noise message, on the LAN and
 //! later through the relay, so both paths share this code.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -11,15 +13,91 @@ use nmt_remote_core::frame::{
     CONTROL_STREAM, Frame, Message as FrameMessage, Reassembler, encode_message, kind,
 };
 use tokio::select;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Instant, sleep_until};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+
+/// Largest backlog one channel may queue. A peer that stays this far
+/// behind is closed and reconnects, which replaces the backlog with a
+/// checkpoint instead of letting memory and latency grow without bound.
+pub(crate) const MAX_QUEUED: usize = 8 * 1024 * 1024;
 
 /// One message to send on a channel stream.
 pub(crate) struct Outbound {
     pub stream: u32,
     pub kind: u8,
     pub payload: Vec<u8>,
+
+    /// Told how many payload bytes left once the message is sent, so
+    /// a stream can track its own backlog.
+    pub on_sent: Option<Arc<dyn SentHook>>,
+}
+
+pub(crate) trait SentHook: Send + Sync {
+    fn sent(&self, bytes: usize);
+}
+
+impl Outbound {
+    pub(crate) fn new(stream: u32, kind: u8, payload: Vec<u8>) -> Self {
+        Self {
+            stream,
+            kind,
+            payload,
+            on_sent: None,
+        }
+    }
+}
+
+/// The sending half of a channel's outbound queue, which counts the bytes
+/// waiting in it.
+#[derive(Clone)]
+pub(crate) struct SendQueue {
+    tx: UnboundedSender<Outbound>,
+    queued: Arc<AtomicUsize>,
+}
+
+pub(crate) struct QueueReceiver {
+    rx: UnboundedReceiver<Outbound>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl QueueReceiver {
+    #[cfg(test)]
+    pub(crate) fn try_recv(&mut self) -> Option<Outbound> {
+        let outbound = self.rx.try_recv().ok()?;
+
+        self.queued
+            .fetch_sub(outbound.payload.len(), Ordering::Relaxed);
+
+        Some(outbound)
+    }
+}
+
+impl SendQueue {
+    pub(crate) fn new() -> (Self, QueueReceiver) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let queued = Arc::new(AtomicUsize::new(0));
+
+        (
+            Self {
+                tx,
+                queued: Arc::clone(&queued),
+            },
+            QueueReceiver { rx, queued },
+        )
+    }
+
+    /// Queue a message; `false` once the channel is gone.
+    pub(crate) fn send(&self, outbound: Outbound) -> bool {
+        self.queued
+            .fetch_add(outbound.payload.len(), Ordering::Relaxed);
+
+        self.tx.send(outbound).is_ok()
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
 }
 
 pub(crate) async fn recv_binary<S>(ws: &mut S) -> Result<Vec<u8>>
@@ -67,7 +145,7 @@ const MAX_MISSED_PINGS: u32 = 2;
 pub(crate) async fn pump<S>(
     mut ws: S,
     mut channel: Channel,
-    mut outbound: UnboundedReceiver<Outbound>,
+    mut outbound: QueueReceiver,
     inbound: UnboundedSender<FrameMessage>,
 ) -> Result<()>
 where
@@ -104,14 +182,26 @@ where
                 }
             }
 
-            next = outbound.recv() => {
+            next = outbound.rx.recv() => {
                 let Some(next) = next else {
                     let _ = ws.close().await;
 
                     return Ok(());
                 };
 
+                if outbound.queued.load(Ordering::Relaxed) > MAX_QUEUED {
+                    bail!("the peer fell too far behind");
+                }
+
                 send_frames(&mut ws, &mut channel, next.stream, next.kind, &next.payload).await?;
+
+                outbound
+                    .queued
+                    .fetch_sub(next.payload.len(), Ordering::Relaxed);
+
+                if let Some(hook) = &next.on_sent {
+                    hook.sent(next.payload.len());
+                }
             }
 
             () = sleep_until(deadline) => {

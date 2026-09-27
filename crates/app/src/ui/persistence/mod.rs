@@ -30,10 +30,13 @@ use crate::tabs::{TabId, TabManager};
 use crate::ui::AppWindow;
 use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::pane_tree::{PaneId, PaneNode, PaneTree};
+use crate::ui::remote::{paired_host_name, restore_view};
 use crate::ui::settings::{AgentProfile, AppSettings, builtin_agent_profile};
 use crate::ui::shell::tab_surface::{AgentTab, GitTab, TerminalPaneTree};
 use crate::ui::shell::{TabSurface, agent_workspace};
-use crate::ui::terminal_launch::{launch_with_profile, spawn_default_pane, spawn_pane};
+use crate::ui::terminal_launch::{
+    launch_with_profile, spawn_default_pane, spawn_pane, spawn_remote_pane,
+};
 use crate::ui::terminal_layout::TerminalLayout;
 use crate::workspace::{WorkspaceId, WorkspaceManager, WorkspaceRoots, default_workspace_name};
 
@@ -46,6 +49,8 @@ enum SavedTab<'a> {
     /// A conversation of this agent kind: the saved one when the tab held
     /// one, otherwise a fresh one.
     Agent(AgentKind),
+    /// A terminal session on a paired host, by host id and session id.
+    Remote(&'a str, &'a str),
     /// A terminal. An agent kind this build does not know (a newer snapshot)
     /// degrades to a terminal rather than losing the tab.
     Terminal,
@@ -58,6 +63,13 @@ fn saved_tab(state: &TabState) -> SavedTab<'_> {
 
     if let Some(room) = state.team_room.as_deref() {
         return SavedTab::Team(room);
+    }
+
+    if let (Some(host), Some(session)) = (
+        state.remote_host.as_deref(),
+        state.remote_session.as_deref(),
+    ) {
+        return SavedTab::Remote(host, session);
     }
 
     match state.agent.as_deref().and_then(AgentKind::from_id) {
@@ -345,6 +357,10 @@ pub(super) fn materialize_active_tab(
 
             TabSurface::Agent(AgentTab { owner, pane })
         }
+        SavedTab::Remote(host, session) => match restore_remote_pane(host, session, next_id, cx) {
+            Some(tree) => TabSurface::Live(tree),
+            None => TabSurface::Live(restore_terminal_tree(TabState::default(), next_id, cx)),
+        },
         SavedTab::Terminal => TabSurface::Live(restore_terminal_tree(state, next_id, cx)),
     };
 
@@ -388,6 +404,29 @@ fn restore_terminal_tree(
 
             TerminalLayout::new_leaf(PaneId(surface_id), pane)
         })
+}
+
+/// A saved remote tab, reattached to its session. The session kept running
+/// on the host; a host that is unreachable now shows its reconnecting
+/// state in the tab. `None` when the host is no longer paired.
+fn restore_remote_pane(
+    host: &str,
+    session: &str,
+    next_id: &mut u64,
+    cx: &mut Context<AppWindow>,
+) -> Option<TerminalPaneTree> {
+    let pty = restore_view(host, session, cx)?;
+    let surface_id = AppWindow::alloc_id(next_id);
+
+    // A restored view does not end the session when closed: whether this
+    // client started it is not recorded.
+    let pane = spawn_remote_pane(cx, surface_id, pty, false)
+        .inspect_err(|error| warn!("failed to restore a remote tab: {error}"))
+        .ok()?;
+
+    AppWindow::watch_pane(&pane, cx);
+
+    Some(TerminalLayout::new_leaf(PaneId(surface_id), pane))
 }
 
 fn restore_team_tab(
@@ -456,6 +495,9 @@ fn restore_tabs(
                 } else {
                     name
                 }
+            }
+            SavedTab::Remote(host, _) => {
+                paired_host_name(host, cx).unwrap_or_else(|| t!("remote-tab-title").into_owned())
             }
             SavedTab::Terminal => cx
                 .global::<AppSettings>()
