@@ -30,6 +30,7 @@ pub struct CommandQueue {
     pub awaiting_turn: bool,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum CommandAdmission {
     Execute(PendingSlashCommand),
     Queued { name: String, count: usize },

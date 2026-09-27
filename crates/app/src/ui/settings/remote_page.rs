@@ -1,3 +1,4 @@
+use app::agent_tab::AgentKind;
 use gpui::{App, ClipboardItem, IntoElement as _, ParentElement as _, SharedString, Styled as _};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
@@ -6,7 +7,7 @@ use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 use nmt_remote::connection::Status;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
 use nmt_remote_core::identity::DeviceId;
-use nmt_remote_core::rpc::{Origin, SessionInfo};
+use nmt_remote_core::rpc::{Origin, SessionInfo, SessionKind};
 use rust_i18n::t;
 
 use crate::ui::AppSettings;
@@ -308,10 +309,24 @@ fn host_session_item(host: DeviceId, session: SessionInfo) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         let id = session.session.clone();
         let host = host.clone();
+        let opened = session.clone();
 
         let origin = match session.origin {
             Origin::Tab => t!("settings-remote-origin-tab"),
             _ => t!("settings-remote-started-remotely"),
+        };
+
+        let harness = session
+            .harness
+            .as_deref()
+            .and_then(AgentKind::from_id)
+            .map(AgentKind::display);
+
+        let detail = match (session.kind, harness) {
+            (SessionKind::Agent, Some(harness)) => {
+                t!("settings-remote-agent-session", harness = harness).into_owned()
+            }
+            _ => format!("{}x{}", session.cols, session.rows),
         };
 
         h_flex()
@@ -325,7 +340,7 @@ fn host_session_item(host: DeviceId, session: SessionInfo) -> SettingItem {
                     .flex_1()
                     .child(Label::new(session.title.clone()).text_sm())
                     .child(
-                        Label::new(format!("{origin}    {}x{}", session.cols, session.rows))
+                        Label::new(format!("{origin}    {detail}"))
                             .text_xs()
                             .text_color(cx.theme().muted_foreground),
                     ),
@@ -338,7 +353,7 @@ fn host_session_item(host: DeviceId, session: SessionInfo) -> SettingItem {
                 .outline()
                 .label(t!("settings-remote-open-session"))
                 .on_click(move |_, window, cx: &mut App| {
-                    remote::open_session(&host, &id, window, cx)
+                    remote::open_session(&host, &opened, window, cx)
                 }),
             )
             .into_any_element()

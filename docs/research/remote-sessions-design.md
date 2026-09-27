@@ -952,6 +952,7 @@ Updated 2026-09-27.
 | M3 | Done: session registry with host tabs, `sessions.list`/`sessions.changed`, attach to host tabs, per-stream flow control with resync, reconnect with backoff and reattach, `SIZE` frames with size reclaim on input, reconnecting banner, restore of remote tabs, checkpoints that carry the prompt lifecycle. |
 | M4 | Done: the Worker under `relay/` with its deployment guide, the host's relay link (control socket, data socket per client, slot claims, TOFU host token), pairing and connecting through the relay, LAN-first path racing, relay URL and sealed access key in settings, pairing links carrying the relay. |
 | M5 | Done: `AgentView` projection with a publisher that sends a transcript splice and changed slots, a replica `SessionController` that applies them, and the pane's session mutations routed through `AgentCommand` values. |
+| M6 | Done for host agent tabs: `agent.attach` (snapshot, then `agent.ops`), `agent.call` running `AgentCommand`s on the host, image fetch by reference, prompts with images staged as host files, replica panes that raise the same turn, question and title effects as local ones, and restore of remote agent tabs. |
 
 Known gaps in M3:
 
@@ -963,6 +964,30 @@ Known gaps in M3:
 - Host tabs do not yet show which devices are attached, and there is no
   status bar count of connected devices.
 - `scrollback_rows` is not implemented; checkpoints carry all history.
+
+As built in M6:
+
+- One `agent.call { session, method, params }` request carries every
+  command; `method` is the command's `AgentCommand::METHOD`, so the
+  transport never changes when commands do.
+- Transcript images travel by the id of the host's `ConversationImage`
+  rather than a content hash, fetched with the `image` command.
+- Changes are published at most every 100 ms while a view is attached,
+  and a streamed reply resends its whole entry (no `append` operation).
+- A view that reconnects gets a fresh snapshot; `since_revision` resume is
+  not implemented.
+
+Known gaps in M6:
+
+- Paired devices can view and drive agent tabs open on the host, but
+  cannot start one there (`agent.open`).
+- Rewind, fork, conversation history and search, side questions,
+  background tasks, and workflow agents stay host-only; a remote pane
+  refuses the slash commands that reach them.
+- File and `@` completion (`fs.list`, `fs.complete`) is not offered, so
+  a remote composer completes nothing from the host's workspace.
+- A host that restarts registers its tabs under new ids, so a device's
+  open view of an earlier tab ends instead of reattaching.
 
 Known gaps in M4:
 

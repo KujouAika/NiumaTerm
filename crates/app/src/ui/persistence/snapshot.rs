@@ -159,6 +159,17 @@ pub(crate) fn session_state(
                             let profile = session.profile();
                             let agent: &str = profile.kind.into();
 
+                            // A tab following a paired host's session
+                            // reattaches to it; the conversation stays there.
+                            if let Some((host, session)) = tab.pane.read(cx).remote_address() {
+                                return TabState {
+                                    agent: Some(agent.into()),
+                                    remote_host: Some(host),
+                                    remote_session: Some(session),
+                                    ..TabState::default()
+                                };
+                            }
+
                             TabState {
                                 agent: Some(agent.into()),
                                 agent_profile: Some(profile.name.clone()),

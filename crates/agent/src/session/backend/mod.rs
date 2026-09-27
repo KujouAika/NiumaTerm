@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::{BoxFuture, FutureExt as _, ready};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::trace;
 
@@ -87,7 +88,7 @@ pub enum RenameOutcome {
 /// transports picks differently, and the caller needs the result rather than
 /// the transport: whether the session now runs under the pick, will adopt it
 /// with the next prompt, or refused it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettingsOutcome {
     /// The harness answered the request and the pick is in force. The
     /// session's own selection is now the authority on what is set.

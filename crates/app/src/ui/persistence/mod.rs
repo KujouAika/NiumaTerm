@@ -30,7 +30,7 @@ use crate::tabs::{TabId, TabManager};
 use crate::ui::AppWindow;
 use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::pane_tree::{PaneId, PaneNode, PaneTree};
-use crate::ui::remote::{paired_host_name, restore_view};
+use crate::ui::remote::{paired_host_name, restore_agent, restore_view};
 use crate::ui::settings::{AgentProfile, AppSettings, builtin_agent_profile};
 use crate::ui::shell::tab_surface::{AgentTab, GitTab, TerminalPaneTree};
 use crate::ui::shell::{TabSurface, agent_workspace};
@@ -357,10 +357,26 @@ pub(super) fn materialize_active_tab(
 
             TabSurface::Agent(AgentTab { owner, pane })
         }
-        SavedTab::Remote(host, session) => match restore_remote_pane(host, session, next_id, cx) {
-            Some(tree) => TabSurface::Live(tree),
-            None => TabSurface::Live(restore_terminal_tree(TabState::default(), next_id, cx)),
-        },
+        SavedTab::Remote(host, session) => {
+            match state.agent.as_deref().and_then(AgentKind::from_id) {
+                Some(kind) => match restore_agent(host, session, kind, window, cx) {
+                    Some((owner, pane)) => {
+                        AppWindow::watch_agent_tab(&pane, cx);
+
+                        TabSurface::Agent(AgentTab { owner, pane })
+                    }
+                    None => {
+                        TabSurface::Live(restore_terminal_tree(TabState::default(), next_id, cx))
+                    }
+                },
+                None => match restore_remote_pane(host, session, next_id, cx) {
+                    Some(tree) => TabSurface::Live(tree),
+                    None => {
+                        TabSurface::Live(restore_terminal_tree(TabState::default(), next_id, cx))
+                    }
+                },
+            }
+        }
         SavedTab::Terminal => TabSurface::Live(restore_terminal_tree(state, next_id, cx)),
     };
 

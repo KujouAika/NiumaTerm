@@ -69,6 +69,16 @@ pub struct ImageRef {
     pub len: u64,
 }
 
+/// The command a view fetches an image's bytes with, by [`ImageRef`].
+pub const IMAGE_METHOD: &str = "image";
+
+/// An image's bytes as they travel to a view.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImageData {
+    #[serde(with = "crate::session::command::base64_bytes")]
+    pub bytes: Arc<[u8]>,
+}
+
 /// A time on the host, sent as how long ago it was. Two readings compare
 /// equal when both are set or both are not: the value advances on its own,
 /// and only its appearance or removal is a change worth publishing.
@@ -204,9 +214,16 @@ pub struct ViewSlots {
     pub goal: Option<GoalStatus>,
     pub tasks: TasksView,
 
+    pub naming: NamingView,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NamingView {
     /// Whether the conversation has its title, so a prompt from any view
     /// knows not to name it again.
     pub named: bool,
+
+    pub title: Option<String>,
 }
 
 /// One slot, replacing its previous value.
@@ -222,7 +239,29 @@ pub enum ViewSlot {
     Queue(QueueView),
     Goal(Option<GoalStatus>),
     Tasks(TasksView),
-    Named(bool),
+    Naming(NamingView),
+}
+
+impl AgentView {
+    /// The view as operations that rebuild it from nothing: the whole
+    /// transcript, then every slot.
+    pub fn into_ops(self) -> Vec<ViewOp> {
+        let mut ops = vec![ViewOp::Splice {
+            from: 0,
+            entries: self.transcript,
+        }];
+
+        ops.extend(
+            self.slots
+                .into_slots()
+                .into_iter()
+                .map(|slot| ViewOp::Slot {
+                    slot: Box::new(slot),
+                }),
+        );
+
+        ops
+    }
 }
 
 impl ViewSlots {
@@ -238,7 +277,7 @@ impl ViewSlots {
             ViewSlot::Queue(self.queue),
             ViewSlot::Goal(self.goal),
             ViewSlot::Tasks(self.tasks),
-            ViewSlot::Named(self.named),
+            ViewSlot::Naming(self.naming),
         ]
     }
 
@@ -282,8 +321,8 @@ impl ViewSlots {
             changed.push(ViewSlot::Tasks(self.tasks.clone()));
         }
 
-        if self.named != previous.named {
-            changed.push(ViewSlot::Named(self.named));
+        if self.naming != previous.naming {
+            changed.push(ViewSlot::Naming(self.naming.clone()));
         }
 
         changed

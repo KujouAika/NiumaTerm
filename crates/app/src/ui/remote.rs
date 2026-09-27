@@ -10,15 +10,19 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context as _, Result, anyhow};
+use app::agent_tab::execution::SessionOwner;
+use app::agent_tab::{AgentKind, AgentPane, AgentPaneEvent, remote as agent_remote};
 use app::terminal_tab::view::{HostShare, TerminalPane};
-use gpui::{App, BorrowAppContext as _, Entity, EntityId, Global, SharedString, Window};
+use gpui::{
+    App, BorrowAppContext as _, Entity, EntityId, Global, SharedString, Subscription, Task, Window,
+};
 use gpui_component::Root;
 use nmt_platform::runtime;
 use nmt_remote::NetworkPty;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
-use nmt_remote::sessions::{SessionRegistry, TerminalControl};
+use nmt_remote::sessions::{AgentControl, SessionRegistry, TerminalControl};
 use nmt_remote::store::{
     PairedDevice, PairedHost, load_hosts, load_or_create_identity, load_relay_access_key,
     remote_dir, save_hosts, save_relay_access_key,
@@ -26,7 +30,7 @@ use nmt_remote::store::{
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
-use nmt_remote_core::rpc::SessionInfo;
+use nmt_remote_core::rpc::{SessionInfo, SessionKind};
 use rust_i18n::t;
 use tokio::select;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -50,6 +54,10 @@ pub(crate) struct Remote {
 
     /// Host session ids of shared tabs, by pane entity.
     shared_tabs: HashMap<EntityId, String>,
+
+    /// What serves each shared agent tab, by pane entity: the task answering
+    /// paired devices and the subscription keeping its listed title current.
+    shared_agents: HashMap<EntityId, (Task<()>, Subscription)>,
 
     hosts: Vec<PairedHost>,
     connections: HashMap<DeviceId, Arc<RemoteHost>>,
@@ -91,6 +99,7 @@ pub(crate) fn initialize(cx: &mut App) {
         host: None,
         registry: SessionRegistry::new(),
         shared_tabs: HashMap::new(),
+        shared_agents: HashMap::new(),
         hosts: load_hosts(&remote_dir()),
         connections: HashMap::new(),
         host_sessions: HashMap::new(),
@@ -418,6 +427,76 @@ pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
     .detach();
 }
 
+/// Offer a host agent tab to paired devices for as long as the pane lives.
+/// A pane following another computer's session is not offered again.
+pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, cx: &mut App) {
+    let pane_id = pane.entity_id();
+
+    let (session, remote) = {
+        let pane = pane.read(cx);
+
+        (pane.agent_session(), pane.remote_address().is_some())
+    };
+
+    let Some(session) = session else {
+        return;
+    };
+
+    if remote {
+        return;
+    }
+
+    let (title, harness) = {
+        let profile = session.read(cx).profile();
+
+        let title = if profile.name.trim().is_empty() {
+            profile.kind.display().to_owned()
+        } else {
+            profile.name.clone()
+        };
+
+        let harness: &str = profile.kind.into();
+
+        (title, harness.to_owned())
+    };
+
+    let registry = Arc::clone(&cx.global::<Remote>().registry);
+    let (requests, requests_rx) = mpsc::unbounded_channel();
+
+    let id = registry.register_agent(title.clone(), harness, AgentControl { requests });
+    let task = agent_remote::serve(session.downgrade(), requests_rx, cx);
+
+    let titles = {
+        let registry = Arc::clone(&registry);
+        let id = id.clone();
+
+        // An empty suggestion clears a conversation's title; the tab then
+        // goes by its profile again.
+        cx.subscribe(&session, move |_, event: &AgentPaneEvent, _| {
+            if let AgentPaneEvent::TitleSuggested(suggested) = event {
+                let listed = if suggested.is_empty() {
+                    title.clone()
+                } else {
+                    suggested.clone()
+                };
+
+                registry.set_title(&id, listed);
+            }
+        })
+    };
+
+    cx.global_mut::<Remote>()
+        .shared_agents
+        .insert(pane_id, (task, titles));
+
+    cx.observe_release(pane, move |_, cx| {
+        registry.unregister(&id);
+
+        cx.global_mut::<Remote>().shared_agents.remove(&pane_id);
+    })
+    .detach();
+}
+
 /// Keep the name paired devices see for a host tab current.
 pub(crate) fn tab_title_changed(pane: &Entity<TerminalPane>, title: &str, cx: &mut App) {
     let remote = cx.global::<Remote>();
@@ -675,20 +754,50 @@ pub(crate) fn open_terminal(id: &DeviceId, window: &mut Window, cx: &mut App) {
 
 /// Open a view of an existing session on a paired host. Closing the tab
 /// leaves the session running there.
-pub(crate) fn open_session(id: &DeviceId, session: &str, window: &mut Window, cx: &mut App) {
+pub(crate) fn open_session(
+    id: &DeviceId,
+    session: &SessionInfo,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(app) = app_window(window, cx) else {
         return;
     };
 
-    match connection(id, cx) {
-        Ok(connection) => {
-            let pty = connection.view(session.to_owned());
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
+        Err(error) => {
+            cx.global_mut::<Remote>().report(Err(error));
+
+            return;
+        }
+    };
+
+    match session.kind {
+        SessionKind::Agent => {
+            let Some(kind) = session.harness.as_deref().and_then(AgentKind::from_id) else {
+                cx.global_mut::<Remote>()
+                    .report(Err(anyhow!(t!("remote-agent-unknown").into_owned())));
+
+                return;
+            };
+
+            let (owner, pane) =
+                agent_remote::open(connection, session.session.clone(), kind, window, cx);
+
+            let title = session.title.clone();
+
+            app.update(cx, |app, cx| {
+                app.open_remote_agent_tab(owner, pane, title, window, cx)
+            });
+        }
+        SessionKind::Terminal | SessionKind::Unknown => {
+            let pty = connection.view(session.session.clone());
 
             app.update(cx, |app, cx| {
                 app.open_remote_terminal(pty, false, window, cx)
             });
         }
-        Err(error) => cx.global_mut::<Remote>().report(Err(error)),
     }
 }
 
@@ -715,6 +824,35 @@ pub(crate) fn restore_view(host: &str, session: &str, cx: &mut App) -> Option<Ne
         .inspect_err(|error| warn!(%error, "cannot restore a remote tab"))
         .ok()
         .map(|connection| connection.view(session.to_owned()))
+}
+
+/// A view of a saved remote agent tab's session, reattached on restore.
+/// `None` when the host is no longer paired.
+pub(crate) fn restore_agent(
+    host: &str,
+    session: &str,
+    kind: AgentKind,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<(SessionOwner, Entity<AgentPane>)> {
+    let id = cx
+        .global::<Remote>()
+        .hosts
+        .iter()
+        .find(|paired| paired.id.as_str() == host)
+        .map(|paired| paired.id.clone())?;
+
+    let connection = connection(&id, cx)
+        .inspect_err(|error| warn!(%error, "cannot restore a remote agent tab"))
+        .ok()?;
+
+    Some(agent_remote::open(
+        connection,
+        session.to_owned(),
+        kind,
+        window,
+        cx,
+    ))
 }
 
 /// The device key, loaded from secret storage on first use.

@@ -11,16 +11,18 @@ use nmt_platform::{AsyncPty, PtyOptions, create_pty_with_env, runtime};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::PairingCode;
-use nmt_remote_core::rpc::Origin;
+use nmt_remote_core::rpc::{Origin, SessionKind};
 use nmt_terminal::event::VoidListener;
 use nmt_terminal::termio::{SessionHandles, SessionOptions, start_session};
+use serde_json::json;
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::NetworkPty;
 use crate::client::pair;
-use crate::connection::{RemoteHost, Status};
+use crate::connection::{AgentUpdate, RemoteHost, Status};
 use crate::host::{HostConfig, HostService};
-use crate::sessions::{SessionRegistry, TerminalControl};
+use crate::sessions::{AgentControl, AgentRequest, SessionRegistry, TerminalControl};
 use crate::store::PairedHost;
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -447,5 +449,91 @@ fn a_host_off_the_lan_is_paired_and_used_through_the_relay() {
         let mut pty = remote.open_terminal(80, 24).await.unwrap();
 
         run_marker(&mut pty, "RELAYED").await;
+    });
+}
+
+/// An agent session stand-in: every view gets a snapshot numbered by how
+/// many views attached so far and then one change, and calls echo.
+fn fake_agent(registry: &SessionRegistry) -> String {
+    let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+    runtime().spawn(async move {
+        let mut attached = 0;
+
+        while let Some(request) = requests_rx.recv().await {
+            match request {
+                AgentRequest::Attach { updates, reply } => {
+                    attached += 1;
+
+                    let _ = reply.send(json!({ "snapshot": attached }));
+                    let _ = updates.send(json!({ "change": attached }));
+                }
+                AgentRequest::Call {
+                    method,
+                    params,
+                    reply,
+                } => {
+                    let _ = reply.send(Ok(json!({ "method": method, "params": params })));
+                }
+            }
+        }
+    });
+
+    registry.register_agent("Agent".into(), "Claude".into(), AgentControl { requests })
+}
+
+async fn next_update(updates: &mut UnboundedReceiver<AgentUpdate>) -> AgentUpdate {
+    timeout(WAIT, updates.recv())
+        .await
+        .expect("an agent update arrives")
+        .expect("the agent view stays open")
+}
+
+#[test]
+fn an_agent_view_gets_a_snapshot_then_changes_and_again_after_a_drop() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+    let session = fake_agent(&registry);
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let remote = remote(paired, key);
+
+        let sessions = remote.list_sessions().await.unwrap();
+
+        assert!(sessions.iter().any(|info| info.session == session
+            && info.kind == SessionKind::Agent
+            && info.harness.as_deref() == Some("Claude")));
+
+        let (link, mut updates) = remote.agent_view(session.clone());
+
+        assert!(matches!(
+            next_update(&mut updates).await,
+            AgentUpdate::Snapshot(view) if view == json!({ "snapshot": 1 })
+        ));
+        assert!(matches!(
+            next_update(&mut updates).await,
+            AgentUpdate::Ops(ops) if ops == json!({ "change": 1 })
+        ));
+
+        let echoed = link.call("interrupt", json!({ "a": 1 })).await.unwrap();
+
+        assert_eq!(
+            echoed,
+            json!({ "method": "interrupt", "params": { "a": 1 } })
+        );
+
+        host.drop_connections();
+
+        // The view reattaches by itself and starts over from a snapshot.
+        assert!(matches!(
+            next_update(&mut updates).await,
+            AgentUpdate::Snapshot(view) if view == json!({ "snapshot": 2 })
+        ));
+
+        registry.unregister(&session);
+
+        drop(link);
     });
 }

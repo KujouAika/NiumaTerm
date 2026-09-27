@@ -7,11 +7,40 @@
 //! drift apart. Per-view state (drafts in progress, pickers, scroll) stays
 //! out of commands.
 
+pub(crate) mod base64_bytes {
+    use std::sync::Arc;
+
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(
+        bytes: &Arc<[u8]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<[u8]>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+
+        STANDARD
+            .decode(text)
+            .map(Into::into)
+            .map_err(D::Error::custom)
+    }
+}
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::chat::{SkillReference, SlashCommandOutcome, SlashCommandRunPolicy, ThreadSettings};
 use crate::session::commands::{CommandAdmission, PendingSlashCommand};
@@ -21,21 +50,26 @@ use crate::session::input::{ApprovalOutcome, QuestionAction, QuestionKey, Submis
 use crate::session::view::DraftAnswers;
 use crate::session::{OperationError, SettingsOutcome};
 
-pub trait AgentCommand {
-    type Outcome;
+pub trait AgentCommand: Serialize + DeserializeOwned {
+    /// The name the command travels under between processes.
+    const METHOD: &'static str;
+
+    type Outcome: Serialize + DeserializeOwned + Send + 'static;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome;
 }
 
-/// One image of a composed message.
-#[derive(Clone, Debug)]
+/// One image of a composed message. The bytes travel as base64, which is
+/// what a JSON message can carry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PromptImage {
+    #[serde(with = "base64_bytes")]
     pub bytes: Arc<[u8]>,
     pub media_type: String,
 }
 
 /// A message as a view composed it, owning its data.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Prompt {
     /// What the harness receives, response annotations included.
     pub text: String,
@@ -49,7 +83,9 @@ pub struct Prompt {
     pub skill: Option<SkillReference>,
     pub images: Vec<PromptImage>,
 
-    /// The images as files, for a harness that reads images by path.
+    /// The images as files, for a harness that reads images by path. Paths
+    /// name files on one machine, so the host writes its own.
+    #[serde(skip)]
     pub image_paths: Vec<PathBuf>,
 
     /// What an interrupt before any answer gives back to the composer.
@@ -66,9 +102,12 @@ pub struct Submitted {
     pub title: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct SubmitPrompt(pub Prompt);
 
 impl AgentCommand for SubmitPrompt {
+    const METHOD: &'static str = "submit";
+
     type Outcome = Result<Submitted, SubmitRefusal>;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -88,6 +127,8 @@ pub enum SubmitRefusal {
 pub struct Interrupt;
 
 impl AgentCommand for Interrupt {
+    const METHOD: &'static str = "interrupt";
+
     type Outcome = UserInterruption;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -101,6 +142,8 @@ pub struct RespondApproval {
 }
 
 impl AgentCommand for RespondApproval {
+    const METHOD: &'static str = "respond_approval";
+
     type Outcome = ApprovalOutcome;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -117,6 +160,8 @@ pub struct AnswerQuestion {
 }
 
 impl AgentCommand for AnswerQuestion {
+    const METHOD: &'static str = "answer_question";
+
     type Outcome = Submission;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -135,6 +180,8 @@ pub struct UpdateSettings {
 }
 
 impl AgentCommand for UpdateSettings {
+    const METHOD: &'static str = "update_settings";
+
     type Outcome = ();
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -150,6 +197,8 @@ pub struct ApplyModelSelection {
 }
 
 impl AgentCommand for ApplyModelSelection {
+    const METHOD: &'static str = "apply_model_selection";
+
     type Outcome = Option<SettingsOutcome>;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -165,6 +214,8 @@ pub struct SelectAgentPreset {
 }
 
 impl AgentCommand for SelectAgentPreset {
+    const METHOD: &'static str = "select_agent_preset";
+
     type Outcome = Option<SettingsOutcome>;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -178,6 +229,8 @@ pub struct WithdrawQueuedPrompt {
 }
 
 impl AgentCommand for WithdrawQueuedPrompt {
+    const METHOD: &'static str = "withdraw_queued_prompt";
+
     type Outcome = bool;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -191,6 +244,8 @@ pub struct RenameConversation {
 }
 
 impl AgentCommand for RenameConversation {
+    const METHOD: &'static str = "rename";
+
     type Outcome = Option<Result<String, OperationError>>;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -204,6 +259,8 @@ pub struct RunSlashCommand {
 }
 
 impl AgentCommand for RunSlashCommand {
+    const METHOD: &'static str = "run_slash_command";
+
     type Outcome = SlashCommandOutcome;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
@@ -219,9 +276,60 @@ pub struct AdmitSlashCommand {
 }
 
 impl AgentCommand for AdmitSlashCommand {
+    const METHOD: &'static str = "admit_slash_command";
+
     type Outcome = CommandAdmission;
 
     fn run(self, controller: &mut SessionController) -> Self::Outcome {
         controller.admit_command_while_busy(self.command, self.policy)
+    }
+}
+
+/// Why a command sent from another process did not run.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteCommandError {
+    #[error("unknown command {0}")]
+    Unknown(String),
+    #[error("invalid command parameters: {0}")]
+    Invalid(#[from] serde_json::Error),
+}
+
+/// Run a command a view in another process sent, returning its outcome as
+/// it travels back. `stage_images` writes a prompt's images to files for a
+/// harness that reads them by path, and returns the paths.
+pub fn run_remote(
+    method: &str,
+    params: Value,
+    controller: &mut SessionController,
+    stage_images: impl FnOnce(&[PromptImage]) -> Vec<PathBuf>,
+) -> Result<Value, RemoteCommandError> {
+    fn run<C: AgentCommand>(
+        params: Value,
+        controller: &mut SessionController,
+    ) -> Result<Value, RemoteCommandError> {
+        let command: C = serde_json::from_value(params)?;
+
+        Ok(serde_json::to_value(command.run(controller))?)
+    }
+
+    match method {
+        SubmitPrompt::METHOD => {
+            let SubmitPrompt(mut prompt) = serde_json::from_value(params)?;
+
+            prompt.image_paths = stage_images(&prompt.images);
+
+            Ok(serde_json::to_value(SubmitPrompt(prompt).run(controller))?)
+        }
+        Interrupt::METHOD => run::<Interrupt>(params, controller),
+        RespondApproval::METHOD => run::<RespondApproval>(params, controller),
+        AnswerQuestion::METHOD => run::<AnswerQuestion>(params, controller),
+        UpdateSettings::METHOD => run::<UpdateSettings>(params, controller),
+        ApplyModelSelection::METHOD => run::<ApplyModelSelection>(params, controller),
+        SelectAgentPreset::METHOD => run::<SelectAgentPreset>(params, controller),
+        WithdrawQueuedPrompt::METHOD => run::<WithdrawQueuedPrompt>(params, controller),
+        RenameConversation::METHOD => run::<RenameConversation>(params, controller),
+        RunSlashCommand::METHOD => run::<RunSlashCommand>(params, controller),
+        AdmitSlashCommand::METHOD => run::<AdmitSlashCommand>(params, controller),
+        _ => Err(RemoteCommandError::Unknown(method.to_owned())),
     }
 }

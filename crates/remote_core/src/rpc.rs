@@ -17,6 +17,18 @@ pub const SESSIONS_LIST: &str = "sessions.list";
 /// Notification: the host's session list changed; clients list it again.
 pub const SESSIONS_CHANGED: &str = "sessions.changed";
 
+/// Open a view of an agent session: the reply carries a snapshot, and
+/// `agent.ops` notifications follow until the view detaches.
+pub const AGENT_ATTACH: &str = "agent.attach";
+
+pub const AGENT_DETACH: &str = "agent.detach";
+
+/// Run a command against an agent session and return its outcome.
+pub const AGENT_CALL: &str = "agent.call";
+
+/// Notification: changes to an attached agent view.
+pub const AGENT_OPS: &str = "agent.ops";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {
@@ -177,6 +189,18 @@ pub enum Origin {
     Unknown,
 }
 
+/// What a host session runs. Peers from before agent sessions send no kind,
+/// and every session they know is a terminal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Terminal,
+    Agent,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub session: String,
@@ -184,6 +208,35 @@ pub struct SessionInfo {
     pub origin: Origin,
     pub cols: u16,
     pub rows: u16,
+
+    #[serde(default)]
+    pub kind: SessionKind,
+
+    /// The agent harness, for an agent session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+}
+
+/// An agent command. Commands and outcomes are opaque here: the agent
+/// sessions on both sides define them, so the transport never changes when
+/// they do.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentCall {
+    pub session: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentAttached {
+    pub view: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentOps {
+    pub session: String,
+    pub ops: Value,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

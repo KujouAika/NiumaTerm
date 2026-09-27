@@ -48,8 +48,8 @@ use crate::session::settings::ConversationSettings;
 use crate::session::side::{SideQuestionOutcome, SideQuestions};
 use crate::session::update_readiness::{ConversationWork, Readiness, prepare_stop};
 use crate::session::view::{
-    CatalogView, ImageRef, QueueView, SettingsView, Since, StatusView, TasksView, UsageView,
-    ViewEntry, ViewSlot, ViewSlots,
+    CatalogView, ImageRef, NamingView, QueueView, SettingsView, Since, StatusView, TasksView,
+    UsageView, ViewEntry, ViewSlot, ViewSlots,
 };
 use crate::session::workflows::{RefreshPlan, WorkflowData, WorkflowReader};
 use crate::session::{
@@ -222,6 +222,8 @@ impl SessionController {
             (AgentKind::Codex | AgentKind::Claude, Some(title)) => {
                 self.claim_title();
 
+                self.naming.title = Some(title.provisional_title.clone());
+
                 Some(title.provisional_title)
             }
             _ => None,
@@ -393,6 +395,11 @@ impl SessionController {
         fallback: impl FnOnce(&str) -> Option<String>,
     ) -> Option<ConversationTitleRequest> {
         self.naming.request(self.kind, text, fallback)
+    }
+
+    /// The title the conversation goes by, once it has one.
+    pub fn conversation_title(&self) -> Option<&str> {
+        self.naming.title.as_deref()
     }
 
     /// Record that a prompt claimed the conversation's title, so a failed
@@ -1307,6 +1314,7 @@ impl SessionController {
             }
             Event::TitleUpdated(title) => {
                 self.naming.named = true;
+                self.naming.title = Some(title.clone());
 
                 SessionEffect::Title(title)
             }
@@ -1421,6 +1429,10 @@ impl SessionController {
 
         let replaced = replay.is_some();
 
+        if let Some(title) = &title {
+            self.naming.title = Some(title.clone());
+        }
+
         if let Some(turns) = replay.take() {
             self.apply_replay(turns);
         }
@@ -1474,6 +1486,10 @@ impl SessionController {
         };
 
         self.apply_replay(turns);
+
+        if let Some(title) = &title {
+            self.naming.title = Some(title.clone());
+        }
 
         Some(SessionReplay {
             branch,
@@ -1539,6 +1555,7 @@ impl SessionController {
         self.controls = ConversationSettings::default();
         self.command_catalog = None;
         self.skill_catalog = None;
+        self.naming.title = None;
 
         self.commands.clear();
 
@@ -1709,7 +1726,10 @@ impl SessionController {
                 list: self.task_list.clone(),
                 snapshots: self.task_snapshots,
             },
-            named: self.naming.named,
+            naming: NamingView {
+                named: self.naming.named,
+                title: self.naming.title.clone(),
+            },
         }
     }
 
@@ -1816,7 +1836,10 @@ impl SessionController {
                 self.task_list = tasks.list;
                 self.task_snapshots = tasks.snapshots;
             }
-            ViewSlot::Named(named) => self.naming.named = named,
+            ViewSlot::Naming(naming) => {
+                self.naming.named = naming.named;
+                self.naming.title = naming.title;
+            }
         }
     }
 

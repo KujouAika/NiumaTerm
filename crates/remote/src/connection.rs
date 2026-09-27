@@ -18,8 +18,8 @@ use nmt_platform::runtime;
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::rpc::{
-    self, Control, ErrorCode, RpcError, SessionInfo, SessionList, SessionRef, StreamRef,
-    TerminalOpen, TerminalResize,
+    self, AgentAttached, AgentCall, AgentOps, Control, ErrorCode, RpcError, SessionInfo,
+    SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
@@ -59,6 +59,49 @@ pub enum Status {
     Refused,
 }
 
+/// What an agent view receives.
+#[derive(Debug)]
+pub enum AgentUpdate {
+    /// The whole view, replacing everything before it: on the first attach
+    /// and after every reconnect.
+    Snapshot(Value),
+    Ops(Value),
+    /// The session is gone, or this device no longer reaches the host.
+    Ended,
+}
+
+/// A view of an agent session on a host. Dropping it detaches.
+pub struct AgentLink {
+    host: Arc<RemoteHost>,
+    session: String,
+}
+
+impl AgentLink {
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    /// Run a command against the session and return its outcome.
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.host
+            .call(
+                rpc::AGENT_CALL,
+                &AgentCall {
+                    session: self.session.clone(),
+                    method: method.to_owned(),
+                    params,
+                },
+            )
+            .await
+    }
+}
+
+impl Drop for AgentLink {
+    fn drop(&mut self) {
+        self.host.detach_agent(&self.session);
+    }
+}
+
 /// What a terminal stream delivers to its [`NetworkPty`].
 pub(crate) enum StreamEvent {
     Output(Vec<u8>),
@@ -81,6 +124,7 @@ pub struct RemoteHost {
 
     link: Mutex<Option<Link>>,
     views: Mutex<HashMap<String, View>>,
+    agents: Mutex<HashMap<String, UnboundedSender<AgentUpdate>>>,
     status: watch::Sender<Status>,
 
     /// Bumped when the host reports its session list changed.
@@ -103,10 +147,15 @@ struct Link {
 struct PendingCall {
     reply: oneshot::Sender<Result<Value, RpcError>>,
 
-    /// For an attach: the session to route the new stream to. Routing it
-    /// while handling the response, before the next frame, means the
-    /// checkpoint that follows never arrives for an unknown stream.
-    attach_for: Option<String>,
+    /// For an attach: the view it is for. Handling the response before the
+    /// next frame means what follows it (a terminal's checkpoint, an agent
+    /// view's changes) never arrives ahead of it.
+    attach: Option<Attach>,
+}
+
+enum Attach {
+    Terminal(String),
+    Agent(String),
 }
 
 struct View {
@@ -144,6 +193,7 @@ impl RemoteHost {
             on_record: Box::new(on_record),
             link: Mutex::new(None),
             views: Mutex::new(HashMap::new()),
+            agents: Mutex::new(HashMap::new()),
             status: watch::channel(Status::Idle).0,
             sessions: watch::channel(0).0,
             wake: Notify::new(),
@@ -183,9 +233,91 @@ impl RemoteHost {
 
         *self.link.lock() = None;
 
+        self.end_views();
+    }
+
+    /// Tell every view the host is out of reach for good.
+    fn end_views(&self) {
         for (_, view) in self.views.lock().drain() {
             let _ = view.events.send(StreamEvent::Exit);
         }
+
+        for (_, agent) in self.agents.lock().drain() {
+            let _ = agent.send(AgentUpdate::Ended);
+        }
+    }
+
+    fn has_views(&self) -> bool {
+        !self.views.lock().is_empty() || !self.agents.lock().is_empty()
+    }
+
+    /// A view of an agent session. It attaches now if connected and
+    /// otherwise as soon as a link is up, and again after every reconnect,
+    /// each time starting from a snapshot.
+    pub fn agent_view(
+        self: &Arc<Self>,
+        session: String,
+    ) -> (AgentLink, UnboundedReceiver<AgentUpdate>) {
+        let (updates, updates_rx) = mpsc::unbounded_channel();
+
+        self.agents.lock().insert(session.clone(), updates);
+
+        if let Some(link) = self.link.lock().clone() {
+            self.attach_agent(&link, session.clone());
+        } else {
+            self.wake.notify_one();
+        }
+
+        let link = AgentLink {
+            host: Arc::clone(self),
+            session,
+        };
+
+        (link, updates_rx)
+    }
+
+    fn detach_agent(&self, session: &str) {
+        if self.agents.lock().remove(session).is_some() {
+            self.notify(
+                rpc::AGENT_DETACH,
+                &SessionRef {
+                    session: session.to_owned(),
+                },
+            );
+        }
+    }
+
+    fn attach_agent(self: &Arc<Self>, link: &Link, session: String) {
+        let host = Arc::clone(self);
+        let link = link.clone();
+
+        runtime().spawn(async move {
+            let (reply, response) = oneshot::channel();
+            let id = host.next_id.fetch_add(1, Ordering::Relaxed);
+
+            link.calls.lock().insert(
+                id,
+                PendingCall {
+                    reply,
+                    attach: Some(Attach::Agent(session.clone())),
+                },
+            );
+
+            let request = SessionRef {
+                session: session.clone(),
+            };
+
+            if send_request(&link, id, rpc::AGENT_ATTACH, &request).is_err() {
+                return;
+            }
+
+            if let Ok(Err(error)) = response.await
+                && error.code == ErrorCode::NotFound
+                && let Some(agent) = host.agents.lock().remove(&session)
+            {
+                let _ = agent.send(AgentUpdate::Ended);
+            }
+        });
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
@@ -291,9 +423,13 @@ impl RemoteHost {
         }
     }
 
-    async fn call<T: DeserializeOwned>(&self, method: &str, params: &impl Serialize) -> Result<T> {
+    pub(crate) async fn call<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: &impl Serialize,
+    ) -> Result<T> {
         let value = self
-            .call_raw(method, params, None)
+            .call_raw(method, params)
             .await?
             .map_err(|error| anyhow!("{method}: {}", error.message))?;
 
@@ -304,15 +440,18 @@ impl RemoteHost {
         &self,
         method: &str,
         params: &impl Serialize,
-        attach_for: Option<String>,
     ) -> Result<Result<Value, RpcError>> {
         let link = self.wait_for_link().await?;
         let (reply, response) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
-        link.calls
-            .lock()
-            .insert(id, PendingCall { reply, attach_for });
+        link.calls.lock().insert(
+            id,
+            PendingCall {
+                reply,
+                attach: None,
+            },
+        );
 
         send_request(&link, id, method, params)?;
 
@@ -367,7 +506,7 @@ impl RemoteHost {
                 id,
                 PendingCall {
                     reply,
-                    attach_for: Some(session.clone()),
+                    attach: Some(Attach::Terminal(session.clone())),
                 },
             );
 
@@ -394,7 +533,7 @@ impl RemoteHost {
         let mut ever_connected = false;
 
         loop {
-            if self.views.lock().is_empty() {
+            if !self.has_views() {
                 self.status.send_replace(Status::Idle);
 
                 self.wake.notified().await;
@@ -440,6 +579,12 @@ impl RemoteHost {
                         self.attach(&link, session);
                     }
 
+                    let agents: Vec<_> = self.agents.lock().keys().cloned().collect();
+
+                    for session in agents {
+                        self.attach_agent(&link, session);
+                    }
+
                     self.dispatch(&link, inbound_rx).await;
 
                     pump.abort();
@@ -457,9 +602,7 @@ impl RemoteHost {
                 Err(error) if error.is::<Refused>() => {
                     self.status.send_replace(Status::Refused);
 
-                    for (_, view) in self.views.lock().drain() {
-                        let _ = view.events.send(StreamEvent::Exit);
-                    }
+                    self.end_views();
 
                     return;
                 }
@@ -488,7 +631,7 @@ impl RemoteHost {
             let message = select! {
                 message = inbound.recv() => message,
                 () = sleep(Duration::from_secs(5)) => {
-                    let idle = self.views.lock().is_empty() && link.calls.lock().is_empty();
+                    let idle = !self.has_views() && link.calls.lock().is_empty();
 
                     match (idle, idle_since) {
                         (false, _) => idle_since = None,
@@ -517,7 +660,15 @@ impl RemoteHost {
                         return;
                     };
 
-                    if let (Ok(result), Some(session)) = (&outcome, &call.attach_for)
+                    if let (Ok(result), Some(Attach::Agent(session))) = (&outcome, &call.attach)
+                        && let Ok(AgentAttached { view }) =
+                            serde_json::from_value::<AgentAttached>(result.clone())
+                        && let Some(agent) = self.agents.lock().get(session)
+                    {
+                        let _ = agent.send(AgentUpdate::Snapshot(view));
+                    }
+
+                    if let (Ok(result), Some(Attach::Terminal(session))) = (&outcome, &call.attach)
                         && let Ok(AttachReply { stream }) =
                             serde_json::from_value::<AttachReply>(result.clone())
                         && let Some(view) = self.views.lock().get_mut(session)
@@ -537,6 +688,13 @@ impl RemoteHost {
                 }
                 Ok(Control::Notification { method, .. }) if method == rpc::SESSIONS_CHANGED => {
                     self.sessions.send_modify(|version| *version += 1);
+                }
+                Ok(Control::Notification { method, params }) if method == rpc::AGENT_OPS => {
+                    if let Ok(AgentOps { session, ops }) = serde_json::from_value(params)
+                        && let Some(agent) = self.agents.lock().get(&session)
+                    {
+                        let _ = agent.send(AgentUpdate::Ops(ops));
+                    }
                 }
                 _ => {}
             },

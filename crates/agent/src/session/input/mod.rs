@@ -38,7 +38,7 @@ pub enum QuestionAction {
     Timeout,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Submission {
     Ignored,
     Waiting,

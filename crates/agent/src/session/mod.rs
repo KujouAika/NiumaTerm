@@ -37,6 +37,8 @@ mod tests;
 #[cfg(test)]
 mod ui_split_tests;
 
+use serde::{Deserialize, Serialize};
+
 /// Encoded image data borrowed from a composed message.
 #[derive(Clone, Copy)]
 pub struct ImageAttachment<'a> {
@@ -44,14 +46,14 @@ pub struct ImageAttachment<'a> {
     pub media_type: &'a str,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnsupportedOperation {
     Rename,
     Fork,
     FileRewind,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationError {
     Unsupported(UnsupportedOperation),
     Failed(String),

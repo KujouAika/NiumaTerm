@@ -23,8 +23,8 @@ use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted, RelayAccess
 use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
 use nmt_remote_core::rpc::{
-    self, Attached, Control, ErrorCode, Origin, RpcError, SessionList, SessionRef, StreamRef,
-    TerminalOpen, TerminalResize,
+    self, AgentAttached, AgentCall, AgentOps, Attached, Control, ErrorCode, Origin, RpcError,
+    SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
 };
 use nmt_remote_core::{Error as CoreError, PROTO_MINOR};
 use parking_lot::Mutex;
@@ -33,7 +33,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::timeout;
 use tokio_tungstenite::accept_hdr_async;
@@ -45,7 +45,7 @@ use tracing::{debug, warn};
 use crate::discovery::Advertiser;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
 use crate::relay::{RelayCommand, RelaySocket, run_host_link};
-use crate::sessions::{SessionRegistry, TerminalControl};
+use crate::sessions::{AgentRequest, SessionRegistry, TerminalControl};
 use crate::store::{self, PairedDevice, now_ms};
 use crate::stream::StreamFlow;
 
@@ -128,6 +128,9 @@ struct Connection {
 
     /// An attach whose response must be queued before its checkpoint.
     pending_attach: Option<PendingAttach>,
+
+    /// The task forwarding each attached agent view's changes.
+    agents: HashMap<String, AbortHandle>,
 }
 
 impl HostService {
@@ -319,6 +322,14 @@ impl Connection {
     fn handle(&mut self, message: FrameMessage) {
         match (message.stream, message.kind) {
             (CONTROL_STREAM, kind::CONTROL_JSON) => match Control::decode(&message.payload) {
+                Ok(Control::Request { id, method, params })
+                    if matches!(
+                        method.as_str(),
+                        rpc::AGENT_ATTACH | rpc::AGENT_DETACH | rpc::AGENT_CALL
+                    ) =>
+                {
+                    self.agent_request(id, &method, params);
+                }
                 Ok(Control::Request { id, method, params }) => {
                     let outcome = self.request(&method, params);
 
@@ -419,6 +430,136 @@ impl Connection {
                 Ok(Value::Null)
             }
             _ => Err(RpcError::new(ErrorCode::Unsupported, method)),
+        }
+    }
+}
+
+impl Connection {
+    /// Agent sessions answer on the UI thread, so their replies go out from
+    /// tasks once they arrive, not in order with other requests.
+    fn agent_request(&mut self, id: u64, method: &str, params: Value) {
+        let queue = self.queue.clone();
+        let registry = &self.shared.config.registry;
+
+        let control = |session: &str| {
+            registry
+                .agent(session)
+                .ok_or_else(|| RpcError::new(ErrorCode::NotFound, session))
+        };
+
+        match method {
+            rpc::AGENT_ATTACH => {
+                let attach = parse::<SessionRef>(params).and_then(|SessionRef { session }| {
+                    control(&session).map(|control| (session, control))
+                });
+
+                let (session, control) = match attach {
+                    Ok(attach) => attach,
+                    Err(error) => return respond(&queue, id, Err(error)),
+                };
+
+                let (updates, mut updates_rx) = mpsc::unbounded_channel();
+
+                let (snapshot, view) = oneshot::channel();
+
+                if control
+                    .requests
+                    .send(AgentRequest::Attach {
+                        updates,
+                        reply: snapshot,
+                    })
+                    .is_err()
+                {
+                    return respond(&queue, id, Err(RpcError::new(ErrorCode::NotFound, session)));
+                }
+
+                let forwarded = session.clone();
+
+                // One task answers and then forwards, so no change can reach
+                // the client ahead of the snapshot it applies to.
+                let task = tokio::spawn(async move {
+                    let outcome = match view.await {
+                        Ok(view) => reply(&AgentAttached { view }),
+                        Err(_) => Err(RpcError::new(ErrorCode::NotFound, &forwarded)),
+                    };
+
+                    let attached = outcome.is_ok();
+
+                    respond(&queue, id, outcome);
+
+                    if !attached {
+                        return;
+                    }
+
+                    while let Some(ops) = updates_rx.recv().await {
+                        let notice = Control::Notification {
+                            method: rpc::AGENT_OPS.into(),
+                            params: serde_json::json!(AgentOps {
+                                session: forwarded.clone(),
+                                ops,
+                            }),
+                        };
+
+                        if !queue.send(Outbound::new(
+                            CONTROL_STREAM,
+                            kind::CONTROL_JSON,
+                            notice.encode(),
+                        )) {
+                            break;
+                        }
+                    }
+                });
+
+                if let Some(previous) = self.agents.insert(session, task.abort_handle()) {
+                    previous.abort();
+                }
+            }
+            rpc::AGENT_DETACH => {
+                let outcome = parse::<SessionRef>(params).map(|SessionRef { session }| {
+                    if let Some(task) = self.agents.remove(&session) {
+                        task.abort();
+                    }
+
+                    Value::Null
+                });
+
+                respond(&queue, id, outcome);
+            }
+            _ => {
+                let call = parse::<AgentCall>(params)
+                    .and_then(|call| control(&call.session).map(|control| (call, control)));
+
+                let (call, control) = match call {
+                    Ok(call) => call,
+                    Err(error) => return respond(&queue, id, Err(error)),
+                };
+
+                let (answer, outcome) = oneshot::channel();
+
+                let sent = control.requests.send(AgentRequest::Call {
+                    method: call.method,
+                    params: call.params,
+                    reply: answer,
+                });
+
+                if sent.is_err() {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(ErrorCode::NotFound, call.session)),
+                    );
+                }
+
+                tokio::spawn(async move {
+                    let outcome = match outcome.await {
+                        Ok(Ok(value)) => Ok(value),
+                        Ok(Err(message)) => Err(RpcError::new(ErrorCode::Internal, message)),
+                        Err(_) => Err(RpcError::new(ErrorCode::NotFound, call.session)),
+                    };
+
+                    respond(&queue, id, outcome);
+                });
+            }
         }
     }
 }
@@ -760,6 +901,7 @@ where
         streams: HashMap::new(),
         next_stream: 1,
         pending_attach: None,
+        agents: HashMap::new(),
     };
 
     while let Some(message) = in_rx.recv().await {
@@ -779,11 +921,23 @@ where
         flow.close();
     }
 
+    for task in connection.agents.values() {
+        task.abort();
+    }
+
     match pump.await {
         Ok(result) => result,
         Err(error) if error.is_cancelled() => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn respond(queue: &SendQueue, id: u64, outcome: Result<Value, RpcError>) {
+    queue.send(Outbound::new(
+        CONTROL_STREAM,
+        kind::CONTROL_JSON,
+        Control::Response { id, outcome }.encode(),
+    ));
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {

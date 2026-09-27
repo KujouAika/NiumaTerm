@@ -1,6 +1,6 @@
-//! The terminals a host offers to paired devices: the tabs open on the host
-//! and the headless terminals remote devices started. Sessions outlive the
-//! channels and views attached to them.
+//! The sessions a host offers to paired devices: the terminal and agent
+//! tabs open on the host and the headless terminals remote devices started.
+//! Sessions outlive the channels and views attached to them.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,12 +9,14 @@ use std::sync::{Arc, Weak};
 use anyhow::{Result, anyhow};
 use nmt_config::{CursorShape, active_colors};
 use nmt_platform::{PtyOptions, WinsizeBuilder, create_pty_with_env, default_shell};
-use nmt_remote_core::rpc::{Origin, SessionInfo};
+use nmt_remote_core::rpc::{Origin, SessionInfo, SessionKind};
 use nmt_terminal::event::{EventListener, Msg, MsgSender, TerminalEvent};
 use nmt_terminal::session::TerminalSessionConfig;
 use nmt_terminal::termio::{SessionOptions, SessionWorker, start_session};
 use parking_lot::Mutex;
-use tokio::sync::watch;
+use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{oneshot, watch};
 use tracing::info;
 
 /// What the host service needs to drive one session from a runtime thread,
@@ -29,6 +31,33 @@ pub struct TerminalControl {
     pub claimed_remotely: Arc<AtomicBool>,
 }
 
+/// What the host service needs to reach an agent session. The session
+/// lives on the UI thread, so everything goes through requests it answers
+/// there; its views and commands are opaque JSON here.
+#[derive(Clone)]
+pub struct AgentControl {
+    pub requests: UnboundedSender<AgentRequest>,
+}
+
+pub enum AgentRequest {
+    /// Open a view: reply with a snapshot, then send changes on `updates`
+    /// until it closes.
+    Attach {
+        updates: UnboundedSender<Value>,
+        reply: oneshot::Sender<Value>,
+    },
+    Call {
+        method: String,
+        params: Value,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+}
+
+struct AgentEntry {
+    info: SessionInfo,
+    control: AgentControl,
+}
+
 pub struct SessionRegistry {
     inner: Mutex<Inner>,
     changed: watch::Sender<u64>,
@@ -37,6 +66,7 @@ pub struct SessionRegistry {
 #[derive(Default)]
 struct Inner {
     sessions: BTreeMap<String, Entry>,
+    agents: BTreeMap<String, AgentEntry>,
     next: u64,
 }
 
@@ -79,10 +109,53 @@ impl SessionRegistry {
         self.insert(Origin::Tab, title, cols, rows, control, None)
     }
 
-    pub fn unregister(&self, session: &str) {
-        let removed = self.inner.lock().sessions.remove(session);
+    /// Offer a host agent tab. `harness` names the agent it runs.
+    pub fn register_agent(&self, title: String, harness: String, control: AgentControl) -> String {
+        let mut inner = self.inner.lock();
 
-        drop(removed);
+        inner.next += 1;
+
+        let session = format!("a{}", inner.next);
+
+        inner.agents.insert(
+            session.clone(),
+            AgentEntry {
+                info: SessionInfo {
+                    session: session.clone(),
+                    title,
+                    origin: Origin::Tab,
+                    cols: 0,
+                    rows: 0,
+                    kind: SessionKind::Agent,
+                    harness: Some(harness),
+                },
+                control,
+            },
+        );
+
+        drop(inner);
+
+        self.notify();
+
+        session
+    }
+
+    pub(crate) fn agent(&self, session: &str) -> Option<AgentControl> {
+        self.inner
+            .lock()
+            .agents
+            .get(session)
+            .map(|entry| entry.control.clone())
+    }
+
+    pub fn unregister(&self, session: &str) {
+        let (terminal, agent) = {
+            let mut inner = self.inner.lock();
+
+            (inner.sessions.remove(session), inner.agents.remove(session))
+        };
+
+        drop((terminal, agent));
 
         self.notify();
     }
@@ -90,27 +163,33 @@ impl SessionRegistry {
     pub fn set_title(&self, session: &str, title: String) {
         let mut inner = self.inner.lock();
 
-        let Some(entry) = inner.sessions.get_mut(session) else {
-            return;
+        let inner = &mut *inner;
+
+        let info = match inner.sessions.get_mut(session) {
+            Some(entry) => &mut entry.info,
+            None => match inner.agents.get_mut(session) {
+                Some(entry) => &mut entry.info,
+                None => return,
+            },
         };
 
-        if entry.info.title == title {
+        if info.title == title {
             return;
         }
 
-        entry.info.title = title;
-
-        drop(inner);
+        info.title = title;
 
         self.notify();
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
-        self.inner
-            .lock()
+        let inner = self.inner.lock();
+
+        inner
             .sessions
             .values()
             .map(|entry| entry.info.clone())
+            .chain(inner.agents.values().map(|entry| entry.info.clone()))
             .collect()
     }
 
@@ -379,6 +458,8 @@ impl SessionRegistry {
                 origin,
                 cols,
                 rows,
+                kind: SessionKind::Terminal,
+                harness: None,
             },
             control,
             size: watch::channel((cols, rows)).0,

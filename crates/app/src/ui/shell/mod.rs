@@ -30,7 +30,7 @@ mod tests;
 use std::path::PathBuf;
 use std::{collections, io, iter, path, time};
 
-use app::agent_tab::execution::AgentSession;
+use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::{TeamPane, TeamRuntime};
 use app::agent_tab::{AgentPane, AgentPaneEvent};
 use app::terminal_tab::session::HostEvent;
@@ -1879,6 +1879,31 @@ impl AppWindow {
         );
     }
 
+    /// Open a tab following an agent session on a paired host. The session
+    /// keeps running there when the tab closes.
+    pub(crate) fn open_remote_agent_tab(
+        &mut self,
+        owner: SessionOwner,
+        pane: Entity<AgentPane>,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_settings_workspace();
+
+        let id = Self::alloc_id(&mut self.next_id);
+
+        Self::watch_agent_tab(&pane, cx);
+
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Agent(AgentTab { owner, pane }),
+            title,
+            window,
+            cx,
+        );
+    }
+
     /// Open an agent tab: an agent chat conversation in place of a terminal.
     /// The conversation's agent process starts in the workspace cwd.
     pub(crate) fn open_agent_tab(
@@ -3017,6 +3042,8 @@ impl AppWindow {
         };
 
         cx.subscribe(&session, Self::on_agent_pane_event).detach();
+
+        ui::remote::share_agent_tab(pane, cx);
     }
 
     fn on_agent_pane_event(

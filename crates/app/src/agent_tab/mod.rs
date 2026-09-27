@@ -17,6 +17,7 @@ pub use crate::agent_tab::session::{
 pub mod execution;
 pub mod input_history;
 pub mod profile;
+pub mod remote;
 pub mod settings;
 pub mod team;
 pub mod transcript;
@@ -120,6 +121,7 @@ use crate::agent_tab::input_history::{
 };
 use crate::agent_tab::pane_state::TurnPresentation;
 use crate::agent_tab::questions::panel::QuestionPanel;
+use crate::agent_tab::remote::RemoteAgent;
 use crate::agent_tab::session::errors::operation_error;
 use crate::agent_tab::session::{Backend, Status};
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
@@ -242,6 +244,10 @@ pub struct AgentPane {
     /// input. Cross-fading the whole layer keeps its arrival readable as the
     /// tab being held rather than as a blur being switched on.
     blocking_overlay: BlockingOverlay,
+
+    /// Set when the conversation runs on a paired host: commands go there,
+    /// and the session's controller follows it.
+    remote: Option<RemoteAgent>,
 }
 
 impl AgentPane {
@@ -1539,6 +1545,28 @@ impl AgentPane {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
                 t!("agent-side-command-unavailable").into_owned(),
+                cx,
+            );
+
+            return false;
+        }
+
+        // These start, replace, or branch the conversation's process, or
+        // read its history from disk, and all of that belongs to the host.
+        if self.remote.is_some()
+            && matches!(
+                route,
+                SlashRoute::NewConversation
+                    | SlashRoute::Resume
+                    | SlashRoute::Rewind
+                    | SlashRoute::Fork
+                    | SlashRoute::Find(_)
+                    | SlashRoute::Side(_)
+            )
+        {
+            self.palette.set_feedback(
+                CommandFeedbackKind::Error,
+                t!("agent-remote-unavailable").into_owned(),
                 cx,
             );
 
@@ -3124,6 +3152,7 @@ impl AgentPane {
             composer_status: ComposerStatusBar::default(),
             workflows: WorkflowUi::default(),
             blocking_overlay: BlockingOverlay::default(),
+            remote: None,
         };
 
         {
@@ -3254,6 +3283,14 @@ impl AgentPane {
     }
 
     pub(super) fn refresh_git_branch(&mut self, cx: &mut Context<Self>) {
+        // A conversation on a paired host works in the host's directory,
+        // whose branch this computer cannot read.
+        if self.remote.is_some() {
+            self.composer_status.refresh_branch(None, cx);
+
+            return;
+        }
+
         let cwd = self.cwd(cx).or_else(|| {
             env::current_dir()
                 .ok()
@@ -3326,16 +3363,47 @@ impl AgentPane {
 
     /// Run a command against this tab's conversation and present its
     /// outcome. What `present` returns comes back when the outcome is known
-    /// at once, as it is for a session running beside this view.
-    pub(super) fn dispatch<C: AgentCommand, R>(
+    /// at once, as it is for a session running beside this view; a paired
+    /// host answers later, and `present` runs then.
+    pub(super) fn dispatch<C: AgentCommand, R: 'static>(
         &mut self,
         command: C,
         cx: &mut Context<Self>,
-        present: impl FnOnce(&mut Self, C::Outcome, &mut Context<Self>) -> R,
+        present: impl FnOnce(&mut Self, C::Outcome, &mut Context<Self>) -> R + 'static,
     ) -> Option<R> {
+        if let Some(remote) = &self.remote {
+            let sent = remote.send(&command);
+
+            cx.spawn(async move |this, cx| {
+                let outcome = sent
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|outcome| outcome);
+
+                let _ = this.update(cx, |this, cx| match outcome {
+                    Ok(outcome) => {
+                        present(this, outcome, cx);
+                    }
+                    Err(error) => this.palette.set_feedback(
+                        CommandFeedbackKind::Error,
+                        format!("{error:#}"),
+                        cx,
+                    ),
+                });
+            })
+            .detach();
+
+            return None;
+        }
+
         let outcome = command.run(&mut self.session.borrow_mut());
 
         Some(present(self, outcome, cx))
+    }
+
+    /// The host and session of a pane following a paired host's session.
+    pub fn remote_address(&self) -> Option<(String, String)> {
+        self.remote.as_ref().map(RemoteAgent::address)
     }
 
     pub(super) fn send_text_with_skill(

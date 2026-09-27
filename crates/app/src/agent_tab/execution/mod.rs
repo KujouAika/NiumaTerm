@@ -130,6 +130,10 @@ pub struct AgentSession {
     /// Whether the side chat had content when last reported, so the chrome
     /// hears only when it appears or goes away.
     side_chat_open: Cell<bool>,
+
+    /// This session follows one running on a paired host. It never starts
+    /// a process of its own; its controller is a replica.
+    remote: bool,
 }
 
 /// Closing this owner releases execution even while observers still exist.
@@ -323,6 +327,7 @@ impl AgentSession {
             team_launch,
             side_launch: None,
             side_chat_open: Cell::new(false),
+            remote: false,
         });
 
         let registry = cx.default_global::<SessionRegistry>().0.clone();
@@ -364,6 +369,10 @@ impl AgentSession {
 
     pub fn is_closed(&self) -> bool {
         self.closed.get()
+    }
+
+    pub(crate) fn follow_remote(&mut self) {
+        self.remote = true;
     }
 
     pub fn agent_route(&self) -> &AgentRoute {
@@ -1271,7 +1280,7 @@ impl AgentSession {
         on_result: impl FnOnce(bool, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
-        if self.is_closed() {
+        if self.is_closed() || self.remote {
             return;
         }
 

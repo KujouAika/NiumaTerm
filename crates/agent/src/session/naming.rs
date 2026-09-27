@@ -14,6 +14,10 @@ pub struct ConversationNaming {
 
     /// A rename remains pending until the provider can address and accept it.
     pub pending: Option<String>,
+
+    /// The title the conversation goes by, for views in other processes;
+    /// the tab strip keeps its own copy.
+    pub title: Option<String>,
 }
 
 pub fn conversation_title_request(
@@ -89,6 +93,7 @@ impl ConversationNaming {
     pub fn rename(&mut self, title: &str) {
         self.named = true;
         self.pending = Some(title.to_owned());
+        self.title = Some(title.to_owned());
     }
 
     pub fn sync(&mut self, backend: Option<&mut Backend>) {

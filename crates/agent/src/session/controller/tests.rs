@@ -951,22 +951,8 @@ fn follow(replica: &mut SessionController, ops: Vec<ViewOp>) {
     }
 }
 
-fn snapshot_ops(view: AgentView) -> Vec<ViewOp> {
-    let mut ops = vec![ViewOp::Splice {
-        from: 0,
-        entries: view.transcript,
-    }];
-
-    ops.extend(
-        view.slots
-            .into_slots()
-            .into_iter()
-            .map(|slot| ViewOp::Slot {
-                slot: Box::new(slot),
-            }),
-    );
-
-    ops
+fn through_json(ops: Vec<ViewOp>) -> Vec<ViewOp> {
+    serde_json::from_value(serde_json::to_value(ops).unwrap()).unwrap()
 }
 
 fn assert_in_step(host: &SessionController, replica: &SessionController) {
@@ -982,12 +968,15 @@ fn a_replica_follows_a_conversation_through_published_changes() {
 
     send(&mut host, "first prompt");
 
-    // The snapshot travels as JSON.
-    let json = serde_json::to_string(&publisher.snapshot(&host)).unwrap();
+    // Views are handed over as parsed JSON values, the form a transport
+    // decodes them from.
+    let json = serde_json::to_value(publisher.snapshot(&host)).unwrap();
 
     follow(
         &mut replica,
-        snapshot_ops(serde_json::from_str(&json).unwrap()),
+        serde_json::from_value::<AgentView>(json)
+            .unwrap()
+            .into_ops(),
     );
 
     assert_in_step(&host, &replica);
@@ -1018,7 +1007,7 @@ fn a_replica_follows_a_conversation_through_published_changes() {
         },
     );
 
-    follow(&mut replica, publisher.changes(&host));
+    follow(&mut replica, through_json(publisher.changes(&host)));
 
     assert_in_step(&host, &replica);
 
@@ -1038,11 +1027,11 @@ fn a_replica_follows_a_conversation_through_published_changes() {
 
     assert!(matches!(&ops[..], [ViewOp::Splice { from: 1, entries }] if entries.len() == 1));
 
-    follow(&mut replica, ops);
+    follow(&mut replica, through_json(ops));
 
     apply(&mut host, Event::TurnCompleted { error: None });
 
-    follow(&mut replica, publisher.changes(&host));
+    follow(&mut replica, through_json(publisher.changes(&host)));
 
     assert_in_step(&host, &replica);
 

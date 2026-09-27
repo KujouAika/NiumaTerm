@@ -206,7 +206,10 @@ pub struct TurnLedger {
     /// because a replayed turn has no duration to record.
     settled: HashSet<u64>,
 
+    #[serde(with = "turn_pairs")]
     seconds: HashMap<u64, u64>,
+
+    #[serde(with = "turn_pairs")]
     output_tokens: HashMap<u64, u64>,
 
     /// Turns the user stopped. An interrupted turn reports no elapsed time,
@@ -291,5 +294,33 @@ impl TurnLedger {
         self.output_tokens.clear();
 
         self.interrupted.clear();
+    }
+}
+
+/// Turn-keyed counts as `[turn, value]` pairs. JSON object keys are strings,
+/// which a reader decoding from an already parsed value cannot turn back
+/// into numbers.
+mod turn_pairs {
+    use std::collections::HashMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        map: &HashMap<u64, u64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut pairs: Vec<(u64, u64)> = map.iter().map(|(turn, value)| (*turn, *value)).collect();
+
+        pairs.sort_unstable();
+
+        pairs.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<u64, u64>, D::Error> {
+        Ok(Vec::<(u64, u64)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
     }
 }
