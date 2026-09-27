@@ -873,9 +873,11 @@ New dependencies: `snow` (Noise), `spake2` (PAKE), `mdns-sd` (DNS-SD). Reused:
 
 - `nmt_remote_core`: the right code pairs; a wrong code fails and is counted;
   the attempt limit invalidates the code; tampered, replayed, and reordered
-  frames fail; an unknown device key and a replayed msg1 are rejected; frames
-  fragment and reassemble at the limits.
-- `nmt_remote`: host and client over localhost WebSocket; relay flows against
+  frames fail; a pinned host key, a wrong host, and a rewritten preface fail
+  the handshake; frames fragment and reassemble at the limits.
+- `nmt_remote`: an unknown device key and a replayed msg1 are rejected (both
+  decisions need the trust store, so the core only exposes the client key and
+  `hello_ms`); host and client over localhost WebSocket; relay flows against
   `wrangler dev`.
 - Terminal: an engine fed a checkpoint renders the same as the engine that
   produced it (screen, cursor, modes, palette); subscribing during continuous
