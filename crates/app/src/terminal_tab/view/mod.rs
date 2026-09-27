@@ -130,8 +130,8 @@ pub struct TerminalPane {
     host_share: Option<HostShare>,
 
     /// Who controls this host tab from another computer, and taking it
-    /// back. While anyone does, the pane stops following the terminal's
-    /// output and a sheet covers it.
+    /// back. While anyone does, a sheet covers the pane and refuses input;
+    /// the output underneath keeps drawing so the host can watch.
     host_control: Option<HostControl>,
 
     close_tab: Option<CloseTab>,
@@ -381,10 +381,6 @@ impl TerminalPane {
 
     fn on_wake(&mut self, change: SessionChange, cx: &mut Context<Self>) {
         match change {
-            // While another computer controls the session, the engine keeps
-            // its state and the pane stops drawing it; the frame catches up
-            // when control comes back.
-            SessionChange::Content if self.controlled() => {}
             SessionChange::Content => self.invalidate(cx),
             SessionChange::HostEvents => {
                 self.model.invalidate();
@@ -499,12 +495,6 @@ impl TerminalPane {
     /// How the sheets' close buttons close this pane's tab.
     pub fn close_tab_with(&mut self, close: CloseTab) {
         self.close_tab = Some(close);
-    }
-
-    fn controlled(&self) -> bool {
-        self.host_control
-            .as_ref()
-            .is_some_and(|control| !(control.controllers)().is_empty())
     }
 
     /// Take the session back from the devices controlling it, and the PTY
@@ -1323,15 +1313,7 @@ impl Render for TerminalPane {
         // here, so background tabs and chrome offsets are handled correctly.
         let cell = self.cell_metrics(window, cx);
 
-        // While another computer controls the session the pane keeps the
-        // last frame it drew, as a plain grid under the sheet, rather than
-        // following output nobody here is meant to read.
-        let controlled = self.controlled();
-
-        let frame = match controlled {
-            true => self.model.frame_cache.current().unwrap_or_default(),
-            false => self.model.begin_frame(),
-        };
+        let frame = self.model.begin_frame();
 
         let show_block_chrome = self.model.settings.command_blocks;
 
@@ -1346,10 +1328,7 @@ impl Render for TerminalPane {
             .map(|b| b.size.height.as_f32())
             .unwrap_or(0.0);
 
-        let block_list_element = match controlled {
-            true => None,
-            false => self.render_block_list_content(&frame, cell, viewport_px, cx),
-        };
+        let block_list_element = self.render_block_list_content(&frame, cell, viewport_px, cx);
 
         // Auto-hide: the scrollbar stays solid briefly, then fades out.
         let scrollbar_opacity = self.model.scrollbar.opacity();

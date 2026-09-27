@@ -254,8 +254,8 @@ pub struct AgentPane {
     remote: Option<RemoteAgent>,
 
     /// Who controls this host tab from another computer, and taking it
-    /// back. While anyone does, the transcript stops following and a sheet
-    /// covers the pane; the session keeps its state.
+    /// back. While anyone does, a sheet covers the pane and refuses input;
+    /// the transcript underneath keeps following so the host can watch.
     host_control: Option<HostControl>,
 
     close_tab: Option<CloseTab>,
@@ -3662,25 +3662,15 @@ impl AgentPane {
             None
         };
 
-        // While the other side has the conversation, the transcript stops
-        // following it and the sheet takes the keyboard; both come back
+        // While the other side has the conversation, the sheet takes the
+        // keyboard so nothing typed here reaches the composer; it comes back
         // when the sheet goes.
         match (sheet.is_some(), self.sheet_shown) {
-            (true, false) => {
-                self.transcript
-                    .update(cx, |transcript, _| transcript.freeze());
-
-                if self.focus.contains_focused(window, cx) {
-                    window.focus(&self.sheet_focus, cx);
-                }
+            (true, false) if self.focus.contains_focused(window, cx) => {
+                window.focus(&self.sheet_focus, cx);
             }
-            (false, true) => {
-                self.transcript
-                    .update(cx, |transcript, cx| transcript.thaw(cx));
-
-                if self.sheet_focus.is_focused(window) {
-                    window.focus(&self.focus, cx);
-                }
+            (false, true) if self.sheet_focus.is_focused(window) => {
+                window.focus(&self.focus, cx);
             }
             _ => {}
         }

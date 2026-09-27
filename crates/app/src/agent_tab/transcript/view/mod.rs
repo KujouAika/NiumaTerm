@@ -117,11 +117,6 @@ pub struct TranscriptView {
     owner: Option<gpui::WeakEntity<AgentPane>>,
 
     pub(crate) attribution: HashMap<String, TranscriptAttribution>,
-
-    /// Set while another computer controls the conversation: the view stops
-    /// following it, and catches up from the revision it last saw when it
-    /// thaws.
-    frozen: bool,
 }
 
 pub(crate) struct TranscriptAttribution {
@@ -164,7 +159,6 @@ impl TranscriptView {
             cwd,
             kind,
             observed_version: (0, 0),
-            frozen: false,
             owner: None,
             attribution: HashMap::new(),
         }
@@ -172,25 +166,7 @@ impl TranscriptView {
 
     /// Claim this view as one pane's own conversation, which is what makes its
     /// rows offer the actions that address the conversation.
-    /// Stop following the conversation until [`Self::thaw`].
-    pub(crate) fn freeze(&mut self) {
-        self.frozen = true;
-    }
-
-    /// Follow the conversation again, catching up at once.
-    pub(crate) fn thaw(&mut self, cx: &mut Context<Self>) {
-        self.frozen = false;
-
-        self.sync_content();
-
-        cx.notify();
-    }
-
     pub(crate) fn sync_content(&mut self) {
-        if self.frozen {
-            return;
-        }
-
         let shared = self.conversation.clone();
         let conversation = shared.borrow();
         let version = conversation.version();
