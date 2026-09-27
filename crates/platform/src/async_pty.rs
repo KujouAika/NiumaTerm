@@ -32,6 +32,14 @@ pub trait AsyncPty: Send + 'static {
     fn poll_shutdown(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+
+    /// Whether the bytes the last read returned start a new stream that
+    /// replaces everything read before, as a checkpoint replayed after a
+    /// reconnect does. The reader then drops state its parser keeps outside
+    /// the screen before parsing them. Local PTYs never restart.
+    fn take_stream_reset(&mut self) -> bool {
+        false
+    }
 }
 
 /// Convert an immediate nonblocking operation after its task waker is installed.

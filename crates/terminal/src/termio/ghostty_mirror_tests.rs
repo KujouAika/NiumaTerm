@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::future::{Future, poll_fn};
 use std::io::{Read, Write};
 use std::pin::{Pin, pin};
@@ -2178,4 +2179,149 @@ fn idle_theme_requests_publish_colors_without_replacing_retained_frames() {
     }
 
     assert_eq!(render_buffer_row_text(&original, 0), "idle text");
+}
+
+/// Serves queued chunks and reports whether the chunk just read restarted
+/// the stream, as a network PTY does when it replays a checkpoint.
+struct RestartingPty {
+    chunks: VecDeque<(bool, Vec<u8>)>,
+    restarted: bool,
+}
+
+impl AsyncPty for RestartingPty {
+    fn poll_read(&mut self, _: &mut Context<'_>, buf: &mut [u8]) -> TaskPoll<io::Result<usize>> {
+        let Some((restart, chunk)) = self.chunks.pop_front() else {
+            return TaskPoll::Pending;
+        };
+
+        self.restarted = restart;
+
+        buf[..chunk.len()].copy_from_slice(&chunk);
+
+        TaskPoll::Ready(Ok(chunk.len()))
+    }
+
+    fn poll_write(&mut self, _: &mut Context<'_>, buf: &[u8]) -> TaskPoll<io::Result<usize>> {
+        TaskPoll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_exit(&mut self, _: &mut Context<'_>) -> TaskPoll<()> {
+        TaskPoll::Pending
+    }
+
+    fn poll_resize(&mut self, _: &mut Context<'_>, _: WinsizeBuilder) -> TaskPoll<io::Result<()>> {
+        TaskPoll::Ready(Ok(()))
+    }
+
+    fn take_stream_reset(&mut self) -> bool {
+        mem::take(&mut self.restarted)
+    }
+}
+
+/// A replayed checkpoint carries the finished blocks as history again, so
+/// blocks frozen from the earlier stream must go, or the history shows twice.
+#[test]
+fn a_restarted_stream_drops_blocks_from_the_earlier_stream() {
+    let finished = b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07\
+\x1b]133;A\x07PS> \x1b]133;B\x07\x1b]133;C\x07Cargo.toml\r\n\
+\x1b]133;D;0\x07\x1b]133;A\x07PS> \x1b]133;B\x07";
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let mut machine = Termio::new(
+        Arc::new(FrameStore::new(RenderBuffer::new(80, 24))),
+        Arc::new(AtomicU32::new(0)),
+        RestartingPty {
+            chunks: VecDeque::from([(false, finished.to_vec())]),
+            restarted: false,
+        },
+        CollectingListener(Arc::clone(&events)),
+        &SessionOptions {
+            cols: 80,
+            rows: 24,
+            route_id: 0,
+            colors: Colors::default(),
+            cursor_shape: CursorShape::Block,
+            scrollback_lines: 1000,
+            engine_blocks: true,
+            terminal_responses: true,
+        },
+    )
+    .unwrap();
+
+    let mut state = PtyState::default();
+    let mut buf = [0u8; READ_BUFFER_SIZE];
+
+    machine
+        .pty_read(&mut state, &mut buf, &mut noop_cx())
+        .unwrap();
+
+    assert!(machine.ghostty.block_count() > 0);
+
+    machine
+        .pty
+        .chunks
+        .push_back((true, b"\x1bc\x1b[3JPS> ".to_vec()));
+
+    machine
+        .pty_read(&mut state, &mut buf, &mut noop_cx())
+        .unwrap();
+
+    assert_eq!(machine.ghostty.block_count(), 0);
+    assert!(events.lock().iter().any(|event| matches!(
+        event,
+        event::TerminalEvent::BlockBatch(batch)
+            if matches!(batch.as_slice(), [event::BlockEvent::HistoryCleared])
+    )));
+}
+
+fn blocks_machine(chunks: Vec<(bool, Vec<u8>)>) -> Termio<RestartingPty, VoidListener> {
+    Termio::new(
+        Arc::new(FrameStore::new(RenderBuffer::new(80, 24))),
+        Arc::new(AtomicU32::new(0)),
+        RestartingPty {
+            chunks: VecDeque::from(chunks),
+            restarted: false,
+        },
+        VoidListener {},
+        &SessionOptions {
+            cols: 80,
+            rows: 24,
+            route_id: 0,
+            colors: Colors::default(),
+            cursor_shape: CursorShape::Block,
+            scrollback_lines: 1000,
+            engine_blocks: true,
+            terminal_responses: true,
+        },
+    )
+    .unwrap()
+}
+
+/// A replica starts from a checkpoint, which carries no OSC 133 marks. The
+/// checkpoint's replayed marks must leave it trusting the shell at the same
+/// point, so the first command it sees becomes a block as on the host.
+#[test]
+fn a_checkpoint_carries_the_prompt_lifecycle_to_the_replica() {
+    let started = b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D\x07\
+\x1b]133;A\x07PS> \x1b]133;B\x07";
+
+    let command =
+        b"ls\r\n\x1b]133;C\x07file.txt\r\n\x1b]133;D;0\x07\x1b]133;A\x07PS> \x1b]133;B\x07";
+
+    let mut state = PtyState::default();
+    let mut buf = [0u8; READ_BUFFER_SIZE];
+    let mut host = blocks_machine(vec![(false, started.to_vec())]);
+
+    host.pty_read(&mut state, &mut buf, &mut noop_cx()).unwrap();
+
+    let checkpoint = host.checkpoint().unwrap().vt;
+
+    let mut replica = blocks_machine(vec![(true, checkpoint), (false, command.to_vec())]);
+
+    replica
+        .pty_read(&mut state, &mut buf, &mut noop_cx())
+        .unwrap();
+
+    assert_eq!(replica.ghostty.block_count(), 1);
 }

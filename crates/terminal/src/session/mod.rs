@@ -253,6 +253,12 @@ impl TerminalSession {
         })
     }
 
+    /// A handle that drives this session's PTY loop from any thread, for a
+    /// host offering the terminal to remote views.
+    pub fn messenger(&self) -> MsgSender {
+        self.messenger.clone()
+    }
+
     /// Whether frozen history lives in finished engine blocks.
     pub fn engine_blocks(&self) -> bool {
         self.engine_blocks

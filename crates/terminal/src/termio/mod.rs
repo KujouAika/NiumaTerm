@@ -383,6 +383,10 @@ where
                 Err(err) => return Err(err),
             }
 
+            if self.pty.take_stream_reset() {
+                self.reset_replica();
+            }
+
             self.on_pty_chunk(&buf[..unprocessed]);
 
             // Preserve the last parsed bytes even if the next read reports EOF.
@@ -434,6 +438,23 @@ where
         self.profile.record(Stage::Flush, flush_started);
 
         result.map(|()| processed)
+    }
+
+    /// A restarted stream replays the whole terminal from a checkpoint, whose
+    /// reset clears the screens but not the finished blocks or the prompt
+    /// lifecycle this side derived from earlier bytes. Keeping them would
+    /// show the replayed history twice.
+    fn reset_replica(&mut self) {
+        self.sniffer = PromptSniffer::default();
+        self.launch_cwd = None;
+
+        if self.engine_blocks && self.ghostty.block_count() > 0 {
+            self.ghostty.clear_blocks();
+
+            self.event_proxy.send_event(TerminalEvent::BlockBatch(vec![
+                event::BlockEvent::HistoryCleared,
+            ]));
+        }
     }
 
     #[inline]
@@ -1183,10 +1204,14 @@ where
         let result = self
             .ghostty
             .format_vt_state()
-            .map(|vt| Checkpoint {
-                vt,
-                cols: self.ghostty.cols(),
-                rows: self.ghostty.rows(),
+            .map(|mut vt| {
+                vt.extend(self.sniffer.replay_marks());
+
+                Checkpoint {
+                    vt,
+                    cols: self.ghostty.cols(),
+                    rows: self.ghostty.rows(),
+                }
             })
             .map_err(|error| RequestError::Engine(error.to_string()));
 

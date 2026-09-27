@@ -475,6 +475,33 @@ impl PromptSniffer {
         self.boundary_trust == ShellBoundaryTrust::Trusted
     }
 
+    /// OSC 133 marks that bring a fresh sniffer to this one's position in the
+    /// shell lifecycle. A checkpoint carries the screen but no marks, so a
+    /// replica attached mid-session would otherwise need two full command
+    /// cycles to trust the marks again, and meanwhile the integration's
+    /// post-command clear would erase output it had not frozen into a block.
+    /// One synthetic cycle grants trust without producing a block; the marks
+    /// after it reopen the region the shell is in.
+    pub(crate) fn replay_marks(&self) -> Vec<u8> {
+        const A: &[u8] = b"\x1b]133;A\x07";
+        const B: &[u8] = b"\x1b]133;B\x07";
+        const C: &[u8] = b"\x1b]133;C\x07";
+        const D: &[u8] = b"\x1b]133;D\x07";
+
+        if !self.boundary_trusted() {
+            return Vec::new();
+        }
+
+        let region: &[&[u8]] = match self.region {
+            PromptRegion::None => &[],
+            PromptRegion::Prompt => &[A],
+            PromptRegion::Command => &[A, B],
+            PromptRegion::Output => &[A, B, C],
+        };
+
+        [&[A, B, C, D][..], region].concat().concat()
+    }
+
     pub(crate) fn take_boundary_trust_changed(&mut self) -> Option<bool> {
         self.boundary_trust_changed.take()
     }
