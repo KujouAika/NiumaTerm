@@ -12,6 +12,7 @@ pub mod identity;
 pub mod messages;
 pub mod pairing;
 pub mod preface;
+pub mod rpc;
 
 mod base32;
 mod noise;
@@ -26,6 +27,8 @@ mod identity_tests;
 mod pairing_tests;
 #[cfg(test)]
 mod preface_tests;
+#[cfg(test)]
+mod rpc_tests;
 
 /// Highest channel protocol major this build speaks. A major changes only for
 /// changes an older peer cannot skip: frame layout, handshake, cryptography.

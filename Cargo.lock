@@ -4312,6 +4312,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nmt_remote"
+version = "1.5.7"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dirs",
+ "futures",
+ "nmt_config",
+ "nmt_platform",
+ "nmt_remote_core",
+ "nmt_terminal",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nmt_remote_core"
 version = "1.5.7"
 dependencies = [
