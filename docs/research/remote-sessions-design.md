@@ -928,3 +928,24 @@ Settled on 2026-09-26:
 2. Paired devices may attach to every host session, including tabs already
    open on the host. There is no toggle; removing a device is the control.
 3. Linux is out of scope for v1.
+
+## 21. Implementation status
+
+Updated 2026-09-27.
+
+| Milestone | State |
+| --- | --- |
+| M1 | Done: `nmt_remote_core` with identity, preface, pairing (SPAKE2 + `Noise_XXpsk3`), pairing link, IK channel, frames, control messages. |
+| M2 | Done: LAN listener, trust store with DPAPI-sealed key, pairing over LAN, DNS-SD advertising and lookup (by slot and by device id), liveness probes, Remote settings page. |
+| M3 | Done: session registry with host tabs, `sessions.list`/`sessions.changed`, attach to host tabs, per-stream flow control with resync, reconnect with backoff and reattach, `SIZE` frames with size reclaim on input, reconnecting banner, restore of remote tabs, checkpoints that carry the prompt lifecycle. |
+
+Known gaps in M3:
+
+- A view whose PTY another view resized renders the host's size on its
+  own grid instead of cropping or padding; it takes the size back on its
+  next input.
+- Remote-created sessions can be closed from the host's settings page but
+  not yet opened in a local tab ("Open here").
+- Host tabs do not yet show which devices are attached, and there is no
+  status bar count of connected devices.
+- `scrollback_rows` is not implemented; checkpoints carry all history.
