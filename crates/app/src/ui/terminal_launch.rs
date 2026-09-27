@@ -5,6 +5,7 @@ use app::terminal_tab::view::{TerminalLaunch, TerminalPane};
 use gpui::{AppContext, Context, Entity};
 use nmt_agent::agent_process;
 use nmt_config::local_state::TabState;
+use nmt_remote::NetworkPty;
 use nmt_terminal::session::TerminalSessionConfig;
 use rust_i18n::t;
 use tracing::warn;
@@ -50,6 +51,26 @@ pub(crate) fn spawn_pane(
             profile_name,
             agent_route,
         },
+    )
+}
+
+/// A pane for a terminal running on another computer, titled with that
+/// computer's name.
+pub(crate) fn spawn_remote_pane(
+    cx: &mut impl AppContext,
+    id: u64,
+    pty: NetworkPty,
+    host_name: String,
+) -> Result<Entity<TerminalPane>, String> {
+    let cursor_shape = cx.read_global(|settings: &TerminalSettings, _| settings.cursor_shape);
+
+    TerminalPane::spawn_remote(
+        cx,
+        id,
+        pty,
+        host_name,
+        agent_process().allocate_route(),
+        cursor_shape,
     )
 }
 

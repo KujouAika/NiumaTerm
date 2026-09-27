@@ -24,6 +24,7 @@ fn pane(cx: &mut VisualTestContext) -> Entity<TerminalPane> {
             profile_name: "Test".into(),
             restorable: TabState::default(),
             agent_route: AgentRoute::parse("test-input").unwrap(),
+            remote: false,
         },
         model,
         content_bounds: None,

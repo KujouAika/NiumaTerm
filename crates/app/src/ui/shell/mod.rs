@@ -58,7 +58,9 @@ use nmt_config::{config_dir_path, get};
 use nmt_platform::default_shell_name;
 use nmt_platform::filesystem::path_identity;
 use nmt_platform::window::native_active_state;
+use nmt_remote::NetworkPty;
 use rust_i18n::t;
+use tracing::warn;
 
 use crate::agent_updates::AgentUpdates;
 use crate::tabs::{Tab, TabId, TabManager};
@@ -92,7 +94,7 @@ use crate::ui::shell::workspace_dirs::{
     RootAvailability, open_new_workspace_dialog, open_workspace_dirs_dialog,
 };
 use crate::ui::tab_bar::{TabStrip, VerticalTabList, WorkspaceTabs};
-use crate::ui::terminal_launch::spawn_default_pane;
+use crate::ui::terminal_launch::{spawn_default_pane, spawn_remote_pane};
 use crate::ui::terminal_layout::TerminalLayout;
 use crate::ui::title_bar::{PanelToggle, TitleBarInputs, TitleCenter};
 use crate::ui::workflows::WorkflowsView;
@@ -1832,6 +1834,38 @@ impl AppWindow {
             TabId(id),
             TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
             title,
+            window,
+            cx,
+        );
+    }
+
+    /// Open a tab on a terminal that runs on another computer.
+    pub(crate) fn open_remote_terminal(
+        &mut self,
+        pty: NetworkPty,
+        host_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_settings_workspace();
+
+        let id = Self::alloc_id(&mut self.next_id);
+
+        let pane = match spawn_remote_pane(cx, id, pty, host_name.clone()) {
+            Ok(pane) => pane,
+            Err(error) => {
+                warn!("remote terminal failed to start: {error}");
+
+                return;
+            }
+        };
+
+        Self::watch_pane(&pane, cx);
+
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
+            host_name,
             window,
             cx,
         );

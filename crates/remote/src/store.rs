@@ -186,7 +186,7 @@ fn save_list<T: Serialize>(dir: &Path, name: &str, list: &[T]) -> io::Result<()>
     durable_file::write(&dir.join(name), &json)
 }
 
-pub(crate) fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64)

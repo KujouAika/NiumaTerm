@@ -20,8 +20,9 @@ use gpui::{
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use nmt_agent::AgentRoute;
-use nmt_config::active_colors;
 use nmt_config::local_state::TabState;
+use nmt_config::{CursorShape, active_colors};
+use nmt_platform::AsyncPty;
 use nmt_terminal::clipboard::{Clipboard, ClipboardType};
 use nmt_terminal::input::{KeyPhase, WheelDelta};
 use nmt_terminal::session::interaction::{CopyCompletion, PendingCopy};
@@ -76,6 +77,10 @@ struct PaneIdentity {
     profile_name: String,
     restorable: TabState,
     agent_route: AgentRoute,
+
+    /// The PTY runs on another computer. Such a tab cannot be restored by
+    /// relaunching its shell here.
+    remote: bool,
 }
 
 pub struct TerminalPane {
@@ -147,6 +152,39 @@ impl TerminalPane {
             profile_name: launch.profile_name,
             restorable: launch.restorable,
             agent_route: launch.agent_route,
+            remote: false,
+        };
+
+        Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
+    }
+
+    /// A pane showing a terminal that runs on another computer. `pty` was
+    /// opened on the host with the default grid; layout resizes it.
+    pub fn spawn_remote<T: AsyncPty + Send + 'static>(
+        cx: &mut impl AppContext,
+        surface_id: u64,
+        pty: T,
+        title: String,
+        agent_route: AgentRoute,
+        cursor_shape: CursorShape,
+    ) -> Result<Entity<Self>, String> {
+        let (wake, wake_rx) = wake::wake_channel();
+
+        let source = TerminalFrameSource::remote(
+            wake.clone(),
+            surface_id,
+            pty,
+            (metrics::COLS, metrics::ROWS),
+            cursor_shape,
+            active_colors(),
+        )?;
+
+        let identity = PaneIdentity {
+            id: surface_id,
+            profile_name: title,
+            restorable: TabState::default(),
+            agent_route,
+            remote: true,
         };
 
         Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
@@ -239,6 +277,10 @@ impl TerminalPane {
 
     pub fn profile_name(&self) -> &str {
         &self.identity.profile_name
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.identity.remote
     }
 
     fn cell_metrics(&mut self, window: &mut Window, cx: &App) -> metrics::CellMetrics {

@@ -20,6 +20,7 @@ use crate::builtin_themes::{THEMES as BUILTIN_THEMES, get as get_builtin_theme};
 use crate::colors::Colors;
 use crate::defaults::*;
 use crate::profile::Profile;
+use crate::remote::RemoteConfig;
 use crate::system::{self, SystemConfig};
 use crate::terminal::TerminalConfig;
 use crate::theme::{Theme, UiTheme};
@@ -77,6 +78,10 @@ pub struct Config {
 
     #[serde(default)]
     pub terminal: TerminalConfig,
+
+    /// Remote session hosting (settings dialog, Remote page).
+    #[serde(default)]
+    pub remote: RemoteConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -276,6 +281,7 @@ impl Default for Config {
             system: system::SystemConfig::default(),
             update: update::UpdateConfig::default(),
             terminal: TerminalConfig::default(),
+            remote: RemoteConfig::default(),
         }
     }
 }
@@ -318,6 +324,7 @@ pub struct SettingsPatch<'a> {
     pub agent_profiles: &'a [profile::AgentProfile],
     pub default_agent_profile: &'a str,
     pub terminal: &'a TerminalConfig,
+    pub remote: &'a RemoteConfig,
 }
 
 /// Save settings to an explicit configuration path using the same locked,
@@ -360,6 +367,7 @@ fn patch_settings_document(doc: &mut DocumentMut, patch: &SettingsPatch<'_>) -> 
         agent_profiles,
         default_agent_profile,
         terminal,
+        remote,
     } = patch;
 
     doc["theme"] = value(theme);
@@ -395,7 +403,9 @@ fn patch_settings_document(doc: &mut DocumentMut, patch: &SettingsPatch<'_>) -> 
         default_agent_profile,
     )?;
 
-    patch_group(doc, "terminal", terminal)
+    patch_group(doc, "terminal", terminal)?;
+
+    patch_group(doc, "remote", remote)
 }
 
 /// Each group's serde names also define the keys edited by the settings UI.

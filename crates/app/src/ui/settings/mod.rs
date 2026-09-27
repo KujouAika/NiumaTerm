@@ -30,6 +30,7 @@ mod hooks;
 mod macos_page;
 mod opacity;
 mod profiles_page;
+mod remote_page;
 mod state;
 mod system_page;
 mod table;
@@ -60,11 +61,13 @@ use tracing::warn;
 
 use crate::agent_updates::AgentUpdates;
 use crate::ui::composition::sidebar_surface;
+use crate::ui::remote::Remote;
 use crate::ui::settings::about_page::about_page;
 use crate::ui::settings::agent_page::agent_page;
 use crate::ui::settings::appearance_page::appearance_page;
 use crate::ui::settings::hooks::{AgentHooks, Hook};
 use crate::ui::settings::profiles_page::profiles_page;
+use crate::ui::settings::remote_page::remote_page;
 use crate::ui::settings::system_page::system_page;
 use crate::ui::settings::terminal_page::terminal_page;
 use crate::ui::settings::theme::watch_themes;
@@ -141,6 +144,9 @@ fn new_settings_view(
             .detach();
 
         cx.observe_global::<Theme>(|view, cx| view.refresh(cx))
+            .detach();
+
+        cx.observe_global::<Remote>(|view, cx| view.refresh(cx))
             .detach();
 
         SettingsView::new(state, move |cx| settings_view(editing.clone(), cx), cx)
@@ -274,5 +280,6 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
         .page(profiles_page(&profiles, &agent_profiles))
         .page(terminal_page())
         .page(agent_page(&agent_profiles, cx))
+        .page(remote_page(cx))
         .page(about_page())
 }

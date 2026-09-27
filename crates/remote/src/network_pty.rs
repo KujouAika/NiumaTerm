@@ -9,6 +9,7 @@ use nmt_platform::{AsyncPty, WinsizeBuilder};
 use nmt_remote_core::frame::kind;
 use nmt_remote_core::rpc::{self, SessionRef, TerminalResize};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::info;
 
 use crate::client::{RemoteHost, StreamEvent};
 
@@ -112,6 +113,8 @@ impl AsyncPty for NetworkPty {
 /// Closing the tab ends the host terminal: nothing else can reach it yet.
 impl Drop for NetworkPty {
     fn drop(&mut self) {
+        info!(session = %self.session, "closing the view of a remote terminal");
+
         self.host.detach(self.stream);
 
         self.host.notify(

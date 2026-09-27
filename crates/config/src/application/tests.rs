@@ -123,6 +123,7 @@ fn patch_settings(doc: &mut DocumentMut) {
             agent_profiles: &sample_agent_profiles(),
             default_agent_profile: "Claude Code",
             terminal: &TerminalConfig::default(),
+            remote: &RemoteConfig::default(),
         },
     )
     .unwrap();
@@ -209,6 +210,7 @@ update = { future-update = "keep" }
             agent_profiles: &sample_agent_profiles(),
             default_agent_profile: "Claude Code",
             terminal: &TerminalConfig::default(),
+            remote: &RemoteConfig::default(),
         },
     )
     .unwrap();
@@ -260,6 +262,7 @@ fn save_settings_to_creates_updates_and_rejects_invalid() {
                 agent_profiles: &sample_agent_profiles(),
                 default_agent_profile: "Claude Code",
                 terminal: &TerminalConfig::default(),
+                remote: &RemoteConfig::default(),
             },
         )
     };

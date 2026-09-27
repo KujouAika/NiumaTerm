@@ -91,3 +91,8 @@ channel = "stable"
 
 [terminal]
 improve-powershell-compatibility = true
+
+[remote]
+enabled = false
+lan-port = 47470
+device-name = ""

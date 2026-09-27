@@ -6,7 +6,7 @@ use nmt_platform::{AsyncPty, runtime};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind};
 use nmt_remote_core::pairing::PairingCode;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use crate::NetworkPty;
 use crate::client::{connect, pair};
@@ -95,6 +95,19 @@ fn paired_client_runs_a_command_in_a_host_terminal() {
         timeout(Duration::from_secs(20), read_until(&mut pty, "NMT_REMOTE_"))
             .await
             .expect("command output arrives");
+
+        assert_eq!(host.terminal_count(), 1);
+
+        // Closing the client's view ends the host terminal.
+        drop(pty);
+
+        timeout(Duration::from_secs(5), async {
+            while host.terminal_count() != 0 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the host terminal closes with its only view");
     });
 }
 

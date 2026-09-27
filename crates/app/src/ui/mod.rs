@@ -24,6 +24,7 @@ pub(crate) use crate::ui::shell::{
 pub(crate) mod macos_menu;
 pub(crate) mod notification_card;
 pub(crate) mod pane_tree;
+pub(crate) mod remote;
 
 mod active_list;
 mod background_tasks;

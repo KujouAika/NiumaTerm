@@ -1,15 +1,20 @@
 use std::ops::Range;
 use std::sync::Arc;
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use std::{io, thread};
 
+use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
+use nmt_platform::{AsyncPty, WinsizeBuilder};
 
 use crate::terminal_tab::frame::TerminalLine;
 use crate::terminal_tab::frame_source::{ItemViewport, TerminalFrameSource};
 use crate::terminal_tab::pane_model::PaneController;
 use crate::terminal_tab::pane_model::test_session::{TestOutput, controller, streaming_controller};
 use crate::terminal_tab::session::{HostEvent, TerminalSessionConfig};
+use crate::terminal_tab::wake::wake_channel;
 
 #[test]
 fn visible_history_survives_a_pending_revision_refresh() {
@@ -335,4 +340,64 @@ fn frozen_item_loads_rows_and_reuses_images_without_a_window() {
             .rows
             .is_empty()
     );
+}
+
+/// A remote tab's PTY stands for a terminal on another computer, and its
+/// drop is what tells that host to end the terminal. Dropping the source
+/// must therefore reach the PTY.
+#[test]
+fn dropping_a_remote_source_drops_its_pty() {
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct IdlePty {
+        _probe: DropProbe,
+    }
+
+    impl AsyncPty for IdlePty {
+        fn poll_read(&mut self, _: &mut Context<'_>, _: &mut [u8]) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_write(&mut self, _: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_exit(&mut self, _: &mut Context<'_>) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn poll_resize(&mut self, _: &mut Context<'_>, _: WinsizeBuilder) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+
+    let source = TerminalFrameSource::remote(
+        wake_channel().0,
+        1,
+        IdlePty {
+            _probe: DropProbe(Arc::clone(&dropped)),
+        },
+        (80, 24),
+        CursorShape::Block,
+        Colors::default(),
+    )
+    .unwrap();
+
+    drop(source);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    while !dropped.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the PTY outlived its source");
+
+        thread::sleep(Duration::from_millis(10));
+    }
 }

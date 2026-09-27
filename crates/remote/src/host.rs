@@ -46,7 +46,7 @@ use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::link::{Outbound, pump, recv_binary, send_binary};
 use crate::store::{self, PairedDevice, now_ms};
@@ -200,6 +200,11 @@ impl HostService {
         issued
             .is_usable(now_ms())
             .then(|| (issued.code().clone(), issued.expires_at_ms()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn terminal_count(&self) -> usize {
+        self.shared.state.lock().terminals.len()
     }
 
     pub fn devices(&self) -> Vec<PairedDevice> {
@@ -375,6 +380,8 @@ impl Connection {
                 let terminal = self.shared.state.lock().terminals.remove(&session);
 
                 if let Some(terminal) = terminal {
+                    info!(%session, "closing a remote terminal");
+
                     terminal.shutdown();
 
                     self.streams
@@ -495,6 +502,8 @@ impl Shared {
         let session = format!("t{}", state.next_terminal);
 
         state.terminals.insert(session.clone(), terminal);
+
+        info!(%session, cols, rows, "opened a remote terminal");
 
         Ok(session)
     }

@@ -306,6 +306,8 @@ dependencies = [
  "nmt_input",
  "nmt_platform",
  "nmt_profiling",
+ "nmt_remote",
+ "nmt_remote_core",
  "nmt_terminal",
  "nmt_updater",
  "nmt_version",

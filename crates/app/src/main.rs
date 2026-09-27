@@ -145,7 +145,12 @@ fn main() {
         })
     });
 
-    if !platform_ipc::try_become_primary(testing) {
+    // A testing instance with its own configuration home acts as a separate
+    // device, such as the second computer in a remote-session test. It
+    // neither forwards to nor serves the testing instance's command pipe.
+    let isolated = testing && env::var_os("NMT_CONFIG_HOME").is_some();
+
+    if !isolated && !platform_ipc::try_become_primary(testing) {
         let action = argv_action.clone().unwrap_or(CliAction::Activate);
         let url: String = (&action).into();
 
@@ -159,7 +164,9 @@ fn main() {
 
     let (cli_tx, cli_rx) = unbounded::<ipc::IpcAction>();
 
-    ipc::spawn_pipe_server(cli_tx.clone(), testing);
+    if !isolated {
+        ipc::spawn_pipe_server(cli_tx.clone(), testing);
+    }
 
     if let Some(action) = argv_action {
         // The primary's own argv URL joins the same dispatch path as
@@ -323,6 +330,8 @@ fn on_finish_launching(
     #[cfg(any(windows, target_os = "macos"))]
     update::initialize(is_testing, cx);
 
+    ui::remote::initialize(cx);
+
     // The platform remembers the choice and applies it to the vsync
     // thread when that spawns (after this closure returns).
     #[cfg(windows)]
@@ -435,6 +444,8 @@ fn on_settings_changed(cx: &mut App) {
 
     #[cfg(any(windows, target_os = "macos"))]
     update::on_settings_changed(cx);
+
+    ui::remote::sync_hosting(cx);
 
     // Terminal and agent scrolling are their own elements carrying
     // their own switch; this one covers every container that scrolls

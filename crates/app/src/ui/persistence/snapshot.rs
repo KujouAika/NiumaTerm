@@ -132,6 +132,14 @@ pub(crate) fn session_state(
                 .list()
                 .items()
                 .iter()
+                // A terminal on another computer cannot be restored by
+                // relaunching a shell here, so it is not saved.
+                .filter(|tab| {
+                    !matches!(
+                        tab.surface(),
+                        TabSurface::Live(tree) if tree.tree().focused_pane().read(cx).is_remote()
+                    )
+                })
                 .map(|tab| {
                     let mut state = match tab.surface() {
                         // A tab that never went live re-saves its restored

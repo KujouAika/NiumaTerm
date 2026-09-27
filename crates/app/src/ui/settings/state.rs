@@ -14,6 +14,7 @@ use nmt_agent::dsh;
 use nmt_config::agent::AgentConfig;
 use nmt_config::appearance::AppearanceConfig;
 use nmt_config::defaults::default_theme;
+use nmt_config::remote::RemoteConfig;
 use nmt_config::system::SystemConfig;
 use nmt_config::terminal::TerminalConfig;
 use nmt_config::theme_catalog::ThemeFamily;
@@ -204,6 +205,10 @@ impl AppSettings {
 
     pub(super) fn edit_terminal(&mut self, edit: impl FnOnce(&mut TerminalConfig)) {
         edit(&mut self.config.terminal);
+    }
+
+    pub(super) fn edit_remote(&mut self, edit: impl FnOnce(&mut RemoteConfig)) {
+        edit(&mut self.config.remote);
     }
 
     pub fn set_theme(&mut self, theme: String) {
@@ -514,6 +519,7 @@ impl AppSettings {
                 agent_profiles: &self.config.agent_profiles.list,
                 default_agent_profile: &self.config.agent_profiles.default,
                 terminal: &self.config.terminal,
+                remote: &self.config.remote,
             },
         )
     }

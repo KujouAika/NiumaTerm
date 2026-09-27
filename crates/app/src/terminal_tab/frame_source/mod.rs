@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections, ops, sync, time};
 
+use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
+use nmt_platform::AsyncPty;
 use nmt_terminal::event::BlockEvent;
 use nmt_terminal::ghostty::BlockHandle;
 use nmt_terminal::graphics::UpdateQueues;
@@ -24,6 +26,7 @@ use nmt_terminal::session::page::{PAGE_ROWS, PageSource, RowPage};
 use nmt_terminal::session::{
     BlockPoint, SessionChange, SessionObserver, TerminalSession, TerminalSessionConfig,
 };
+use nmt_terminal::termio::SessionOptions;
 use parking_lot::Mutex;
 use tracing::trace;
 
@@ -70,6 +73,45 @@ impl TerminalFrameSource {
         colors: Colors,
     ) -> Result<Self, String> {
         Self::new(launch, surface_id, Some(wake), colors)
+    }
+
+    /// A session whose PTY is a terminal on another computer. That host's
+    /// engine, next to the real PTY, already answers terminal queries; a
+    /// second answer from this engine would reach the program as input.
+    pub(super) fn remote<T: AsyncPty + Send + 'static>(
+        wake: WakeSignal,
+        surface_id: u64,
+        pty: T,
+        grid_size: (u16, u16),
+        cursor_shape: CursorShape,
+        colors: Colors,
+    ) -> Result<Self, String> {
+        let images = Arc::new(SessionBridge::new(Some(wake)));
+        let defaults = TerminalSessionConfig::default();
+
+        let session = TerminalSession::from_pty(
+            pty,
+            None,
+            SessionOptions {
+                cols: grid_size.0,
+                rows: grid_size.1,
+                route_id: surface_id as usize,
+                colors,
+                cursor_shape,
+                scrollback_lines: defaults.scrollback_lines,
+                engine_blocks: defaults.engine_blocks,
+                terminal_responses: false,
+            },
+            Some(images.clone()),
+        )
+        .map_err(|error| format!("{:?}: {}", error.code, error))?;
+
+        Ok(Self {
+            snapshot: session.snapshot(),
+            session,
+            images,
+            grid_size,
+        })
     }
 
     #[cfg(test)]
