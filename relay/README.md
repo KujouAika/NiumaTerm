@@ -59,12 +59,13 @@ echo ACCESS_KEY=local-test-key-0123456789 > .dev.vars
 npx wrangler dev --local --port 8787 --ip 127.0.0.1
 ```
 
-The Rust integration test pairs and connects through a running relay:
+The Rust integration test pairs, then runs a shell, through a running relay
+with the host's LAN listener closed:
 
 ```sh
 NMT_TEST_RELAY_URL=http://127.0.0.1:8787 \
 NMT_TEST_RELAY_KEY=local-test-key-0123456789 \
-cargo test -p nmt_remote --lib relay_tests -- --ignored
+cargo test -p nmt_remote --lib through_the_relay -- --ignored
 ```
 
 ## Endpoints

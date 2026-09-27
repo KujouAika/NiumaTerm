@@ -255,6 +255,12 @@ impl HostService {
         }
     }
 
+    /// Stop accepting LAN connections, leaving the relay as the only way in.
+    #[cfg(test)]
+    pub(crate) fn close_lan(&self) {
+        self.task.abort();
+    }
+
     #[cfg(test)]
     pub(crate) fn terminal_count(&self) -> usize {
         self.shared.config.registry.remote_sessions().len()

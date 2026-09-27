@@ -23,8 +23,6 @@ mod link_tests;
 #[cfg(test)]
 mod loopback_tests;
 #[cfg(test)]
-mod relay_tests;
-#[cfg(test)]
 #[cfg(windows)]
 mod store_tests;
 #[cfg(test)]

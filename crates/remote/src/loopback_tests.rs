@@ -1,3 +1,4 @@
+use std::env;
 use std::future::poll_fn;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -8,12 +9,12 @@ use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
 use nmt_platform::{AsyncPty, PtyOptions, create_pty_with_env, runtime};
 use nmt_remote_core::identity::DeviceKey;
-use nmt_remote_core::messages::{DeviceInfo, DeviceKind};
+use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::PairingCode;
 use nmt_remote_core::rpc::Origin;
 use nmt_terminal::event::VoidListener;
 use nmt_terminal::termio::{SessionHandles, SessionOptions, start_session};
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant, sleep, timeout};
 
 use crate::NetworkPty;
 use crate::client::pair;
@@ -58,6 +59,14 @@ fn marker_command(tag: &str) -> (Vec<u8>, String) {
 }
 
 fn start_host(dir: &tempfile::TempDir, registry: Arc<SessionRegistry>) -> HostService {
+    start_host_with_relay(dir, registry, None)
+}
+
+fn start_host_with_relay(
+    dir: &tempfile::TempDir,
+    registry: Arc<SessionRegistry>,
+    relay: Option<RelayAccess>,
+) -> HostService {
     let (shell, args) = test_shell();
 
     HostService::start(
@@ -69,7 +78,7 @@ fn start_host(dir: &tempfile::TempDir, registry: Arc<SessionRegistry>) -> HostSe
             shell,
             args,
             registry,
-            relay: None,
+            relay,
             on_change: Arc::new(|| {}),
         },
     )
@@ -393,5 +402,50 @@ fn pairing_without_an_address_finds_the_host_showing_the_code() {
         let client = remote(paired, Arc::new(key));
 
         client.list_sessions().await.unwrap();
+    });
+}
+
+/// Needs a running relay: `wrangler dev` under `relay/`, with
+/// `NMT_TEST_RELAY_URL` and `NMT_TEST_RELAY_KEY` pointing at it.
+#[test]
+#[ignore = "needs a running relay"]
+fn a_host_off_the_lan_is_paired_and_used_through_the_relay() {
+    let relay = RelayAccess {
+        url: env::var("NMT_TEST_RELAY_URL").expect("NMT_TEST_RELAY_URL"),
+        access_key: env::var("NMT_TEST_RELAY_KEY").expect("NMT_TEST_RELAY_KEY"),
+    };
+
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host_with_relay(&host_dir, SessionRegistry::new(), Some(relay.clone()));
+
+    host.close_lan();
+
+    let key = DeviceKey::generate().unwrap();
+    let code = host.start_pairing().unwrap();
+
+    runtime().block_on(async {
+        // The host registers and claims the code's slot in the background.
+        let deadline = Instant::now() + WAIT;
+
+        let paired = loop {
+            match pair(None, &code, &key, info("Client"), None, Some(relay.clone())).await {
+                Ok(paired) => break paired,
+                Err(error) if Instant::now() < deadline => {
+                    eprintln!("retrying pairing: {error:#}");
+
+                    sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => panic!("pairing through the relay failed: {error:#}"),
+            }
+        };
+
+        assert_eq!(paired.relay.as_ref().unwrap().open().unwrap(), relay);
+        assert!(paired.lan_hints.is_empty(), "the LAN path cannot have won");
+
+        let remote = remote(paired, Arc::new(key));
+
+        let mut pty = remote.open_terminal(80, 24).await.unwrap();
+
+        run_marker(&mut pty, "RELAYED").await;
     });
 }

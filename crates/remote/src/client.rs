@@ -138,7 +138,7 @@ pub async fn pair(
 }
 
 /// Run the pairing exchange over an open socket.
-pub(crate) async fn pair_over(
+async fn pair_over(
     mut ws: RelaySocket,
     code: &PairingCode,
     key: &DeviceKey,
@@ -342,7 +342,7 @@ fn hello(app_version: &str, clock: &HelloClock) -> ClientHello {
 }
 
 /// Run the channel handshake over an open socket.
-pub(crate) async fn channel_handshake(
+async fn channel_handshake(
     mut ws: RelaySocket,
     key: &DeviceKey,
     host_key: &[u8; 32],
