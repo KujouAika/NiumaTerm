@@ -109,7 +109,6 @@ fn resized_pipe(initial: &[u8]) -> Termio<FakePty, VoidListener> {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -164,7 +163,11 @@ fn resize_reads_preserve_bottom_text_during_partial_erase() {
     let forwarded = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&forwarded);
 
-    machine.set_output_sink(move |bytes| sink.lock().extend_from_slice(&bytes));
+    machine.add_subscriber(move |bytes| {
+        sink.lock().extend_from_slice(&bytes);
+
+        true
+    });
 
     machine.on_pty_chunk(input);
 
@@ -403,8 +406,10 @@ fn child_exit_retains_output_beyond_one_parse_batch() {
     let observed = Arc::new(AtomicUsize::new(0));
     let count = observed.clone();
 
-    machine.set_output_sink(move |bytes| {
+    machine.add_subscriber(move |bytes| {
         count.fetch_add(bytes.len(), Ordering::Relaxed);
+
+        true
     });
 
     machine.pty.reader.data = data;
@@ -427,6 +432,103 @@ fn child_exit_retains_output_beyond_one_parse_batch() {
             .contains("final output")
     );
     assert!(!machine.snapshot_pending);
+}
+
+/// A subscriber joining mid-stream receives a checkpoint and then exactly
+/// the bytes parsed after it. A byte lost or repeated between the two shows
+/// up as a gap or a duplicate in the replica's numbered lines.
+#[test]
+fn subscribe_mid_stream_replays_without_loss_or_duplication() {
+    let mut machine = resized_pipe(b"");
+    let mut data = Vec::new();
+
+    for line in 0.. {
+        if data.len() >= 3 * READ_BUFFER_SIZE {
+            break;
+        }
+
+        data.extend_from_slice(
+            format!(
+                "line{line:05}
+"
+            )
+            .as_bytes(),
+        );
+    }
+
+    machine.pty.reader.data = data.clone();
+    machine.pty.writer.exited = true;
+
+    // Parse one batch first so the subscription lands between PTY reads.
+    machine
+        .pty_read(
+            &mut PtyState::default(),
+            &mut [0; READ_BUFFER_SIZE],
+            &mut noop_cx(),
+        )
+        .unwrap();
+
+    let checkpoint = Arc::new(Mutex::new(None));
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let checkpoint_slot = Arc::clone(&checkpoint);
+    let streamed_sink = Arc::clone(&streamed);
+
+    machine
+        .channel()
+        .send(event::Msg::Subscribe {
+            sink: event::OutputSink(Box::new(move |bytes| {
+                streamed_sink.lock().extend_from_slice(&bytes);
+
+                true
+            })),
+            checkpoint: event::CheckpointRequest(Box::new(move |result| {
+                *checkpoint_slot.lock() = Some(result.unwrap());
+            })),
+        })
+        .unwrap();
+
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+
+    runtime.block_on(async {
+        timeout(time::Duration::from_secs(2), machine.run_event_loop())
+            .await
+            .unwrap()
+    });
+
+    let checkpoint = checkpoint.lock().take().expect("checkpoint delivered");
+    let streamed = streamed.lock();
+
+    // The stream is exactly the tail of the output, and the checkpoint is
+    // exactly the head: rebuilding the head from raw bytes must match it.
+    assert!(!streamed.is_empty(), "subscribed before the stream ended");
+    assert!(
+        data.ends_with(&streamed),
+        "stream skipped or repeated bytes"
+    );
+
+    let head = &data[..data.len() - streamed.len()];
+
+    assert!(!head.is_empty(), "subscribed after the first batch");
+
+    let mut reference = ghostty::GhosttyTerminal::new(80, 25, 1000).unwrap();
+
+    let mut replica =
+        ghostty::GhosttyTerminal::new(checkpoint.cols, checkpoint.rows, 1000).unwrap();
+
+    reference.write_vt(head);
+    replica.write_vt(&checkpoint.vt);
+
+    let last_lines = |engine: &mut ghostty::GhosttyTerminal| -> Vec<String> {
+        let text = engine.format_text(None, false, true).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+
+        lines[lines.len() - 100..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
+    };
+
+    assert_eq!(last_lines(&mut replica), last_lines(&mut reference));
 }
 
 #[test]
@@ -1033,7 +1135,6 @@ fn terminal_replies_resume_after_partial_writes_in_input_order() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1109,12 +1210,23 @@ fn assert_session_cleanup(close: impl FnOnce(SessionHandles)) {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: Some(Arc::new(move |_| {
-                let _ = &lifetime;
-            })),
         },
     )
     .unwrap();
+
+    // The sink holds the lifetime whether the loop registered it or still
+    // had the message queued, so either way only teardown releases it.
+    handles
+        .messenger
+        .send(event::Msg::Subscribe {
+            sink: event::OutputSink(Box::new(move |_| {
+                let _ = &lifetime;
+
+                true
+            })),
+            checkpoint: event::CheckpointRequest(Box::new(|_| {})),
+        })
+        .unwrap();
 
     close(handles);
 
@@ -1149,7 +1261,6 @@ fn disabled_terminal_responses_are_forwarded_without_replying() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1157,7 +1268,11 @@ fn disabled_terminal_responses_are_forwarded_without_replying() {
     let forwarded = Arc::new(Mutex::new(Vec::new()));
     let forwarded_sink = Arc::clone(&forwarded);
 
-    machine.set_output_sink(move |bytes| forwarded_sink.lock().extend_from_slice(&bytes));
+    machine.add_subscriber(move |bytes| {
+        forwarded_sink.lock().extend_from_slice(&bytes);
+
+        true
+    });
 
     machine.set_terminal_responses_enabled(false);
 
@@ -1197,7 +1312,6 @@ fn resize_message_publishes_snapshot_to_render_buffer() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1253,7 +1367,6 @@ fn theme_refresh_preserves_synchronized_output_until_commit() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1411,7 +1524,6 @@ fn theme_refresh_preserves_progress_cursor_suppression() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1508,7 +1620,6 @@ fn conpty_echo_after_resize_preserves_addressed_row() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1574,7 +1685,6 @@ fn conpty_repaint_after_resize_uses_active_screen_when_scrolled() {
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();
@@ -1672,7 +1782,6 @@ fn pty_read_events(
             scrollback_lines: 1000,
             engine_blocks: true,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .unwrap();

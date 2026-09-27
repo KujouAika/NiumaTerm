@@ -66,7 +66,6 @@ function global:prompt {{ 'NMT> ' }}
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .expect("start terminal session")

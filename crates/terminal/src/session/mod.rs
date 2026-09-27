@@ -202,7 +202,6 @@ impl TerminalSession {
                 scrollback_lines: config.scrollback_lines,
                 engine_blocks: config.engine_blocks,
                 terminal_responses: true,
-                output_sink: None,
             },
             observer,
         )?;

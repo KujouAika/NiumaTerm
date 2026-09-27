@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter};
+use std::sync::Arc;
 use std::{path, time};
 
 use futures::channel::oneshot;
@@ -95,6 +96,12 @@ pub enum Msg {
     },
     Query(Query),
     Checkpoint(CheckpointRequest),
+    /// Format a checkpoint and register `sink` for every later byte in the
+    /// same loop step, so the replica sees each byte exactly once.
+    Subscribe {
+        sink: OutputSink,
+        checkpoint: CheckpointRequest,
+    },
     /// Update the local PowerShell resize workaround without waiting behind input.
     PowerShellCompatibility(bool),
 }
@@ -332,12 +339,25 @@ pub struct Checkpoint {
     pub rows: u16,
 }
 
-/// Completion runs on the owner thread before any later output is parsed.
-/// It may register a stream subscriber but must not wait for another thread.
+/// Completion runs on the owner thread before any later output is parsed,
+/// so it is ordered with the bytes subscribers receive. It must not wait for
+/// another thread.
 pub struct CheckpointRequest(pub Box<dyn FnOnce(Result<Checkpoint, RequestError>) + Send>);
 
 impl fmt::Debug for CheckpointRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("CheckpointRequest")
+    }
+}
+
+/// Observes the exact VT bytes accepted by the engine, in the owner task.
+/// Returning before the next command preserves checkpoint and output ordering;
+/// observers must not wait for work submitted to this same event loop.
+/// Returning `false` unsubscribes, so a closed stream needs no extra message.
+pub struct OutputSink(pub Box<dyn FnMut(Arc<[u8]>) -> bool + Send>);
+
+impl fmt::Debug for OutputSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OutputSink")
     }
 }

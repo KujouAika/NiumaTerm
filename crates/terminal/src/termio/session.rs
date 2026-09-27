@@ -11,11 +11,6 @@ use crate::event::{EventListener, Msg, MsgSender};
 use crate::render_buffer::{FrameStore, RenderBuffer};
 use crate::termio::Termio;
 
-/// Observes the exact VT bytes accepted by the engine, in the owner task.
-/// Returning before the next command preserves checkpoint and output ordering;
-/// observers must not wait for work submitted to this same event loop.
-pub type OutputSink = Arc<dyn Fn(Arc<[u8]>) + Send + Sync>;
-
 /// Construction settings for [`start_session`].
 pub struct SessionOptions {
     pub cols: u16,
@@ -40,8 +35,6 @@ pub struct SessionOptions {
     /// Whether this pipe answers DA/DSR/OSC queries. Off for a headless host
     /// whose attached frontend owns terminal identity and theme.
     pub terminal_responses: bool,
-
-    pub output_sink: Option<OutputSink>,
 }
 
 /// Shared handles to one running terminal session, returned by [`start_session`].
@@ -140,7 +133,6 @@ where
         .map_err(|error| Box::new(error) as Box<dyn error::Error>)?;
 
     pipe.terminal_responses_enabled = options.terminal_responses;
-    pipe.output_sink = options.output_sink;
 
     pipe.ghostty
         .snapshot_into(&mut pipe.back_buffer, 0, 0)

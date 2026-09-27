@@ -1,6 +1,4 @@
-pub use crate::termio::session::{
-    OutputSink, SessionHandles, SessionOptions, SessionWorker, start_session,
-};
+pub use crate::termio::session::{SessionHandles, SessionOptions, SessionWorker, start_session};
 pub use crate::termio::write_queue::PtyState;
 
 pub(crate) mod requests;
@@ -32,7 +30,9 @@ use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
 use tracing::{error, warn};
 
-use crate::event::{self, Checkpoint, EventListener, Msg, MsgSender, RequestError, TerminalEvent};
+use crate::event::{
+    self, Checkpoint, EventListener, Msg, MsgSender, OutputSink, RequestError, TerminalEvent,
+};
 use crate::ghostty::{self, GhosttyTerminal, mode};
 use crate::render_buffer::{FrameStore, RenderBuffer};
 use crate::termio::marks::{apply_sniffer_mark, engine_blocks_live_list};
@@ -124,10 +124,10 @@ pub struct Termio<T: AsyncPty, U: EventListener> {
     /// compares it to detect content changes and invalidate cached views.
     content_version: u64,
 
-    /// Optional observer for the exact VT stream accepted by the engine. It runs
-    /// in the owner task before another command or byte batch can run,
-    /// preserving checkpoint ordering. Observers must return promptly.
-    output_sink: Option<OutputSink>,
+    /// Observers of the exact VT stream accepted by the engine. They run in
+    /// the owner task before another command or byte batch can run, which
+    /// keeps them ordered with checkpoints. Observers must return promptly.
+    subscribers: Vec<OutputSink>,
 
     terminal_responses_enabled: bool,
     event_proxy: U,
@@ -300,7 +300,7 @@ where
             back_buffer: RenderBuffer::new(cols as usize, rows as usize),
             vt_modes,
             content_version: 0,
-            output_sink: None,
+            subscribers: Vec::new(),
             terminal_responses_enabled: true,
             event_proxy,
             route_id: options.route_id,
@@ -334,8 +334,8 @@ where
 
     /// Observe parsed VT output without taking ownership of the PTY loop.
     #[cfg(test)]
-    pub(crate) fn set_output_sink(&mut self, sink: impl Fn(Arc<[u8]>) + Send + Sync + 'static) {
-        self.output_sink = Some(Arc::new(sink));
+    pub(crate) fn add_subscriber(&mut self, sink: impl FnMut(Arc<[u8]>) -> bool + Send + 'static) {
+        self.subscribers.push(OutputSink(Box::new(sink)));
     }
 
     /// Choose whether VT-generated DA/DSR/OSC replies are written to this PTY.
@@ -443,14 +443,10 @@ where
 
         // The owner parses into private engine state while the UI retains its
         // last published frame. Neither side waits for the other's read pass.
-        let output_sink = self.output_sink.clone();
-
-        let engine = &mut self.ghostty;
-
         // ConPTY tracks both cursor and content for incremental redraws.
         // Altering addresses or inserting scrolls would change state it does
         // not know to repaint, so output reaches the engine unchanged.
-        let observed_output = output_sink.as_ref().map(|_| input.into());
+        let engine = &mut self.ghostty;
 
         // Always run the sniffer: it classifies/captures OSC 133 lifecycle state
         // while every byte, including marks, still reaches the engine.
@@ -494,8 +490,12 @@ where
 
         vt_trace::trace_read(self.route_id, engine, input);
 
-        if let (Some(sink), Some(output)) = (&output_sink, observed_output) {
-            sink(output);
+        // One shared allocation per chunk, and none without subscribers.
+        if !self.subscribers.is_empty() {
+            let output: Arc<[u8]> = input.into();
+
+            self.subscribers
+                .retain_mut(|sink| (sink.0)(Arc::clone(&output)));
         }
 
         #[cfg(enable_profiling)]
@@ -1156,28 +1156,44 @@ where
                 self.event_proxy.send_event(TerminalEvent::ReadReady);
             }
             Msg::Checkpoint(request) => {
-                #[cfg(enable_profiling)]
-                let checkpoint_started = self.profile.start();
+                (request.0)(self.checkpoint());
+            }
+            Msg::Subscribe { sink, checkpoint } => {
+                let result = self.checkpoint();
+                let subscribed = result.is_ok();
 
-                let result = self
-                    .ghostty
-                    .format_vt_state()
-                    .map(|vt| Checkpoint {
-                        vt,
-                        cols: self.ghostty.cols(),
-                        rows: self.ghostty.rows(),
-                    })
-                    .map_err(|error| RequestError::Engine(error.to_string()));
+                (checkpoint.0)(result);
 
-                (request.0)(result);
-
-                #[cfg(enable_profiling)]
-                self.profile.record(Stage::Checkpoint, checkpoint_started);
+                // Registering in the same step as the checkpoint means the
+                // next parsed byte is the first one the subscriber receives.
+                if subscribed {
+                    self.subscribers.push(sink);
+                }
             }
             Msg::Input(_) | Msg::Resize(_) | Msg::Shutdown | Msg::PowerShellCompatibility(_) => {
                 unreachable!("handled by the PTY loop")
             }
         }
+    }
+
+    fn checkpoint(&mut self) -> Result<Checkpoint, RequestError> {
+        #[cfg(enable_profiling)]
+        let checkpoint_started = self.profile.start();
+
+        let result = self
+            .ghostty
+            .format_vt_state()
+            .map(|vt| Checkpoint {
+                vt,
+                cols: self.ghostty.cols(),
+                rows: self.ghostty.rows(),
+            })
+            .map_err(|error| RequestError::Engine(error.to_string()));
+
+        #[cfg(enable_profiling)]
+        self.profile.record(Stage::Checkpoint, checkpoint_started);
+
+        result
     }
 
     fn publish_command(&mut self) {

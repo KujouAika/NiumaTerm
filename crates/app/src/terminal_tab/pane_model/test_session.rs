@@ -148,7 +148,6 @@ pub(crate) fn streaming_controller(
                 scrollback_lines: 100,
                 engine_blocks,
                 terminal_responses: true,
-                output_sink: None,
             },
             Some(observer),
         )
