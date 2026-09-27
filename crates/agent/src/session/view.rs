@@ -161,6 +161,14 @@ pub struct DraftView {
     pub touched: bool,
 }
 
+/// The answers typed into one question batch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DraftAnswers {
+    pub selected: Vec<Vec<usize>>,
+    pub text: Vec<String>,
+    pub custom: Vec<bool>,
+}
+
 /// What the conversation waits on the user for.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PendingView {

@@ -9,6 +9,7 @@ use gpui::{App, Context};
 use gpui_component::IconName;
 use nmt_agent::claude_code::stream_json;
 use nmt_agent::codex::app_server;
+use nmt_agent::session::command::UpdateSettings;
 use nmt_agent::session::settings::ConversationSettings;
 use rust_i18n::t;
 
@@ -315,6 +316,12 @@ fn update_settings(
     };
 
     update(&mut pane.session.borrow_mut().controls);
+
+    // The pickers edit this view's copy of the controls; the conversation
+    // takes the result, which for a session beside the view is that copy.
+    let settings = pane.session.borrow().controls.settings.clone();
+
+    pane.dispatch(UpdateSettings { settings }, cx, |_, (), _| ());
 
     // A Team member's settings belong to its room, which persists them from
     // the session's controls the next time its runtime looks: that runtime

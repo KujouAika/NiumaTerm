@@ -57,34 +57,38 @@ use gpui_component::{ActiveTheme as _, ElementExt as _, WindowExt, v_flex};
 use nmt_agent::background_task::{BackgroundTaskKey, BackgroundTaskSnapshot};
 use nmt_agent::catalog::adapter_commands;
 use nmt_agent::chat::{
-    ForkCheckpoint, Item as SessionItem, Question, SendOutcome, SessionSummary, SkillInfo,
-    SkillReference, SlashCommandArguments, SlashCommandInfo, SlashCommandOutcome,
-    SlashCommandRunPolicy, SlashCommandSource,
+    ForkCheckpoint, Item as SessionItem, Question, SessionSummary, SkillInfo, SkillReference,
+    SlashCommandArguments, SlashCommandInfo, SlashCommandOutcome, SlashCommandRunPolicy,
+    SlashCommandSource,
 };
 use nmt_agent::claude_code::stream_json;
 use nmt_agent::codex::app_server;
 use nmt_agent::codex::app_server::SideStart;
+use nmt_agent::session::SettingsOutcome;
 use nmt_agent::session::branch::{
     BranchCompletion, BranchError, BranchFailure, BranchUpdate, BranchView, FileProgress,
     PromptTarget,
 };
 use nmt_agent::session::children::ChildTranscript;
+use nmt_agent::session::command::{
+    AdmitSlashCommand, AgentCommand, AnswerQuestion, ApplyModelSelection, Interrupt, Prompt,
+    PromptImage, RenameConversation, RespondApproval, RunSlashCommand, SelectAgentPreset,
+    SubmitPrompt, SubmitRefusal, Submitted, UpdateSettings, WithdrawQueuedPrompt,
+};
 use nmt_agent::session::commands::CommandAdmission;
 use nmt_agent::session::controller::{
     SessionController, SessionEffect, SessionFailure, SessionReady, SubmissionBlock,
 };
 use nmt_agent::session::delivery::RecoverablePrompt;
 use nmt_agent::session::input::{
-    ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionKey, Submission,
+    ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionDraft, QuestionKey, Submission,
 };
 use nmt_agent::session::lifecycle::InterruptOutcome;
 use nmt_agent::session::restore::{ResumeStart, SettingsSeed};
 use nmt_agent::session::side::SideQuestionOutcome;
 use nmt_agent::session::workflows::OpenWorkflowAgent;
-use nmt_agent::session::{ImageAttachment, PromptRequest, SettingsOutcome};
 #[cfg(test)]
 use nmt_agent::transcript::TextField;
-use nmt_agent::transcript::conversation::ConversationImage;
 use nmt_agent::workflow::WorkflowRun;
 use nmt_agent::{AgentEvent, AgentEventKind, AgentRoute, AgentWorkspace};
 use nmt_config::profile::AgentProfile;
@@ -1569,7 +1573,11 @@ impl AgentPane {
                 true
             }
             SlashRoute::Permissions(value) => {
-                self.session.borrow_mut().controls.settings.approval = Some(value.clone());
+                let mut settings = self.session.borrow().controls.settings.clone();
+
+                settings.approval = Some(value.clone());
+
+                self.dispatch(UpdateSettings { settings }, cx, |_, (), _| ());
 
                 remember_defaults(self, cx);
 
@@ -1629,41 +1637,40 @@ impl AgentPane {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.is_command_busy() {
-            let admission = self
-                .session
-                .borrow_mut()
-                .admit_command_while_busy(command, policy);
+            let command = AdmitSlashCommand { command, policy };
 
-            return match admission {
-                CommandAdmission::Queued { name, count } => {
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Queued,
-                        t!(
-                            if count == 1 {
-                                "agent-composer-command-queued-one"
-                            } else {
-                                "agent-composer-command-queued-many"
-                            },
-                            name = &name,
-                            count = count
-                        )
-                        .into_owned(),
-                        cx,
-                    );
+            return self
+                .dispatch(command, cx, |this, admission, cx| match admission {
+                    CommandAdmission::Queued { name, count } => {
+                        this.palette.set_feedback(
+                            CommandFeedbackKind::Queued,
+                            t!(
+                                if count == 1 {
+                                    "agent-composer-command-queued-one"
+                                } else {
+                                    "agent-composer-command-queued-many"
+                                },
+                                name = &name,
+                                count = count
+                            )
+                            .into_owned(),
+                            cx,
+                        );
 
-                    true
-                }
-                CommandAdmission::Busy { name } => {
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Error,
-                        t!("agent-composer-command-idle-only", name = &name).into_owned(),
-                        cx,
-                    );
+                        true
+                    }
+                    CommandAdmission::Busy { name } => {
+                        this.palette.set_feedback(
+                            CommandFeedbackKind::Error,
+                            t!("agent-composer-command-idle-only", name = &name).into_owned(),
+                            cx,
+                        );
 
-                    false
-                }
-                CommandAdmission::Execute(command) => self.execute_backend_command(command, cx),
-            };
+                        false
+                    }
+                    CommandAdmission::Execute(command) => this.execute_backend_command(command, cx),
+                })
+                .unwrap_or(true);
         }
 
         self.execute_backend_command(command, cx)
@@ -1684,15 +1691,28 @@ impl AgentPane {
             return false;
         }
 
-        let outcome = self.session.borrow_mut().execute_command(&command);
+        let name = command.name.clone();
 
+        self.dispatch(RunSlashCommand { command }, cx, move |this, outcome, cx| {
+            this.present_command_outcome(&name, session_kind, outcome, cx)
+        })
+        .unwrap_or(true)
+    }
+
+    fn present_command_outcome(
+        &mut self,
+        name: &str,
+        session_kind: AgentKind,
+        outcome: SlashCommandOutcome,
+        cx: &mut Context<Self>,
+    ) -> bool {
         match outcome {
             SlashCommandOutcome::Accepted => {
                 self.history_ui.mode = RecentSessionsMode::Hidden;
 
                 self.palette.set_feedback(
                     CommandFeedbackKind::Notice,
-                    t!("agent-composer-command-starting", name = &command.name).into_owned(),
+                    t!("agent-composer-command-starting", name = name).into_owned(),
                     cx,
                 );
 
@@ -1702,16 +1722,14 @@ impl AgentPane {
                 // The harness pins its own default preset into every
                 // conversation it opens, so a switch it accepted is remembered
                 // for the next one, whether it was picked or typed.
-                if let Some(preset) = approval {
-                    self.session.borrow_mut().controls.settings.approval = Some(preset);
-
+                if approval.is_some() {
                     remember_defaults(self, cx);
                 }
 
                 self.palette.set_feedback(
                     CommandFeedbackKind::Notice,
                     message.unwrap_or_else(|| {
-                        t!("agent-session-command-completed", name = &command.name).into_owned()
+                        t!("agent-session-command-completed", name = name).into_owned()
                     }),
                     cx,
                 );
@@ -1966,24 +1984,38 @@ impl AgentPane {
             return;
         }
 
-        let outcome = self
+        let answers = self
             .session
-            .borrow_mut()
-            .submit_question(key, action, Instant::now());
+            .borrow()
+            .input()
+            .draft(key)
+            .map(QuestionDraft::draft_answers);
 
-        match outcome {
-            Submission::Ignored => return,
-            Submission::Settled { waiting_finished } => {
-                if waiting_finished {
-                    self.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx);
+        let Some(answers) = answers else {
+            return;
+        };
+
+        let command = AnswerQuestion {
+            key,
+            action,
+            answers,
+        };
+
+        self.dispatch(command, cx, |this, outcome, cx| {
+            match outcome {
+                Submission::Ignored => return,
+                Submission::Settled { waiting_finished } => {
+                    if waiting_finished {
+                        this.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx);
+                    }
                 }
+                Submission::Waiting | Submission::Failed => {}
             }
-            Submission::Waiting | Submission::Failed => {}
-        }
 
-        self.prompts.hide_settled(self.session.borrow().input());
+            this.prompts.hide_settled(this.session.borrow().input());
 
-        cx.notify();
+            cx.notify();
+        });
     }
 
     pub fn refresh_background_tasks(&mut self) {
@@ -2084,35 +2116,42 @@ impl AgentPane {
             return false;
         }
 
-        let outcome = match self.session.borrow_mut().rename_conversation(title) {
-            Some(outcome) => outcome.map_err(operation_error),
-            None => Err(t!(
-                "agent-session-still-starting",
-                name = session_kind.display()
-            )
-            .into_owned()),
+        let command = RenameConversation {
+            title: title.to_owned(),
         };
 
-        // The backend answers with the title it was asked for. What it keeps
-        // after its own normalization reaches the tab as a title update, and
-        // a refusal is reported in the transcript.
-        match outcome {
-            Ok(accepted) => {
-                self.palette.set_feedback(
-                    CommandFeedbackKind::Notice,
-                    t!("agent-session-renamed", title = &accepted).into_owned(),
-                    cx,
-                );
+        self.dispatch(command, cx, move |this, outcome, cx| {
+            let outcome = match outcome {
+                Some(outcome) => outcome.map_err(operation_error),
+                None => Err(t!(
+                    "agent-session-still-starting",
+                    name = session_kind.display()
+                )
+                .into_owned()),
+            };
 
-                true
-            }
-            Err(error) => {
-                self.palette
-                    .set_feedback(CommandFeedbackKind::Error, error, cx);
+            // The backend answers with the title it was asked for. What it
+            // keeps after its own normalization reaches the tab as a title
+            // update, and a refusal is reported in the transcript.
+            match outcome {
+                Ok(accepted) => {
+                    this.palette.set_feedback(
+                        CommandFeedbackKind::Notice,
+                        t!("agent-session-renamed", title = &accepted).into_owned(),
+                        cx,
+                    );
 
-                false
+                    true
+                }
+                Err(error) => {
+                    this.palette
+                        .set_feedback(CommandFeedbackKind::Error, error, cx);
+
+                    false
+                }
             }
-        }
+        })
+        .unwrap_or(true)
     }
 
     /// Ask the backend which earlier conversations mention a phrase.
@@ -2449,17 +2488,23 @@ impl AgentPane {
             return;
         }
 
-        if !self.session.borrow_mut().withdraw_queued_prompt(item_id) {
-            self.palette.set_feedback(
-                CommandFeedbackKind::Error,
-                t!("agent-session-queued-remove-failed").to_string(),
-                cx,
-            );
+        let command = WithdrawQueuedPrompt {
+            item_id: item_id.to_owned(),
+        };
 
-            return;
-        }
+        self.dispatch(command, cx, |this, removed, cx| {
+            if !removed {
+                this.palette.set_feedback(
+                    CommandFeedbackKind::Error,
+                    t!("agent-session-queued-remove-failed").to_string(),
+                    cx,
+                );
 
-        cx.notify();
+                return;
+            }
+
+            cx.notify();
+        });
     }
 
     pub(super) fn present_session_effect(&mut self, effect: SessionEffect, cx: &mut Context<Self>) {
@@ -2629,9 +2674,7 @@ impl AgentPane {
                 // A backend that answers its commands later reports an
                 // accepted permission switch here, and it is remembered for
                 // the next conversation the same way an immediate answer is.
-                if let Some(preset) = approval {
-                    self.session.borrow_mut().controls.settings.approval = Some(preset);
-
+                if approval.is_some() {
                     remember_defaults(self, cx);
                 }
 
@@ -3281,6 +3324,20 @@ impl AgentPane {
         Some(&self.host.upgrade()?.read(cx).profile.name)
     }
 
+    /// Run a command against this tab's conversation and present its
+    /// outcome. What `present` returns comes back when the outcome is known
+    /// at once, as it is for a session running beside this view.
+    pub(super) fn dispatch<C: AgentCommand, R>(
+        &mut self,
+        command: C,
+        cx: &mut Context<Self>,
+        present: impl FnOnce(&mut Self, C::Outcome, &mut Context<Self>) -> R,
+    ) -> Option<R> {
+        let outcome = command.run(&mut self.session.borrow_mut());
+
+        Some(present(self, outcome, cx))
+    }
+
     pub(super) fn send_text_with_skill(
         &mut self,
         text: String,
@@ -3318,53 +3375,48 @@ impl AgentPane {
             .as_ref()
             .map_or(text.as_str(), |(prompt, _)| prompt.as_str());
 
-        let title_request = self
-            .session
-            .borrow()
-            .title_request(title_text, tab_title_from_prompt);
-
-        let settings = self.session.borrow().controls.settings.clone();
-        let image_paths = self.attachments.paths();
-
-        let restores_annotations = restore_on_interrupt.is_some();
-
-        let image_prompt = (!self.attachments.images().is_empty()).then(|| text.clone());
-
-        let outcome = self.session.borrow_mut().submit(
-            text.clone(),
-            |session, text| {
-                let images: Vec<_> = self
-                    .attachments
-                    .images()
-                    .iter()
-                    .map(|image| ImageAttachment {
-                        bytes: image.image.bytes(),
-                        media_type: image.image.format().mime_type(),
-                    })
-                    .collect();
-
-                session.submit(&PromptRequest {
-                    text,
-                    settings: &settings,
-                    skill,
-                    images: &images,
-                    image_paths: &image_paths,
-                    title: title_request.as_ref(),
+        let prompt = Prompt {
+            fallback_title: tab_title_from_prompt(title_text),
+            title_text: title_text.to_owned(),
+            skill: skill.cloned(),
+            images: self
+                .attachments
+                .images()
+                .iter()
+                .map(|image| PromptImage {
+                    bytes: image.image.bytes().into(),
+                    media_type: image.image.format().mime_type().to_owned(),
                 })
-            },
-            || {
-                restore_on_interrupt.map(|(text, response_annotations)| RecoverablePrompt {
+                .collect(),
+            image_paths: self.attachments.paths(),
+            recoverable: restore_on_interrupt.map(|(text, response_annotations)| {
+                RecoverablePrompt {
                     text,
                     response_annotations,
                     skill: skill.cloned(),
-                })
-            },
-        );
+                }
+            }),
+            text,
+        };
 
-        let started_text = match outcome {
-            Ok(SendOutcome::StartedTurn) => Some(text),
-            Ok(SendOutcome::Steered) => None,
-            Ok(SendOutcome::NotReady) => {
+        let restores_annotations = prompt.recoverable.is_some();
+
+        self.dispatch(SubmitPrompt(prompt), cx, move |this, outcome, cx| {
+            this.present_submission(outcome, restores_annotations, session_kind, cx)
+        })
+        .unwrap_or(true)
+    }
+
+    fn present_submission(
+        &mut self,
+        outcome: Result<Submitted, SubmitRefusal>,
+        restores_annotations: bool,
+        session_kind: AgentKind,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let submitted = match outcome {
+            Ok(submitted) => submitted,
+            Err(SubmitRefusal::NotReady) => {
                 self.push_item(
                     SessionItem::Error {
                         text: t!(
@@ -3378,12 +3430,12 @@ impl AgentPane {
 
                 return false;
             }
-            Ok(SendOutcome::Rejected { message }) => {
+            Err(SubmitRefusal::Rejected { message }) => {
                 self.push_item(SessionItem::Error { text: message }, cx);
 
                 return false;
             }
-            Err(reason) => {
+            Err(SubmitRefusal::Blocked(reason)) => {
                 let (kind, message) = match reason {
                     SubmissionBlock::QuestionResponse => {
                         (CommandFeedbackKind::Notice, "agent-question-send-pending")
@@ -3403,27 +3455,13 @@ impl AgentPane {
             }
         };
 
-        // Both providers generate their final title asynchronously. Claiming
-        // the first accepted prompt here prevents a failed generation from
-        // naming the conversation from a later message.
-        if matches!(session_kind, AgentKind::Codex | AgentKind::Claude)
-            && let Some(title) = title_request
-        {
-            self.session.borrow_mut().claim_title();
-
-            self.emit_event(AgentPaneEvent::TitleSuggested(title.provisional_title), cx);
+        if let Some(title) = submitted.title {
+            self.emit_event(AgentPaneEvent::TitleSuggested(title), cx);
         }
 
         // Accepted: the images went with it, so the transcript keeps them and
         // the composer lets them go. A refusal above keeps them pending, so
         // the message stays as recoverable as its text.
-        let sent_images: Vec<Arc<Image>> = self
-            .attachments
-            .images()
-            .iter()
-            .map(|attachment| attachment.image.clone())
-            .collect();
-
         self.attachments.clear_images();
 
         if restores_annotations {
@@ -3434,39 +3472,13 @@ impl AgentPane {
         // history list is no longer offered.
         self.history_ui.mode = RecentSessionsMode::Hidden;
 
-        match started_text {
-            Some(text) => {
-                let _ = text;
-                let shared = self.session.borrow().conversation().clone();
+        if submitted.started_turn {
+            self.transcript
+                .update(cx, |transcript, _| transcript.sync_content());
 
-                let mut conversation = shared.borrow_mut();
-
-                conversation.attach_last_images(
-                    sent_images
-                        .into_iter()
-                        .map(|image| Arc::new(ConversationImage::new(image.bytes().into())))
-                        .collect(),
-                );
-
-                drop(conversation);
-
-                self.transcript
-                    .update(cx, |transcript, _| transcript.sync_content());
-
-                self.start_working(cx);
-            }
-            None => {
-                if let Some(text) = image_prompt {
-                    let images = sent_images
-                        .into_iter()
-                        .map(|image| Arc::new(ConversationImage::new(image.bytes().into())))
-                        .collect();
-
-                    self.session.borrow_mut().hold_sent_images(text, images);
-                }
-
-                cx.notify();
-            }
+            self.start_working(cx);
+        } else {
+            cx.notify();
         }
 
         true
@@ -3618,7 +3630,12 @@ impl AgentPane {
             return;
         }
 
-        let interrupted = self.session.borrow_mut().interrupt_from_user();
+        // Restoring the composer needs the window this handler has, so the
+        // outcome is presented here rather than in a callback.
+        let Some(interrupted) = self.dispatch(Interrupt, cx, |_, interrupted, _| interrupted)
+        else {
+            return;
+        };
 
         if let Some((_, prompt)) = interrupted.prompt {
             // The controller already dropped the turn that produced nothing.
@@ -3669,8 +3686,16 @@ impl AgentPane {
             return;
         }
 
-        let outcome = self.session.borrow_mut().respond_approval(decision);
+        let command = RespondApproval {
+            decision: decision.to_owned(),
+        };
 
+        self.dispatch(command, cx, |this, outcome, cx| {
+            this.present_approval(outcome, cx)
+        });
+    }
+
+    fn present_approval(&mut self, outcome: ApprovalOutcome, cx: &mut Context<Self>) {
         match outcome {
             ApprovalOutcome::Ignored => return,
             ApprovalOutcome::Settled => {
@@ -3727,19 +3752,24 @@ impl AgentPane {
             return;
         }
 
-        let Some(outcome) = self.session.borrow_mut().apply_model_selection() else {
-            return;
-        };
+        let settings = self.session.borrow().controls.settings.clone();
 
-        match outcome {
-            SettingsOutcome::Effective
-            | SettingsOutcome::Requested
-            | SettingsOutcome::RidesNextSubmission => cx.notify(),
-            SettingsOutcome::Refused { message } => {
-                self.palette
-                    .set_feedback(CommandFeedbackKind::Error, message, cx)
-            }
-        }
+        self.dispatch(
+            ApplyModelSelection { settings },
+            cx,
+            |this, outcome, cx| match outcome {
+                None => {}
+                Some(
+                    SettingsOutcome::Effective
+                    | SettingsOutcome::Requested
+                    | SettingsOutcome::RidesNextSubmission,
+                ) => cx.notify(),
+                Some(SettingsOutcome::Refused { message }) => {
+                    this.palette
+                        .set_feedback(CommandFeedbackKind::Error, message, cx)
+                }
+            },
+        );
     }
 
     /// Rebuild this conversation's agent from another composition.
@@ -3753,25 +3783,27 @@ impl AgentPane {
             return;
         }
 
-        let Some(outcome) = self.session.borrow_mut().select_agent_preset(preset) else {
-            return;
-        };
+        self.dispatch(SelectAgentPreset { preset }, cx, |this, outcome, cx| {
+            match outcome {
+                None => {}
+                Some(
+                    SettingsOutcome::Effective
+                    | SettingsOutcome::Requested
+                    | SettingsOutcome::RidesNextSubmission,
+                ) => {
+                    // The harness composes an agent only when a conversation
+                    // is created, so the pick is remembered for the next
+                    // creation.
+                    remember_defaults(this, cx);
 
-        match outcome {
-            SettingsOutcome::Effective
-            | SettingsOutcome::Requested
-            | SettingsOutcome::RidesNextSubmission => {
-                // The harness composes an agent only when a conversation is
-                // created, so the pick is remembered for the next creation.
-                remember_defaults(self, cx);
-
-                cx.notify()
+                    cx.notify()
+                }
+                Some(SettingsOutcome::Refused { message }) => {
+                    this.palette
+                        .set_feedback(CommandFeedbackKind::Error, message, cx)
+                }
             }
-            SettingsOutcome::Refused { message } => {
-                self.palette
-                    .set_feedback(CommandFeedbackKind::Error, message, cx)
-            }
-        }
+        });
     }
 
     pub(super) fn render_approval_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

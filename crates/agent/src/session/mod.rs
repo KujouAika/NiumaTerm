@@ -11,6 +11,7 @@ pub use crate::session::lifecycle::{RecoverySnapshot, RestorationReadiness, Sess
 pub mod branch;
 pub mod capabilities;
 pub mod children;
+pub mod command;
 pub mod commands;
 pub mod controller;
 pub mod delivery;

@@ -6,6 +6,9 @@ use crate::chat::{
     QuestionRequest, QuestionResolution, SendOutcome, SlashCommandOutcome, ThreadSettings,
 };
 use crate::progress::{GoalStatus, Task, TaskList, TaskStatus};
+use crate::session::command::{
+    AgentCommand as _, Prompt, PromptImage, SubmitPrompt, SubmitRefusal, Submitted,
+};
 use crate::session::controller::{SessionController, SessionEffect};
 use crate::session::delivery::RecoverablePrompt;
 use crate::session::input::{ApprovalOutcome, QuestionAction, QuestionKey, Submission};
@@ -1047,4 +1050,93 @@ fn a_replica_follows_a_conversation_through_published_changes() {
 
     // Time passing on its own is not a change.
     assert!(publisher.changes(&host).is_empty());
+}
+
+fn prompt(text: &str, images: usize) -> Prompt {
+    Prompt {
+        text: text.into(),
+        title_text: text.into(),
+        fallback_title: None,
+        skill: None,
+        images: (0..images)
+            .map(|index| PromptImage {
+                bytes: vec![index as u8; 4].into(),
+                media_type: "image/png".into(),
+            })
+            .collect(),
+        image_paths: Vec::new(),
+        recoverable: None,
+    }
+}
+
+#[test]
+fn a_submitted_prompt_claims_the_title_and_keeps_its_images() {
+    let mut host = started(
+        AgentKind::Claude,
+        "submit",
+        vec![SendOutcome::StartedTurn, SendOutcome::Steered],
+    );
+
+    let first = SubmitPrompt(prompt("Fix the parser", 1)).run(&mut host);
+
+    assert_eq!(
+        first,
+        Ok(Submitted {
+            started_turn: true,
+            title: Some("Fix the parser".into()),
+        })
+    );
+
+    let images = |host: &SessionController| {
+        host.conversation()
+            .borrow()
+            .content
+            .entries()
+            .iter()
+            .map(|entry| entry.metadata.images.len())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(images(&host), vec![1]);
+
+    // A steered prompt names nothing and holds its images until the
+    // harness echoes the message.
+    let second = SubmitPrompt(prompt("and the tests", 2)).run(&mut host);
+
+    assert_eq!(
+        second,
+        Ok(Submitted {
+            started_turn: false,
+            title: None,
+        })
+    );
+
+    apply(
+        &mut host,
+        Event::ItemStarted(Item::UserMessage {
+            text: Some("and the tests".into()),
+        }),
+    );
+
+    assert_eq!(images(&host), vec![1, 2]);
+}
+
+#[test]
+fn a_refused_prompt_reports_why() {
+    let mut host = started(
+        AgentKind::Codex,
+        "refused",
+        vec![SendOutcome::Rejected {
+            message: "offline".into(),
+        }],
+    );
+
+    assert_eq!(
+        SubmitPrompt(prompt("hello", 0)).run(&mut host),
+        Err(SubmitRefusal::Rejected {
+            message: "offline".into(),
+        })
+    );
+
+    assert!(host.conversation().borrow().content.entries().is_empty());
 }

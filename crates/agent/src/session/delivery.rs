@@ -6,6 +6,8 @@ mod delivery_tests;
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{QueuedPrompt, SendOutcome, SkillReference};
 use crate::session::AgentKind;
 
@@ -23,7 +25,7 @@ enum QueuedPromptDelivery {
 }
 
 /// Text and bindings returned when an unanswered prompt is interrupted.
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecoverablePrompt {
     pub text: String,
     pub response_annotations: Vec<String>,

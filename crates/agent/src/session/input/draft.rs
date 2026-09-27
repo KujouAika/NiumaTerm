@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::chat::{Question, QuestionInput, QuestionMode, QuestionRequest};
 use crate::session::RecoveryIdentity;
 use crate::session::input::{QuestionError, QuestionKey};
-use crate::session::view::{DraftView, Since};
+use crate::session::view::{DraftAnswers, DraftView, Since};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionStatus {
@@ -114,6 +114,35 @@ impl QuestionDraft {
             started: Instant::now(),
             touched: false,
         }
+    }
+
+    /// The answers typed so far, for a view that sends them elsewhere.
+    pub fn draft_answers(&self) -> DraftAnswers {
+        DraftAnswers {
+            selected: self.selected.clone(),
+            text: self.text.clone(),
+            custom: self.custom.clone(),
+        }
+    }
+
+    /// Take answers composed in another view. A batch that already left
+    /// the pending state keeps the answers it was settled with.
+    pub fn set_answers(&mut self, answers: DraftAnswers) {
+        let count = self.questions.len();
+
+        if self.status != QuestionStatus::Pending
+            || answers.selected.len() != count
+            || answers.text.len() != count
+            || answers.custom.len() != count
+        {
+            return;
+        }
+
+        self.selected = answers.selected;
+        self.text = answers.text;
+        self.custom = answers.custom;
+
+        self.touch();
     }
 
     pub fn view(&self) -> DraftView {

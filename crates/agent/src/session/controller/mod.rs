@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -29,6 +30,7 @@ use crate::session::branch::{
     ConversationBranch, ForkRequest, PromptTarget, RewindAction,
 };
 use crate::session::children::{ChildAgents, ChildTranscript};
+use crate::session::command::{Prompt, SubmitRefusal, Submitted};
 use crate::session::commands::{CommandAdmission, CommandQueue, PendingSlashCommand};
 use crate::session::delivery::{MessageDelivery, RecoverablePrompt};
 use crate::session::input::{
@@ -51,8 +53,9 @@ use crate::session::view::{
 };
 use crate::session::workflows::{RefreshPlan, WorkflowData, WorkflowReader};
 use crate::session::{
-    AgentKind, Backend, ConversationTitleRequest, OperationError, RecoveryIdentity, RenameOutcome,
-    SettingsOutcome, TaskHistory, TaskHistoryRead, TranscriptLoad, UnsupportedOperation,
+    AgentKind, Backend, ConversationTitleRequest, ImageAttachment, OperationError, PromptRequest,
+    RecoveryIdentity, RenameOutcome, SettingsOutcome, TaskHistory, TaskHistoryRead, TranscriptLoad,
+    UnsupportedOperation,
 };
 use crate::transcript::conversation::{
     ConversationImage, ConversationState, EntryMetadata, hidden,
@@ -60,7 +63,7 @@ use crate::transcript::conversation::{
 use crate::transcript::{TextField, TranscriptEntry};
 use crate::workflow::{WorkflowRefreshRequest, WorkflowRefreshResult, WorkflowRun, WorkflowSource};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubmissionBlock {
     QuestionResponse,
     ConversationChange,
@@ -172,8 +175,95 @@ impl SessionController {
         Ok(outcome)
     }
 
+    /// Submit a composed message. What the harness took is recorded here,
+    /// title and images included, so a view in another process gets the
+    /// same result as one beside the session.
+    pub fn submit_prompt(&mut self, prompt: Prompt) -> Result<Submitted, SubmitRefusal> {
+        let title = self.title_request(&prompt.title_text, |_| prompt.fallback_title.clone());
+        let settings = self.controls.settings.clone();
+
+        let attachments: Vec<ImageAttachment> = prompt
+            .images
+            .iter()
+            .map(|image| ImageAttachment {
+                bytes: &image.bytes,
+                media_type: &image.media_type,
+            })
+            .collect();
+
+        let outcome = self
+            .submit(
+                prompt.text.clone(),
+                |backend, text| {
+                    backend.submit(&PromptRequest {
+                        text,
+                        settings: &settings,
+                        skill: prompt.skill.as_ref(),
+                        images: &attachments,
+                        image_paths: &prompt.image_paths,
+                        title: title.as_ref(),
+                    })
+                },
+                || prompt.recoverable,
+            )
+            .map_err(SubmitRefusal::Blocked)?;
+
+        let started_turn = match outcome {
+            SendOutcome::StartedTurn => true,
+            SendOutcome::Steered => false,
+            SendOutcome::NotReady => return Err(SubmitRefusal::NotReady),
+            SendOutcome::Rejected { message } => return Err(SubmitRefusal::Rejected { message }),
+        };
+
+        // Both providers generate their final title asynchronously. Claiming
+        // the first accepted prompt here prevents a failed generation from
+        // naming the conversation from a later message.
+        let title = match (self.kind, title) {
+            (AgentKind::Codex | AgentKind::Claude, Some(title)) => {
+                self.claim_title();
+
+                Some(title.provisional_title)
+            }
+            _ => None,
+        };
+
+        let images: Vec<Arc<ConversationImage>> = prompt
+            .images
+            .into_iter()
+            .map(|image| Arc::new(ConversationImage::new(image.bytes)))
+            .collect();
+
+        if started_turn {
+            self.conversation.borrow_mut().attach_last_images(images);
+        } else if !images.is_empty() {
+            // A steered prompt's row appears when the harness echoes it.
+            self.hold_sent_images(prompt.text, images);
+        }
+
+        Ok(Submitted {
+            started_turn,
+            title,
+        })
+    }
+
     pub fn execute_command(&mut self, command: &PendingSlashCommand) -> SlashCommandOutcome {
-        self.commands.execute(self.runtime.backend_mut(), command)
+        let outcome = self.commands.execute(self.runtime.backend_mut(), command);
+
+        self.adopt_command_approval(&outcome);
+
+        outcome
+    }
+
+    /// The harness pins its own default preset into every conversation it
+    /// opens, so a permission switch a command made is the preset in force.
+    fn adopt_command_approval(&mut self, outcome: &SlashCommandOutcome) {
+        if let SlashCommandOutcome::Completed {
+            approval: Some(preset),
+            ..
+        } = outcome
+        {
+            self.controls.settings.approval = Some(preset.clone());
+        }
     }
 
     pub fn next_command(&mut self) -> Option<(String, SlashCommandOutcome)> {
@@ -1012,6 +1102,8 @@ impl SessionController {
             Event::SlashCommandResult { name, outcome } => {
                 self.commands.settle(&outcome, self.runtime.status());
 
+                self.adopt_command_approval(&outcome);
+
                 SessionEffect::CommandResult { name, outcome }
             }
             Event::TurnStarted => SessionEffect::TurnStarted {
@@ -1772,6 +1864,7 @@ pub struct SessionFailure {
     pub cancelled_commands: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UserInterruption {
     pub prompt: Option<(u64, RecoverablePrompt)>,
     pub outcome: InterruptOutcome,

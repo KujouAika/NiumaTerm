@@ -743,6 +743,16 @@ view is attached, like the existing reader-interest rule.
 
 Steps 1 to 3 are a pure refactor and can land before any networking.
 
+As built, the replica in step 3 is itself a `SessionController` without a
+backend, following the host through `apply_slot` and `splice_transcript`.
+The pane already reads through `Rc<RefCell<SessionController>>`, so no
+separate accessor type was needed, and every read path, not only
+transcript rendering, is shared between local and remote panes.
+Commands are values implementing `AgentCommand` in
+`nmt_agent::session::command`, each with a typed outcome; the pane runs
+them through one `dispatch` helper and presents the outcome in a
+callback, which a remote session can answer later.
+
 ## 12. Application integration
 
 ### 12.1 Threads
@@ -941,6 +951,7 @@ Updated 2026-09-27.
 | M2 | Done: LAN listener, trust store with DPAPI-sealed key, pairing over LAN, DNS-SD advertising and lookup (by slot and by device id), liveness probes, Remote settings page. |
 | M3 | Done: session registry with host tabs, `sessions.list`/`sessions.changed`, attach to host tabs, per-stream flow control with resync, reconnect with backoff and reattach, `SIZE` frames with size reclaim on input, reconnecting banner, restore of remote tabs, checkpoints that carry the prompt lifecycle. |
 | M4 | Done: the Worker under `relay/` with its deployment guide, the host's relay link (control socket, data socket per client, slot claims, TOFU host token), pairing and connecting through the relay, LAN-first path racing, relay URL and sealed access key in settings, pairing links carrying the relay. |
+| M5 | Done: `AgentView` projection with a publisher that sends a transcript splice and changed slots, a replica `SessionController` that applies them, and the pane's session mutations routed through `AgentCommand` values. |
 
 Known gaps in M3:
 
