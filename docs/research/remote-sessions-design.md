@@ -1026,9 +1026,9 @@ of §10.4 and §11.7 between host and device:
 
 - While a paired device views a host tab, the host covers the tab with a
   frosted sheet naming the device, with "Switch back to this computer"
-  and "End session". The session keeps its state; the host stops drawing
-  it (a terminal keeps its last frame, an agent transcript stops
-  following) and refuses input until the sheet goes.
+  and "End session". The content under the sheet stays live, so the
+  host can watch the device work, but the host refuses input until the
+  sheet goes.
 - Switching back sends `session.ended { session, reason: "taken_back" }`
   to the device, which keeps its tab under a sheet with "Reconnect" and
   "End session". Reconnecting attaches again and hands control back to
