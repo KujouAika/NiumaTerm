@@ -322,7 +322,7 @@ Endpoints:
 | `GET /v1/host/{host_id}` (WebSocket) | host | Control socket. Access key plus `X-Host-Token: <relay token>`. |
 | `GET /v1/host/{host_id}/accept/{conn}` (WebSocket) | host | Data socket for one client connection, same credentials. |
 | `GET /v1/client/{host_id}` (WebSocket) | client | New client connection. Access key. |
-| `GET /v1/slot/{slot}` | client | `{ "host_id": ... }` or 404. Access key. |
+| `GET /v1/pair/{slot}` (WebSocket) | client | New client connection to the host whose showing code has this slot. Access key. Resolving and joining in one socket saves the client a round trip and keeps host ids off the pairing path. |
 
 Flow:
 
@@ -337,7 +337,9 @@ Flow:
    4404 (host offline or not answering).
 5. Pairing slots are claimed and released over the control socket
    (`{"t":"slot","slot":"K7Q","ttl":300}`, answered `slot_ok` or
-   `slot_taken`; the host picks another slot when taken).
+   `slot_taken`). A taken slot means another host on the same relay shows a
+   code with the same slot; pairing through the relay then fails until one
+   code is cancelled, while LAN pairing is unaffected.
 
 Host ownership: the host generates a random 32-byte relay token and keeps it in
 secret storage beside its key. The first control connection for a host id
@@ -938,6 +940,7 @@ Updated 2026-09-27.
 | M1 | Done: `nmt_remote_core` with identity, preface, pairing (SPAKE2 + `Noise_XXpsk3`), pairing link, IK channel, frames, control messages. |
 | M2 | Done: LAN listener, trust store with DPAPI-sealed key, pairing over LAN, DNS-SD advertising and lookup (by slot and by device id), liveness probes, Remote settings page. |
 | M3 | Done: session registry with host tabs, `sessions.list`/`sessions.changed`, attach to host tabs, per-stream flow control with resync, reconnect with backoff and reattach, `SIZE` frames with size reclaim on input, reconnecting banner, restore of remote tabs, checkpoints that carry the prompt lifecycle. |
+| M4 | Done: the Worker under `relay/` with its deployment guide, the host's relay link (control socket, data socket per client, slot claims, TOFU host token), pairing and connecting through the relay, LAN-first path racing, relay URL and sealed access key in settings, pairing links carrying the relay. |
 
 Known gaps in M3:
 
@@ -949,3 +952,12 @@ Known gaps in M3:
 - Host tabs do not yet show which devices are attached, and there is no
   status bar count of connected devices.
 - `scrollback_rows` is not implemented; checkpoints carry all history.
+
+Known gaps in M4:
+
+- A pairing slot taken by another host on the same relay is only logged;
+  the host does not pick a new code.
+- Clients do not yet retry at once on OS network changes; they wait for
+  the next backoff step.
+- Pairing links carry the host's LAN address as seen by the host, which a
+  device behind another NAT cannot use; the relay covers that case.

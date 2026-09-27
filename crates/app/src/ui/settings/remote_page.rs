@@ -1,4 +1,4 @@
-use gpui::{App, IntoElement as _, ParentElement as _, SharedString, Styled as _};
+use gpui::{App, ClipboardItem, IntoElement as _, ParentElement as _, SharedString, Styled as _};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
@@ -9,6 +9,7 @@ use nmt_remote_core::identity::DeviceId;
 use nmt_remote_core::rpc::{Origin, SessionInfo};
 use rust_i18n::t;
 
+use crate::ui::AppSettings;
 use crate::ui::remote::{self, Remote};
 use crate::ui::settings::fields::settings_switch;
 
@@ -37,7 +38,28 @@ fn hosting_group(state: &Remote) -> SettingGroup {
                 ),
             )
             .description(t!("settings-remote-enable-description").into_owned()),
-        );
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-remote-relay-url"),
+                SettingField::input(
+                    |cx| cx.global::<Remote>().relay_url.clone(),
+                    |value, cx| cx.global_mut::<Remote>().relay_url = value,
+                ),
+            )
+            .description(t!("settings-remote-relay-url-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-remote-relay-key"),
+                SettingField::input(
+                    |cx| cx.global::<Remote>().relay_key.clone(),
+                    |value, cx| cx.global_mut::<Remote>().relay_key = value,
+                ),
+            )
+            .description(t!("settings-remote-relay-key-description").into_owned()),
+        )
+        .item(relay_apply_item(state));
 
     let Some(address) = state.hosting_address() else {
         return group;
@@ -64,6 +86,48 @@ fn hosting_group(state: &Remote) -> SettingGroup {
     }
 
     group
+}
+
+fn relay_apply_item(state: &Remote) -> SettingItem {
+    let relay_on = state.relay_configured();
+
+    SettingItem::render(move |options, _, cx| {
+        let status = if relay_on {
+            t!("settings-remote-relay-on")
+        } else {
+            Default::default()
+        };
+
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(
+                Label::new(status)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Button::new("remote-relay-apply")
+                    .outline()
+                    .label(t!("settings-remote-relay-apply"))
+                    .disabled(options.is_disabled())
+                    .on_click(|_, _, cx: &mut App| {
+                        if !remote::save_relay_key(cx) {
+                            return;
+                        }
+
+                        let url = cx.global::<Remote>().relay_url.trim().to_owned();
+
+                        // Hosting restarts on its relay from the settings
+                        // observer, which runs even when only the key changed.
+                        cx.global_mut::<AppSettings>()
+                            .edit_remote(|section| section.relay_url = url);
+                    }),
+            )
+            .into_any_element()
+    })
 }
 
 /// A terminal a paired device started here. It runs with nobody at the host
@@ -99,6 +163,7 @@ fn remote_created_item(session: SessionInfo) -> SettingItem {
 
 fn pairing_item(state: &Remote) -> SettingItem {
     let pairing = state.pairing();
+    let link = state.pairing_link();
 
     SettingItem::render(move |options, _, cx| {
         let row = h_flex().w_full().justify_between().items_center().gap_3();
@@ -118,10 +183,22 @@ fn pairing_item(state: &Remote) -> SettingItem {
                         ),
                 )
                 .child(
-                    Button::new("remote-cancel-pairing")
-                        .outline()
-                        .label(t!("settings-remote-cancel"))
-                        .on_click(|_, _, cx: &mut App| remote::cancel_pairing(cx)),
+                    h_flex()
+                        .gap_2()
+                        .children(link.clone().map(|link| {
+                            Button::new("remote-copy-link")
+                                .outline()
+                                .label(t!("settings-remote-copy-link"))
+                                .on_click(move |_, _, cx: &mut App| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(link.clone()))
+                                })
+                        }))
+                        .child(
+                            Button::new("remote-cancel-pairing")
+                                .outline()
+                                .label(t!("settings-remote-cancel"))
+                                .on_click(|_, _, cx: &mut App| remote::cancel_pairing(cx)),
+                        ),
                 )
                 .into_any_element()
             }

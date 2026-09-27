@@ -12,6 +12,11 @@ pub struct RemoteConfig {
 
     /// The name peers see; empty uses the computer name.
     pub device_name: String,
+
+    /// The user's own relay (see `relay/`), for paired devices off the LAN.
+    /// Empty keeps hosting LAN-only. Its access key is stored sealed beside
+    /// the device key, not here.
+    pub relay_url: String,
 }
 
 impl Default for RemoteConfig {
@@ -20,6 +25,7 @@ impl Default for RemoteConfig {
             enabled: false,
             lan_port: 47470,
             device_name: String::new(),
+            relay_url: String::new(),
         }
     }
 }

@@ -69,6 +69,7 @@ fn start_host(dir: &tempfile::TempDir, registry: Arc<SessionRegistry>) -> HostSe
             shell,
             args,
             registry,
+            relay: None,
             on_change: Arc::new(|| {}),
         },
     )
@@ -80,7 +81,7 @@ async fn paired_client(host: &HostService) -> (PairedHost, Arc<DeviceKey>) {
     let key = DeviceKey::generate().unwrap();
     let code = host.start_pairing().unwrap();
 
-    let paired = pair(Some(&address), &code, &key, info("Client"), None)
+    let paired = pair(Some(&address), &code, &key, info("Client"), None, None)
         .await
         .unwrap();
 
@@ -344,6 +345,7 @@ fn unpaired_and_revoked_devices_are_refused() {
                 &wrong,
                 &DeviceKey::generate().unwrap(),
                 info("Guess"),
+                None,
                 None
             )
             .await
@@ -379,7 +381,9 @@ fn pairing_without_an_address_finds_the_host_showing_the_code() {
     let code = host.start_pairing().unwrap();
 
     runtime().block_on(async {
-        let mut paired = pair(None, &code, &key, info("Client"), None).await.unwrap();
+        let mut paired = pair(None, &code, &key, info("Client"), None, None)
+            .await
+            .unwrap();
 
         assert_eq!(paired.id, host.device_id());
 

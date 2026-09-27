@@ -19,7 +19,7 @@ use nmt_platform::runtime;
 use nmt_remote_core::channel::{Channel, HostHandshake};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
-use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted};
+use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted, RelayAccess};
 use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
 use nmt_remote_core::rpc::{
@@ -32,6 +32,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::timeout;
@@ -43,6 +44,7 @@ use tracing::{debug, warn};
 
 use crate::discovery::Advertiser;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
+use crate::relay::{RelayCommand, RelaySocket, run_host_link};
 use crate::sessions::{SessionRegistry, TerminalControl};
 use crate::store::{self, PairedDevice, now_ms};
 use crate::stream::StreamFlow;
@@ -70,6 +72,10 @@ pub struct HostConfig {
     /// The sessions offered to paired devices, host tabs included.
     pub registry: Arc<SessionRegistry>,
 
+    /// The user's own relay, for devices off the LAN. Paired devices
+    /// receive it, key included, inside the encrypted pairing exchange.
+    pub relay: Option<RelayAccess>,
+
     /// Runs on a runtime thread after pairing records change, so a view that
     /// lists them can refresh.
     pub on_change: Arc<dyn Fn() + Send + Sync>,
@@ -92,6 +98,12 @@ struct Shared {
 
     /// Absent when multicast is unavailable; clients then enter the address.
     advertiser: Option<Advertiser>,
+
+    /// Commands to the relay link, when a relay is configured.
+    relay: Option<UnboundedSender<RelayCommand>>,
+
+    /// The pairing slot claimed on the relay, to release when the code goes.
+    relay_slot: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -138,6 +150,15 @@ impl HostService {
             .inspect_err(|error| warn!(%error, "LAN discovery is unavailable"))
             .ok();
 
+        let relay_token = match &config.relay {
+            Some(_) => store::load_or_create_relay_token(&dir)
+                .inspect_err(|error| warn!(%error, "the relay is unavailable"))
+                .ok(),
+            None => None,
+        };
+
+        let (relay_commands, relay_rx) = mpsc::unbounded_channel();
+
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 devices: store::load_devices(&dir),
@@ -148,9 +169,41 @@ impl HostService {
             config,
             unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED)),
             advertiser,
+            relay: relay_token.as_ref().map(|_| relay_commands),
+            relay_slot: Mutex::new(None),
         });
 
         let task = runtime().spawn(accept_loop(Arc::clone(&shared), listener));
+
+        if let (Some(relay), Some(token)) = (shared.config.relay.clone(), relay_token) {
+            let served = Arc::downgrade(&shared);
+
+            let serve: Arc<dyn Fn(RelaySocket) + Send + Sync> = Arc::new(move |ws| {
+                let Some(shared) = served.upgrade() else {
+                    return;
+                };
+
+                // Relay connections count against the same limit as LAN
+                // sockets until their handshake completes.
+                let Ok(permit) = Arc::clone(&shared.unauthenticated).try_acquire_owned() else {
+                    return;
+                };
+
+                tokio::spawn(async move {
+                    if let Err(error) = serve_ws(shared, ws, permit).await {
+                        debug!(%error, "relayed connection ended");
+                    }
+                });
+            });
+
+            runtime().spawn(run_host_link(
+                relay,
+                shared.key.id(),
+                token,
+                relay_rx,
+                serve,
+            ));
+        }
 
         Ok(Self {
             shared,
@@ -365,9 +418,25 @@ impl Connection {
 }
 
 impl Shared {
+    /// Publish the showing code's slot on the LAN and the relay, or
+    /// withdraw it.
     fn advertise_slot(&self, slot: Option<&str>) {
         if let Some(advertiser) = &self.advertiser {
             advertiser.set_pairing_slot(slot);
+        }
+
+        if let Some(relay) = &self.relay {
+            let mut claimed = self.relay_slot.lock();
+
+            if let Some(previous) = claimed.take() {
+                let _ = relay.send(RelayCommand::ReleaseSlot(previous));
+            }
+
+            if let Some(slot) = slot {
+                *claimed = Some(slot.to_owned());
+
+                let _ = relay.send(RelayCommand::ClaimSlot(slot.to_owned()));
+            }
         }
     }
 }
@@ -413,15 +482,28 @@ async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
 }
 
 async fn serve(shared: Arc<Shared>, tcp: TcpStream, permit: OwnedSemaphorePermit) -> Result<()> {
-    let (mut ws, offer, answer) = timeout(HANDSHAKE_TIMEOUT, async {
-        let mut ws = accept_hdr_async(tcp, check_path).await?;
+    let ws = timeout(HANDSHAKE_TIMEOUT, accept_hdr_async(tcp, check_path)).await??;
 
+    serve_ws(shared, ws, permit).await
+}
+
+/// Run one connection, from the LAN or through the relay: the version
+/// preface, then pairing or the channel.
+async fn serve_ws<S>(shared: Arc<Shared>, mut ws: S, permit: OwnedSemaphorePermit) -> Result<()>
+where
+    S: Stream<Item = Result<Message, WsError>>
+        + Sink<Message, Error = WsError>
+        + Unpin
+        + Send
+        + 'static,
+{
+    let (offer, answer) = timeout(HANDSHAKE_TIMEOUT, async {
         let offer = Preface::decode(&recv_binary(&mut ws).await?)?;
         let answer = offer.answer();
 
         send_binary(&mut ws, answer.encode().to_vec()).await?;
 
-        anyhow::Ok((ws, offer, answer))
+        anyhow::Ok((offer, answer))
     })
     .await??;
 
@@ -547,7 +629,7 @@ where
 
     let accepted = request.accept(&PairAccepted {
         host: shared.config.device.clone(),
-        relay: None,
+        relay: shared.config.relay.clone(),
         lan_hints: Vec::new(),
     })?;
 

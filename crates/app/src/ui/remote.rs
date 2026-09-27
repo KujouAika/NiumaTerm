@@ -20,10 +20,11 @@ use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
 use nmt_remote::sessions::{SessionRegistry, TerminalControl};
 use nmt_remote::store::{
-    PairedDevice, PairedHost, load_hosts, load_or_create_identity, remote_dir, save_hosts,
+    PairedDevice, PairedHost, load_hosts, load_or_create_identity, load_relay_access_key,
+    remote_dir, save_hosts, save_relay_access_key,
 };
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
-use nmt_remote_core::messages::{DeviceInfo, DeviceKind};
+use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use nmt_remote_core::rpc::SessionInfo;
 use rust_i18n::t;
@@ -64,6 +65,15 @@ pub(crate) struct Remote {
 
     pub(crate) code: SharedString,
 
+    /// Drafts of the relay form, applied together: every edit to the live
+    /// settings would restart hosting.
+    pub(crate) relay_url: SharedString,
+
+    pub(crate) relay_key: SharedString,
+
+    /// The relay the running host registered with.
+    hosted_relay: Option<RelayAccess>,
+
     /// The outcome of the last action, shown on the settings page.
     status: Option<SharedString>,
 
@@ -87,6 +97,15 @@ pub(crate) fn initialize(cx: &mut App) {
         record_updates,
         address: SharedString::default(),
         code: SharedString::default(),
+        relay_url: cx
+            .global::<AppSettings>()
+            .config()
+            .remote
+            .relay_url
+            .clone()
+            .into(),
+        relay_key: SharedString::default(),
+        hosted_relay: None,
         status: None,
         busy: false,
     });
@@ -109,14 +128,58 @@ pub(crate) fn initialize(cx: &mut App) {
     sync_hosting(cx);
 }
 
-/// Start or stop hosting to match the setting. Runs on every settings
-/// change; a host that failed to start is retried on the next one.
+/// Start or stop hosting to match the setting, restarting it when the
+/// relay changed. Runs on every settings change; a host that failed to
+/// start is retried on the next one.
 pub(crate) fn sync_hosting(cx: &mut App) {
     let enabled = cx.global::<AppSettings>().config().remote.enabled;
+    let remote = cx.global::<Remote>();
+
+    let relay_changed = remote.host.is_some() && remote.hosted_relay != configured_relay(cx);
+
+    if relay_changed {
+        set_hosting(false, cx);
+    }
 
     if enabled != cx.global::<Remote>().host.is_some() {
         set_hosting(enabled, cx);
     }
+}
+
+/// The relay in the settings, when both its URL and access key are set.
+fn configured_relay(cx: &App) -> Option<RelayAccess> {
+    let url = cx.global::<AppSettings>().config().remote.relay_url.trim();
+
+    if url.is_empty() {
+        return None;
+    }
+
+    Some(RelayAccess {
+        url: url.to_owned(),
+        access_key: load_relay_access_key(&remote_dir())?,
+    })
+}
+
+/// Seal the access key typed into the relay form, reporting whether it is
+/// saved. An empty field keeps the key saved before.
+pub(crate) fn save_relay_key(cx: &mut App) -> bool {
+    let remote = cx.global_mut::<Remote>();
+    let key = remote.relay_key.trim().to_owned();
+
+    if key.is_empty() {
+        return true;
+    }
+
+    let result = save_relay_access_key(&remote_dir(), &key);
+    let saved = result.is_ok();
+
+    if saved {
+        remote.relay_key = SharedString::default();
+    }
+
+    remote.report(result.map_err(Into::into));
+
+    saved
 }
 
 impl Remote {
@@ -132,6 +195,28 @@ impl Remote {
 
     pub(crate) fn pairing(&self) -> Option<(PairingCode, u64)> {
         self.host.as_ref()?.pairing()
+    }
+
+    /// The showing code as a link that also carries this host's key, so
+    /// the device pairs only with this host, and its relay, so it pairs
+    /// from off the LAN too.
+    pub(crate) fn pairing_link(&self) -> Option<String> {
+        let key = self.key.as_ref()?;
+        let (code, _) = self.pairing()?;
+
+        let link = PairingLink {
+            code,
+            host_id: key.id(),
+            host_key: *key.public(),
+            relay: self.hosted_relay.clone(),
+            addresses: self.hosting_address().into_iter().collect(),
+        };
+
+        Some(link.to_url())
+    }
+
+    pub(crate) fn relay_configured(&self) -> bool {
+        self.hosted_relay.is_some()
     }
 
     pub(crate) fn devices(&self) -> Vec<PairedDevice> {
@@ -178,17 +263,27 @@ impl Remote {
 /// opened here.
 fn set_hosting(enabled: bool, cx: &mut App) {
     if !enabled {
-        cx.global_mut::<Remote>().host = None;
+        let remote = cx.global_mut::<Remote>();
+
+        remote.host = None;
+        remote.hosted_relay = None;
 
         return;
     }
 
-    let result = start_host(cx).map(|host| cx.global_mut::<Remote>().host = Some(host));
+    let relay = configured_relay(cx);
+
+    let result = start_host(relay.clone(), cx).map(|host| {
+        let remote = cx.global_mut::<Remote>();
+
+        remote.host = Some(host);
+        remote.hosted_relay = relay;
+    });
 
     cx.global_mut::<Remote>().report(result);
 }
 
-fn start_host(cx: &mut App) -> Result<HostService> {
+fn start_host(relay: Option<RelayAccess>, cx: &mut App) -> Result<HostService> {
     let key = device_key(cx)?;
     let config = cx.global::<AppSettings>().config();
     let (shell, args) = cx.global::<AppSettings>().default_profile_command();
@@ -221,6 +316,7 @@ fn start_host(cx: &mut App) -> Result<HostService> {
             shell,
             args,
             registry,
+            relay,
             on_change: Arc::new(move || {
                 let _ = changed.send(());
             }),
@@ -347,17 +443,17 @@ pub(crate) fn pair_with_host(cx: &mut App) {
                 Some(with_default_port(typed_address))
             };
 
-            (link.code, address, Some(link.host_key))
+            (link.code, address, Some(link.host_key), link.relay)
         })
     } else {
         PairingCode::parse(&remote.code).map(|code| {
             let address = (!typed_address.is_empty()).then(|| with_default_port(typed_address));
 
-            (code, address, None)
+            (code, address, None, None)
         })
     };
 
-    let (code, address, expected_host_key) = match parsed {
+    let (code, address, expected_host_key, relay) = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {
             cx.global_mut::<Remote>().report(Err(error.into()));
@@ -388,7 +484,15 @@ pub(crate) fn pair_with_host(cx: &mut App) {
     });
 
     let task = runtime().spawn(async move {
-        pair(address.as_deref(), &code, &key, device, expected_host_key).await
+        pair(
+            address.as_deref(),
+            &code,
+            &key,
+            device,
+            expected_host_key,
+            relay,
+        )
+        .await
     });
 
     cx.spawn(async move |cx| {

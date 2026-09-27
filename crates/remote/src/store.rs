@@ -9,11 +9,13 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use nmt_config::config_dir_path;
 use nmt_platform::durable_file;
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
-use nmt_remote_core::messages::DeviceKind;
+use nmt_remote_core::messages::{DeviceKind, RelayAccess};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -24,6 +26,8 @@ const SCHEMA: u32 = 1;
 const IDENTITY_FILE: &str = "identity.key";
 const DEVICES_FILE: &str = "devices.json";
 const HOSTS_FILE: &str = "hosts.json";
+const RELAY_TOKEN_FILE: &str = "relay-token.key";
+const RELAY_ACCESS_FILE: &str = "relay-access.key";
 
 /// The remote-session state directory. Testing instances resolve their own
 /// configuration directory, so they get their own identity and records.
@@ -70,6 +74,42 @@ pub struct PairedHost {
     /// when the clock stepped backwards, so the host never mistakes it for a
     /// replay.
     pub last_hello_ms: u64,
+
+    /// The host's relay, handed over encrypted during pairing. Absent for a
+    /// host reachable only on the LAN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<StoredRelay>,
+}
+
+/// A relay URL with its access key sealed to the current user: the key
+/// admits sockets to the relay owner's Cloudflare account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredRelay {
+    pub url: String,
+    sealed_key: String,
+}
+
+impl StoredRelay {
+    pub fn seal(relay: &RelayAccess) -> io::Result<Self> {
+        Ok(Self {
+            url: relay.url.clone(),
+            sealed_key: STANDARD.encode(secret::protect(relay.access_key.as_bytes())?),
+        })
+    }
+
+    pub fn open(&self) -> io::Result<RelayAccess> {
+        let sealed = STANDARD
+            .decode(&self.sealed_key)
+            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+
+        let key = secret::unprotect(&sealed)?;
+
+        Ok(RelayAccess {
+            url: self.url.clone(),
+            access_key: String::from_utf8(key)
+                .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?,
+        })
+    }
 }
 
 impl PairedDevice {
@@ -97,7 +137,7 @@ impl PairedDevice {
 }
 
 impl PairedHost {
-    pub(crate) fn new(public_key: [u8; 32], name: String, address: String) -> Self {
+    pub(crate) fn new(public_key: [u8; 32], name: String, address: Option<String>) -> Self {
         let now = now_ms();
 
         Self {
@@ -105,18 +145,12 @@ impl PairedHost {
             id: DeviceId::from_public_key(&public_key),
             name,
             public_key,
-            lan_hints: vec![address],
+            lan_hints: address.into_iter().collect(),
             paired_at: now,
             last_seen: now,
             last_hello_ms: 0,
+            relay: None,
         }
-    }
-
-    /// The `hello_ms` for the next connection, recorded as sent.
-    pub(crate) fn next_hello_ms(&mut self) -> u64 {
-        self.last_hello_ms = now_ms().max(self.last_hello_ms + 1);
-
-        self.last_hello_ms
     }
 }
 
@@ -146,6 +180,55 @@ pub fn load_or_create_identity(dir: &Path) -> Result<DeviceKey> {
         }
         Err(error) => Err(error).context("reading the device key"),
     }
+}
+
+/// The secret proving this host owns its id on a relay: generated on first
+/// use and kept sealed beside the device key.
+pub fn load_or_create_relay_token(dir: &Path) -> Result<String> {
+    let path = dir.join(RELAY_TOKEN_FILE);
+
+    match fs::read(&path) {
+        Ok(sealed) => {
+            let token = secret::unprotect(&sealed).context("unsealing the relay token")?;
+
+            Ok(String::from_utf8(token).context("relay token is not text")?)
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let mut bytes = [0u8; 32];
+
+            getrandom::fill(&mut bytes).map_err(|error| anyhow!("{error}"))?;
+
+            let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+
+            fs::create_dir_all(dir)?;
+            durable_file::write(&path, &secret::protect(token.as_bytes())?)?;
+
+            Ok(token)
+        }
+        Err(error) => Err(error).context("reading the relay token"),
+    }
+}
+
+/// The access key of this host's own relay, as entered in settings.
+pub fn load_relay_access_key(dir: &Path) -> Option<String> {
+    let sealed = fs::read(dir.join(RELAY_ACCESS_FILE)).ok()?;
+
+    String::from_utf8(secret::unprotect(&sealed).ok()?).ok()
+}
+
+pub fn save_relay_access_key(dir: &Path, key: &str) -> io::Result<()> {
+    let path = dir.join(RELAY_ACCESS_FILE);
+
+    if key.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(error) if error.kind() != ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    }
+
+    fs::create_dir_all(dir)?;
+
+    durable_file::write(&path, &secret::protect(key.as_bytes())?)
 }
 
 pub fn load_devices(dir: &Path) -> Vec<PairedDevice> {

@@ -14,6 +14,7 @@ pub mod store;
 
 mod link;
 mod network_pty;
+mod relay;
 mod secret;
 mod stream;
 
@@ -21,6 +22,8 @@ mod stream;
 mod link_tests;
 #[cfg(test)]
 mod loopback_tests;
+#[cfg(test)]
+mod relay_tests;
 #[cfg(test)]
 #[cfg(windows)]
 mod store_tests;

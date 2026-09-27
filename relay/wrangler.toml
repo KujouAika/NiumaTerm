@@ -1,0 +1,23 @@
+# NiumaTerm remote-session relay. Each user deploys their own copy to their
+# own Cloudflare account; the project runs none. See relay/README.md.
+#
+# The relay forwards opaque, end-to-end encrypted frames between a host and
+# its paired clients. It holds no keys that can read them.
+name = "niumaterm-relay"
+main = "src/index.ts"
+compatibility_date = "2026-07-29"
+
+# One HostRoom per host id pairs the host's sockets with its clients'.
+# One PairingDirectory maps short-lived pairing slots to host ids.
+[durable_objects]
+bindings = [
+  { name = "HOST_ROOM", class_name = "HostRoom" },
+  { name = "DIRECTORY", class_name = "PairingDirectory" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HostRoom", "PairingDirectory"]
+
+# ACCESS_KEY is a secret: `wrangler secret put ACCESS_KEY`. Every socket
+# presents it, so a stranger who learns the URL cannot use the relay.

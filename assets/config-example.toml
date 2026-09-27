@@ -96,3 +96,4 @@ improve-powershell-compatibility = true
 enabled = false
 lan-port = 47470
 device-name = ""
+relay-url = ""
