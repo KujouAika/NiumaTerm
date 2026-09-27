@@ -49,3 +49,5 @@ AGENTS.local.md
 
 # Local secrets for `wrangler dev`; never committed.
 .dev.vars
+
+.scratch
