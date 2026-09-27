@@ -2,10 +2,13 @@ pub(super) use app::design::SIDEBAR_ROW_GUTTER;
 
 mod drag;
 mod list;
+mod remote_list;
 mod status;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, DragMoveEvent, Entity, FontWeight, SharedString, div, px};
+use gpui::{
+    AnyElement, App, Context, Div, DragMoveEvent, Entity, FontWeight, SharedString, div, px,
+};
 use gpui_component::{ActiveTheme, Disableable, IconName, IconNamed, h_flex, v_flex};
 use nmt_agent::AgentProjection;
 use rust_i18n::t;
@@ -16,11 +19,13 @@ use crate::ui::composition::{
 };
 use crate::ui::fluent::SELECTION_BAR_WIDTH;
 use crate::ui::platform_style::{Host, PlatformStyle as _};
+use crate::ui::remote::RemoteWorkspace;
 use crate::ui::shell::InlineRenameSession;
 use crate::ui::sidebar_resize::ResizeDrag;
 use crate::ui::title_bar::TITLE_BAR_CONTROLS_WIDTH;
 use crate::ui::token_usage::TokenUsageView;
 use crate::ui::workspace_sidebar::list::WorkspaceList;
+use crate::ui::workspace_sidebar::remote_list::remote_workspace_blocks;
 use crate::ui::{AppSettings, AppWindow, NewWorkspace, WindowRegistry, sidebar_resize};
 use crate::workspace::{ProgressTally, TerminalActivity, WorkspaceSummary};
 
@@ -96,9 +101,30 @@ impl Sidebar {
         tab_rows: Vec<Vec<AnyElement>>,
         renames: &InlineRenameSession,
         usage: SidebarUsage,
+        // Connected paired hosts. With none, the list is just this
+        // computer's workspaces; with some, it names them as local and
+        // lists each host's sessions after them.
+        remote: Vec<RemoteWorkspace>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         self.list.end_cancelled_drag(cx);
+
+        let local_title = match remote.is_empty() {
+            true => t!("sidebar-workspaces-title"),
+            false => t!("sidebar-local-workspaces-title"),
+        };
+
+        let remote_blocks = match remote.is_empty() {
+            true => Vec::new(),
+            false => remote_workspace_blocks(
+                section_heading(t!("sidebar-remote-workspaces-title"), cx)
+                    .pl(px(SIDEBAR_ROW_GUTTER))
+                    .pt(px(SIDEBAR_GROUP_GAP))
+                    .into_any_element(),
+                &remote,
+                cx,
+            ),
+        };
 
         let width = self.width;
 
@@ -130,20 +156,13 @@ impl Sidebar {
                 h_flex()
                     .w_full()
                     .justify_between()
-                    .child(
-                        div()
-                            .map(Host::sidebar_heading)
-                            .text_size(px(SIDEBAR_SECTION_TEXT))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().sidebar_foreground.opacity(0.5))
-                            // Set as a caps label so the heading is told apart
-                            // from the workspace names by case rather than by
-                            // weight, which the names now use to mark the
-                            // active one. Scripts without case are unchanged.
-                            .child(t!("sidebar-workspaces-title").to_uppercase()),
-                    )
+                    .gap_1()
+                    // A long heading ("Local Workspaces" at the narrowest
+                    // width) gives way before the controls beside it do.
+                    .child(section_heading(local_title, cx).min_w_0().truncate())
                     .child(
                         h_flex()
+                            .flex_none()
                             .gap_1()
                             .child(
                                 toolbar_button("new-workspace")
@@ -166,7 +185,10 @@ impl Sidebar {
                             ),
                     ),
             )
-            .child(self.list.render(&summaries, tab_rows, renames, width, cx))
+            .child(
+                self.list
+                    .render(&summaries, tab_rows, remote_blocks, renames, width, cx),
+            )
             .children((show_daily_token_usage || show_agent_usage).then(|| {
                 v_flex()
                     .id("workspace-sidebar-status")
@@ -241,6 +263,18 @@ impl Sidebar {
         // startup.
         sidebar_resize::slide_width(wrapper, "sidebar", !collapsed, px(width), self.animated)
     }
+}
+
+/// A section heading of the sidebar, set as a caps label so it is told apart
+/// from the workspace names by case rather than by weight, which the names
+/// use to mark the active one. Scripts without case are unchanged.
+fn section_heading(label: impl AsRef<str>, cx: &App) -> Div {
+    div()
+        .map(Host::sidebar_heading)
+        .text_size(px(SIDEBAR_SECTION_TEXT))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(cx.theme().sidebar_foreground.opacity(0.5))
+        .child(label.as_ref().to_uppercase())
 }
 
 /// Terminal with a lower-right close mark

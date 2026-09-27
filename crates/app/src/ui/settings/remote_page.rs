@@ -1,18 +1,16 @@
-use app::agent_tab::AgentKind;
 use gpui::{App, ClipboardItem, IntoElement as _, ParentElement as _, SharedString, Styled as _};
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 use nmt_remote::connection::Status;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
-use nmt_remote_core::identity::DeviceId;
-use nmt_remote_core::rpc::{Origin, SessionInfo, SessionKind};
+use nmt_remote_core::rpc::SessionInfo;
 use rust_i18n::t;
 
+use crate::ui::AppSettings;
 use crate::ui::remote::{self, Remote};
 use crate::ui::settings::fields::settings_switch;
-use crate::ui::{AppSettings, modern_dropdown};
 
 pub(super) fn remote_page(cx: &App) -> SettingPage {
     let page = SettingPage::new(t!("settings-remote-title")).default_open(true);
@@ -310,116 +308,14 @@ fn computers_group(state: &Remote) -> SettingGroup {
 
     for host in state.hosts() {
         group = group.item(host_item(host.clone()));
-
-        for session in state.host_sessions(&host.id).unwrap_or_default() {
-            group = group.item(host_session_item(host.id.clone(), session.clone()));
-        }
     }
 
     group
 }
 
-/// A session running on a paired host, which this computer can view.
-fn host_session_item(host: DeviceId, session: SessionInfo) -> SettingItem {
-    SettingItem::render(move |_, _, cx| {
-        let id = session.session.clone();
-        let host = host.clone();
-        let opened = session.clone();
-
-        let origin = match session.origin {
-            Origin::Tab => t!("settings-remote-origin-tab"),
-            _ => t!("settings-remote-started-remotely"),
-        };
-
-        let harness = session
-            .harness
-            .as_deref()
-            .and_then(AgentKind::from_id)
-            .map(AgentKind::display);
-
-        let detail = match (session.kind, harness) {
-            (SessionKind::Agent, Some(harness)) => {
-                t!("settings-remote-agent-session", harness = harness).into_owned()
-            }
-            _ => format!("{}x{}", session.cols, session.rows),
-        };
-
-        h_flex()
-            .w_full()
-            .justify_between()
-            .items_center()
-            .gap_3()
-            .pl_4()
-            .child(
-                v_flex()
-                    .flex_1()
-                    .child(Label::new(session.title.clone()).text_sm())
-                    .child(
-                        Label::new(format!("{origin}    {detail}"))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            .child(
-                Button::new(SharedString::from(format!(
-                    "remote-view-{}-{id}",
-                    host.as_str()
-                )))
-                .outline()
-                .label(t!("settings-remote-open-session"))
-                .on_click(move |_, window, cx: &mut App| {
-                    remote::open_session(&host, &opened, window, cx)
-                }),
-            )
-            .into_any_element()
-    })
-}
-
 fn host_item(host: PairedHost) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
-        let open_id = host.id.clone();
         let forget_id = host.id.clone();
-        let list_id = host.id.clone();
-
-        // Listing the host's sessions also fetches what it lets this
-        // computer start; the menu appears once there is something to pick.
-        let offers = cx
-            .global::<Remote>()
-            .host_offers(&host.id)
-            .filter(|offers| !offers.agents.is_empty() && !offers.workspaces.is_empty())
-            .cloned();
-
-        let new_agent = offers.map(|offers| {
-            let host_id = host.id.clone();
-
-            modern_dropdown(
-                Button::new(SharedString::from(format!(
-                    "remote-new-agent-{}",
-                    host.id.as_str()
-                )))
-                .outline()
-                .label(t!("settings-remote-new-agent"))
-                .disabled(cx.global::<Remote>().busy()),
-                move |mut menu, _, _| {
-                    for workspace in &offers.workspaces {
-                        for agent in &offers.agents {
-                            let host_id = host_id.clone();
-                            let chosen = agent.clone();
-                            let path = workspace.path.clone();
-
-                            menu = menu.item(
-                                format!("{} · {}", agent.name, workspace.name),
-                                move |window, cx| {
-                                    remote::open_agent(&host_id, &chosen, path.clone(), window, cx)
-                                },
-                            );
-                        }
-                    }
-
-                    menu
-                },
-            )
-        });
 
         let status = match cx.global::<Remote>().host_status(&host.id) {
             Status::Idle => t!("settings-remote-status-idle"),
@@ -429,6 +325,8 @@ fn host_item(host: PairedHost) -> SettingItem {
             Status::Refused => t!("settings-remote-status-refused"),
         };
 
+        // A connected host's sessions are listed in the workspace sidebar,
+        // where they open; the settings page only manages the pairing.
         h_flex()
             .w_full()
             .justify_between()
@@ -445,39 +343,13 @@ fn host_item(host: PairedHost) -> SettingItem {
                     ),
             )
             .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "remote-list-{}",
-                            host.id.as_str()
-                        )))
-                        .outline()
-                        .label(t!("settings-remote-sessions"))
-                        .on_click(move |_, _, cx: &mut App| remote::refresh_sessions(&list_id, cx)),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "remote-forget-{}",
-                            host.id.as_str()
-                        )))
-                        .outline()
-                        .label(t!("settings-remote-forget"))
-                        .on_click(move |_, _, cx: &mut App| remote::forget_host(&forget_id, cx)),
-                    )
-                    .children(new_agent)
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "remote-open-{}",
-                            host.id.as_str()
-                        )))
-                        .primary()
-                        .label(t!("settings-remote-new-terminal"))
-                        .disabled(cx.global::<Remote>().busy())
-                        .on_click(move |_, window, cx: &mut App| {
-                            remote::open_terminal(&open_id, window, cx)
-                        }),
-                    ),
+                Button::new(SharedString::from(format!(
+                    "remote-forget-{}",
+                    host.id.as_str()
+                )))
+                .outline()
+                .label(t!("settings-remote-forget"))
+                .on_click(move |_, _, cx: &mut App| remote::forget_host(&forget_id, cx)),
             )
             .into_any_element()
     })

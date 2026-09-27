@@ -62,6 +62,8 @@ use nmt_platform::filesystem::path_identity;
 use nmt_platform::window::native_active_state;
 use nmt_remote::NetworkPty;
 use nmt_remote::local_view::LocalView;
+use nmt_remote_core::identity::DeviceId;
+use nmt_remote_core::rpc::SessionInfo;
 use rust_i18n::t;
 use tracing::warn;
 
@@ -1883,6 +1885,47 @@ impl AppWindow {
         );
     }
 
+    /// Show `session` on the paired host `host`: the tab already following
+    /// it if there is one, otherwise a new tab following it.
+    pub(crate) fn open_remote_session(
+        &mut self,
+        host: &DeviceId,
+        session: &SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let found = self
+            .workspaces
+            .all_tabs()
+            .enumerate()
+            .find_map(|(workspace_index, tabs)| {
+                tabs.list()
+                    .items()
+                    .iter()
+                    .position(|tab| {
+                        tab.surface()
+                            .follows_remote(host.as_str(), &session.session, cx)
+                    })
+                    .map(|tab_index| (workspace_index, tab_index))
+            });
+
+        match found {
+            Some((workspace_index, tab_index)) => {
+                self.jump_to_tab(workspace_index, tab_index, window, cx)
+            }
+            // Opening one inserts a tab into this window, which is being
+            // updated now; it runs once this update is done.
+            None => {
+                let host = host.clone();
+                let session = session.clone();
+
+                window.defer(cx, move |window, cx| {
+                    ui::remote::open_session(&host, &session, window, cx)
+                });
+            }
+        }
+    }
+
     /// Open a tab on a terminal a paired device started on this computer.
     pub(crate) fn open_local_view(
         &mut self,
@@ -3521,6 +3564,8 @@ impl Render for AppWindow {
             }
         };
 
+        let remote = cx.global::<Remote>().remote_workspaces();
+
         let sidebar = self.sidebar.render(
             summaries,
             tab_rows,
@@ -3529,6 +3574,7 @@ impl Render for AppWindow {
                 daily: self.chrome.token_usage.clone(),
                 quotas: self.chrome.agent_usage.clone(),
             },
+            remote,
             cx,
         );
 

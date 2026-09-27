@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -142,6 +142,10 @@ pub struct RemoteHost {
     /// Wakes the supervisor: a view or request needs a link now.
     wake: Notify,
 
+    /// Set while the application lists this host's sessions, which keeps
+    /// the link up with no view open.
+    listed: AtomicBool,
+
     next_id: AtomicU64,
     supervisor: Mutex<Option<AbortHandle>>,
 }
@@ -208,6 +212,7 @@ impl RemoteHost {
             ended: Mutex::new(HashMap::new()),
             ended_changes: watch::channel(0).0,
             wake: Notify::new(),
+            listed: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             supervisor: Mutex::new(None),
         });
@@ -302,8 +307,19 @@ impl RemoteHost {
         }
     }
 
+    /// Whether anything needs the link: an open view, or a session list.
     fn has_views(&self) -> bool {
-        !self.views.lock().is_empty() || !self.agents.lock().is_empty()
+        self.listed.load(Ordering::Relaxed)
+            || !self.views.lock().is_empty()
+            || !self.agents.lock().is_empty()
+    }
+
+    /// Stay connected, reconnecting as needed, so the host's sessions can be
+    /// listed without a view open.
+    pub fn keep_connected(&self) {
+        self.listed.store(true, Ordering::Relaxed);
+
+        self.wake.notify_one();
     }
 
     /// A view of an agent session. It attaches now if connected and

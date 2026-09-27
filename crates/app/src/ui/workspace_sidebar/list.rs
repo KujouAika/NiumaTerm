@@ -83,6 +83,8 @@ impl WorkspaceList {
         &self,
         summaries: &[WorkspaceChrome],
         tab_rows: Vec<Vec<AnyElement>>,
+        // The remote section, scrolling with the workspaces above it.
+        remote_blocks: Vec<AnyElement>,
         renames: &InlineRenameSession,
         width: f32,
         cx: &mut Context<AppWindow>,
@@ -132,7 +134,8 @@ impl WorkspaceList {
                         rows.extend(tab_rows.next().into_iter().flatten());
 
                         v_flex().w_full().children(rows)
-                    })),
+                    }))
+                    .children(remote_blocks),
             )
             .child(workspace_list_scrollbar(&self.scroll))
             .into_any_element()

@@ -185,6 +185,25 @@ impl TabSurface {
         }
     }
 
+    /// Whether this tab follows `session` on the paired host `host`.
+    pub(crate) fn follows_remote(&self, host: &str, session: &str, cx: &App) -> bool {
+        let terminal = self.leaves().into_iter().any(|(_, pane)| {
+            pane.read(cx).remote_tab().is_some_and(|remote| {
+                remote.host.id().as_str() == host && remote.session == session
+            })
+        });
+
+        let agent = self.agent().is_some_and(|pane| {
+            pane.read(cx)
+                .remote_address()
+                .is_some_and(|(followed_host, followed)| {
+                    followed_host == host && followed == session
+                })
+        });
+
+        terminal || agent
+    }
+
     /// The id paired devices know a still-pending agent tab by.
     pub(crate) fn restoring_agent(&self) -> Option<&str> {
         match self {

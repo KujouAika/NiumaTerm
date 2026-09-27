@@ -115,6 +115,15 @@ pub(crate) struct Remote {
 
 impl Global for Remote {}
 
+/// A connected paired host as the workspace sidebar lists it: its sessions,
+/// and what it lets this computer start.
+pub(crate) struct RemoteWorkspace {
+    pub(crate) id: DeviceId,
+    pub(crate) name: String,
+    pub(crate) sessions: Vec<SessionInfo>,
+    pub(crate) offers: Option<HostInfo>,
+}
+
 /// One shared agent tab: the id paired devices know it by, the task
 /// answering them, and the subscription keeping its listed title current.
 struct SharedAgent {
@@ -190,6 +199,26 @@ pub(crate) fn tabs_restored(cx: &mut App) {
     cx.global_mut::<Remote>().tabs_restored = true;
 
     sync_hosting(cx);
+
+    let hosts: Vec<DeviceId> = cx
+        .global::<Remote>()
+        .hosts
+        .iter()
+        .map(|host| host.id.clone())
+        .collect();
+
+    for id in hosts {
+        list_host(&id, cx);
+    }
+}
+
+/// Keep a paired host connected so the sidebar lists its sessions as they
+/// change, reconnecting whenever it comes back into reach.
+fn list_host(id: &DeviceId, cx: &mut App) {
+    match connection(id, cx) {
+        Ok(connection) => connection.keep_connected(),
+        Err(error) => warn!(%error, "cannot list a paired host's sessions"),
+    }
 }
 
 /// Start or stop hosting to match the setting, restarting it when the
@@ -343,6 +372,21 @@ impl Remote {
 
     pub(crate) fn host_offers(&self, id: &DeviceId) -> Option<&HostInfo> {
         self.host_offers.get(id)
+    }
+
+    /// The paired hosts connected now, each with its sessions, in pairing
+    /// order.
+    pub(crate) fn remote_workspaces(&self) -> Vec<RemoteWorkspace> {
+        self.hosts
+            .iter()
+            .filter(|host| self.host_status(&host.id) == Status::Connected)
+            .map(|host| RemoteWorkspace {
+                id: host.id.clone(),
+                name: host.name.clone(),
+                sessions: self.host_sessions(&host.id).unwrap_or_default().to_vec(),
+                offers: self.host_offers(&host.id).cloned(),
+            })
+            .collect()
     }
 
     pub(crate) fn host_sessions(&self, id: &DeviceId) -> Option<&[SessionInfo]> {
@@ -858,24 +902,38 @@ pub(crate) fn pair_with_host(cx: &mut App) {
             .context("pairing stopped")
             .and_then(|paired| paired);
 
-        cx.update_global::<Remote, _>(|remote, _| match result {
-            Ok(paired) => {
-                // A new pairing replaces a connection that the host may
-                // have refused under the old record.
-                if let Some(old) = remote.connections.remove(&paired.id) {
-                    old.shutdown();
+        cx.update(|cx| {
+            let paired = cx.update_global::<Remote, _>(|remote, _| match result {
+                Ok(paired) => {
+                    // A new pairing replaces a connection that the host may
+                    // have refused under the old record.
+                    if let Some(old) = remote.connections.remove(&paired.id) {
+                        old.shutdown();
+                    }
+
+                    let id = paired.id.clone();
+
+                    remote.hosts.retain(|host| host.id != paired.id);
+                    remote.hosts.push(paired);
+
+                    remote.code = SharedString::default();
+
+                    let saved = save_hosts(&remote_dir(), &remote.hosts);
+
+                    remote.report(saved.map_err(Into::into));
+
+                    Some(id)
                 }
+                Err(error) => {
+                    remote.report(Err(error));
 
-                remote.hosts.retain(|host| host.id != paired.id);
-                remote.hosts.push(paired);
+                    None
+                }
+            });
 
-                remote.code = SharedString::default();
-
-                let saved = save_hosts(&remote_dir(), &remote.hosts);
-
-                remote.report(saved.map_err(Into::into));
+            if let Some(id) = paired {
+                list_host(&id, cx);
             }
-            Err(error) => remote.report(Err(error)),
         });
     })
     .detach();
@@ -918,7 +976,8 @@ fn connection(id: &DeviceId, cx: &mut App) -> Result<Arc<RemoteHost>> {
         let _ = updates.send(record);
     });
 
-    // The settings page shows each host's link state and session list.
+    // The settings page shows each host's link state and the sidebar its
+    // sessions, which are listed afresh whenever the link comes up.
     let mut status = connection.status();
     let mut sessions = connection.session_changes();
 
@@ -927,7 +986,11 @@ fn connection(id: &DeviceId, cx: &mut App) -> Result<Arc<RemoteHost>> {
     cx.spawn(async move |cx| {
         loop {
             let listed = select! {
-                change = status.changed() => { if change.is_err() { break } false }
+                change = status.changed() => {
+                    if change.is_err() { break }
+
+                    *status.borrow() == Status::Connected
+                }
 
                 change = sessions.changed() => { if change.is_err() { break } true }
             };
