@@ -395,7 +395,8 @@ Every Noise plaintext is one frame:
  flags bit 0 (MORE): the message continues in the next frame of this stream
 ```
 
-- Stream 0 is the control stream; type `0x01` is a JSON message.
+- Stream 0 is the control stream; type `0x01` is a JSON message, and types
+  `0x02` PING / `0x03` PONG are liveness probes the channel answers itself.
 - The host allocates every other stream id in its attach or upload responses.
 - Fragments of different streams may interleave. A reassembled message larger
   than 32 MiB closes the channel.
@@ -434,7 +435,6 @@ requests and host-to-client notifications. Error codes: `not_found`,
 | `stream.close` | Detach any stream. |
 | `fs.list`, `fs.complete` | Host directory listing and path completion for workspace pickers and `@` mentions. |
 | `blob.put`, `blob.get` | Chunked upload and download by SHA-256, for images. |
-| `ping` | Liveness. |
 
 Notifications: `sessions.changed`, `host.goodbye { reason }`.
 
@@ -455,8 +455,10 @@ Notifications: `sessions.changed`, `host.goodbye { reason }`.
 ### 9.4 Liveness
 
 - The relay path pings at the relay level (§8.2).
-- Either side sends `ping` after 30 s without inbound frames. No answer within
-  10 s, twice in a row, marks the channel dead and starts a reconnect.
+- Either side sends a PING frame after 30 s without inbound frames. No answer
+  within 10 s, twice in a row, marks the channel dead and starts a reconnect.
+  Probes are frames rather than a `ping` request so the channel layer answers
+  them without the request dispatch above it.
 
 ### 9.5 Versioning
 
