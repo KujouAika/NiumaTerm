@@ -986,13 +986,32 @@ As built in M6:
 
 Known gaps in M6:
 
-- Paired devices can view and drive agent tabs open on the host, but
-  cannot start one there (`agent.open`).
-- Rewind, fork, conversation history and search, side questions,
-  background tasks, and workflow agents stay host-only; a remote pane
-  refuses the slash commands that reach them.
-- File and `@` completion (`fs.list`, `fs.complete`) is not offered, so
-  a remote composer completes nothing from the host's workspace.
+- Conversation search, new conversations, side questions, background
+  tasks, and workflow agents stay host-only; a remote pane refuses the
+  slash commands that reach them.
+- The history list a remote pane shows is the host's first page; paging
+  further is host-only.
+- After a rewind or fork a remote pane does not put the cut prompt back
+  into its composer, as the host's pane does for a branch it started.
+- `fs.list` and `fs.complete` are not offered. Local panes have no `@`
+  file completion either, and `agent.open` picks among the host's open
+  workspaces, which needs no directory browsing.
+
+Closed after M6:
+
+- `host.info` lists the host's agent profiles and open workspaces, and
+  `agent.open { profile, workspace }` starts an agent tab there without
+  switching the host user's view. A workspace outside the list is
+  refused. The settings page offers each pair as "New agent".
+- Rewind and fork run on the host as `branch` steps (begin, select,
+  action, cancel). The branch picker is published as a `branch` slot, so
+  every view shows the one operation, and a replica mirrors it without
+  running one of its own.
+- `/resume` lists the host's conversations through a `history` slot:
+  Codex pages arrive over its protocol, Claude's are read from the
+  host's disk. Picking one resumes it in the host session.
+- A remote agent pane shows the reconnecting banner while the link to
+  the host is down.
 
 Closed after M6: host agent tabs keep their session id across restarts.
 The id is saved with the tab, and a restored tab that is still pending
@@ -1001,6 +1020,24 @@ first request starts that tab in place. Hosting starts only after the
 startup windows restored their tabs, so a reconnecting device never asks
 before they exist. Host terminal tabs still get new ids, which is right:
 their shells do not survive the restart.
+
+One side controls a session at a time, which replaces the shared views
+of §10.4 and §11.7 between host and device:
+
+- While a paired device views a host tab, the host covers the tab with a
+  frosted sheet naming the device, with "Switch back to this computer"
+  and "End session". The session keeps its state; the host stops drawing
+  it (a terminal keeps its last frame, an agent transcript stops
+  following) and refuses input until the sheet goes.
+- Switching back sends `session.ended { session, reason: "taken_back" }`
+  to the device, which keeps its tab under a sheet with "Reconnect" and
+  "End session". Reconnecting attaches again and hands control back to
+  the device. The host refuses `agent.call` from a device without a view
+  of the session.
+- Ending the session, or closing its tab, on the host sends
+  `reason: "closed"`; the device's sheet then offers only closing its own
+  tab, which never ends anything on the host. A remote shell that exits
+  by itself still ends the device's view the old way.
 
 Known gaps in M4:
 
