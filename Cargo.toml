@@ -22,6 +22,7 @@ members = [
     "crates/terminal",
     "crates/tree_sitter_bundle",
     "crates/updater",
+    "crates/remote_core",
 
     "third_party/libghostty-vt-sys",
 
@@ -102,6 +103,11 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tokio-util = "0.7"
+
+# Remote sessions: Noise handshakes and transport encryption, and the PAKE
+# that turns a short pairing code into a key no offline search can recover.
+snow = "0.10"
+spake2 = "0.4"
 
 # GPUI fork
 collections = { path = "third_party/gpui/collections" }
