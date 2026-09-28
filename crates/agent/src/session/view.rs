@@ -274,7 +274,42 @@ impl AgentView {
     }
 }
 
+impl AgentView {
+    /// Apply one published change. This is the inverse of what
+    /// [`ViewPublisher`] emits, for a view that renders the projection
+    /// directly instead of running a replica controller. A splice past the
+    /// end appends, so a view that fell behind by a trimmed entry still
+    /// converges on the next splice rather than panicking.
+    pub fn apply(&mut self, op: ViewOp) {
+        match op {
+            ViewOp::Splice { from, entries } => {
+                self.transcript.truncate(from);
+                self.transcript.extend(entries);
+            }
+            ViewOp::Slot { slot } => self.slots.set(*slot),
+        }
+    }
+}
+
 impl ViewSlots {
+    /// Replace the slot `slot` names.
+    pub fn set(&mut self, slot: ViewSlot) {
+        match slot {
+            ViewSlot::Status(value) => self.status = value,
+            ViewSlot::Usage(value) => self.usage = value,
+            ViewSlot::Turns(value) => self.turns = value,
+            ViewSlot::Settings(value) => self.settings = value,
+            ViewSlot::Catalogs(value) => self.catalogs = value,
+            ViewSlot::Pending(value) => self.pending = value,
+            ViewSlot::Queue(value) => self.queue = value,
+            ViewSlot::Goal(value) => self.goal = value,
+            ViewSlot::Tasks(value) => self.tasks = value,
+            ViewSlot::Naming(value) => self.naming = value,
+            ViewSlot::Branch(value) => self.branch = value,
+            ViewSlot::History(value) => self.history = value,
+        }
+    }
+
     /// Every slot, for a view starting from nothing.
     pub fn into_slots(self) -> Vec<ViewSlot> {
         vec![

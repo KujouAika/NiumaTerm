@@ -1044,6 +1044,50 @@ fn a_replica_follows_a_conversation_through_published_changes() {
 }
 
 #[test]
+fn a_view_applying_published_changes_equals_a_fresh_snapshot() {
+    let mut host = started(AgentKind::Codex, "view", vec![SendOutcome::StartedTurn]);
+    let mut publisher = ViewPublisher::default();
+
+    send(&mut host, "first prompt");
+
+    let mut view: AgentView =
+        serde_json::from_value(serde_json::to_value(publisher.snapshot(&host)).unwrap()).unwrap();
+
+    let steps = [
+        Event::TurnStarted,
+        Event::ItemStarted(Item::AgentMessage {
+            id: "reply".into(),
+            text: None,
+            questions: None,
+        }),
+        Event::AgentMessageDelta {
+            item_id: "reply".into(),
+            delta: "streamed ".into(),
+        },
+        Event::ApprovalRequested {
+            description: "Allow command".into(),
+        },
+        Event::AgentMessageDelta {
+            item_id: "reply".into(),
+            delta: "text".into(),
+        },
+        Event::TurnCompleted { error: None },
+    ];
+
+    // One change set per event, so streaming splices and slot replacements
+    // interleave the way they do on a live link.
+    for event in steps {
+        apply(&mut host, event);
+
+        for op in through_json(publisher.changes(&host)) {
+            view.apply(op);
+        }
+
+        assert_eq!(view, ViewPublisher::default().snapshot(&host));
+    }
+}
+
+#[test]
 fn a_replica_shows_the_host_branch_picker_until_it_closes() {
     let mut host = started(AgentKind::Codex, "view", Vec::new());
     let mut replica = SessionController::new(AgentKind::Codex);
