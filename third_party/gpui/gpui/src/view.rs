@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::{Empty, Window};
 use anyhow::Result;
-use collections::FxHashSet;
+use collections::{FxHashSet, TypeIdHashSet};
 use refineable::Refineable;
 use std::mem;
 use std::{any::TypeId, fmt, ops::Range};
@@ -34,7 +34,8 @@ impl AnyView {
     /// Embed this view as a cached [`ViewElement`] laid out at `style`.
     ///
     /// The rendered subtree is recycled from the previous frame unless
-    /// [Context::notify] was called on the backing entity since it was rendered
+    /// [Context::notify] was called on the backing entity or on a view inside
+    /// it, or a global the subtree read was mutated, since it was rendered
     /// (or [Window::refresh] is called, which ignores caching).
     pub fn cached(self, style: StyleRefinement) -> ViewElement<AnyView> {
         ViewElement::new(self).cached(style)
@@ -223,8 +224,9 @@ impl<T: Render> View for Entity<T> {
 impl<T: Render> Entity<T> {
     /// Embed this entity as a cached [`ViewElement`] laid out at `style`.
     ///
-    /// The rendered subtree is reused until the entity is notified (or the
-    /// cached bounds / text style change). Caching requires a definite size:
+    /// The rendered subtree is reused until the entity or a view inside it is
+    /// notified, a global it read is mutated, or the cached bounds / text
+    /// style change. Caching requires a definite size:
     /// a cached view is laid out from `style` and is *not* measured from its
     /// contents. Use [`ViewElement::new`] (or `.child(entity)`) for the
     /// uncached case.
@@ -287,6 +289,11 @@ struct ViewElementState {
     paint_range: Range<PaintIndex>,
     cache_key: ViewElementCacheKey,
     accessed_entities: FxHashSet<EntityId>,
+    accessed_globals: TypeIdHashSet,
+    /// The global generation when the subtree finished rendering. Taken
+    /// after the render so a global the subtree itself mutates while
+    /// rendering does not bust its own cache on every frame.
+    global_generation: u64,
 }
 
 struct ViewElementCacheKey {
@@ -389,11 +396,16 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.text_style == text_style
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
+                            && !cx.globals_changed_since(
+                                &element_state.accessed_globals,
+                                element_state.global_generation,
+                            )
                         {
                             let prepaint_start = window.prepaint_index();
                             window.reuse_prepaint(element_state.prepaint_range.clone());
                             cx.entities
                                 .extend_accessed(&element_state.accessed_entities);
+                            cx.extend_accessed_globals(&element_state.accessed_globals);
                             let prepaint_end = window.prepaint_index();
                             element_state.prepaint_range = prepaint_start..prepaint_end;
 
@@ -402,17 +414,21 @@ impl<V: View> Element for ViewElement<V> {
 
                         let refreshing = mem::replace(&mut window.refreshing, true);
                         let prepaint_start = window.prepaint_index();
-                        let (mut element, accessed_entities) = cx.detect_accessed_entities(|cx| {
-                            let mut element = self
-                                .view
-                                .take()
-                                .unwrap()
-                                .render(window, cx)
-                                .into_any_element();
-                            element.layout_as_root(bounds.size.into(), window, cx);
-                            element.prepaint_at(bounds.origin, window, cx);
-                            element
-                        });
+                        let ((mut element, accessed_entities), accessed_globals) = cx
+                            .detect_accessed_globals(|cx| {
+                                cx.detect_accessed_entities(|cx| {
+                                    let mut element = self
+                                        .view
+                                        .take()
+                                        .unwrap()
+                                        .render(window, cx)
+                                        .into_any_element();
+                                    element.layout_as_root(bounds.size.into(), window, cx);
+                                    element.prepaint_at(bounds.origin, window, cx);
+                                    element
+                                })
+                            });
+                        let global_generation = cx.global_generation();
 
                         let prepaint_end = window.prepaint_index();
                         window.refreshing = refreshing;
@@ -421,6 +437,8 @@ impl<V: View> Element for ViewElement<V> {
                             Some(element),
                             ViewElementState {
                                 accessed_entities,
+                                accessed_globals,
+                                global_generation,
                                 prepaint_range: prepaint_start..prepaint_end,
                                 paint_range: PaintIndex::default()..PaintIndex::default(),
                                 cache_key: ViewElementCacheKey {
@@ -503,5 +521,112 @@ pub struct EmptyView;
 impl Render for EmptyView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         Empty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        Context, Entity, Global, StyleRefinement, TestAppContext, Window, div, prelude::*, px, size,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    struct Counter(usize);
+
+    struct Label;
+
+    impl Global for Label {}
+
+    struct Unrelated;
+
+    impl Global for Unrelated {}
+
+    /// Reads a model and a global, and counts its own renders.
+    struct CachedView {
+        counter: Entity<Counter>,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl Render for CachedView {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            let _ = self.counter.read(cx).0;
+            let _ = cx.global::<Label>();
+            div().size_full()
+        }
+    }
+
+    /// Reads the same model before the cached child renders, the way an
+    /// ancestor that shows part of the same state would.
+    struct RootView {
+        counter: Entity<Counter>,
+        child: Entity<CachedView>,
+    }
+
+    impl Render for RootView {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let _ = self.counter.read(cx).0;
+            div().size_full().child(
+                self.child
+                    .clone()
+                    .cached(StyleRefinement::default().size_full()),
+            )
+        }
+    }
+
+    fn open(cx: &mut TestAppContext) -> (crate::WindowHandle<RootView>, Rc<Cell<usize>>) {
+        cx.update(|cx| {
+            cx.set_global(Label);
+            cx.set_global(Unrelated);
+        });
+        let renders = Rc::new(Cell::new(0));
+        let window = cx.open_window(size(px(400.), px(300.)), {
+            let renders = renders.clone();
+            move |_, cx| {
+                let counter = cx.new(|_| Counter(0));
+                let child = cx.new(|_| CachedView {
+                    counter: counter.clone(),
+                    renders,
+                });
+                RootView { counter, child }
+            }
+        });
+        cx.run_until_parked();
+        (window, renders)
+    }
+
+    #[gpui::test]
+    fn test_cached_view_is_reused_when_only_its_parent_changes(cx: &mut TestAppContext) {
+        let (window, renders) = open(cx);
+        let before = renders.get();
+
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(renders.get(), before);
+    }
+
+    #[gpui::test]
+    fn test_cached_view_rerenders_only_for_globals_it_read(cx: &mut TestAppContext) {
+        let (window, renders) = open(cx);
+        let before = renders.get();
+
+        window
+            .update(cx, |_, _, cx| {
+                cx.set_global(Unrelated);
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(renders.get(), before);
+
+        window
+            .update(cx, |_, _, cx| {
+                cx.set_global(Label);
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(renders.get(), before + 1);
     }
 }

@@ -737,6 +737,14 @@ pub struct App {
         FxHashMap<EntityId, FxHashMap<WindowId, WindowInvalidator>>,
     pub(crate) tracked_entities: FxHashMap<WindowId, FxHashSet<EntityId>>,
     pub(crate) current_window_by_entity: FxHashMap<EntityId, WindowId>,
+    /// Globals read while a cached view renders. `None` outside such a
+    /// render, so the global reads every element makes cost nothing extra.
+    accessed_globals: RefCell<Option<TypeIdHashSet>>,
+    /// Bumped on every global mutation; `global_changed_at` keeps the value
+    /// each global type last changed at, so a cached view can tell whether a
+    /// global it read has changed since it rendered.
+    global_generation: u64,
+    global_changed_at: TypeIdHashMap<u64>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) inspector_renderer: Option<crate::InspectorRenderer>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -827,6 +835,9 @@ impl App {
                 tracked_entities: FxHashMap::default(),
                 window_invalidators_by_entity: FxHashMap::default(),
                 current_window_by_entity: FxHashMap::default(),
+                accessed_globals: RefCell::new(None),
+                global_generation: 0,
+                global_changed_at: TypeIdHashMap::default(),
                 event_listeners: SubscriberSet::new(),
                 release_listeners: SubscriberSet::new(),
                 keystroke_observers: SubscriberSet::new(),
@@ -1109,6 +1120,60 @@ impl App {
             .copied()
             .collect::<FxHashSet<EntityId>>();
         (result, entities_accessed_in_callback)
+    }
+
+    /// Run `callback`, returning the global types it read. Nested calls report
+    /// their reads to the enclosing call too, because a cached view that
+    /// contains another one depends on everything the inner one read.
+    pub(crate) fn detect_accessed_globals<R>(
+        &mut self,
+        callback: impl FnOnce(&mut App) -> R,
+    ) -> (R, TypeIdHashSet) {
+        let outer = self
+            .accessed_globals
+            .get_mut()
+            .replace(TypeIdHashSet::default());
+        let result = callback(self);
+        let accessed = self.accessed_globals.get_mut().take().unwrap_or_default();
+        *self.accessed_globals.get_mut() = outer;
+        self.extend_accessed_globals(&accessed);
+        (result, accessed)
+    }
+
+    /// Report globals read by a cached subtree that is being reused rather
+    /// than rendered, so an enclosing cached view still depends on them.
+    pub(crate) fn extend_accessed_globals(&mut self, globals: &TypeIdHashSet) {
+        if let Some(outer) = self.accessed_globals.get_mut().as_mut() {
+            outer.extend(globals.iter().copied());
+        }
+    }
+
+    /// The current global generation, to compare against
+    /// [`Self::globals_changed_since`] later.
+    pub(crate) fn global_generation(&self) -> u64 {
+        self.global_generation
+    }
+
+    /// Whether any of `globals` was mutated after `generation`.
+    pub(crate) fn globals_changed_since(&self, globals: &TypeIdHashSet, generation: u64) -> bool {
+        globals.iter().any(|global_type| {
+            self.global_changed_at
+                .get(global_type)
+                .is_some_and(|changed_at| *changed_at > generation)
+        })
+    }
+
+    fn record_global_read(&self, global_type: TypeId) {
+        if let Some(accessed) = self.accessed_globals.borrow_mut().as_mut() {
+            accessed.insert(global_type);
+        }
+    }
+
+    fn record_global_change(&mut self, global_type: TypeId) {
+        self.global_generation += 1;
+        self.global_changed_at
+            .insert(global_type, self.global_generation);
+        self.push_effect(Effect::NotifyGlobalObservers { global_type });
     }
 
     pub(crate) fn record_entities_accessed(
@@ -2008,12 +2073,14 @@ impl App {
 
     /// Check whether a global of the given type has been assigned.
     pub fn has_global<G: Global>(&self) -> bool {
+        self.record_global_read(TypeId::of::<G>());
         self.globals_by_type.contains_key(&TypeId::of::<G>())
     }
 
     /// Access the global of the given type. Panics if a global for that type has not been assigned.
     #[track_caller]
     pub fn global<G: Global>(&self) -> &G {
+        self.record_global_read(TypeId::of::<G>());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2022,6 +2089,7 @@ impl App {
 
     /// Access the global of the given type if a value has been assigned.
     pub fn try_global<G: Global>(&self) -> Option<&G> {
+        self.record_global_read(TypeId::of::<G>());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2031,7 +2099,7 @@ impl App {
     #[track_caller]
     pub fn global_mut<G: Global>(&mut self) -> &mut G {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.record_global_change(global_type);
         self.globals_by_type
             .get_mut(&global_type)
             .and_then(|any_state| any_state.downcast_mut::<G>())
@@ -2042,7 +2110,7 @@ impl App {
     /// yet been assigned.
     pub fn default_global<G: Global + Default>(&mut self) -> &mut G {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.record_global_change(global_type);
         self.globals_by_type
             .entry(global_type)
             .or_insert_with(|| Box::<G>::default())
@@ -2053,7 +2121,7 @@ impl App {
     /// Sets the value of the global of the given type.
     pub fn set_global<G: Global>(&mut self, global: G) {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.record_global_change(global_type);
         self.globals_by_type.insert(global_type, Box::new(global));
     }
 
@@ -2066,7 +2134,7 @@ impl App {
     /// Remove the global of the given type from the app context. Does not notify global observers.
     pub fn remove_global<G: Global>(&mut self) -> G {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.record_global_change(global_type);
         *self
             .globals_by_type
             .remove(&global_type)
@@ -2106,7 +2174,7 @@ impl App {
     pub(crate) fn end_global_lease<G: Global>(&mut self, lease: GlobalLease<G>) {
         let global_type = TypeId::of::<G>();
 
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.record_global_change(global_type);
         self.globals_by_type.insert(global_type, lease.global);
     }
 
