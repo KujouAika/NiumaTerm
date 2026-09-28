@@ -1,7 +1,8 @@
-use nmt_config::colors::term::{DIM_FACTOR, List, TermColors};
-use nmt_config::colors::{AnsiColor, ColorArray, NamedColor};
+use nmt_config::colors::term::{List, TermColors};
+use nmt_config::colors::{AnsiColor, NamedColor};
 use nmt_terminal::ghostty::SnapshotStyle;
 use nmt_terminal::grid::{Square, Style, StyleFlags};
+use nmt_terminal::palette::{dim_color, indexed_color, resolve_color};
 use nmt_terminal::render_buffer::RenderBuffer;
 
 use crate::terminal_tab::frame::TerminalColor;
@@ -81,7 +82,7 @@ impl BackgroundColors {
 
     fn engine_text_color(&self, style: &SnapshotStyle) -> TerminalColor {
         match (style.fg, style.faint) {
-            (Some(fg), true) => dim(fg),
+            (Some(fg), true) => dim_color(fg),
             (Some(fg), false) => fg,
             (None, true) => self.named(NamedColor::DimForeground),
             (None, false) => self.named(NamedColor::Foreground),
@@ -89,41 +90,7 @@ impl BackgroundColors {
     }
 
     fn color(&self, color: &AnsiColor, flags: StyleFlags, foreground: bool) -> TerminalColor {
-        let dim = foreground && flags.contains(StyleFlags::DIM);
-        let bold = foreground && flags.contains(StyleFlags::BOLD);
-
-        match color {
-            AnsiColor::Named(named) => {
-                let named = if foreground && bold && !dim {
-                    named.to_light()
-                } else if dim {
-                    named.to_dim()
-                } else {
-                    *named
-                };
-
-                self.named(named)
-            }
-            AnsiColor::Spec(rgb) => {
-                if dim {
-                    self::dim(*rgb)
-                } else {
-                    *rgb
-                }
-            }
-            AnsiColor::Indexed(index) => {
-                let index = match (foreground, dim, bold, *index) {
-                    (true, true, _, 8..=15) => *index as usize - 8,
-                    (true, true, _, 0..=7) => NamedColor::DimBlack as usize + *index as usize,
-                    (false, false, true, 0..=7) => *index as usize + 8,
-                    (false, true, false, 8..=15) => *index as usize - 8,
-                    (false, true, false, 0..=7) => NamedColor::DimBlack as usize + *index as usize,
-                    _ => *index as usize,
-                };
-
-                self.indexed(index)
-            }
-        }
+        resolve_color(&self.colors, &self.term_colors, color, flags, foreground)
     }
 
     pub(super) fn named(&self, named: NamedColor) -> TerminalColor {
@@ -131,12 +98,6 @@ impl BackgroundColors {
     }
 
     fn indexed(&self, index: usize) -> TerminalColor {
-        self.term_colors[index].unwrap_or(self.colors[index]).into()
+        indexed_color(&self.colors, &self.term_colors, index)
     }
-}
-
-fn dim(color: TerminalColor) -> TerminalColor {
-    let color: ColorArray = (color * DIM_FACTOR).into();
-
-    color.into()
 }

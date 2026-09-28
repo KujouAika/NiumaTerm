@@ -7,6 +7,7 @@ pub mod graphics;
 pub mod grid;
 pub mod input;
 pub mod links;
+pub mod palette;
 pub mod render_buffer;
 pub mod selection;
 pub mod session;
