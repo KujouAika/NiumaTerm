@@ -1,15 +1,11 @@
-use crate::ns_string;
+use crate::{id, nil, ns_string};
 use anyhow::Result;
-use cocoa::{
-    appkit::NSScreen,
-    base::{id, nil},
-    foundation::{NSArray, NSDictionary},
-};
 use core_foundation::base::CFRelease;
 use core_foundation::uuid::{CFUUIDGetUUIDBytes, CFUUIDRef};
 use core_graphics::display::{CGDirectDisplayID, CGDisplayBounds, CGGetActiveDisplayList};
 use gpui::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, size};
-use objc::{msg_send, sel, sel_impl};
+use objc2::{class, msg_send};
+use objc2_foundation::NSRect;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -34,13 +30,12 @@ impl MacDisplay {
         //
         // https://chromium.googlesource.com/chromium/src/+/66.0.3359.158/ui/display/mac/screen_mac.mm#56
         unsafe {
-            let screens = NSScreen::screens(nil);
-            let screen = cocoa::foundation::NSArray::objectAtIndex(screens, 0);
-            let device_description = NSScreen::deviceDescription(screen);
+            let screens: id = msg_send![class!(NSScreen), screens];
+            let screen: id = msg_send![screens, objectAtIndex: 0usize];
+            let device_description: id = msg_send![screen, deviceDescription];
             let screen_number_key: id = ns_string("NSScreenNumber");
-            let screen_number = device_description.objectForKey_(screen_number_key);
-            let screen_number: CGDirectDisplayID = msg_send![screen_number, unsignedIntegerValue];
-            Self(screen_number)
+            let screen_number: id = msg_send![device_description, objectForKey: screen_number_key];
+            Self(screen_number_value(screen_number))
         }
     }
 
@@ -126,8 +121,8 @@ impl PlatformDisplay for MacDisplay {
                 return self.bounds();
             }
 
-            let screen_frame = NSScreen::frame(dominated_screen);
-            let visible_frame = NSScreen::visibleFrame(dominated_screen);
+            let screen_frame: NSRect = msg_send![dominated_screen, frame];
+            let visible_frame: NSRect = msg_send![dominated_screen, visibleFrame];
 
             // Convert from bottom-left origin (AppKit) to top-left origin
             let origin_y =
@@ -151,19 +146,33 @@ impl PlatformDisplay for MacDisplay {
 impl MacDisplay {
     /// Find the NSScreen corresponding to this display
     unsafe fn get_nsscreen(&self) -> id {
-        let screens = unsafe { NSScreen::screens(nil) };
-        let count = unsafe { NSArray::count(screens) };
+        let screens: id = unsafe { msg_send![class!(NSScreen), screens] };
+        let count: usize = unsafe { msg_send![screens, count] };
         let screen_number_key: id = unsafe { ns_string("NSScreenNumber") };
 
         for i in 0..count {
-            let screen = unsafe { NSArray::objectAtIndex(screens, i) };
-            let device_description = unsafe { NSScreen::deviceDescription(screen) };
-            let screen_number = unsafe { device_description.objectForKey_(screen_number_key) };
-            let screen_id: CGDirectDisplayID = msg_send![screen_number, unsignedIntegerValue];
+            let screen: id = unsafe { msg_send![screens, objectAtIndex: i] };
+            let device_description: id = unsafe { msg_send![screen, deviceDescription] };
+            let screen_number: id =
+                unsafe { msg_send![device_description, objectForKey: screen_number_key] };
+            let screen_id = unsafe { screen_number_value(screen_number) };
             if screen_id == self.0 {
                 return screen;
             }
         }
         nil
     }
+}
+
+/// Reads the `NSScreenNumber` entry of a screen's device description.
+///
+/// A missing entry reads as display id 0, the value a message to nil yields,
+/// so a screen without a number never aborts display enumeration. The number
+/// is an `NSUInteger`, and display ids are its low 32 bits.
+unsafe fn screen_number_value(screen_number: id) -> CGDirectDisplayID {
+    if screen_number.is_null() {
+        return 0;
+    }
+    let screen_number: usize = unsafe { msg_send![screen_number, unsignedIntegerValue] };
+    screen_number as CGDirectDisplayID
 }

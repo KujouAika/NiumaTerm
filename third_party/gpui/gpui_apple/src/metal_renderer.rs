@@ -1,11 +1,6 @@
 use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
 use block::ConcreteBlock;
-use cocoa::{
-    base::{NO, YES},
-    foundation::{NSSize, NSUInteger},
-    quartzcore::AutoresizingMask,
-};
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
     PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
@@ -23,7 +18,9 @@ use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
     CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
 };
-use objc::{self, msg_send, sel, sel_impl};
+use objc2::{msg_send, runtime::AnyObject};
+use objc2_foundation::NSSize;
+use objc2_quartz_core::CAAutoresizingMask;
 use parking_lot::Mutex;
 
 use std::{cell::Cell, ffi::c_void, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc};
@@ -165,12 +162,13 @@ impl MetalRenderer {
         #[cfg(any(test, feature = "test-support"))]
         layer.set_framebuffer_only(false);
         unsafe {
-            let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
-            let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
+            let layer_object = layer.as_ptr().cast::<AnyObject>();
+            let _: () = msg_send![layer_object, setAllowsNextDrawableTimeout: false];
+            let _: () = msg_send![layer_object, setNeedsDisplayOnBoundsChange: true];
             let _: () = msg_send![
-                &*layer,
-                setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
-                    | AutoresizingMask::HEIGHT_SIZABLE
+                layer_object,
+                setAutoresizingMask: CAAutoresizingMask::LayerWidthSizable
+                    | CAAutoresizingMask::LayerHeightSizable
             ];
         }
 
@@ -382,13 +380,10 @@ impl MetalRenderer {
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         if let Some(layer) = &self.layer {
-            let ns_size = NSSize {
-                width: size.width.0 as f64,
-                height: size.height.0 as f64,
-            };
+            let ns_size = NSSize::new(size.width.0 as f64, size.height.0 as f64);
             unsafe {
                 let _: () = msg_send![
-                    layer.as_ref(),
+                    layer.as_ptr().cast::<AnyObject>(),
                     setDrawableSize: ns_size
                 ];
             }
@@ -1521,13 +1516,13 @@ impl InstanceBufferWriter {
                 }
                 buffer.metal_buffer.did_modify_range(NSRange {
                     location: 0,
-                    length: *written as NSUInteger,
+                    length: *written as metal::NSUInteger,
                 });
             }
             if offset > 0 {
                 current.metal_buffer.did_modify_range(NSRange {
                     location: 0,
-                    length: offset as NSUInteger,
+                    length: offset as metal::NSUInteger,
                 });
             }
         }
