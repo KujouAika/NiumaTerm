@@ -931,6 +931,8 @@ fn zig_target(target: &str) -> String {
         "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
         "aarch64-apple-darwin" => "aarch64-macos-none",
         "x86_64-apple-darwin" => "x86_64-macos-none",
+        "aarch64-apple-ios" => "aarch64-ios",
+        "aarch64-apple-ios-sim" => "aarch64-ios-simulator",
         "x86_64-pc-windows-gnu" => "x86_64-windows-gnu",
         "aarch64-pc-windows-gnullvm" => "aarch64-windows-gnu",
         "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
