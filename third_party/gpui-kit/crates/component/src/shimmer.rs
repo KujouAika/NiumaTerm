@@ -55,6 +55,7 @@ pub struct ShimmerStyle {
     peak_opacity: Option<f32>,
     reverse: bool,
     once: bool,
+    max_fps: Option<f32>,
 }
 
 impl ShimmerStyle {
@@ -123,8 +124,21 @@ impl ShimmerStyle {
         self
     }
 
+    /// Cap how often the sweep re-renders. Each re-render redraws the view
+    /// that hosts the text, so a shimmering label inside a large view
+    /// otherwise rebuilds that whole view on every display refresh.
+    pub fn max_fps(mut self, max_fps: f32) -> Self {
+        self.max_fps = Some(max_fps);
+        self
+    }
+
     pub(crate) fn animation(self) -> Animation {
-        loading_animation(self.duration, self.once)
+        let animation = loading_animation(self.duration, self.once);
+
+        match self.max_fps {
+            Some(max_fps) => animation.with_max_fps(max_fps),
+            None => animation,
+        }
     }
 }
 
@@ -137,6 +151,7 @@ impl Default for ShimmerStyle {
             peak_opacity: None,
             reverse: false,
             once: false,
+            max_fps: None,
         }
     }
 }
@@ -217,6 +232,12 @@ impl ShimmerText {
     /// Set whether the highlight should complete one sweep instead of looping.
     pub fn once(mut self, once: bool) -> Self {
         self.shimmer_style = self.shimmer_style.once(once);
+        self
+    }
+
+    /// Cap how often the sweep re-renders; see [`ShimmerStyle::max_fps`].
+    pub fn max_fps(mut self, max_fps: f32) -> Self {
+        self.shimmer_style = self.shimmer_style.max_fps(max_fps);
         self
     }
 }

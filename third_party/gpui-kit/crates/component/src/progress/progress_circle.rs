@@ -24,6 +24,7 @@ pub struct ProgressCircle {
     children: Vec<AnyElement>,
     loading: bool,
     loading_duration: Duration,
+    loading_max_fps: Option<f32>,
 }
 
 impl ProgressCircle {
@@ -39,6 +40,7 @@ impl ProgressCircle {
             children: Vec::new(),
             loading: false,
             loading_duration: Duration::from_secs(1),
+            loading_max_fps: None,
         }
     }
 
@@ -54,6 +56,14 @@ impl ProgressCircle {
     /// Set the duration of one complete loading cycle.
     pub fn loading_duration(mut self, duration: Duration) -> Self {
         self.loading_duration = duration;
+        self
+    }
+
+    /// Cap how often the loading animation re-renders. Each re-render redraws
+    /// the view that hosts the circle, so a small spinner inside a large view
+    /// otherwise rebuilds that whole view on every display refresh.
+    pub fn loading_max_fps(mut self, max_fps: f32) -> Self {
+        self.loading_max_fps = Some(max_fps);
         self
     }
 
@@ -214,7 +224,12 @@ impl RenderOnce for ProgressCircle {
                 if loading {
                     this.with_animation(
                         "progress-circle-loading",
-                        Animation::new(self.loading_duration).repeat(),
+                        match self.loading_max_fps {
+                            Some(max_fps) => Animation::new(self.loading_duration)
+                                .repeat()
+                                .with_max_fps(max_fps),
+                            None => Animation::new(self.loading_duration).repeat(),
+                        },
                         move |this, delta| {
                             let (start, end) = Self::loading_arc(delta);
                             this.child(Self::render_circle(start, end, color))
