@@ -1,8 +1,11 @@
-use gpui::{App, ClipboardItem, IntoElement as _, ParentElement as _, SharedString, Styled as _};
-use gpui_component::button::Button;
+use gpui::{
+    App, ClipboardItem, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window,
+};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, DialogClose, DialogFooter};
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_flex, v_flex};
 use nmt_remote::connection::Status;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
 use nmt_remote_core::rpc::SessionInfo;
@@ -313,9 +316,45 @@ fn computers_group(state: &Remote) -> SettingGroup {
     group
 }
 
+/// Forgetting drops the pairing keys, and getting them back takes a new
+/// code from the host, so a stray click must not do it on its own.
+fn confirm_forget(host: &PairedHost, window: &mut Window, cx: &mut App) {
+    let id = host.id.clone();
+    let title = t!("settings-remote-forget-title", name = host.name.as_str());
+
+    window.open_dialog(cx, move |dialog, _, _| {
+        let forget_id = id.clone();
+
+        dialog
+            .title(title.clone())
+            .child(t!("settings-remote-forget-message"))
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        DialogClose::new().child(
+                            Button::new("remote-forget-cancel")
+                                .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                                .label(t!("settings-common-cancel")),
+                        ),
+                    )
+                    .child(
+                        Button::new("remote-forget-confirm")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .danger()
+                            .label(t!("settings-remote-forget"))
+                            .on_click(move |_, window, cx: &mut App| {
+                                window.close_dialog(cx);
+
+                                remote::forget_host(&forget_id, cx);
+                            }),
+                    ),
+            )
+    });
+}
+
 fn host_item(host: PairedHost) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
-        let forget_id = host.id.clone();
+        let forget_host = host.clone();
 
         let status = match cx.global::<Remote>().host_status(&host.id) {
             Status::Idle => t!("settings-remote-status-idle"),
@@ -349,7 +388,7 @@ fn host_item(host: PairedHost) -> SettingItem {
                 )))
                 .outline()
                 .label(t!("settings-remote-forget"))
-                .on_click(move |_, _, cx: &mut App| remote::forget_host(&forget_id, cx)),
+                .on_click(move |_, window, cx: &mut App| confirm_forget(&forget_host, window, cx)),
             )
             .into_any_element()
     })
