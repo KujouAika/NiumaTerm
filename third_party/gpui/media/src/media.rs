@@ -231,9 +231,8 @@ pub mod core_video {
     use core_foundation::{
         base::kCFAllocatorDefault, dictionary::CFDictionaryRef, mach_port::CFAllocatorRef,
     };
-    use foreign_types::ForeignTypeRef;
-
-    use metal::{MTLDevice, MTLPixelFormat};
+    use objc2::runtime::ProtocolObject;
+    use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTexture};
     use std::ptr;
 
     #[repr(C)]
@@ -252,7 +251,7 @@ pub mod core_video {
         /// # Safety
         ///
         /// metal_device must be valid according to CVMetalTextureCacheCreate
-        pub unsafe fn new(metal_device: *mut MTLDevice) -> Result<Self> {
+        pub unsafe fn new(metal_device: &ProtocolObject<dyn MTLDevice>) -> Result<Self> {
             let mut this = ptr::null();
             let result = unsafe {
                 CVMetalTextureCacheCreate(
@@ -310,7 +309,7 @@ pub mod core_video {
         fn CVMetalTextureCacheCreate(
             allocator: CFAllocatorRef,
             cache_attributes: CFDictionaryRef,
-            metal_device: *const MTLDevice,
+            metal_device: &ProtocolObject<dyn MTLDevice>,
             texture_attributes: CFDictionaryRef,
             cache_out: *mut CVMetalTextureCacheRef,
         ) -> CVReturn;
@@ -336,10 +335,14 @@ pub mod core_video {
     impl_CFTypeDescription!(CVMetalTexture);
 
     impl CVMetalTexture {
-        pub fn as_texture_ref(&self) -> &metal::TextureRef {
+        pub fn as_texture_ref(&self) -> Option<&ProtocolObject<dyn MTLTexture>> {
+            // Safety: CVMetalTextureGetTexture follows the get rule, so the
+            // texture stays alive as long as this CVMetalTexture does, which
+            // the returned borrow is tied to.
             unsafe {
-                let texture = CVMetalTextureGetTexture(self.as_concrete_TypeRef());
-                metal::TextureRef::from_ptr(texture as *mut _)
+                CVMetalTextureGetTexture(self.as_concrete_TypeRef())
+                    .cast::<ProtocolObject<dyn MTLTexture>>()
+                    .as_ref()
             }
         }
     }

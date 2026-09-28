@@ -2876,13 +2876,7 @@ fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
     let size = lock.content_size();
     let drawable_size = size.to_device_pixels(scale_factor);
     if let Some(layer) = lock.renderer.layer() {
-        let layer: id = (layer as *const metal::MetalLayerRef).cast_mut().cast();
-        unsafe {
-            let _: () = msg_send![
-                layer,
-                setContentsScale: scale_factor as f64
-            ];
-        }
+        layer.setContentsScale(scale_factor as f64);
     }
 
     lock.renderer.update_drawable_size(drawable_size);
