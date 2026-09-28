@@ -32,3 +32,8 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+aes-gcm.workspace = true
+core-foundation.workspace = true
+security-framework.workspace = true

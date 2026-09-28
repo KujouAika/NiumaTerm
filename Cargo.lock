@@ -4342,8 +4342,10 @@ dependencies = [
 name = "nmt_remote"
 version = "1.5.8"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "base64 0.22.1",
+ "core-foundation 0.10.1",
  "dirs",
  "futures",
  "getrandom 0.4.3",
@@ -4353,6 +4355,7 @@ dependencies = [
  "nmt_remote_core",
  "nmt_terminal",
  "parking_lot",
+ "security-framework",
  "serde",
  "serde_json",
  "tempfile",

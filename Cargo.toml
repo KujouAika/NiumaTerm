@@ -113,6 +113,9 @@ snow = "0.10"
 spake2 = "0.4"
 # LAN discovery of hosts (DNS-SD), which mobile platforms browse natively.
 mdns-sd = "0.21"
+# The macOS login Keychain, which holds the key that seals remote-session
+# secrets at rest.
+security-framework = "3.7"
 
 # GPUI fork
 collections = { path = "third_party/gpui/collections" }

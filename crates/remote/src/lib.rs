@@ -25,7 +25,7 @@ mod link_tests;
 #[cfg(test)]
 mod loopback_tests;
 #[cfg(test)]
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod store_tests;
 #[cfg(test)]
 mod stream_tests;
