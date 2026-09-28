@@ -39,7 +39,7 @@ $protected_files
 Code files:
 $code_files
 EOF
-    exit 1
+    failed=1
 }
 
 check_no_incomplete_openspec_changes() {
@@ -55,7 +55,7 @@ pre-commit: unfinished spec documents cannot be committed
 
 $incomplete_spec_files
 EOF
-    exit 1
+    failed=1
 }
 
 check_third_party_dirs_are_separate() {
@@ -75,7 +75,7 @@ $isolated_files
 Other staged files:
 $other_files
 EOF
-        exit 1
+        failed=1
     done
 }
 
@@ -89,7 +89,7 @@ pre-commit: refusing protected-path commit on main
 
 $protected_files
 EOF
-    exit 1
+    failed=1
 }
 
 check_no_ai_slop_marker() {
@@ -114,7 +114,7 @@ pre-commit: refusing to commit AI slop containing '$slop_markers'
 
 $slop
 EOF
-    exit 1
+    failed=1
 }
 
 check_comment_rationale() {
@@ -144,7 +144,7 @@ are allowed when the comment remains understandable without opening the referenc
 
 $instruction_refs
 EOF
-    exit 1
+    failed=1
 }
 
 check_no_xcode_signing_identity() {
@@ -178,7 +178,7 @@ team unset in Xcode's Signing & Capabilities tab.
 $personal_files
 $signing_lines
 EOF
-    exit 1
+    failed=1
 }
 
 check_readability() {
@@ -188,28 +188,30 @@ check_readability() {
         return 0
     fi
 
-    echo "pre-commit: checking readability of staged Rust changes"
-    cargo run --quiet --locked --manifest-path tools/readability/Cargo.toml -- --staged
+    if ! readability_output=$(cargo run --quiet --locked \
+        --manifest-path tools/readability/Cargo.toml -- --staged 2>&1); then
+        printf 'pre-commit: readability issues\n\n%s\n\n' "$readability_output" >&2
+        failed=1
+    fi
 }
 
 check_rustfmt_and_clippy() {
     rust_files=$(git diff --cached --name-only --diff-filter=ACMRD -- '*.rs')
 
     if [ -z "$rust_files" ]; then
-        echo "pre-commit: no staged Rust files; skipping rustfmt and clippy"
         return 0
     fi
 
-    echo "pre-commit: staged Rust files detected"
-
     if ! command -v jq >/dev/null 2>&1; then
         echo "pre-commit: jq is required to select changed workspace members" >&2
-        exit 1
+        failed=1
+        return 0
     fi
 
-    workspace_metadata=$(cargo metadata --no-deps --format-version 1) || {
+    workspace_metadata=$(cargo metadata --no-deps --format-version 1 2>/dev/null) || {
         echo "pre-commit: failed to read Cargo workspace metadata" >&2
-        exit 1
+        failed=1
+        return 0
     }
 
     package_classes=$(
@@ -254,24 +256,27 @@ check_rustfmt_and_clippy() {
             '
     ) || {
         echo "pre-commit: failed to classify changed workspace members" >&2
-        exit 1
+        failed=1
+        return 0
     }
     package_classes=$(printf '%s\n' "$package_classes" | tr -d '\r')
 
     rustfmt_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
     if [ -n "$rustfmt_files" ]; then
-        echo "pre-commit: checking rustfmt on staged Rust files"
         set --
         while IFS= read -r file; do
             set -- "$@" "$file"
         done <<EOF
 $rustfmt_files
 EOF
-        rustfmt --edition 2024 --check --config skip_children=true "$@"
+        if ! rustfmt_output=$(rustfmt --edition 2024 --check \
+            --config skip_children=true "$@" 2>&1); then
+            printf 'pre-commit: rustfmt differences\n\n%s\n\n' "$rustfmt_output" >&2
+            failed=1
+        fi
     fi
 
     if [ -z "$package_classes" ]; then
-        echo "pre-commit: staged Rust files are outside workspace members; skipping clippy"
         return 0
     fi
 
@@ -296,13 +301,11 @@ EOF
             set -- "$@" -p "$package"
         done
 
-        echo "pre-commit: running clippy on changed non-first-party members"
-        CARGO_TARGET_DIR="$clippy_target_dir" cargo clippy --all-targets --no-deps --quiet "$@"
+        run_clippy "$@"
     fi
 
     first_party_packages=$(printf '%s\n' "$first_party_packages" | tr -d '\r')
     if [ -z "$first_party_packages" ]; then
-        echo "pre-commit: no changed first-party workspace members; skipping clippy::absolute_paths"
         return 0
     fi
 
@@ -311,8 +314,24 @@ EOF
         set -- "$@" -p "$package"
     done
 
-    echo "pre-commit: running strict clippy groups on changed first-party members"
-    CARGO_TARGET_DIR="$clippy_target_dir" cargo clippy --all-targets --no-deps --quiet "$@" -- -D clippy::absolute_paths -D clippy::complexity -D clippy::perf -D clippy::style
+    run_clippy "$@" -- -D clippy::absolute_paths -D clippy::complexity -D clippy::perf -D clippy::style
+}
+
+# Runs clippy and reports only its errors. A clippy run also prints every
+# warning in the changed crates plus Cargo's workspace-level warnings, which
+# would bury the few lines that block the commit. The short message format
+# puts each diagnostic on one line, so the errors can be picked out; if a
+# failure produced no recognizable error line, the full output is shown
+# rather than hiding why the run failed.
+run_clippy() {
+    if clippy_output=$(CARGO_TARGET_DIR="$clippy_target_dir" cargo clippy \
+        --all-targets --no-deps --quiet --message-format=short "$@" 2>&1); then
+        return 0
+    fi
+
+    clippy_errors=$(printf '%s\n' "$clippy_output" | grep -E '(^|: )error(\[[^]]*\])?:' || true)
+    printf 'pre-commit: clippy errors\n\n%s\n\n' "${clippy_errors:-$clippy_output}" >&2
+    failed=1
 }
 
 branch=$(git symbolic-ref --quiet --short HEAD || true)
@@ -327,6 +346,9 @@ code_file_pattern='(^|/)(Cargo[.](toml|lock)|build[.]rs)$|[.](rs|zig|c|cc|cpp|cx
 staged_files=$(git diff --cached --name-only --diff-filter=ACMRD)
 protected_files=$(printf '%s\n' "$staged_files" | grep -E "$protected_paths" || true)
 code_files=$(collect_staged_code_files)
+# Every check runs even after one fails, so a single attempt reports every
+# problem instead of revealing them one commit attempt at a time.
+failed=0
 
 check_no_incomplete_openspec_changes
 check_ai_docs_are_separate
@@ -337,3 +359,8 @@ check_comment_rationale
 check_no_xcode_signing_identity
 check_readability
 check_rustfmt_and_clippy
+
+if [ "$failed" -ne 0 ]; then
+    echo "pre-commit: commit rejected; fix the issues above" >&2
+    exit 1
+fi
