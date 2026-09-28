@@ -2,6 +2,7 @@ import SwiftUI
 import Observation
 import UIKit
 import UserNotifications
+import Network
 import os
 import NiumaTermCore
 
@@ -21,6 +22,10 @@ final class AppModel {
     @ObservationIgnored private var agentModels: [String: AgentSessionModel] = [:]
     @ObservationIgnored private var terminalModels: [String: TerminalSessionModel] = [:]
 
+    /// Tells the core when the phone's network changes, which iOS reports
+    /// only to the app.
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+
     /// The APNs device token, once iOS issued one.
     @ObservationIgnored private var pushToken: String?
     @ObservationIgnored private let pushLog = Logger(subsystem: "io.f32.NiumaTermMobile", category: "push")
@@ -36,6 +41,12 @@ final class AppModel {
             let events = CoreEvents(app: self)
             self.events = events
             core.observe(observer: events)
+
+            // Joining another Wi-Fi network may put the phone on a host's
+            // LAN: links through a relay then try going direct at once, and
+            // every link checks it still reaches its host.
+            pathMonitor.pathUpdateHandler = { _ in core.networkChanged() }
+            pathMonitor.start(queue: DispatchQueue(label: "io.f32.NiumaTermMobile.network"))
         } catch {
             startupError = error.displayText
         }

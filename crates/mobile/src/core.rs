@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use nmt_platform::runtime;
-use nmt_remote::client;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::store::{PairedHost, load_hosts, load_or_create_identity, save_hosts};
+use nmt_remote::{client, notify_network_changed};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
@@ -125,6 +125,13 @@ impl MobileCore {
                 paired.remote.stop_listing();
             }
         }
+    }
+
+    /// The phone's network changed (from `NWPathMonitor`): links check they
+    /// still reach their hosts, and links through a relay try the LAN, which
+    /// may now be the host's.
+    pub fn network_changed(&self) {
+        notify_network_changed();
     }
 
     /// Pair with a host from a scanned or pasted `niumaterm://pair` link, or
