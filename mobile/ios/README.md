@@ -69,6 +69,28 @@ Core Text, redrawing only the rows each frame changed (design doc §8.2).
 Without a relay the app uses the LAN address in the pairing link; with one it
 goes through the relay (design doc §7.1).
 
+## Push notifications
+
+A host pushes to this phone once it has been away from the host for five
+minutes: when an agent finishes, fails, needs approval, or asks a question,
+for the kinds left on in Settings. The host seals the text; the extension in
+`NotificationService/` opens it, and falls back to a generic "Agent update"
+when it cannot.
+
+Pushes need a relay that holds the developer account's APNs key (see
+`relay/README.md`), named in `Config/Local.xcconfig`:
+
+```text
+NMT_PUSH_ENDPOINT = https:/$()/<worker>.workers.dev/v1/push
+```
+
+Without it the app asks hosts for no pushes. Debug builds use the APNs
+sandbox, and Apple-silicon simulators receive real sandbox pushes; archives
+for TestFlight use production.
+
+The project is generated from `project.yml` with XcodeGen
+(`brew install xcodegen`, then `xcodegen` here) and both are committed.
+
 ## TestFlight
 
 `scripts/ios-testflight.sh` builds the core for release, archives the app
@@ -101,6 +123,9 @@ binary's imports (`nm -u`) and declare any new ones there.
 | Terminal drawing and gestures | `Terminal/TerminalSurface.swift` |
 | Keyboard, input methods, hardware keys | `Terminal/TerminalInput.swift` |
 | Liquid Glass with iOS 18 fallbacks | `Compat/Compat.swift` |
+| Push registration, notification taps | `App/AppModel.swift`, `App/AppDelegate.swift` |
+| Push keys shared with the extension | `Push/PushKeys.swift` |
+| Opening sealed pushes | `../NotificationService/NotificationService.swift` |
 
 ## Fonts
 

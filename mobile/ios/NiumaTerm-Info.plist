@@ -20,6 +20,13 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Where hosts send this build's pushes, from NMT_PUSH_ENDPOINT; empty
+	     asks hosts for no pushes. And the keychain group the notification
+	     extension reads push keys from. -->
+	<key>NMTPushEndpoint</key>
+	<string>$(NMT_PUSH_ENDPOINT)</string>
+	<key>NMTPushKeyGroup</key>
+	<string>$(AppIdentifierPrefix)$(NMT_APP_BUNDLE_ID).shared</string>
 	<!-- Export compliance, answered once here instead of on every upload.
 	     The encryption (Noise with standard algorithms) only protects the
 	     user's own data between their devices and computers, which the

@@ -1,5 +1,5 @@
-# XcodeGen spec (design doc §5). Optional: `xcodegen` regenerates NiumaTerm.xcodeproj.
-# Use it once you add the Notification Service Extension.
+# XcodeGen spec. NiumaTerm.xcodeproj is generated from it: after editing
+# this file, run `xcodegen` in mobile/ios and commit both.
 name: NiumaTerm
 options:
   deploymentTarget:
@@ -16,23 +16,57 @@ targets:
   NiumaTerm:
     type: application
     platform: iOS
-    sources: [NiumaTerm]
+    # A synchronized folder: files added under NiumaTerm/ join the target
+    # without editing the project.
+    sources:
+      - path: NiumaTerm
+        type: syncedFolder
     # Team ID and bundle ID come from here and a gitignored Local.xcconfig.
     configFiles:
       Debug: Config/Signing.xcconfig
       Release: Config/Signing.xcconfig
     dependencies:
       - package: NiumaTermCore
+      - target: NiumaTermNotifications
     settings:
       base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Config/NiumaTerm.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: NiumaTerm-Info.plist
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to NiumaTerm on a computer in this network.
         INFOPLIST_KEY_CFBundleDisplayName: NiumaTerm
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSCameraUsageDescription: Scan the pairing QR code shown by NiumaTerm on your computer.
         INFOPLIST_KEY_NSFaceIDUsageDescription: Unlock NiumaTerm when returning to the app.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to NiumaTerm on a computer in this network.
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  # Opens sealed push notifications before they are shown (see
+  # NotificationService/NotificationService.swift).
+  NiumaTermNotifications:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+        type: syncedFolder
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Config/NiumaTermNotifications.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: $(NMT_APP_BUNDLE_ID).notifications
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NotificationService-Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: NiumaTerm Notifications

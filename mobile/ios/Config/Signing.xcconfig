@@ -18,4 +18,13 @@
 #include? "Local.xcconfig"
 
 DEVELOPMENT_TEAM = $(NMT_DEVELOPMENT_TEAM)
-PRODUCT_BUNDLE_IDENTIFIER = $(NMT_BUNDLE_ID:default=io.f32.NiumaTermMobile)
+
+// The app's bundle identifier. The notification extension is named after
+// it, and both share a keychain group derived from it.
+NMT_APP_BUNDLE_ID = $(NMT_BUNDLE_ID:default=io.f32.NiumaTermMobile)
+PRODUCT_BUNDLE_IDENTIFIER = $(NMT_APP_BUNDLE_ID)
+
+// Where hosts send this build's pushes: the relay deployment that holds the
+// APNs key of the account signing the build. Set NMT_PUSH_ENDPOINT in
+// Local.xcconfig; without it the app asks hosts for no pushes. An xcconfig
+// value cannot contain "//", so write the URL as https:/$()/host/v1/push.

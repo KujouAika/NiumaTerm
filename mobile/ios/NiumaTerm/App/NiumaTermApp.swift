@@ -3,6 +3,7 @@ import CoreText
 
 @main
 struct NiumaTermApp: App {
+    @UIApplicationDelegateAdaptor private var delegate: AppDelegate
     @State private var app = AppModel()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appearance") private var appearance = AppAppearance.system
@@ -18,6 +19,10 @@ struct NiumaTermApp: App {
                 .tint(Theme.accent)
                 .onChange(of: appearance, initial: true) { _, appearance in
                     appearance.apply()
+                }
+                .task {
+                    delegate.app = app
+                    await app.startPush()
                 }
         }
         // iOS suspends a background app within seconds, so the links wind

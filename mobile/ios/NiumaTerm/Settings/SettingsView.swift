@@ -42,7 +42,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Notifications")
                 } footer: {
-                    Text("Sent by each computer while this phone is not viewing the session.")
+                    Text("A computer sends these once this phone has been away from it for five minutes, and stops when you are back at the computer.")
                 }
                 Section("Terminal") {
                     Picker("Font", selection: $fontName) {
@@ -71,6 +71,9 @@ struct SettingsView: View {
                 }
             }
             .tint(Theme.accent)
+            .onChange(of: [notifyTurnFinished, notifyApproval, notifyQuestion, notifyError]) {
+                app.pushSettingsChanged()
+            }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

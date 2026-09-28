@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  aps-environment: pushes. Development builds get sandbox tokens; exporting
+  for TestFlight or the App Store signs the build for production.
+
+  keychain-access-groups: the app's own group comes first because new keychain
+  items go to the first group, and the Rust core's items have always lived in
+  the app's own group. The shared group holds the per-host push keys the
+  notification extension opens pushes with.
+-->
+<dict>
+	<key>aps-environment</key>
+	<string>development</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(NMT_APP_BUNDLE_ID)</string>
+		<string>$(AppIdentifierPrefix)$(NMT_APP_BUNDLE_ID).shared</string>
+	</array>
+</dict>
+</plist>

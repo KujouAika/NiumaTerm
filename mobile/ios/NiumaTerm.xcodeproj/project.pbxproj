@@ -7,117 +7,210 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4E0000000000000000000020 /* NiumaTermCore in Frameworks */ = {isa = PBXBuildFile; productRef = 4E0000000000000000000021 /* NiumaTermCore */; };
+		9A0B6E4647C231AC3197A471 /* NiumaTermNotifications.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EF17EC71E4B37736500E003B /* NiumaTermNotifications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AF76E82EC92D15F6C28E63D3 /* NiumaTermCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9C34EA59D6F3CE74FD82C4A1 /* NiumaTermCore */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		16A769750B360C67E1C2F566 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6089AEC6FD9F7517AC59661C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 35A02660233E2307F0391839;
+			remoteInfo = NiumaTermNotifications;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BD54F3ECA4586E3EE153304E /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				9A0B6E4647C231AC3197A471 /* NiumaTermNotifications.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		4E0000000000000000000030 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Signing.xcconfig; path = Config/Signing.xcconfig; sourceTree = "<group>"; };
-		4E0000000000000000000001 /* NiumaTerm.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NiumaTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		09B822E4B92C737499B7C10A /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		2C23F042ADC2D958665B2E3D /* NiumaTermCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = NiumaTermCore; path = Packages/NiumaTermCore; sourceTree = SOURCE_ROOT; };
+		970586C5D530B606DE81F3FC /* NiumaTerm.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NiumaTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EF17EC71E4B37736500E003B /* NiumaTermNotifications.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NiumaTermNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		4E0000000000000000000002 /* NiumaTerm */ = {
+		2844D43CB048B6F321F26F35 /* NotificationService */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = NotificationService;
+			sourceTree = "<group>";
+		};
+		B48B6D9464F8E5E409925620 /* NiumaTerm */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
 			path = NiumaTerm;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		4E0000000000000000000003 /* Frameworks */ = {
+		D1FFC17799FE714A24549450 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4E0000000000000000000020 /* NiumaTermCore in Frameworks */,
+				AF76E82EC92D15F6C28E63D3 /* NiumaTermCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		4E0000000000000000000004 = {
+		6A1D69FDC11E0643433F389F = {
 			isa = PBXGroup;
 			children = (
-				4E0000000000000000000030 /* Signing.xcconfig */,
-				4E0000000000000000000002 /* NiumaTerm */,
-				4E0000000000000000000005 /* Products */,
+				E8B74B291C5C4FB14058AA72 /* Config */,
+				B48B6D9464F8E5E409925620 /* NiumaTerm */,
+				2844D43CB048B6F321F26F35 /* NotificationService */,
+				7304DD0CE19E5E60F0194426 /* Packages */,
+				A119FA9BBB0C2EB1BAA7F479 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		4E0000000000000000000005 /* Products */ = {
+		7304DD0CE19E5E60F0194426 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				4E0000000000000000000001 /* NiumaTerm.app */,
+				2C23F042ADC2D958665B2E3D /* NiumaTermCore */,
+			);
+			path = Packages;
+			sourceTree = "<group>";
+		};
+		A119FA9BBB0C2EB1BAA7F479 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				970586C5D530B606DE81F3FC /* NiumaTerm.app */,
+				EF17EC71E4B37736500E003B /* NiumaTermNotifications.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		E8B74B291C5C4FB14058AA72 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				09B822E4B92C737499B7C10A /* Signing.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		4E0000000000000000000006 /* NiumaTerm */ = {
+		35A02660233E2307F0391839 /* NiumaTermNotifications */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4E000000000000000000000C /* Build configuration list for PBXNativeTarget "NiumaTerm" */;
+			buildConfigurationList = 2CFF264DA8CFF4C69E28ECB7 /* Build configuration list for PBXNativeTarget "NiumaTermNotifications" */;
 			buildPhases = (
-				4E0000000000000000000007 /* Sources */,
-				4E0000000000000000000003 /* Frameworks */,
-				4E0000000000000000000008 /* Resources */,
+				5C4563856D3D7C086DD92589 /* Sources */,
+				5821EC4A210B7CF616C05060 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				4E0000000000000000000002 /* NiumaTerm */,
+				2844D43CB048B6F321F26F35 /* NotificationService */,
+			);
+			name = NiumaTermNotifications;
+			packageProductDependencies = (
+			);
+			productName = NiumaTermNotifications;
+			productReference = EF17EC71E4B37736500E003B /* NiumaTermNotifications.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		37DB34685AA923CB302F704E /* NiumaTerm */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 737CB33AD57EC7827BE8AAA5 /* Build configuration list for PBXNativeTarget "NiumaTerm" */;
+			buildPhases = (
+				7DE58BE60094EB1859C13792 /* Sources */,
+				B6E3D8B6D27EED3E633EB912 /* Resources */,
+				D1FFC17799FE714A24549450 /* Frameworks */,
+				BD54F3ECA4586E3EE153304E /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1439A0DE4EE8BF28CAF105D6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B48B6D9464F8E5E409925620 /* NiumaTerm */,
 			);
 			name = NiumaTerm;
 			packageProductDependencies = (
-				4E0000000000000000000021 /* NiumaTermCore */,
+				9C34EA59D6F3CE74FD82C4A1 /* NiumaTermCore */,
 			);
 			productName = NiumaTerm;
-			productReference = 4E0000000000000000000001 /* NiumaTerm.app */;
+			productReference = 970586C5D530B606DE81F3FC /* NiumaTerm.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		4E0000000000000000000009 /* Project object */ = {
+		6089AEC6FD9F7517AC59661C /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2600;
-				LastUpgradeCheck = 2700;
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
 				TargetAttributes = {
-					4E0000000000000000000006 = {
-						CreatedOnToolsVersion = 26.0;
+					35A02660233E2307F0391839 = {
+						DevelopmentTeam = "$(NMT_DEVELOPMENT_TEAM)";
+						ProvisioningStyle = Automatic;
+					};
+					37DB34685AA923CB302F704E = {
+						DevelopmentTeam = "$(NMT_DEVELOPMENT_TEAM)";
+						ProvisioningStyle = Automatic;
 					};
 				};
 			};
-			buildConfigurationList = 4E000000000000000000000D /* Build configuration list for PBXProject "NiumaTerm" */;
+			buildConfigurationList = 593235E5CF7AF0AE43BA0675 /* Build configuration list for PBXProject "NiumaTerm" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
-				en,
 				Base,
-				"zh-Hans",
+				en,
 			);
-			mainGroup = 4E0000000000000000000004;
+			mainGroup = 6A1D69FDC11E0643433F389F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				4E0000000000000000000022 /* XCLocalSwiftPackageReference "Packages/NiumaTermCore" */,
+				949F284F683CE0F026CFC5E1 /* XCLocalSwiftPackageReference "Packages/NiumaTermCore" */,
 			);
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 4E0000000000000000000005 /* Products */;
+			productRefGroup = A119FA9BBB0C2EB1BAA7F479 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				4E0000000000000000000006 /* NiumaTerm */,
+				37DB34685AA923CB302F704E /* NiumaTerm */,
+				35A02660233E2307F0391839 /* NiumaTermNotifications */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		4E0000000000000000000008 /* Resources */ = {
+		5821EC4A210B7CF616C05060 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B6E3D8B6D27EED3E633EB912 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -127,7 +220,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		4E0000000000000000000007 /* Sources */ = {
+		5C4563856D3D7C086DD92589 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7DE58BE60094EB1859C13792 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -136,19 +236,118 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		1439A0DE4EE8BF28CAF105D6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 35A02660233E2307F0391839 /* NiumaTermNotifications */;
+			targetProxy = 16A769750B360C67E1C2F566 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
-		4E000000000000000000000E /* Debug */ = {
+		40A04CD734CA2632658B8CA2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 09B822E4B92C737499B7C10A /* Signing.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Config/NiumaTermNotifications.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "NotificationService-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "NiumaTerm Notifications";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NMT_APP_BUNDLE_ID).notifications";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		47990870281C39206ABD252E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 09B822E4B92C737499B7C10A /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Config/NiumaTerm.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "NiumaTerm-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = NiumaTerm;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by NiumaTerm on your computer.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock NiumaTerm when returning to the app.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to NiumaTerm on a computer in this network.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		6B13A98B28C679C1E39CC865 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 09B822E4B92C737499B7C10A /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Config/NiumaTerm.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "NiumaTerm-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = NiumaTerm;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by NiumaTerm on your computer.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock NiumaTerm when returning to the app.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to NiumaTerm on a computer in this network.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		84CCB2D20026B35ECE58A3AB /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
 				CLANG_WARN_COMMA = YES;
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
 				CLANG_WARN_EMPTY_BODY = YES;
 				CLANG_WARN_ENUM_CONVERSION = YES;
 				CLANG_WARN_INFINITE_RECURSION = YES;
@@ -156,190 +355,170 @@
 				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
 				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
 				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
 				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
 				CLANG_WARN_STRICT_PROTOTYPES = YES;
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		990C3C6A341A08B4C60EA560 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
 					"DEBUG=1",
-					"$(inherited)",
 				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
-		4E000000000000000000000F /* Release */ = {
+		EB20063CF1ACF0188AFCED72 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 09B822E4B92C737499B7C10A /* Signing.xcconfig */;
 			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MTL_ENABLE_DEBUG_INFO = NO;
+				CODE_SIGN_ENTITLEMENTS = Config/NiumaTermNotifications.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "NotificationService-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "NiumaTerm Notifications";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NMT_APP_BUNDLE_ID).notifications";
 				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
-		4E0000000000000000000010 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = 4E0000000000000000000030 /* Signing.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "NiumaTerm-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = NiumaTerm;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by NiumaTerm on your computer.";
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock NiumaTerm when returning to the app.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to NiumaTerm on a computer in this network.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
-		};
-		4E0000000000000000000011 /* Release */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = 4E0000000000000000000030 /* Signing.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "NiumaTerm-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = NiumaTerm;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by NiumaTerm on your computer.";
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock NiumaTerm when returning to the app.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to NiumaTerm on a computer in this network.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		4E000000000000000000000C /* Build configuration list for PBXNativeTarget "NiumaTerm" */ = {
+		2CFF264DA8CFF4C69E28ECB7 /* Build configuration list for PBXNativeTarget "NiumaTermNotifications" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				4E0000000000000000000010 /* Debug */,
-				4E0000000000000000000011 /* Release */,
+				EB20063CF1ACF0188AFCED72 /* Debug */,
+				40A04CD734CA2632658B8CA2 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
-		4E000000000000000000000D /* Build configuration list for PBXProject "NiumaTerm" */ = {
+		593235E5CF7AF0AE43BA0675 /* Build configuration list for PBXProject "NiumaTerm" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				4E000000000000000000000E /* Debug */,
-				4E000000000000000000000F /* Release */,
+				990C3C6A341A08B4C60EA560 /* Debug */,
+				84CCB2D20026B35ECE58A3AB /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
+		};
+		737CB33AD57EC7827BE8AAA5 /* Build configuration list for PBXNativeTarget "NiumaTerm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				47990870281C39206ABD252E /* Debug */,
+				6B13A98B28C679C1E39CC865 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		4E0000000000000000000022 /* XCLocalSwiftPackageReference "Packages/NiumaTermCore" */ = {
+		949F284F683CE0F026CFC5E1 /* XCLocalSwiftPackageReference "Packages/NiumaTermCore" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/NiumaTermCore;
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		4E0000000000000000000021 /* NiumaTermCore */ = {
+		9C34EA59D6F3CE74FD82C4A1 /* NiumaTermCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = NiumaTermCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
-	rootObject = 4E0000000000000000000009 /* Project object */;
+	rootObject = 6089AEC6FD9F7517AC59661C /* Project object */;
 }
