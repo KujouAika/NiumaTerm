@@ -147,6 +147,40 @@ EOF
     exit 1
 }
 
+check_no_xcode_signing_identity() {
+    # A team ID, provisioning profile, or named certificate ties the Xcode
+    # project to one developer account. Those live in the gitignored
+    # mobile/ios/Config/Local.xcconfig or in environment variables. Picking a
+    # team in Xcode's Signing & Capabilities tab writes it into project.pbxproj
+    # instead, where it is easy to commit without noticing. Values that expand
+    # a build setting, such as $(NMT_DEVELOPMENT_TEAM), stay allowed.
+    # Deletions stay allowed, so a file committed by mistake can be removed.
+    personal_files=$(git diff --cached --name-only --diff-filter=ACMR |
+        grep -E '(^|/)(Local[.]xcconfig$|xcuserdata/)' || true)
+    signing_lines=$(git diff --cached --diff-filter=ACMR -U0 -- '*.pbxproj' '*.xcconfig' |
+        awk '
+            /^\+\+\+ b\// { file = substr($0, 7); next }
+            /^\+/ { print file ": " substr($0, 2) }
+        ' |
+        grep -E ': [[:space:]]*"?(DEVELOPMENT_TEAM|PROVISIONING_PROFILE(_SPECIFIER)?)(\[[^]]*\])?"?[[:space:]]*=[[:space:]]*"?[^"$;[:space:]]|: [[:space:]]*"?CODE_SIGN_IDENTITY(\[[^]]*\])?"?[[:space:]]*=.*:' ||
+        true)
+    if [ -z "$personal_files" ] && [ -z "$signing_lines" ]; then
+        return 0
+    fi
+
+    cat >&2 <<EOF
+pre-commit: refusing to commit a personal Xcode signing identity
+
+Set the team and bundle ID in mobile/ios/Config/Local.xcconfig (gitignored) or
+the NMT_DEVELOPMENT_TEAM and NMT_BUNDLE_ID environment variables, and leave the
+team unset in Xcode's Signing & Capabilities tab.
+
+$personal_files
+$signing_lines
+EOF
+    exit 1
+}
+
 check_readability() {
     readability_files=$(git diff --cached --name-only --no-renames \
         --diff-filter=ACM -- ':(glob)crates/**/*.rs')
@@ -300,5 +334,6 @@ check_third_party_dirs_are_separate
 check_protected_paths_on_main
 check_no_ai_slop_marker
 check_comment_rationale
+check_no_xcode_signing_identity
 check_readability
 check_rustfmt_and_clippy
