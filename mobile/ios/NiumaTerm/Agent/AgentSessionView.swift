@@ -120,11 +120,6 @@ struct AgentSessionView: View {
     }
 }
 
-private struct EndedSheetItem: Identifiable {
-    let end: ViewEnd
-    var id: ViewEnd { end }
-}
-
 // MARK: Transcript rows
 
 struct TranscriptRow: View {

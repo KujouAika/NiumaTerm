@@ -5,16 +5,17 @@ protocol, cryptography, reconnects, and the agent view replica live in the
 Rust core `crates/mobile` (`nmt_mobile`), which UniFFI exposes to Swift as the
 `NiumaTermCore` module.
 
-Status: pairing, the host and session list, and agent sessions (transcript,
+Status: pairing, the host and session list, agent sessions (transcript,
 send / queue / withdraw, interrupt, approvals, model and effort, rename, the
-desktop taking a session back and the phone reconnecting) run on the real
-core. Terminal sessions are the next milestone (P2): opening one shows a
-placeholder, and the screens under `Terminal/` are still the prototype fed by
-`Core/MockData.swift`.
+desktop taking a session back and the phone reconnecting), and terminal
+sessions run on the real core. A terminal runs the desktop's libghostty-vt
+engine in the core and is drawn by `Terminal/TerminalSurface.swift` with
+Core Text, redrawing only the rows each frame changed (design doc §8.2).
 
 ## Build
 
-1. Xcode 26 or later, and the Rust iOS targets:
+1. Xcode 26 or later, the Rust iOS targets, and the Zig version the
+   desktop build uses (the core compiles libghostty-vt for iOS with it):
 
    ```sh
    rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -29,8 +30,8 @@ placeholder, and the screens under `Terminal/` are still the prototype fed by
    scripts/build-ios-core.sh --debug --sim  # faster while developing
    ```
 
-   Run it again after changing `crates/mobile`, `crates/remote`, or
-   `crates/agent`.
+   Run it again after changing `crates/mobile`, `crates/remote`,
+   `crates/terminal`, or `crates/agent`.
 
 3. Set your signing identity outside the project file, so it never reaches
    the repository:
@@ -73,14 +74,16 @@ goes through the relay (design doc §7.1).
 | Screen | File |
 | --- | --- |
 | Hosts and sessions | `Hosts/HostListView.swift` |
-| New agent (profile × workspace from `host.info`) | `Hosts/NewSessionSheet.swift` |
+| New terminal, or agent (profile × workspace from `host.info`) | `Hosts/NewSessionSheet.swift` |
 | Pairing: scan, paste a link, or type a code | `Hosts/PairingView.swift` |
 | Agent session and transcript | `Agent/AgentSessionView.swift`, `Agent/AgentSessionModel.swift` |
 | Composer, model and effort | `Agent/ComposerView.swift` |
 | Approval, session taken back or ended | `Agent/AgentSheets.swift` |
 | Core callbacks onto the main actor | `Core/CoreEvents.swift` |
 | App state over `MobileCore` | `App/AppModel.swift` |
-| Terminal prototype | `Terminal/` |
+| Terminal screen, accessory keys | `Terminal/TerminalSessionView.swift`, `Terminal/TerminalSessionModel.swift` |
+| Terminal drawing and gestures | `Terminal/TerminalSurface.swift` |
+| Keyboard, input methods, hardware keys | `Terminal/TerminalInput.swift` |
 | Liquid Glass with iOS 18 fallbacks | `Compat/Compat.swift` |
 
 ## Fonts

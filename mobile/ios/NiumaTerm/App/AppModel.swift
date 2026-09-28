@@ -4,7 +4,7 @@ import UIKit
 import NiumaTermCore
 
 /// App-wide state over `MobileCore` (design doc §4.2): paired hosts, their
-/// live session lists, and the open agent views.
+/// live session lists, and the open agent and terminal views.
 @MainActor
 @Observable
 final class AppModel {
@@ -17,6 +17,7 @@ final class AppModel {
     @ObservationIgnored private var core: MobileCore?
     @ObservationIgnored private var events: CoreEvents?
     @ObservationIgnored private var agentModels: [String: AgentSessionModel] = [:]
+    @ObservationIgnored private var terminalModels: [String: TerminalSessionModel] = [:]
 
     init() {
         do {
@@ -95,6 +96,9 @@ final class AppModel {
         for key in agentModels.keys where key.hasPrefix(hostID + "/") {
             agentModels[key] = nil
         }
+        for key in terminalModels.keys where key.hasPrefix(hostID + "/") {
+            terminalModels[key] = nil
+        }
     }
 
     func hostOffer(_ hostID: String) async throws -> HostOffer {
@@ -127,5 +131,37 @@ final class AppModel {
     func closeAgent(_ route: SessionRoute) {
         agentModels["\(route.hostID)/\(route.sessionID)"]?.detach()
         agentModels["\(route.hostID)/\(route.sessionID)"] = nil
+    }
+
+    /// Start a shell on the host and return the route of its screen, whose
+    /// view is already attached.
+    func openTerminal(hostID: String) async throws -> SessionRoute {
+        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        let grid = TerminalMetrics.estimatedGrid()
+        let events = TerminalEvents()
+        let handle = try await core.openTerminal(host: hostID, cols: UInt16(grid.cols), rows: UInt16(grid.rows),
+                                                 observer: events)
+        let route = SessionRoute(hostID: hostID, sessionID: handle.session(), kind: .terminal)
+        terminalModels["\(route.hostID)/\(route.sessionID)"] = TerminalSessionModel(handle: handle, events: events,
+                                                                                     route: route)
+        return route
+    }
+
+    /// Attaching takes control of the session from the desktop (§8.4), as
+    /// for agents; `closeTerminal` detaches.
+    func terminalModel(for route: SessionRoute, session: Session?) -> TerminalSessionModel? {
+        let key = "\(route.hostID)/\(route.sessionID)"
+        if let model = terminalModels[key] { return model }
+        guard let core else { return nil }
+        let model = TerminalSessionModel(core: core, route: route, title: session?.title ?? "Terminal")
+        terminalModels[key] = model
+        return model
+    }
+
+    /// Drop the view of a terminal, which detaches from it on the host; the
+    /// shell keeps running there.
+    func closeTerminal(_ route: SessionRoute) {
+        terminalModels["\(route.hostID)/\(route.sessionID)"]?.detach()
+        terminalModels["\(route.hostID)/\(route.sessionID)"] = nil
     }
 }

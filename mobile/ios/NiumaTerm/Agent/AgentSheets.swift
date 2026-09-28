@@ -53,6 +53,12 @@ struct ApprovalSheet: View {
     }
 }
 
+/// Presents `EndedSheet` for as long as a view stays ended.
+struct EndedSheetItem: Identifiable {
+    let end: ViewEnd
+    var id: ViewEnd { end }
+}
+
 /// `session.ended` and a lost host (§8.4). Taken back offers Reconnect,
 /// which takes control again; a closed session only closes.
 struct EndedSheet: View {

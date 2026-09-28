@@ -1,8 +1,8 @@
 import SwiftUI
 import NiumaTermCore
 
-/// "+" on a host: a profile × workspace pair from `host.info` (§8.1).
-/// Terminals come with the terminal milestone.
+/// "+" on a host: a terminal, or an agent from a profile × workspace pair
+/// in `host.info` (§8.1).
 struct NewSessionSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -14,11 +14,13 @@ struct NewSessionSheet: View {
     @State private var workspace: String?
     @State private var starting = false
     @State private var startError: String?
+    @State private var openingTerminal = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    terminalChoice
                     if let offer {
                         form(offer)
                     } else if let loadError {
@@ -57,7 +59,7 @@ struct NewSessionSheet: View {
                 }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
-                        Text("New Agent").font(.system(size: 17, weight: .semibold))
+                        Text("New Session").font(.system(size: 17, weight: .semibold))
                         Text(host.name).font(.system(size: 12)).foregroundStyle(Theme.secondary)
                     }
                 }
@@ -69,6 +71,55 @@ struct NewSessionSheet: View {
     private var startLabel: String {
         guard let profile else { return "Start agent" }
         return "Start \(profile)"
+    }
+
+    private var terminalChoice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel("Terminal")
+            Button(action: openTerminal) {
+                HStack(spacing: 12) {
+                    Text(">_")
+                        .font(Theme.mono(14, weight: .semibold))
+                        .foregroundStyle(Theme.ink2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("New terminal").font(.system(size: 16)).foregroundStyle(Theme.ink)
+                        Text("The default shell on \(host.name)")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Theme.tertiary)
+                    }
+                    Spacer()
+                    if openingTerminal {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.tertiary)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 60)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .disabled(openingTerminal || starting)
+            .background(Color.white, in: .rect(cornerRadius: 22))
+        }
+    }
+
+    private func openTerminal() {
+        openingTerminal = true
+        startError = nil
+        Task {
+            do {
+                let route = try await app.openTerminal(hostID: host.id)
+                dismiss()
+                try? await Task.sleep(for: .milliseconds(350))
+                app.path.append(route)
+            } catch {
+                startError = error.displayText
+                openingTerminal = false
+            }
+        }
     }
 
     @ViewBuilder

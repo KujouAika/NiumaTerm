@@ -35,3 +35,16 @@ final class AgentEvents: AgentObserver, @unchecked Sendable {
         Task { @MainActor [weak model] in model?.viewChanged(transcriptFrom: transcriptFrom) }
     }
 }
+
+/// Tells a terminal screen its view changed. The core stops calling until
+/// the screen reads a frame, and the screen reads at most one per display
+/// refresh, so output floods never queue work on the main actor. The model
+/// is set after creation because a terminal opened here needs its observer
+/// before the model exists.
+final class TerminalEvents: TerminalObserver, @unchecked Sendable {
+    @MainActor weak var model: TerminalSessionModel?
+
+    func changed() {
+        Task { @MainActor [weak self] in self?.model?.viewChanged() }
+    }
+}

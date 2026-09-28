@@ -1,128 +1,129 @@
 import SwiftUI
+import NiumaTermCore
 
 struct TerminalSessionView: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.dismiss) private var dismiss
     @Bindable var model: TerminalSessionModel
-    let workspaceName: String
+    let hostName: String
 
-    @FocusState private var inputFocused: Bool
     @AppStorage("terminalFontSize") private var fontSize = 11.0
     @AppStorage("terminalFontName") private var fontName = "JetBrains Mono"
-    @State private var pinchBase: Double?
 
-    private var font: Font { Theme.terminalFont(fontSize, name: fontName) }
+    private var hostStatus: HostStatus? { app.host(model.route.hostID)?.status }
+
+    /// The screen's chrome follows the terminal's background, which the
+    /// program's theme decides, so bars and titles stay readable on it.
+    private var scheme: ColorScheme {
+        let rgb = model.background
+        let luma = 0.299 * Double((rgb >> 16) & 0xFF) + 0.587 * Double((rgb >> 8) & 0xFF) + 0.114 * Double(rgb & 0xFF)
+        return luma < 128 ? .dark : .light
+    }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
+        TerminalSurfaceView(model: model, fontSize: fontSize, fontName: fontName) { fontSize = $0 }
+            .background(Color(hex: model.background))
+            .overlay {
+                if !model.attached {
+                    VStack(spacing: 10) {
+                        if let notice = model.notice {
+                            Text(notice).foregroundStyle(Theme.attention)
+                        } else {
+                            ProgressView()
+                            Text("Connecting to \(hostName)…")
+                        }
                     }
-                    HStack(spacing: 0) {
-                        Text(model.prompt + model.input)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                        if model.ctrl { Text("^").foregroundStyle(Theme.accent) }
-                        Cursor(width: fontSize * 0.6, height: fontSize * 1.3)
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+                    .padding(40)
+                }
+            }
+            .overlay(alignment: .top) {
+                if model.attached && (hostStatus == .reconnecting || hostStatus == .connecting) {
+                    Label("Reconnecting to \(hostName)…", systemImage: "wifi.exclamationmark")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 14)
+                        .frame(height: 34)
+                        .glassCapsule()
+                        .padding(.top, 8)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if model.exited && model.ended == nil {
+                    ExitedBar { dismiss() }
+                } else {
+                    AccessoryBar(model: model)
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 1) {
+                        Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                        Text(model.attached ? "\(hostName) · \(model.cols)×\(model.rows)" : hostName)
+                            .font(Theme.mono(11.5))
+                            .foregroundStyle(.secondary)
                     }
-                    .id("cursor")
                 }
-                .font(font)
-                .monospacedDigit()
-                .foregroundStyle(Theme.ink)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .defaultScrollAnchor(.bottom)
-            .scrollDismissesKeyboard(.never)
-            .onChange(of: model.lines.count) { proxy.scrollTo("cursor", anchor: .bottom) }
-            .onChange(of: inputFocused) { proxy.scrollTo("cursor", anchor: .bottom) }
-        }
-        .contentShape(.rect)
-        .onTapGesture { inputFocused = true }
-        .simultaneousGesture(
-            MagnifyGesture()
-                .onChanged { value in
-                    let base = pinchBase ?? fontSize
-                    pinchBase = base
-                    fontSize = min(18, max(8, (base * value.magnification).rounded()))
-                }
-                .onEnded { _ in pinchBase = nil }
-        )
-        .background(Theme.terminalBackground)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-            // Real app: the phone's grid claims the PTY size while it has control.
-            model.cols = max(20, Int((size.width - 24) / (fontSize * 0.6)))
-            model.rows = max(8, Int(size.height / (fontSize * 1.45)))
-        }
-        .overlay(alignment: .bottomLeading) {
-            // Hidden input. Real app: a UIView adopting UITextInput so IME marked text draws at the cursor.
-            TextField("", text: $model.input)
-                .focused($inputFocused)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.return)
-                .onSubmit {
-                    model.submit()
-                    inputFocused = true
-                }
-                .onChange(of: model.input) { old, new in model.inputChanged(from: old, to: new) }
-                .frame(width: 1, height: 1)
-                .opacity(0.01)
-                .accessibilityHidden(true)
-        }
-        .safeAreaInset(edge: .bottom) {
-            AccessoryBar(model: model, keyboardShown: inputFocused) {
-                inputFocused.toggle()
-            }
-        }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
-                    Text(model.title).font(.system(size: 16, weight: .semibold))
-                    Text("\(workspaceName) · \(model.cols)×\(model.rows)")
-                        .font(Theme.mono(11.5))
-                        .foregroundStyle(Theme.secondary)
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("Copy all", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = model.lines.map { String($0.characters) }.joined(separator: "\n")
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Paste", systemImage: "doc.on.clipboard") { model.paste() }
+                        Button("End session", systemImage: "xmark.circle", role: .destructive) {
+                            model.terminate()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
                     }
-                    Button("Clear", systemImage: "eraser") { model.lines = [] }
-                    Toggle("Keep desktop width", isOn: .constant(false)).disabled(true)
-                } label: {
-                    Image(systemName: "ellipsis")
+                    .disabled(!model.attached || model.exited)
                 }
             }
-        }
+            .sheet(item: Binding(get: { model.ended.map(EndedSheetItem.init) }, set: { _ in })) { item in
+                EndedSheet(end: item.end, hostName: hostName, title: model.title,
+                           onReconnect: { model.takeControl() },
+                           onClose: {
+                               Task {
+                                   try? await Task.sleep(for: .milliseconds(300))
+                                   dismiss()
+                               }
+                           })
+                    .presentationDetents([.height(400)])
+                    .interactiveDismissDisabled()
+                    // The sheet draws in the app's light colors, so it
+                    // needs their background rather than glass tinted by
+                    // a dark terminal behind it.
+                    .environment(\.colorScheme, .light)
+                    .presentationBackground(Theme.sheet)
+            }
+            .toolbarColorScheme(scheme, for: .navigationBar)
+            .environment(\.colorScheme, scheme)
     }
 }
 
-private struct Cursor: View {
-    let width: CGFloat
-    let height: CGFloat
+/// The shell ended on the host.
+private struct ExitedBar: View {
+    var onClose: () -> Void
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.55)) { context in
-            let on = Int(context.date.timeIntervalSinceReferenceDate / 0.55) % 2 == 0
-            Rectangle()
-                .fill(Theme.ink)
-                .frame(width: width, height: height)
-                .opacity(on ? 1 : 0)
+        HStack {
+            Text("The shell exited.")
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Close", action: onClose)
+                .font(.system(size: 15, weight: .semibold))
+                .padding(.horizontal, 18)
+                .frame(height: 40)
+                .glassCapsule(interactive: true)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 }
 
 /// Glass key row above the keyboard (§8.2).
 struct AccessoryBar: View {
     @Bindable var model: TerminalSessionModel
-    let keyboardShown: Bool
-    var toggleKeyboard: () -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -132,7 +133,7 @@ struct AccessoryBar: View {
                     Button { model.press(key) } label: {
                         Text(key.label)
                             .font(Theme.mono(14, weight: .medium))
-                            .foregroundStyle(on ? Color.white : Theme.ink)
+                            .foregroundStyle(on ? Color.white : Color.primary)
                             .padding(.horizontal, 10)
                             .frame(minWidth: 40, minHeight: 40)
                             .background(on ? Theme.accent : Color.clear, in: .capsule)
@@ -140,18 +141,19 @@ struct AccessoryBar: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Button(action: toggleKeyboard) {
-                    Image(systemName: keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
+                Button { model.toggleKeyboard() } label: {
+                    Image(systemName: model.keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
                         .font(.system(size: 15))
-                        .foregroundStyle(Theme.ink)
+                        .foregroundStyle(.primary)
                         .frame(width: 44, height: 40)
                         .glassCapsule(interactive: true)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(keyboardShown ? "Hide keyboard" : "Show keyboard")
+                .accessibilityLabel(model.keyboardShown ? "Hide keyboard" : "Show keyboard")
             }
             .padding(.horizontal, 8)
         }
         .padding(.vertical, 6)
+        .disabled(!model.attached)
     }
 }

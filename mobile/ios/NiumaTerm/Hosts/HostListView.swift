@@ -28,7 +28,7 @@ struct HostListView: View {
                             .listRowBackground(Theme.rowBackground)
                         }
                         if host.isOnline && host.sessions.isEmpty {
-                            Text("No sessions. Tap + to start an agent.")
+                            Text("No sessions. Tap + to start a terminal or an agent.")
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.tertiary)
                                 .listRowBackground(Theme.rowBackground)
@@ -47,7 +47,7 @@ struct HostListView: View {
                     ContentUnavailableView {
                         Label("No computers yet", systemImage: "desktopcomputer")
                     } description: {
-                        Text("Pair this phone with NiumaTerm on your computer to follow its agents here.")
+                        Text("Pair this phone with NiumaTerm on your computer to use its terminals and agents here.")
                     } actions: {
                         Button("Add computer") { pairing = PairingRequest(link: nil) }
                             .buttonStyle(.borderedProminent)
@@ -167,8 +167,10 @@ struct SessionScreen: View {
                     .onDisappear { app.closeAgent(route) }
             }
         case .terminal:
-            ContentUnavailableView("Terminal comes next", systemImage: "apple.terminal",
-                                   description: Text("This build follows agent sessions. Open this terminal on \(hostName) for now."))
+            if let model = app.terminalModel(for: route, session: session) {
+                TerminalSessionView(model: model, hostName: hostName)
+                    .onDisappear { app.closeTerminal(route) }
+            }
         case .other:
             ContentUnavailableView("Session ended", systemImage: "xmark.circle",
                                    description: Text("\(hostName) no longer lists this session."))
