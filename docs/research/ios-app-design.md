@@ -259,10 +259,24 @@ pub struct TerminalFrame {
 
 Rendering:
 
-- `TerminalSurface` is a `UIView` with one layer per visible row, redrawn with
-  Core Text only when that row changed. The core already tracks dirty rows
-  for the desktop renderer. Metal is not needed at phone grid sizes; the row
-  cache keeps a flood at display-link rate.
+- `TerminalSurface` is a single `UIView` drawn with Core Text. Each pulled
+  frame invalidates only the rects of the rows it changed, and the display
+  link pulls at most one frame per refresh, so a flood costs at most one
+  redraw per frame.
+- One layer per row does not pay off. The engine's row versions are keyed
+  by screen position, so scrolling by one line, the most common change
+  (`cat`, logs, build output), changes every row, and full-screen programs
+  repaint the whole grid anyway. A per-row cache would only help if keyed by
+  content, with a layer pool and layers moved on scroll, which costs
+  nearly as much code as a GPU renderer without its payoff. Layer count and
+  memory are not the concern: about 50 row layers take the same backing
+  store as one full-screen layer.
+- A full redraw is about 2000 cells (roughly 55 columns by 25 to 50 rows in
+  portrait). If measurement on a device shows dropped frames during floods
+  or at 120 Hz, the surface moves to a `CAMetalLayer` with a glyph atlas:
+  each glyph is rasterized once and every frame redraws all cells as quads,
+  which keeps frame time flat no matter how much of the grid changed. The
+  frame records from the core stay the same for both renderers.
 - Wide characters, emoji, box drawing, and powerline glyphs follow the
   engine's cell widths; box drawing is drawn as paths so it joins cleanly.
 - Font: JetBrains Mono, bundled as its Nerd Font Mono build (SIL OFL), so
