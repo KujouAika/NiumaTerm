@@ -4376,9 +4376,12 @@ version = "1.5.8"
 dependencies = [
  "anyhow",
  "nmt_agent",
+ "nmt_config",
+ "nmt_input",
  "nmt_platform",
  "nmt_remote",
  "nmt_remote_core",
+ "nmt_terminal",
  "parking_lot",
  "serde_json",
  "thiserror 2.0.20",

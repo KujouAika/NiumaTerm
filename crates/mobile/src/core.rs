@@ -18,6 +18,7 @@ use tracing::{debug, warn};
 use crate::agent::{AgentHandle, AgentObserver};
 use crate::error::CoreError;
 use crate::records::{HostOffer, HostRecord, SessionRecord};
+use crate::terminal::{TerminalHandle, TerminalObserver};
 
 /// Told about hosts and their sessions. Called on the core's threads; the
 /// app moves to its main thread itself.
@@ -220,6 +221,41 @@ impl MobileCore {
         let remote = self.remote(&host)?;
 
         Ok(AgentHandle::attach(remote, session, observer))
+    }
+
+    /// Start a shell on the host at this view's grid size and open a view
+    /// of it. The shell runs headless there until someone ends it.
+    pub async fn open_terminal(
+        &self,
+        host: String,
+        cols: u16,
+        rows: u16,
+        observer: Arc<dyn TerminalObserver>,
+    ) -> Result<Arc<TerminalHandle>, CoreError> {
+        let remote = self.remote(&host)?;
+        let opener = Arc::clone(&remote);
+
+        let pty = runtime()
+            .spawn(async move { opener.open_terminal(cols, rows).await })
+            .await??;
+
+        TerminalHandle::attach(remote, pty, cols, rows, observer)
+    }
+
+    /// Open a view of a terminal session, which takes control of it from
+    /// the person at the host. Dropping the handle detaches.
+    pub fn attach_terminal(
+        &self,
+        host: String,
+        session: String,
+        cols: u16,
+        rows: u16,
+        observer: Arc<dyn TerminalObserver>,
+    ) -> Result<Arc<TerminalHandle>, CoreError> {
+        let remote = self.remote(&host)?;
+        let pty = remote.view(session);
+
+        TerminalHandle::attach(remote, pty, cols, rows, observer)
     }
 }
 

@@ -211,7 +211,7 @@ fn fallback_text<'a>(event: &TerminalKey<'a>) -> Option<&'a str> {
 /// and Ctrl-Shift-V were the chords before that: they are swallowed rather than
 /// encoded, so the habit of reaching for them does nothing instead of writing
 /// an escape sequence into the command line.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn clipboard_action(event: &TerminalKey<'_>) -> Option<TerminalKeyAction> {
     if !event.modifiers.control_key() || event.modifiers.alt_key() || event.modifiers.super_key() {
         return None;
@@ -228,13 +228,14 @@ fn clipboard_action(event: &TerminalKey<'_>) -> Option<TerminalKeyAction> {
     }
 }
 
-/// Command-C and Command-V, which is where macOS puts the clipboard.
+/// Command-C and Command-V, which is where macOS puts the clipboard, and
+/// where iPad hardware keyboards put it too.
 ///
-/// Control keeps its terminal meaning on this platform, so Ctrl-C is the
+/// Control keeps its terminal meaning on these platforms, so Ctrl-C is the
 /// interrupt byte and nothing else. That leaves Command-C with no byte to fall
 /// back to, which is why it carries none: with nothing selected it copies
 /// nothing rather than interrupting the running program.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn clipboard_action(event: &TerminalKey<'_>) -> Option<TerminalKeyAction> {
     if !event.modifiers.super_key()
         || event.modifiers.control_key()

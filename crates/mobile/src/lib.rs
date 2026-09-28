@@ -9,5 +9,6 @@ pub mod agent;
 pub mod core;
 pub mod error;
 pub mod records;
+pub mod terminal;
 
 uniffi::setup_scaffolding!();
