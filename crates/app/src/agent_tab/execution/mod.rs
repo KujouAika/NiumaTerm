@@ -60,7 +60,7 @@ use crate::agent_tab::profile::{AgentKind, agent_launch};
 use crate::agent_tab::session::RestorationReadiness;
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::thread_controls::{launch_effort, launch_model};
-use crate::agent_tab::{AgentPaneEvent, RecoveryReadiness};
+use crate::agent_tab::{AgentAttention, AgentPaneEvent, RecoveryReadiness};
 use crate::utils::on_runtime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -862,15 +862,22 @@ impl AgentSession {
 
                 self.last_completed = Some(key);
 
-                self.emit_lifecycle(
-                    AgentEventKind::Stopped,
-                    &t!(
-                        "agent-session-provider-finished",
-                        name = self.kind.display()
-                    ),
-                    &body,
-                    cx,
+                let title = t!(
+                    "agent-session-provider-finished",
+                    name = self.kind.display()
                 );
+
+                self.emit_lifecycle(AgentEventKind::Stopped, &title, &body, cx);
+
+                cx.emit(AgentPaneEvent::Attention {
+                    kind: if error.is_some() {
+                        AgentAttention::TurnFailed
+                    } else {
+                        AgentAttention::TurnFinished
+                    },
+                    title: title.into_owned(),
+                    body,
+                });
             }
             SessionEffect::ApprovalRequested => {
                 let body = self
@@ -881,12 +888,15 @@ impl AgentSession {
                     .unwrap_or_default()
                     .to_string();
 
-                self.emit_lifecycle(
-                    AgentEventKind::PermissionRequested,
-                    &t!("agent-session-needs-input", name = self.kind.display()),
-                    &body,
-                    cx,
-                );
+                let title = t!("agent-session-needs-input", name = self.kind.display());
+
+                self.emit_lifecycle(AgentEventKind::PermissionRequested, &title, &body, cx);
+
+                cx.emit(AgentPaneEvent::Attention {
+                    kind: AgentAttention::ApprovalRequested,
+                    title: title.into_owned(),
+                    body,
+                });
             }
             SessionEffect::InputRequested { index } => {
                 let state = self.controller.borrow();
@@ -904,12 +914,15 @@ impl AgentSession {
 
                 drop(state);
 
-                self.emit_lifecycle(
-                    AgentEventKind::PermissionRequested,
-                    &t!("agent-session-needs-input", name = self.kind.display()),
-                    &body,
-                    cx,
-                );
+                let title = t!("agent-session-needs-input", name = self.kind.display());
+
+                self.emit_lifecycle(AgentEventKind::PermissionRequested, &title, &body, cx);
+
+                cx.emit(AgentPaneEvent::Attention {
+                    kind: AgentAttention::QuestionAsked,
+                    title: title.into_owned(),
+                    body,
+                });
             }
             SessionEffect::ApprovalResolved => {
                 self.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx)

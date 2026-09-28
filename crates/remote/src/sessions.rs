@@ -79,6 +79,10 @@ pub struct SessionRegistry {
     /// apart from `changed`, which paired devices hear about: who is
     /// watching is shown on the host only.
     viewers_changed: watch::Sender<u64>,
+
+    /// Bumped when the person at the host uses it, which tells the host
+    /// that paired devices away from it are no longer being carried around.
+    local_use: watch::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -137,6 +141,7 @@ impl SessionRegistry {
             inner: Mutex::new(Inner::default()),
             changed: watch::channel(0).0,
             viewers_changed: watch::channel(0).0,
+            local_use: watch::channel(0).0,
         })
     }
 
@@ -237,6 +242,8 @@ impl SessionRegistry {
     /// The person at the host takes `session` back: every device viewing it
     /// loses its view and hears why. The session keeps running.
     pub fn take_back(&self, session: &str) {
+        self.note_local_use();
+
         let viewers = self.inner.lock().viewers.remove(session);
 
         let Some(viewers) = viewers else {
@@ -307,6 +314,15 @@ impl SessionRegistry {
 
     pub fn subscribe_viewers(&self) -> watch::Receiver<u64> {
         self.viewers_changed.subscribe()
+    }
+
+    /// The person at the host is using it.
+    pub fn note_local_use(&self) {
+        self.local_use.send_modify(|version| *version += 1);
+    }
+
+    pub(crate) fn subscribe_local_use(&self) -> watch::Receiver<u64> {
+        self.local_use.subscribe()
     }
 
     pub fn set_title(&self, session: &str, title: String) {

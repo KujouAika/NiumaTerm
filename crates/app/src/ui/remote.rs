@@ -10,7 +10,9 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context as _, Result, anyhow};
 use app::agent_tab::execution::SessionOwner;
-use app::agent_tab::{AgentKind, AgentPane, AgentPaneEvent, remote as agent_remote};
+use app::agent_tab::{
+    AgentAttention, AgentKind, AgentPane, AgentPaneEvent, remote as agent_remote,
+};
 use app::remote_control::HostControl;
 use app::terminal_tab::view::{HostShare, TerminalPane};
 use gpui::{
@@ -22,6 +24,7 @@ use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
 use nmt_remote::lan::lan_addresses;
+use nmt_remote::presence::Presence;
 use nmt_remote::sessions::{
     AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl,
 };
@@ -33,6 +36,7 @@ use nmt_remote::{NetworkPty, local_view};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
+use nmt_remote_core::push::PushKind;
 use nmt_remote_core::rpc::{
     AgentOpen, AgentProfileInfo, HostInfo, SessionInfo, SessionKind, SessionRef, WorkspaceInfo,
 };
@@ -330,6 +334,13 @@ impl Remote {
             .unwrap_or_default()
     }
 
+    /// Whether a paired device is using this host from afar now.
+    pub(crate) fn presence(&self, id: &DeviceId) -> Presence {
+        self.host
+            .as_ref()
+            .map_or(Presence::Paired, |host| host.presence(id))
+    }
+
     /// Names of the paired devices connected to this host now.
     pub(crate) fn connected_devices(&self) -> Vec<String> {
         self.host
@@ -498,6 +509,12 @@ pub(crate) fn cancel_pairing(cx: &mut App) {
     }
 
     cx.update_global::<Remote, _>(|_, _| {});
+}
+
+/// The person is at this computer, so paired devices away from it are no
+/// longer following its sessions.
+pub(crate) fn note_local_use(cx: &App) {
+    cx.global::<Remote>().registry.note_local_use();
 }
 
 pub(crate) fn remove_device(id: &DeviceId, cx: &mut App) {
@@ -684,8 +701,8 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: 
 
         // An empty suggestion clears a conversation's title; the tab then
         // goes by its profile again.
-        cx.subscribe(&session, move |_, event: &AgentPaneEvent, _| {
-            if let AgentPaneEvent::TitleSuggested(suggested) = event {
+        cx.subscribe(&session, move |_, event: &AgentPaneEvent, cx| match event {
+            AgentPaneEvent::TitleSuggested(suggested) => {
                 let listed = if suggested.is_empty() {
                     title.clone()
                 } else {
@@ -694,6 +711,12 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: 
 
                 registry.set_title(&id, listed);
             }
+            AgentPaneEvent::Attention {
+                kind,
+                title: headline,
+                body,
+            } => push_attention(&registry, &id, *kind, headline, body, cx),
+            _ => {}
         })
     };
 
@@ -712,6 +735,40 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: 
         cx.global_mut::<Remote>().shared_agents.remove(&pane_id);
     })
     .detach();
+}
+
+/// Tell paired devices away from this computer that a shared agent session
+/// wants attention. The session's title follows the headline, since a phone
+/// may follow several sessions of several computers.
+fn push_attention(
+    registry: &SessionRegistry,
+    session: &str,
+    kind: AgentAttention,
+    headline: &str,
+    body: &str,
+    cx: &App,
+) {
+    let Some(host) = &cx.global::<Remote>().host else {
+        return;
+    };
+
+    let kind = match kind {
+        AgentAttention::TurnFinished => PushKind::TurnFinished,
+        AgentAttention::TurnFailed => PushKind::TurnFailed,
+        AgentAttention::ApprovalRequested => PushKind::Approval,
+        AgentAttention::QuestionAsked => PushKind::Question,
+    };
+
+    let title = registry
+        .list()
+        .into_iter()
+        .find(|info| info.session == session)
+        .map_or_else(
+            || headline.to_owned(),
+            |info| format!("{headline} · {}", info.title),
+        );
+
+    host.push(session, kind, &title, body);
 }
 
 /// What a shared host tab needs to show who controls `session` from another

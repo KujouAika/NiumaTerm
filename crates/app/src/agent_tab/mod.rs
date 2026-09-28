@@ -184,6 +184,23 @@ pub enum AgentPaneEvent {
     /// This tab's side chat appeared, went away, or was minimized or
     /// restored. The chrome's Side Chat control follows it.
     SideChatActivity,
+    /// Something here wants the person's attention: a turn ended, or the
+    /// agent waits for an approval or an answer. The desktop notifies from
+    /// the lifecycle; this one carries which of them it was, for paired
+    /// devices away from the computer.
+    Attention {
+        kind: AgentAttention,
+        title: String,
+        body: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAttention {
+    TurnFinished,
+    TurnFailed,
+    ApprovalRequested,
+    QuestionAsked,
 }
 
 pub struct AgentPane {

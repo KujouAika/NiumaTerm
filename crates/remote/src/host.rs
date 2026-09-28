@@ -11,7 +11,7 @@ use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use futures::{Sink, Stream};
@@ -22,6 +22,9 @@ use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted, RelayAccess};
 use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
+use nmt_remote_core::push::{
+    PUSH_FEATURE, PUSH_REGISTER, PUSH_UNREGISTER, PushKind, PushMessage, PushRegistration, seal,
+};
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOps, Attached, Control, ErrorCode, Origin, RpcError,
     SessionEnded, SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
@@ -35,15 +38,17 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::discovery::Advertiser;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
+use crate::presence::{DISCONNECT_EXPIRY, DISCONNECT_GRACE, Presence, Presences};
+use crate::push_sender::{self, Delivery};
 use crate::relay::RelaySocket;
 use crate::relay_host::{RelayCommand, run_host_link};
 use crate::sessions::{AgentRequest, HostRequest, Kick, SessionRegistry, TerminalControl, Viewer};
@@ -58,7 +63,7 @@ const MAX_UNAUTHENTICATED: usize = 16;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
-const FEATURES: &[&str] = &["terminal"];
+const FEATURES: &[&str] = &["terminal", PUSH_FEATURE];
 
 pub struct HostConfig {
     pub port: u16,
@@ -78,8 +83,7 @@ pub struct HostConfig {
     pub relay: Option<RelayAccess>,
 
     /// Runs on a runtime thread after pairing records change and when a
-    /// device connects or disconnects, so a view that lists them can
-    /// refresh.
+    /// device's presence changes, so a view that lists them can refresh.
     pub on_change: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -89,6 +93,9 @@ pub struct HostService {
     shared: Arc<Shared>,
     local_addr: SocketAddr,
     task: JoinHandle<()>,
+
+    /// Returns devices to paired when the person at the host uses it.
+    desk: JoinHandle<()>,
 }
 
 struct Shared {
@@ -106,6 +113,9 @@ struct Shared {
 
     /// The pairing slot claimed on the relay, to release when the code goes.
     relay_slot: Mutex<Option<String>>,
+
+    /// Posts pushes to the forwarders devices registered.
+    push_client: reqwest::Client,
 }
 
 #[derive(Default)]
@@ -115,6 +125,8 @@ struct State {
 
     /// Open channels by client key, so removing a device closes them.
     connections: Vec<([u8; 32], AbortHandle)>,
+
+    presences: Presences,
 }
 
 /// A stream id with what attaching it needs: the session, its control
@@ -182,9 +194,11 @@ impl HostService {
             advertiser,
             relay: relay_token.as_ref().map(|_| relay_commands),
             relay_slot: Mutex::new(None),
+            push_client: push_sender::client(),
         });
 
         let task = runtime().spawn(accept_loop(Arc::clone(&shared), listener));
+        let desk = runtime().spawn(watch_desk(Arc::clone(&shared)));
 
         if let (Some(relay), Some(token)) = (shared.config.relay.clone(), relay_token) {
             let served = Arc::downgrade(&shared);
@@ -220,6 +234,7 @@ impl HostService {
             shared,
             local_addr,
             task,
+            desk,
         })
     }
 
@@ -298,6 +313,88 @@ impl HostService {
             .collect()
     }
 
+    /// Whether the device is paired, connected, or connected before and
+    /// gone now.
+    pub fn presence(&self, id: &DeviceId) -> Presence {
+        let state = self.shared.state.lock();
+
+        state
+            .devices
+            .iter()
+            .find(|device| &device.id == id)
+            .map_or(Presence::Paired, |device| {
+                state.presences.presence(&device.public_key, Instant::now())
+            })
+    }
+
+    /// Tell every device that asked for `kind` and is away from this host
+    /// about something that happened in `session`. Devices connected now see
+    /// it on screen; paired ones are not following the host.
+    pub fn push(&self, session: &str, kind: PushKind, title: &str, body: &str) {
+        let host = self.shared.key.id().as_str().to_owned();
+        let message = PushMessage::new(&host, session, kind, title, body, now_ms());
+        let now = Instant::now();
+
+        let targets: Vec<([u8; 32], PushRegistration)> = {
+            let state = self.shared.state.lock();
+
+            state
+                .devices
+                .iter()
+                .filter(|device| {
+                    state.presences.presence(&device.public_key, now) == Presence::Disconnected
+                })
+                .filter_map(|device| {
+                    let registration = device.push.as_ref()?;
+
+                    registration
+                        .kinds
+                        .contains(&kind)
+                        .then(|| (device.public_key, registration.clone()))
+                })
+                .collect()
+        };
+
+        // Who got a push, and who not, is otherwise invisible: a device
+        // counts as away only after the grace period, which is easy to
+        // mistake for a failure while trying pushes out.
+        info!(
+            ?kind,
+            devices = targets.len(),
+            "pushing to paired devices away from the host"
+        );
+
+        for (device, registration) in targets {
+            let sealed = match seal(&registration.key, &message) {
+                Ok(sealed) => sealed,
+                Err(error) => {
+                    warn!(%error, "cannot seal a push");
+
+                    continue;
+                }
+            };
+
+            let shared = Arc::clone(&self.shared);
+            let host = host.clone();
+            let session = session.to_owned();
+
+            runtime().spawn(async move {
+                let delivery = push_sender::deliver(
+                    &shared.push_client,
+                    &registration,
+                    &host,
+                    &session,
+                    &sealed,
+                )
+                .await;
+
+                if delivery == Delivery::TokenGone {
+                    shared.forget_push_token(&device, &registration.token);
+                }
+            });
+        }
+    }
+
     /// Revoke a device: forget its key and close its open channels.
     pub fn remove_device(&self, id: &DeviceId) -> Result<()> {
         let devices = {
@@ -313,6 +410,7 @@ impl HostService {
             };
 
             state.devices.retain(|device| device.public_key != key);
+            state.presences.forget(&key);
 
             state.connections.retain(|(client, task)| {
                 if *client == key {
@@ -334,6 +432,7 @@ impl HostService {
 impl Drop for HostService {
     fn drop(&mut self) {
         self.task.abort();
+        self.desk.abort();
 
         for (_, task) in self.shared.state.lock().connections.drain(..) {
             task.abort();
@@ -464,6 +563,32 @@ impl Connection {
                 }
 
                 Ok(Value::Null)
+            }
+            PUSH_REGISTER => {
+                let registration: PushRegistration = parse(params)?;
+
+                // A paired device can already run anything here; the check
+                // only catches a malformed registration before a push fails
+                // on it.
+                if !registration.endpoint.starts_with("https://") {
+                    return Err(RpcError::new(
+                        ErrorCode::InvalidParams,
+                        "the push endpoint must be an https URL",
+                    ));
+                }
+
+                self.shared
+                    .set_push(&self.viewer.key, Some(registration))
+                    .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))?;
+
+                Ok(done())
+            }
+            PUSH_UNREGISTER => {
+                self.shared
+                    .set_push(&self.viewer.key, None)
+                    .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))?;
+
+                Ok(done())
             }
             _ => Err(RpcError::new(ErrorCode::Unsupported, method)),
         }
@@ -694,6 +819,47 @@ impl Connection {
 }
 
 impl Shared {
+    /// Record where the device with `key` wants pushes, or that it wants
+    /// none.
+    fn set_push(&self, key: &[u8; 32], push: Option<PushRegistration>) -> Result<()> {
+        let devices = {
+            let mut state = self.state.lock();
+
+            let Some(device) = state
+                .devices
+                .iter_mut()
+                .find(|device| &device.public_key == key)
+            else {
+                return Ok(());
+            };
+
+            device.push = push;
+
+            state.devices.clone()
+        };
+
+        store::save_devices(&self.dir, &devices)?;
+
+        Ok(())
+    }
+
+    /// Stop pushing to a token APNs refused, unless the device registered a
+    /// new one meanwhile.
+    fn forget_push_token(&self, key: &[u8; 32], token: &str) {
+        let current = self
+            .state
+            .lock()
+            .devices
+            .iter()
+            .find(|device| &device.public_key == key)
+            .and_then(|device| device.push.as_ref())
+            .is_some_and(|push| push.token == token);
+
+        if current && let Err(error) = self.set_push(key, None) {
+            warn!(%error, "cannot drop a push token APNs refused");
+        }
+    }
+
     /// Publish the showing code's slot on the LAN and the relay, or
     /// withdraw it.
     fn advertise_slot(&self, slot: Option<&str>) {
@@ -1024,6 +1190,7 @@ where
         let mut state = shared.state.lock();
 
         state.connections.push((client_key, pump.abort_handle()));
+        state.presences.opened(client_key);
 
         state
             .devices
@@ -1061,13 +1228,27 @@ where
         }
     }
 
-    shared
-        .state
-        .lock()
-        .connections
-        .retain(|(_, task)| task.id() != pump_id);
+    {
+        let mut state = shared.state.lock();
+
+        state.connections.retain(|(_, task)| task.id() != pump_id);
+        state.presences.closed(client_key, Instant::now());
+    }
 
     (shared.config.on_change)();
+
+    // Presence moves on by itself once the grace and the expiry pass; a view
+    // listing devices learns of it then. A stale refresh after a reconnect
+    // only redraws the same state.
+    for delay in [DISCONNECT_GRACE, DISCONNECT_EXPIRY] {
+        let on_change = Arc::clone(&shared.config.on_change);
+
+        tokio::spawn(async move {
+            sleep(delay).await;
+
+            on_change();
+        });
+    }
 
     watcher.abort();
 
@@ -1093,12 +1274,31 @@ where
     }
 }
 
+/// The person at the host using it means devices away from it are no longer
+/// following it, so they stop counting as disconnected.
+async fn watch_desk(shared: Arc<Shared>) {
+    let mut uses = shared.config.registry.subscribe_local_use();
+
+    while uses.changed().await.is_ok() {
+        shared.state.lock().presences.at_desk();
+
+        (shared.config.on_change)();
+    }
+}
+
 fn respond(queue: &SendQueue, id: u64, outcome: Result<Value, RpcError>) {
     queue.send(Outbound::new(
         CONTROL_STREAM,
         kind::CONTROL_JSON,
         Control::Response { id, outcome }.encode(),
     ));
+}
+
+/// The result of a request that has nothing to report. A `null` result reads
+/// as a missing one to every released client, which then drops the response
+/// and waits forever, so success is an empty object.
+fn done() -> Value {
+    Value::Object(Default::default())
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {

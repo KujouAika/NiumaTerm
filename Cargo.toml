@@ -112,6 +112,9 @@ tokio-util = "0.7"
 # Remote sessions: Noise handshakes and transport encryption, and the PAKE
 # that turns a short pairing code into a key no offline search can recover.
 snow = "0.10"
+# Seals push notification text for one phone; the same AEAD Noise runs,
+# already in the dependency tree through snow.
+chacha20poly1305 = "0.10"
 spake2 = "0.4"
 # LAN discovery of hosts (DNS-SD), which mobile platforms browse natively.
 mdns-sd = "0.21"

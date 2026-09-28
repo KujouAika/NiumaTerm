@@ -7,6 +7,7 @@ use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_flex, v_flex};
 use nmt_remote::connection::Status;
+use nmt_remote::presence::Presence;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
 use nmt_remote_core::rpc::SessionInfo;
 use rust_i18n::t;
@@ -82,7 +83,9 @@ fn hosting_group(state: &Remote) -> SettingGroup {
         .item(pairing_item(state));
 
     for device in state.devices() {
-        group = group.item(device_item(device));
+        let presence = state.presence(&device.id);
+
+        group = group.item(device_item(device, presence));
     }
 
     for session in state.remote_created_sessions() {
@@ -235,9 +238,21 @@ fn pairing_item(state: &Remote) -> SettingItem {
     })
 }
 
-fn device_item(device: PairedDevice) -> SettingItem {
+fn device_item(device: PairedDevice, presence: Presence) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         let id = device.id.clone();
+
+        let (status, status_color) = match presence {
+            Presence::Paired => (
+                t!("settings-remote-device-paired"),
+                cx.theme().muted_foreground,
+            ),
+            Presence::Connected => (t!("settings-remote-device-connected"), cx.theme().success),
+            Presence::Disconnected => (
+                t!("settings-remote-device-disconnected"),
+                cx.theme().warning,
+            ),
+        };
 
         h_flex()
             .w_full()
@@ -247,7 +262,13 @@ fn device_item(device: PairedDevice) -> SettingItem {
             .child(
                 v_flex()
                     .flex_1()
-                    .child(Label::new(device.name.clone()).text_sm())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new(device.name.clone()).text_sm())
+                            .child(Label::new(status).text_xs().text_color(status_color)),
+                    )
                     .child(
                         Label::new(format!("{}    {}", device.platform, device.id))
                             .text_xs()

@@ -16,6 +16,7 @@ use nmt_config::config_dir_path;
 use nmt_platform::durable_file;
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceKind, RelayAccess};
+use nmt_remote_core::push::PushRegistration;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -56,6 +57,11 @@ pub struct PairedDevice {
     /// The last `hello_ms` accepted from this device; a first handshake
     /// message that does not exceed it is a replay.
     pub last_hello_ms: u64,
+
+    /// Where and how to push to this device while it is away, once it
+    /// asked for pushes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushRegistration>,
 }
 
 /// Client side: one host this device may open sessions on.
@@ -133,6 +139,7 @@ impl PairedDevice {
             paired_at: now,
             last_seen: now,
             last_hello_ms: 0,
+            push: None,
         }
     }
 }

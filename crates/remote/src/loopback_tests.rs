@@ -11,6 +11,7 @@ use nmt_platform::{AsyncPty, PtyOptions, create_pty_with_env, runtime};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::PairingCode;
+use nmt_remote_core::push::{PushEnvironment, PushKind, PushRegistration};
 use nmt_remote_core::rpc::{EndReason, Origin, SessionKind};
 use nmt_terminal::event::VoidListener;
 use nmt_terminal::termio::{SessionHandles, SessionOptions, start_session};
@@ -22,6 +23,7 @@ use crate::client::pair;
 use crate::connection::{AgentUpdate, RemoteHost, Status};
 use crate::host::{HostConfig, HostService};
 use crate::local_view;
+use crate::presence::Presence;
 use crate::sessions::{AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl};
 use crate::store::PairedHost;
 
@@ -735,5 +737,89 @@ fn the_host_takes_a_session_back_and_the_device_takes_it_again() {
         registry.close_remote(&session);
 
         wait_ended(&remote, &session, Some(EndReason::Closed)).await;
+    });
+}
+
+fn registration() -> PushRegistration {
+    PushRegistration {
+        endpoint: "https://relay.example/v1/push".into(),
+        token: "ab".repeat(32),
+        environment: PushEnvironment::Sandbox,
+        key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
+        kinds: vec![PushKind::TurnFinished, PushKind::Approval],
+    }
+}
+
+#[test]
+fn a_device_registers_for_pushes_and_its_presence_follows_its_channels() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let id = key.id();
+
+        assert_eq!(host.presence(&id), Presence::Paired);
+
+        let client = remote(paired, key);
+
+        client.register_push(&registration()).await.unwrap();
+
+        assert_eq!(host.devices()[0].push, Some(registration()));
+        assert_eq!(host.presence(&id), Presence::Connected);
+
+        // A plain http forwarder would leak nothing, but it is not what the
+        // app registers, so it is a malformed registration.
+        let mut plain = registration();
+
+        plain.endpoint = "http://relay.example/v1/push".into();
+
+        assert!(client.register_push(&plain).await.is_err());
+
+        // A dropped link stays connected through the grace period. The
+        // client stops first, or it would reconnect at once.
+        client.shutdown();
+        host.drop_connections();
+
+        timeout(WAIT, async {
+            while host.connected_devices().len() == 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(host.presence(&id), Presence::Connected);
+
+        // The person using the host sends the device back to paired. The
+        // channel's task records the close after the host dropped it from
+        // its list, and a device still closing counts as connected, so the
+        // signal repeats until the close has landed.
+        timeout(WAIT, async {
+            while host.presence(&id) != Presence::Paired {
+                registry.note_local_use();
+
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+}
+
+#[test]
+fn a_device_that_unregisters_gets_no_pushes() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host(&host_dir, SessionRegistry::new());
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let client = remote(paired, key);
+
+        client.register_push(&registration()).await.unwrap();
+        client.unregister_push().await.unwrap();
+
+        assert_eq!(host.devices()[0].push, None);
     });
 }

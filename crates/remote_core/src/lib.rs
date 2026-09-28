@@ -12,6 +12,7 @@ pub mod identity;
 pub mod messages;
 pub mod pairing;
 pub mod preface;
+pub mod push;
 pub mod rpc;
 
 mod base32;
@@ -28,6 +29,8 @@ mod pairing_tests;
 #[cfg(test)]
 mod preface_tests;
 #[cfg(test)]
+mod push_tests;
+#[cfg(test)]
 mod rpc_tests;
 
 /// Highest channel protocol major this build speaks. A major changes only for
@@ -39,7 +42,7 @@ pub const PROTO_MAJOR: u8 = 1;
 pub const PROTO_MIN_MAJOR: u8 = 1;
 
 /// Additive protocol revision. Both sides use the lower of the two values.
-pub const PROTO_MINOR: u32 = 0;
+pub const PROTO_MINOR: u32 = 1;
 
 /// Pairing exchange major, versioned apart from the channel.
 pub const PAIR_MAJOR: u8 = 1;

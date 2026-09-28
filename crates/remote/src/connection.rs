@@ -17,6 +17,7 @@ use getrandom::fill;
 use nmt_platform::runtime;
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
+use nmt_remote_core::push::{PUSH_REGISTER, PUSH_UNREGISTER, PushRegistration};
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOpen, AgentOps, Control, EndReason, ErrorCode, HostInfo,
     RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, StreamRef, TerminalOpen,
@@ -399,6 +400,20 @@ impl RemoteHost {
                 host.end_view(&session, EndReason::Closed);
             }
         });
+    }
+
+    /// Ask the host to push to this device while it is away.
+    pub async fn register_push(&self, registration: &PushRegistration) -> Result<()> {
+        let _: Value = self.call(PUSH_REGISTER, registration).await?;
+
+        Ok(())
+    }
+
+    /// Ask the host to stop pushing to this device.
+    pub async fn unregister_push(&self) -> Result<()> {
+        let _: Value = self.call(PUSH_UNREGISTER, &Value::Null).await?;
+
+        Ok(())
     }
 
     /// What this device may start on the host.

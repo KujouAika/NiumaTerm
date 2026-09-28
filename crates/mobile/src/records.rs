@@ -8,6 +8,7 @@ use nmt_agent::chat::Item;
 use nmt_agent::session::lifecycle::Status as LifecycleStatus;
 use nmt_agent::session::view::{AgentView, ViewEntry};
 use nmt_remote::connection::Status;
+use nmt_remote_core::push::{PushEnvironment, PushKind, PushRegistration};
 use nmt_remote_core::rpc::{EndReason, HostInfo, Origin, SessionInfo, SessionKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -420,5 +421,59 @@ pub(crate) fn agent_state(
             .collect(),
         context_used: usage.map(|usage| usage.used_tokens()),
         context_window: usage.and_then(|usage| usage.max_tokens),
+    }
+}
+
+/// An event the phone can be told about while it is away from a host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NotificationKind {
+    TurnFinished,
+    TurnFailed,
+    Approval,
+    Question,
+}
+
+impl From<NotificationKind> for PushKind {
+    fn from(kind: NotificationKind) -> Self {
+        match kind {
+            NotificationKind::TurnFinished => PushKind::TurnFinished,
+            NotificationKind::TurnFailed => PushKind::TurnFailed,
+            NotificationKind::Approval => PushKind::Approval,
+            NotificationKind::Question => PushKind::Question,
+        }
+    }
+}
+
+/// Where and how a host should push to this phone.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PushSettings {
+    /// The forwarder that holds the APNs key for this app build.
+    pub endpoint: String,
+
+    /// The APNs device token, hex.
+    pub token: String,
+
+    /// Production for TestFlight and App Store builds, sandbox otherwise.
+    pub production: bool,
+
+    /// The 32-byte key the host seals pushes with, base64.
+    pub key: String,
+
+    pub kinds: Vec<NotificationKind>,
+}
+
+impl From<PushSettings> for PushRegistration {
+    fn from(settings: PushSettings) -> Self {
+        Self {
+            endpoint: settings.endpoint,
+            token: settings.token,
+            environment: if settings.production {
+                PushEnvironment::Production
+            } else {
+                PushEnvironment::Sandbox
+            },
+            key: settings.key,
+            kinds: settings.kinds.into_iter().map(PushKind::from).collect(),
+        }
     }
 }

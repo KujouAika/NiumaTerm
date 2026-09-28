@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::agent::{AgentHandle, AgentObserver};
 use crate::error::CoreError;
-use crate::records::{HostOffer, HostRecord, SessionRecord};
+use crate::records::{HostOffer, HostRecord, PushSettings, SessionRecord};
 use crate::terminal::{TerminalHandle, TerminalObserver};
 
 /// Told about hosts and their sessions. Called on the core's threads; the
@@ -208,6 +208,33 @@ impl MobileCore {
             .await??;
 
         Ok(session)
+    }
+
+    /// Ask a host to push to this phone while it is away from the host.
+    /// A host too old to take registrations answers with an error.
+    pub async fn register_push(
+        &self,
+        host: String,
+        settings: PushSettings,
+    ) -> Result<(), CoreError> {
+        let remote = self.remote(&host)?;
+
+        runtime()
+            .spawn(async move { remote.register_push(&settings.into()).await })
+            .await??;
+
+        Ok(())
+    }
+
+    /// Ask a host to stop pushing to this phone.
+    pub async fn unregister_push(&self, host: String) -> Result<(), CoreError> {
+        let remote = self.remote(&host)?;
+
+        runtime()
+            .spawn(async move { remote.unregister_push().await })
+            .await??;
+
+        Ok(())
     }
 
     /// Open a view of an agent session, which takes control of it from the

@@ -15,12 +15,16 @@ pub mod lan;
 #[cfg(feature = "host")]
 pub mod local_view;
 #[cfg(feature = "host")]
+pub mod presence;
+#[cfg(feature = "host")]
 pub mod sessions;
 pub mod store;
 
 mod link;
 mod netwatch;
 mod network_pty;
+#[cfg(feature = "host")]
+mod push_sender;
 mod relay;
 #[cfg(feature = "host")]
 mod relay_host;

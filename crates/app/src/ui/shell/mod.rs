@@ -78,7 +78,7 @@ use crate::ui::persistence::{
     default_session, materialize_active_tab, materialize_tab, restore_session, session_state,
 };
 use crate::ui::platform_style::{Host, PlatformStyle as _};
-use crate::ui::remote::Remote;
+use crate::ui::remote::{self, Remote};
 use crate::ui::right_panel::{RightPanel, RightPanelKind};
 use crate::ui::settings::{
     AgentProfile, AppSettings, SettingsSurface, TabBarStyle, settings_title,
@@ -562,6 +562,10 @@ impl AppWindow {
 
         if self.window_active {
             cx.global_mut::<LastActiveWindow>().0 = Some(self.window_id);
+
+            // Coming back to a window is the person being back at this
+            // computer, which ends pushes to devices they carried away.
+            remote::note_local_use(cx);
 
             self.acknowledge_visible(window, true, cx);
         } else {
@@ -3330,6 +3334,9 @@ impl AppWindow {
                 .agent_notifications
                 .agent_monitor
                 .interrupt(&route, time::Instant::now()),
+            // Addressed to paired devices; this window notifies from the
+            // lifecycle event that accompanies it.
+            AgentPaneEvent::Attention { .. } => return,
         };
 
         apply_monitor_display_change(&mutation, cx);
