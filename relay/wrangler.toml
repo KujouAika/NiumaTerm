@@ -13,11 +13,17 @@ compatibility_date = "2026-07-29"
 bindings = [
   { name = "HOST_ROOM", class_name = "HostRoom" },
   { name = "DIRECTORY", class_name = "PairingDirectory" },
+  { name = "PUSH_GATEWAY", class_name = "PushGateway" },
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["HostRoom", "PairingDirectory"]
+
+# One PushGateway signs and sends every push; see src/push.ts.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PushGateway"]
 
 # ACCESS_KEY is a secret: `wrangler secret put ACCESS_KEY`. Every socket
 # presents it, so a stranger who learns the URL cannot use the relay.

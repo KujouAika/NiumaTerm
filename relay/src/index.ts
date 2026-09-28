@@ -14,10 +14,18 @@
 //   /v1/client/{host_id}             client connection
 //   /v1/pair/{slot}                  client connection to the host showing
 //                                    a pairing code with this slot
+//
+// One more endpoint is a plain POST without the access key, because hosts
+// that use other relays reach it too; see push.ts:
+//   /v1/push                         forward a sealed push to the phone app
 
 import { DurableObject } from "cloudflare:workers";
 
-export interface Env {
+import { handlePush, type PushEnv } from "./push";
+
+export { PushGateway } from "./push";
+
+export interface Env extends PushEnv {
   ACCESS_KEY: string;
   HOST_ROOM: DurableObjectNamespace<HostRoom>;
   DIRECTORY: DurableObjectNamespace<PairingDirectory>;
@@ -44,6 +52,10 @@ const attempts = new Map<string, { windowStart: number; count: number }>();
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/v1/push") {
+      return handlePush(request, env);
+    }
+
     if (!authorized(request, env)) {
       return new Response("unauthorized", { status: 401 });
     }
