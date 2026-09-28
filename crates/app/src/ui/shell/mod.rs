@@ -3836,7 +3836,7 @@ impl AppWindow {
 
         for (visible, view) in views {
             view.update(cx, |view, cx| {
-                view.set_quote_available(visible && can_quote);
+                view.set_quote_available(visible && can_quote, cx);
                 view.set_visible(visible, cx);
             });
         }

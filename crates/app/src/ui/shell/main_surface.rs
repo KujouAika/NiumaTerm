@@ -4,7 +4,7 @@
 use app::agent_tab::AgentPane;
 use app::terminal_tab::view::TerminalPane;
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Context, Div, Entity, MouseDownEvent, div};
+use gpui::{AnyElement, App, Context, Div, Entity, MouseDownEvent, StyleRefinement, div};
 use gpui_component::ActiveTheme;
 use gpui_component::resizable::{ResizablePanelGroup, resizable_panel};
 use gpui_component::setting::SettingsView;
@@ -16,6 +16,13 @@ use crate::ui::shell::{AppWindow, TabSurface};
 
 /// The active tab's pane tree as nested resizable groups. The main surface
 /// owns the outer frame, so a single pane renders without another card.
+///
+/// Each pane is embedded as a cached view. The window re-renders from its
+/// root whenever anything in the chrome changes, and a busy mark in the
+/// sidebar or tab strip animates for as long as an agent works; without the
+/// cache every one of those frames would also rebuild the transcript or the
+/// terminal grid. A pane still re-renders when it, a view inside it, or an
+/// entity or global it read is notified or changed.
 ///
 /// `agent` is the Agent pane the surface holds, if any, and `settings` the
 /// settings page to show when the surface is the settings entry.
@@ -30,14 +37,14 @@ pub(super) fn tab_surface_view(
             return div()
                 .size_full()
                 .overflow_hidden()
-                .child(tab.view.clone())
+                .child(tab.view.clone().cached(pane_style()))
                 .into_any_element();
         }
         TabSurface::Team(pane) => {
             return div()
                 .size_full()
                 .overflow_hidden()
-                .child(pane.clone())
+                .child(pane.clone().cached(pane_style()))
                 .into_any_element();
         }
         TabSurface::TeamUnavailable { message, .. } => {
@@ -77,7 +84,7 @@ pub(super) fn tab_surface_view(
         return div()
             .size_full()
             .overflow_hidden()
-            .child(agent)
+            .child(agent.cached(pane_style()))
             .into_any_element();
     }
 
@@ -113,7 +120,7 @@ fn render_pane_node(
                 .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                     this.focus_pane(id, window, cx);
                 }))
-                .child(pane.clone())
+                .child(pane.clone().cached(pane_style()))
                 .into_any_element()
         }
         PaneNode::Split {
@@ -135,6 +142,12 @@ fn render_pane_node(
             group.into_any_element()
         }
     }
+}
+
+/// A cached pane is laid out from this style rather than measured from its
+/// contents, so it has to fill the slot its parent gives it.
+fn pane_style() -> StyleRefinement {
+    StyleRefinement::default().size_full()
 }
 
 /// Clip terminal and agent content within the sidebar-colored backing surface.

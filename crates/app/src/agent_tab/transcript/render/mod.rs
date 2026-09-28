@@ -30,6 +30,7 @@ use crate::agent_tab::transcript::disclosure_row::{
 use crate::agent_tab::transcript::format::{interrupted_status_label, worked_status_label};
 use crate::agent_tab::transcript::reveal::{Disclosures, RevealKey};
 use crate::agent_tab::transcript::rows::RowGap;
+use crate::design::status_animation_fps;
 
 /// Edge of a transcript thumbnail, matching the composer strip so an image
 /// does not change size when the message it belongs to is sent.
@@ -286,8 +287,9 @@ impl WorkingIndicator {
 }
 
 impl RenderOnce for WorkingIndicator {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let color = self.color;
+        let max_fps = status_animation_fps(window);
 
         h_flex()
             .gap(px(DOT_GAP))
@@ -299,19 +301,23 @@ impl RenderOnce for WorkingIndicator {
                     .size(px(DOT_CELL_SIZE))
                     .items_center()
                     .justify_center()
-                    .child(div().rounded_full().bg(color).with_animation(
-                        ElementId::NamedInteger("working-indicator-dot".into(), index as u64),
-                        Animation::new(CYCLE_DURATION).repeat(),
-                        move |dot, delta| {
-                            let pulse = dot_pulse(delta, index);
-                            let size = DOT_MIN_SIZE + (DOT_CELL_SIZE - DOT_MIN_SIZE) * pulse;
+                    .child(
+                        div().rounded_full().bg(color).with_animation(
+                            ElementId::NamedInteger("working-indicator-dot".into(), index as u64),
+                            Animation::new(CYCLE_DURATION)
+                                .repeat()
+                                .with_max_fps(max_fps),
+                            move |dot, delta| {
+                                let pulse = dot_pulse(delta, index);
+                                let size = DOT_MIN_SIZE + (DOT_CELL_SIZE - DOT_MIN_SIZE) * pulse;
 
-                            let opacity =
-                                DOT_MIN_OPACITY + (DOT_MAX_OPACITY - DOT_MIN_OPACITY) * pulse;
+                                let opacity =
+                                    DOT_MIN_OPACITY + (DOT_MAX_OPACITY - DOT_MIN_OPACITY) * pulse;
 
-                            dot.size(px(size)).opacity(opacity)
-                        },
-                    ))
+                                dot.size(px(size)).opacity(opacity)
+                            },
+                        ),
+                    )
             }))
     }
 }

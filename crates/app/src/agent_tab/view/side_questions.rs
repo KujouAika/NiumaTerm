@@ -141,10 +141,20 @@ impl SideChatWindow {
     }
 
     /// Record the pane's bounds; attached to the pane's root element.
+    ///
+    /// The card is fitted to the size recorded here, which prepaint learns
+    /// only after the render that used the old one. A size change therefore
+    /// asks for one more frame: the pane is a cached view, so nothing else is
+    /// guaranteed to render it again, and the card would stay clamped to the
+    /// previous size.
     pub(crate) fn track_pane(&self) -> impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static {
         let pane = self.pane.clone();
 
-        move |bounds, _, _| pane.set(bounds)
+        move |bounds, window, _| {
+            if pane.replace(bounds).size != bounds.size {
+                window.request_animation_frame();
+            }
+        }
     }
 
     fn press(&mut self, pointer: Point<Pixels>, gesture: Gesture) {

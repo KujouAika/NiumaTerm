@@ -16,6 +16,7 @@ use rust_i18n::t;
 use crate::agent_tab::AgentPane;
 use crate::agent_tab::fade::Fade;
 use crate::agent_tab::view::composer_layout::{composer_panel, composer_panel_slot};
+use crate::design::status_animation_fps;
 
 /// Opening the details pushes the transcript up, and a moving edge needs longer
 /// than an opacity change before the eye reads it as travel instead of a jump.
@@ -53,6 +54,7 @@ impl ProgressPanel {
         cx: &mut Context<AgentPane>,
     ) -> Option<AnyElement> {
         let empty = TaskList::default();
+        let spinner_fps = status_animation_fps(window);
 
         // A finished list has nothing left to steer by, and the transcript
         // already shows it under the reply that finished it.
@@ -178,7 +180,12 @@ impl ProgressPanel {
                         .as_ref()
                         .map(|text| div().child(text.clone())),
                 )
-                .children(tasks.items.iter().map(|task| task_row(task, true, cx)));
+                .children(
+                    tasks
+                        .items
+                        .iter()
+                        .map(|task| task_row(task, Some(spinner_fps), cx)),
+                );
 
             let recorded = Rc::clone(&self.details_height);
 
@@ -308,25 +315,27 @@ fn goal_details(goal: &GoalStatus, cx: &Context<AgentPane>) -> AnyElement {
 const TASK_MARK: f32 = 12.0;
 
 /// One task as a checklist line: its state as a mark, then the title and
-/// whatever else the provider said about it. A `live` list is the one the
-/// agent is working through, so its running task turns; a list recorded in
-/// the transcript shows the state it captured and stays still.
-pub(crate) fn task_row(task: &Task, live: bool, cx: &App) -> AnyElement {
-    let mark = match task.status {
-        TaskStatus::InProgress if live => Spinner::new()
+/// whatever else the provider said about it. A live list, given the rate its
+/// spinner turns at, is the one the agent is working through, so its running
+/// task turns; a list recorded in the transcript passes `None`, shows the
+/// state it captured and stays still.
+pub(crate) fn task_row(task: &Task, spinner_fps: Option<f32>, cx: &App) -> AnyElement {
+    let mark = match (&task.status, spinner_fps) {
+        (TaskStatus::InProgress, Some(max_fps)) => Spinner::new()
             .icon(IconName::LoaderCircle)
             .with_size(px(TASK_MARK))
             .color(cx.theme().primary)
+            .max_fps(max_fps)
             .into_any_element(),
-        TaskStatus::InProgress => Icon::new(IconName::LoaderCircle)
+        (TaskStatus::InProgress, None) => Icon::new(IconName::LoaderCircle)
             .size(px(TASK_MARK))
             .text_color(cx.theme().primary)
             .into_any_element(),
-        TaskStatus::Pending => Icon::new(IconName::Minus)
+        (TaskStatus::Pending, _) => Icon::new(IconName::Minus)
             .size(px(TASK_MARK))
             .text_color(cx.theme().muted_foreground)
             .into_any_element(),
-        TaskStatus::Completed => Icon::new(IconName::Check)
+        (TaskStatus::Completed, _) => Icon::new(IconName::Check)
             .size(px(TASK_MARK))
             .text_color(cx.theme().success)
             .into_any_element(),

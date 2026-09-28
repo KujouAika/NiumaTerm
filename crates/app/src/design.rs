@@ -1,6 +1,6 @@
 //! Shared geometry for application chrome and conversation surfaces.
 
-use gpui::{Pixels, px};
+use gpui::{Pixels, Window, px};
 
 pub const CONTROL_RADIUS: Pixels = px(6.0);
 pub const SURFACE_RADIUS: Pixels = px(8.0);
@@ -52,3 +52,17 @@ pub const TITLE_BAR_HEIGHT: f32 = 44.0;
 /// first glyph starts and reads as clipped; the leading half is also the
 /// lane the selected-row mark stands in.
 pub const SIDEBAR_ROW_GUTTER: f32 = 6.0;
+
+/// How often a looping status animation (a busy dot, a pulse, a spinner)
+/// re-renders. Each re-render rebuilds the whole view hosting the mark, and
+/// the display link would otherwise drive that at the panel's refresh rate
+/// (120 Hz on ProMotion) for as long as an agent works. A slow breath or a
+/// small spinner reads as smooth well below that; a window the user is not
+/// looking at only needs to show that something is still moving.
+pub fn status_animation_fps(window: &Window) -> f32 {
+    if window.is_window_active() {
+        30.0
+    } else {
+        10.0
+    }
+}

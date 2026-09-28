@@ -6,7 +6,7 @@ use std::time::Instant;
 use chrono::{DateTime, Local};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, FontWeight, SharedString, WeakEntity, div, px, relative,
+    AnyElement, App, Context, Div, FontWeight, SharedString, WeakEntity, Window, div, px, relative,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::modern_menu::ModernMenuExt as _;
@@ -25,6 +25,7 @@ use crate::agent_tab::transcript::render::WorkingIndicator;
 use crate::agent_tab::transcript::render::menus::copy_entry_menu;
 use crate::agent_tab::transcript::render::text_style::{markdown_view, transcript_text_style};
 use crate::agent_tab::transcript::{TranscriptView, working_label};
+use crate::design::status_animation_fps;
 
 /// The live line under a running turn, which began at `started`. While the
 /// conversation is being compacted it says that instead of the waiting swell.
@@ -33,6 +34,7 @@ pub(crate) fn working_row(
     output_tokens: Option<u64>,
     detail: Option<&str>,
     compacting: bool,
+    window: &Window,
     cx: &App,
 ) -> AnyElement {
     let label = working_label(started, output_tokens, detail);
@@ -56,7 +58,8 @@ pub(crate) fn working_row(
                         Spinner::new()
                             .icon(IconName::LoaderCircle)
                             .with_size(px(12.))
-                            .color(accent),
+                            .color(accent)
+                            .max_fps(status_animation_fps(window)),
                     ),
             )
             .child(
@@ -115,7 +118,8 @@ pub(crate) fn working_row(
                     ShimmerText::new(label)
                         .id("agent-working-label")
                         .highlight_color(cx.theme().foreground)
-                        .peak_opacity(0.9),
+                        .peak_opacity(0.9)
+                        .max_fps(status_animation_fps(window)),
                 ),
         )
         .into_any_element()

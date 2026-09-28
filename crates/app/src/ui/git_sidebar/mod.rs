@@ -99,8 +99,14 @@ impl GitSidebar {
         window.focus(&self.focus, cx);
     }
 
-    pub(crate) fn set_quote_available(&mut self, available: bool) {
+    pub(crate) fn set_quote_available(&mut self, available: bool, cx: &mut Context<Self>) {
+        if self.can_quote == available {
+            return;
+        }
+
         self.can_quote = available;
+
+        cx.notify();
     }
 
     pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {

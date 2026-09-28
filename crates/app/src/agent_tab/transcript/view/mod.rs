@@ -432,6 +432,7 @@ impl TranscriptView {
                         conversation.live.output_tokens(),
                         conversation.live.detail(),
                         compacting,
+                        window,
                         cx,
                     ),
                     None => div().into_any_element(),

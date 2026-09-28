@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use app::design::SURFACE_RADIUS;
+use app::design::{SURFACE_RADIUS, status_animation_fps};
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Div, ElementId, Hsla, IntoElement, Pixels,
@@ -295,7 +295,7 @@ impl StatusMark {
 }
 
 impl RenderOnce for StatusMark {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self.visual {
             StatusMarkVisual::Dot { tone, size } => {
                 let mark = div()
@@ -316,7 +316,9 @@ impl RenderOnce for StatusMark {
 
                 mark.with_animation(
                     self.id,
-                    Animation::new(PULSE_PERIOD).repeat(),
+                    Animation::new(PULSE_PERIOD)
+                        .repeat()
+                        .with_max_fps(status_animation_fps(window)),
                     |mark, delta| {
                         // One breath per period: the ramp turns at the
                         // halfway point rather than snapping back to full.
@@ -332,6 +334,7 @@ impl RenderOnce for StatusMark {
             StatusMarkVisual::Busy => ProgressCircle::new(self.id)
                 .small()
                 .loading(true)
+                .loading_max_fps(status_animation_fps(window))
                 .color(cx.theme().warning)
                 .into_any_element(),
         }
