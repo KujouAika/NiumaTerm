@@ -34,7 +34,7 @@ struct ApprovalSheet: View {
                 .tint(Theme.accent)
                 .padding(.horizontal, 14)
                 .frame(height: 52)
-                .background(Color.white, in: .rect(cornerRadius: 18))
+                .background(Theme.card, in: .rect(cornerRadius: 18))
                 .padding(.top, 16)
 
             Spacer(minLength: 16)

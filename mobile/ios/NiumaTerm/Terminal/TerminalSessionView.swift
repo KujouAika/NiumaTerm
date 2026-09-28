@@ -4,6 +4,10 @@ import NiumaTermCore
 struct TerminalSessionView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
+
+    /// The system appearance. The screen below overrides the scheme to
+    /// match the terminal; sheets over it follow the system instead.
+    @Environment(\.colorScheme) private var systemScheme
     @Bindable var model: TerminalSessionModel
     let hostName: String
 
@@ -89,10 +93,10 @@ struct TerminalSessionView: View {
                            })
                     .presentationDetents([.height(400)])
                     .interactiveDismissDisabled()
-                    // The sheet draws in the app's light colors, so it
-                    // needs their background rather than glass tinted by
-                    // a dark terminal behind it.
-                    .environment(\.colorScheme, .light)
+                    // The sheet belongs to the app, not the terminal: it
+                    // takes the system appearance and a solid background
+                    // rather than glass tinted by the terminal behind it.
+                    .environment(\.colorScheme, systemScheme)
                     .presentationBackground(Theme.sheet)
             }
             .toolbarColorScheme(scheme, for: .navigationBar)
@@ -133,7 +137,7 @@ struct AccessoryBar: View {
                     Button { model.press(key) } label: {
                         Text(key.label)
                             .font(Theme.mono(14, weight: .medium))
-                            .foregroundStyle(on ? Color.white : Color.primary)
+                            .foregroundStyle(on ? Theme.onAccent : Color.primary)
                             .padding(.horizontal, 10)
                             .frame(minWidth: 40, minHeight: 40)
                             .background(on ? Theme.accent : Color.clear, in: .capsule)

@@ -26,7 +26,7 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(Color.white)
+            .foregroundStyle(Theme.onAccent)
             .frame(maxWidth: .infinity)
             .frame(height: 54)
             .background(Theme.accent, in: .capsule)
@@ -44,7 +44,7 @@ struct SecondaryButtonStyle: ButtonStyle {
             .foregroundStyle(dark ? Color.white : Theme.ink)
             .frame(maxWidth: .infinity)
             .frame(height: 54)
-            .background(dark ? Color.white.opacity(0.14) : Color.black.opacity(0.06), in: .capsule)
+            .background(dark ? Color.white.opacity(0.14) : Theme.fill, in: .capsule)
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }

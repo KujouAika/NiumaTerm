@@ -42,7 +42,7 @@ struct NewSessionSheet: View {
             .safeAreaInset(edge: .bottom) {
                 Button(action: create) {
                     HStack(spacing: 8) {
-                        if starting { ProgressView().tint(.white) }
+                        if starting { ProgressView().tint(Theme.onAccent) }
                         Text(startLabel)
                     }
                 }
@@ -102,7 +102,7 @@ struct NewSessionSheet: View {
             }
             .buttonStyle(.plain)
             .disabled(openingTerminal || starting)
-            .background(Color.white, in: .rect(cornerRadius: 22))
+            .background(Theme.card, in: .rect(cornerRadius: 22))
         }
     }
 
@@ -166,7 +166,7 @@ struct NewSessionSheet: View {
                     .buttonStyle(.plain)
                 }
             }
-            .background(Color.white, in: .rect(cornerRadius: 22))
+            .background(Theme.card, in: .rect(cornerRadius: 22))
         }
     }
 
@@ -213,8 +213,8 @@ struct FlowChips: View {
                         .font(.system(size: 14, weight: .medium))
                         .padding(.horizontal, 14)
                         .frame(height: 36)
-                        .foregroundStyle(selection == item ? Color.white : Theme.ink)
-                        .background(selection == item ? Theme.accent : Color.black.opacity(0.06), in: .capsule)
+                        .foregroundStyle(selection == item ? Theme.onAccent : Theme.ink)
+                        .background(selection == item ? Theme.accent : Theme.fill, in: .capsule)
                 }
                 .buttonStyle(.plain)
             }

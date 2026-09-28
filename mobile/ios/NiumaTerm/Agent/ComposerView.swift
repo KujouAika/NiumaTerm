@@ -24,7 +24,7 @@ struct ComposerView: View {
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(Theme.ink2)
                                 .frame(width: 26, height: 26)
-                                .background(Color.black.opacity(0.06), in: .circle)
+                                .background(Theme.fill, in: .circle)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Withdraw")
@@ -81,7 +81,7 @@ struct ComposerView: View {
                     Button(action: model.primaryAction) {
                         Image(systemName: model.showsStop ? "stop.fill" : "arrow.up")
                             .font(.system(size: model.showsStop ? 12 : 15, weight: .bold))
-                            .foregroundStyle(Color.white)
+                            .foregroundStyle(Theme.onAccent)
                             .frame(width: 36, height: 36)
                             .background(Theme.accent.opacity(model.primaryEnabled ? 1 : 0.35), in: .circle)
                             .contentTransition(.symbolEffect(.replace))
@@ -125,6 +125,6 @@ struct ChipLabel: View {
         .foregroundStyle(Theme.ink)
         .padding(.horizontal, 10)
         .frame(height: 32)
-        .background(Color.black.opacity(0.05), in: .capsule)
+        .background(Theme.fill, in: .capsule)
     }
 }
