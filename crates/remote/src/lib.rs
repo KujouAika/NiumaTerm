@@ -8,9 +8,13 @@ pub use crate::network_pty::NetworkPty;
 pub mod client;
 pub mod connection;
 pub mod discovery;
+#[cfg(feature = "host")]
 pub mod host;
+#[cfg(feature = "lan")]
 pub mod lan;
+#[cfg(feature = "host")]
 pub mod local_view;
+#[cfg(feature = "host")]
 pub mod sessions;
 pub mod store;
 
@@ -18,17 +22,23 @@ mod link;
 mod netwatch;
 mod network_pty;
 mod relay;
+#[cfg(feature = "host")]
+mod relay_host;
 mod secret;
+#[cfg(feature = "host")]
 mod stream;
 
 #[cfg(test)]
+#[cfg(feature = "lan")]
 mod lan_tests;
 #[cfg(test)]
 mod link_tests;
 #[cfg(test)]
+#[cfg(feature = "host")]
 mod loopback_tests;
 #[cfg(test)]
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_vendor = "apple"))]
 mod store_tests;
 #[cfg(test)]
+#[cfg(feature = "host")]
 mod stream_tests;

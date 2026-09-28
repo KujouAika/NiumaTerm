@@ -113,6 +113,7 @@ impl StoredRelay {
 }
 
 impl PairedDevice {
+    #[cfg(feature = "host")]
     pub(crate) fn new(
         public_key: [u8; 32],
         name: String,

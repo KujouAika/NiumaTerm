@@ -7,17 +7,28 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "host")]
 use anyhow::Result;
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+#[cfg(feature = "host")]
+use mdns_sd::ServiceInfo;
+#[cfg(feature = "lan")]
+use mdns_sd::{ServiceDaemon, ServiceEvent};
 use nmt_remote_core::identity::DeviceId;
+#[cfg(feature = "host")]
 use parking_lot::Mutex;
+#[cfg(feature = "lan")]
 use tokio::time::{Instant, timeout_at};
+#[cfg(feature = "host")]
 use tracing::warn;
 
+#[cfg(feature = "lan")]
 const SERVICE_TYPE: &str = "_niumaterm._tcp.local.";
+
+#[cfg(feature = "lan")]
 const RECORD_VERSION: &str = "1";
 
 /// A host's DNS-SD record, kept current while it lives.
+#[cfg(feature = "host")]
 pub(crate) struct Advertiser {
     daemon: ServiceDaemon,
     name: String,
@@ -34,6 +45,7 @@ pub enum Target<'a> {
     PairingSlot(&'a str),
 }
 
+#[cfg(feature = "host")]
 impl Advertiser {
     pub(crate) fn start(name: &str, id: DeviceId, port: u16) -> Result<Self> {
         let advertiser = Self {
@@ -92,6 +104,7 @@ impl Advertiser {
     }
 }
 
+#[cfg(feature = "host")]
 impl Drop for Advertiser {
     fn drop(&mut self) {
         if let Some(fullname) = self.fullname.lock().take() {
@@ -104,6 +117,7 @@ impl Drop for Advertiser {
 
 /// Browse the LAN for up to `wait` and return the first matching host
 /// address as `ip:port`.
+#[cfg(feature = "lan")]
 pub async fn find(target: Target<'_>, wait: Duration) -> Option<String> {
     let daemon = ServiceDaemon::new().ok()?;
     let events = daemon.browse(SERVICE_TYPE).ok()?;
@@ -137,4 +151,11 @@ pub async fn find(target: Target<'_>, wait: Duration) -> Option<String> {
     let _ = daemon.shutdown();
 
     found
+}
+
+/// Without DNS-SD nothing on the LAN can be found, so a client falls back at
+/// once to the addresses it was given and to the relay.
+#[cfg(not(feature = "lan"))]
+pub async fn find(_target: Target<'_>, _wait: Duration) -> Option<String> {
+    None
 }

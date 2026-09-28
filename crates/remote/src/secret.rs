@@ -1,25 +1,25 @@
 //! Protects the device private key at rest. Whoever reads that key can run
 //! commands on every host that trusts the device, so it is sealed to the
 //! current OS user rather than with a key compiled into the binary: DPAPI on
-//! Windows, a login Keychain item on macOS.
+//! Windows, a Keychain item on macOS and iOS.
 
 use std::io;
 #[cfg(windows)]
 use std::{ptr, slice};
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use core_foundation::data::CFData;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use parking_lot::Mutex;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use security_framework::base::Error as KeychainError;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass};
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use security_framework::passwords::{PasswordOptions, generic_password};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::LocalFree;
@@ -117,41 +117,42 @@ fn take_blob(blob: CRYPT_INTEGER_BLOB) -> Vec<u8> {
 
 // macOS has no DPAPI counterpart that seals arbitrary bytes, so one random
 // AES-256-GCM key lives in the user's login Keychain and seals every secret
-// file. Keeping the secrets themselves in files leaves the on-disk layout and
+// file. iOS runs the same code against the app's own Keychain; the item is
+// not marked synchronizable, so it stays on the device. Keeping the secrets themselves in files leaves the on-disk layout and
 // the per-instance directories of `--testing` launches unchanged, and a single
 // Keychain item means at most one access prompt when the code signature of
 // the reading binary changes.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const KEYCHAIN_SERVICE: &str = "NiumaTerm";
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(target_vendor = "apple", not(test)))]
 const KEYCHAIN_ACCOUNT: &str = "remote-sessions-sealing-key";
 
 // Test binaries get their own item: they are rebuilt with a new code
 // signature every time, and reading the application's item would ask the
 // user to approve each build.
-#[cfg(all(target_os = "macos", test))]
+#[cfg(all(target_vendor = "apple", test))]
 const KEYCHAIN_ACCOUNT: &str = "remote-sessions-sealing-key-tests";
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const NONCE_LEN: usize = 12;
 
 // Security framework status codes, from `SecBase.h`.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
 /// The sealing key once read, so each secret does not cost a Keychain
 /// round trip, and so two threads sealing their first secret at once cannot
 /// both generate a key.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 static SEALING_KEY: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 
 /// Seal `data` with the Keychain-held key: a random nonce followed by the
 /// AES-GCM ciphertext and tag.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub(crate) fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
     let cipher = cipher()?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -167,7 +168,7 @@ pub(crate) fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
     Ok(sealed)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub(crate) fn unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
     let cipher = cipher()?;
 
@@ -185,7 +186,7 @@ pub(crate) fn unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "sealed secret does not open"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn cipher() -> io::Result<Aes256Gcm> {
     let mut cached = SEALING_KEY.lock();
 
@@ -197,7 +198,7 @@ fn cipher() -> io::Result<Aes256Gcm> {
     Ok(Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key)))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn load_or_create_sealing_key() -> io::Result<[u8; 32]> {
     let stored = match read_sealing_key() {
         Ok(stored) => stored,
@@ -213,7 +214,7 @@ fn load_or_create_sealing_key() -> io::Result<[u8; 32]> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn read_sealing_key() -> Result<Vec<u8>, KeychainError> {
     generic_password(PasswordOptions::new_generic_password(
         KEYCHAIN_SERVICE,
@@ -222,7 +223,7 @@ fn read_sealing_key() -> Result<Vec<u8>, KeychainError> {
 }
 
 /// Store a fresh random key and return the key the Keychain now holds.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn add_sealing_key() -> io::Result<Vec<u8>> {
     let key = Aes256Gcm::generate_key(&mut OsRng);
 
@@ -248,22 +249,22 @@ fn add_sealing_key() -> io::Result<Vec<u8>> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn keychain_error(error: KeychainError) -> io::Error {
     io::Error::other(format!("Keychain access failed: {error}"))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_vendor = "apple")))]
 pub(crate) fn protect(_data: &[u8]) -> io::Result<Vec<u8>> {
     Err(unsupported())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_vendor = "apple")))]
 pub(crate) fn unprotect(_data: &[u8]) -> io::Result<Vec<u8>> {
     Err(unsupported())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_vendor = "apple")))]
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,

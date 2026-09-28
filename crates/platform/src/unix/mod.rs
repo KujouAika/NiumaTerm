@@ -33,7 +33,9 @@ use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Child as ChildProcess, Command};
 use std::sync::Arc;
 use std::task::{Context, Poll as TaskPoll, ready};
@@ -58,7 +60,7 @@ const TIOCSWINSZ: libc::c_int = 0x5414;
 #[cfg(target_os = "freebsd")]
 const TIOCSWINSZ: libc::c_ulong = 0x80087467;
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const TIOCSWINSZ: libc::c_ulong = 2148037735;
 
 #[link(name = "util")]
@@ -241,7 +243,7 @@ fn create_termp() -> libc::termios {
         c_line: 0,
     };
 
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
     let mut term = libc::termios {
         c_iflag: libc::ICRNL | libc::IXON | libc::IXANY | libc::IMAXBEL | libc::BRKINT,
         c_oflag: libc::OPOST | libc::ONLCR,
@@ -284,7 +286,7 @@ fn create_termp() -> libc::termios {
     term.c_cc[libc::VMIN] = 1;
     term.c_cc[libc::VTIME] = 0;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     {
         term.c_cc[libc::VDSUSP] = 25;
         term.c_cc[libc::VSTATUS] = 20;
@@ -424,10 +426,10 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
 
     let (width, height) = (UNKNOWN_PIXEL_SIZE, UNKNOWN_PIXEL_SIZE);
 
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "freebsd")))]
     let mut take_controlling_terminal = true;
 
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
     let take_controlling_terminal = true;
 
     let mut main: libc::c_int = 0;

@@ -44,7 +44,8 @@ use tracing::{debug, warn};
 
 use crate::discovery::Advertiser;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
-use crate::relay::{RelayCommand, RelaySocket, run_host_link};
+use crate::relay::RelaySocket;
+use crate::relay_host::{RelayCommand, run_host_link};
 use crate::sessions::{AgentRequest, HostRequest, Kick, SessionRegistry, TerminalControl, Viewer};
 use crate::store::{self, PairedDevice, now_ms};
 use crate::stream::StreamFlow;

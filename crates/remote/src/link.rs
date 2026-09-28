@@ -96,6 +96,7 @@ impl SendQueue {
         self.tx.send(outbound).is_ok()
     }
 
+    #[cfg(feature = "host")]
     pub(crate) fn is_closed(&self) -> bool {
         self.tx.is_closed()
     }
