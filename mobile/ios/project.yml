@@ -1,8 +1,7 @@
 # XcodeGen spec (design doc §5). Optional: `xcodegen` regenerates NiumaTerm.xcodeproj.
-# Use it once you add the Notification Service Extension and the NiumaTermCore package.
+# Use it once you add the Notification Service Extension.
 name: NiumaTerm
 options:
-  bundleIdPrefix: com.example
   deploymentTarget:
     iOS: "26.0"
 settings:
@@ -10,16 +9,26 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1"
     CURRENT_PROJECT_VERSION: "1"
+packages:
+  NiumaTermCore:
+    path: Packages/NiumaTermCore
 targets:
   NiumaTerm:
     type: application
     platform: iOS
     sources: [NiumaTerm]
+    # Team ID and bundle ID come from here and a gitignored Local.xcconfig.
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    dependencies:
+      - package: NiumaTermCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.niumaterm
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NiumaTerm-Info.plist
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to NiumaTerm on a computer in this network.
         INFOPLIST_KEY_CFBundleDisplayName: NiumaTerm
         INFOPLIST_KEY_NSCameraUsageDescription: Scan the pairing QR code shown by NiumaTerm on your computer.
         INFOPLIST_KEY_NSFaceIDUsageDescription: Unlock NiumaTerm when returning to the app.

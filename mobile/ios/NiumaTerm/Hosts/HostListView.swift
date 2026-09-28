@@ -1,57 +1,67 @@
 import SwiftUI
+import NiumaTermCore
 
-/// Root: paired hosts, each listing its sessions grouped by workspace (design doc §8.1).
+/// Root: paired hosts, each a section listing its sessions (design doc §8.1).
 struct HostListView: View {
     @Environment(AppModel.self) private var app
     @State private var newSessionHost: Host?
-    @State private var showPairing = false
+    @State private var pairing: PairingRequest?
     @State private var showSettings = false
 
     var body: some View {
         @Bindable var app = app
         NavigationStack(path: $app.path) {
             List {
+                if let error = app.startupError {
+                    Section {
+                        Text(error).foregroundStyle(Theme.attention)
+                    } header: {
+                        Text("NiumaTerm could not start")
+                    }
+                }
                 ForEach(app.hosts) { host in
-                    if host.isOnline && !host.workspaces.isEmpty {
-                        ForEach(Array(host.workspaces.enumerated()), id: \.element.id) { index, ws in
-                            Section {
-                                ForEach(ws.sessions) { session in
-                                    NavigationLink(value: session.id) {
-                                        SessionRow(session: session)
-                                    }
-                                    .listRowBackground(Theme.rowBackground)
-                                }
-                            } header: {
-                                VStack(alignment: .leading, spacing: 14) {
-                                    if index == 0 {
-                                        HostHeader(host: host) { newSessionHost = host }
-                                    }
-                                    WorkspaceHeader(workspace: ws)
-                                }
-                                .textCase(nil)
+                    Section {
+                        ForEach(host.orderedSessions) { session in
+                            NavigationLink(value: SessionRoute(hostID: host.id, sessionID: session.id, kind: session.kind)) {
+                                SessionRow(session: session)
                             }
+                            .listRowBackground(Theme.rowBackground)
                         }
-                    } else {
-                        Section {
-                            EmptyView()
-                        } header: {
-                            HostHeader(host: host, onNew: nil).textCase(nil)
+                        if host.isOnline && host.sessions.isEmpty {
+                            Text("No sessions. Tap + to start an agent.")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.tertiary)
+                                .listRowBackground(Theme.rowBackground)
                         }
+                    } header: {
+                        HostHeader(host: host, onNew: host.isOnline ? { newSessionHost = host } : nil)
+                            .textCase(nil)
                     }
                 }
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Theme.canvas)
+            .overlay {
+                if app.hosts.isEmpty && app.startupError == nil {
+                    ContentUnavailableView {
+                        Label("No computers yet", systemImage: "desktopcomputer")
+                    } description: {
+                        Text("Pair this phone with NiumaTerm on your computer to follow its agents here.")
+                    } actions: {
+                        Button("Add computer") { pairing = PairingRequest(link: nil) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
             .navigationTitle("Computers")
-            .navigationDestination(for: String.self) { SessionScreen(sessionID: $0) }
-            .refreshable { try? await Task.sleep(for: .milliseconds(600)) }
+            .navigationDestination(for: SessionRoute.self) { SessionScreen(route: $0) }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Add computer", systemImage: "qrcode.viewfinder") { showPairing = true }
+                    Button("Add computer", systemImage: "qrcode.viewfinder") { pairing = PairingRequest(link: nil) }
                 }
             }
             .sheet(item: $newSessionHost) { host in
@@ -60,11 +70,25 @@ struct HostListView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView()
             }
-            .fullScreenCover(isPresented: $showPairing) {
-                PairingView()
+            .fullScreenCover(item: $pairing) { request in
+                PairingView(initialLink: request.link)
+            }
+            // The Camera app hands a scanned niumaterm://pair link to the
+            // app, which pairs as if it had scanned the code itself.
+            .onOpenURL { url in
+                guard url.scheme == "niumaterm", url.host() == "pair" else { return }
+                pairing = PairingRequest(link: url.absoluteString)
             }
         }
     }
+}
+
+/// One presentation of the pairing screen. The link travels with it, so
+/// the screen sees the link it was opened for rather than a value captured
+/// when the cover was first declared.
+struct PairingRequest: Identifiable {
+    let id = UUID()
+    let link: String?
 }
 
 struct HostHeader: View {
@@ -105,22 +129,6 @@ struct HostHeader: View {
     }
 }
 
-struct WorkspaceHeader: View {
-    let workspace: Workspace
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(workspace.name)
-                .font(.system(size: 12, weight: .semibold))
-                .textCase(.uppercase)
-                .tracking(0.4)
-            Text(workspace.shortPath)
-                .font(Theme.mono(11))
-                .foregroundStyle(Theme.tertiary)
-        }
-        .foregroundStyle(Theme.secondary)
-    }
-}
-
 struct SessionRow: View {
     let session: Session
     var body: some View {
@@ -134,40 +142,36 @@ struct SessionRow: View {
                     .font(.system(size: 16))
                     .foregroundStyle(Theme.ink)
                     .lineLimit(1)
-                Text(session.statusText)
+                Text(session.subtitle)
                     .font(.system(size: 12.5))
-                    .foregroundStyle(session.statusColor)
+                    .foregroundStyle(Theme.secondary)
             }
             Spacer(minLength: 4)
-            if session.controlledOnDesktop {
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.tertiary)
-                    .accessibilityLabel("Controlled on desktop")
-            }
         }
         .padding(.vertical, 3)
     }
 }
 
-/// Routes a session id to its terminal or agent screen.
+/// Routes a session to its terminal or agent screen.
 struct SessionScreen: View {
     @Environment(AppModel.self) private var app
-    let sessionID: String
+    let route: SessionRoute
 
     var body: some View {
-        if let found = app.lookup(sessionID) {
-            switch found.session.kind {
-            case .terminal:
-                TerminalSessionView(model: app.terminalModel(for: found.session),
-                                    workspaceName: found.workspace.name)
-            case .agent:
-                AgentSessionView(model: app.agentModel(for: found.session),
-                                 hostName: found.host.name)
+        let session = app.session(route)
+        let hostName = app.host(route.hostID)?.name ?? "Computer"
+        switch route.kind {
+        case .agent:
+            if let model = app.agentModel(for: route, session: session) {
+                AgentSessionView(model: model, hostName: hostName)
+                    .onDisappear { app.closeAgent(route) }
             }
-        } else {
+        case .terminal:
+            ContentUnavailableView("Terminal comes next", systemImage: "apple.terminal",
+                                   description: Text("This build follows agent sessions. Open this terminal on \(hostName) for now."))
+        case .other:
             ContentUnavailableView("Session ended", systemImage: "xmark.circle",
-                                   description: Text("The host closed this session."))
+                                   description: Text("\(hostName) no longer lists this session."))
         }
     }
 }

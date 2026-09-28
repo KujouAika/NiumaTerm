@@ -1,86 +1,54 @@
 import SwiftUI
+import NiumaTermCore
 
-/// "+" on a host: New terminal, or a profile × workspace pair from `host.info` (§8.1).
+/// "+" on a host: a profile × workspace pair from `host.info` (§8.1).
+/// Terminals come with the terminal milestone.
 struct NewSessionSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     let host: Host
 
-    @State private var isAgent = true
-    @State private var profile: AgentProfile = .claude
-    @State private var workspaceID: String
-
-    init(host: Host) {
-        self.host = host
-        _workspaceID = State(initialValue: host.workspaces.first?.id ?? "")
-    }
+    @State private var offer: HostOffer?
+    @State private var loadError: String?
+    @State private var profile: String?
+    @State private var workspace: String?
+    @State private var starting = false
+    @State private var startError: String?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    Picker("Kind", selection: $isAgent) {
-                        Text(">_  Terminal").tag(false)
-                        Text("✱  Agent").tag(true)
+                    if let offer {
+                        form(offer)
+                    } else if let loadError {
+                        Text(loadError)
+                            .foregroundStyle(Theme.attention)
+                    } else {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 60)
                     }
-                    .pickerStyle(.segmented)
-
-                    if isAgent {
-                        VStack(alignment: .leading, spacing: 8) {
-                            SectionLabel("Profile")
-                            HStack(spacing: 8) {
-                                ForEach(AgentProfile.allCases) { p in
-                                    Button { profile = p } label: {
-                                        Text(p.rawValue)
-                                            .font(.system(size: 14, weight: .medium))
-                                            .padding(.horizontal, 14)
-                                            .frame(height: 36)
-                                            .foregroundStyle(profile == p ? Color.white : Theme.ink)
-                                            .background(profile == p ? Theme.accent : Color.black.opacity(0.06), in: .capsule)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        SectionLabel("Workspace")
-                        VStack(spacing: 0) {
-                            ForEach(Array(host.workspaces.enumerated()), id: \.element.id) { index, ws in
-                                if index > 0 { Divider().padding(.leading, 16) }
-                                Button { workspaceID = ws.id } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(ws.name).font(.system(size: 16)).foregroundStyle(Theme.ink)
-                                            Text(ws.path).font(Theme.mono(11.5)).foregroundStyle(Theme.tertiary)
-                                        }
-                                        Spacer()
-                                        if workspaceID == ws.id {
-                                            Image(systemName: "checkmark")
-                                                .font(.system(size: 15, weight: .bold))
-                                                .foregroundStyle(Theme.accent)
-                                        }
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .frame(height: 56)
-                                    .contentShape(.rect)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .background(Color.white, in: .rect(cornerRadius: 22))
+                    if let startError {
+                        Text(startError)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.attention)
                     }
                 }
                 .padding(20)
-                .animation(.snappy, value: isAgent)
             }
             .safeAreaInset(edge: .bottom) {
-                Button(isAgent ? "Start \(profile.rawValue)" : "Open Terminal", action: create)
-                    .buttonStyle(PrimaryButtonStyle())
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 8)
+                Button(action: create) {
+                    HStack(spacing: 8) {
+                        if starting { ProgressView().tint(.white) }
+                        Text(startLabel)
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(profile == nil || workspace == nil || starting)
+                .opacity(profile == nil || workspace == nil ? 0.5 : 1)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -89,21 +57,163 @@ struct NewSessionSheet: View {
                 }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
-                        Text("New Session").font(.system(size: 17, weight: .semibold))
+                        Text("New Agent").font(.system(size: 17, weight: .semibold))
                         Text(host.name).font(.system(size: 12)).foregroundStyle(Theme.secondary)
                     }
                 }
             }
+            .task { await load() }
+        }
+    }
+
+    private var startLabel: String {
+        guard let profile else { return "Start agent" }
+        return "Start \(profile)"
+    }
+
+    @ViewBuilder
+    private func form(_ offer: HostOffer) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel("Profile")
+            if offer.agents.isEmpty {
+                Text("\(host.name) has no agent profiles.")
+                    .foregroundStyle(Theme.secondary)
+            }
+            FlowChips(items: offer.agents.map(\.name), selection: $profile) { name in
+                let harness = offer.agents.first { $0.name == name }?.harness ?? ""
+                return "\(AgentProfile(harness: harness).glyph)  \(name)"
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel("Workspace")
+            if offer.workspaces.isEmpty {
+                Text("Open a workspace on \(host.name) first; agents start only where you already work.")
+                    .foregroundStyle(Theme.secondary)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(offer.workspaces.enumerated()), id: \.element.path) { index, ws in
+                    if index > 0 { Divider().padding(.leading, 16) }
+                    Button { workspace = ws.path } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(ws.name).font(.system(size: 16)).foregroundStyle(Theme.ink)
+                                Text(ws.path).font(Theme.mono(11.5)).foregroundStyle(Theme.tertiary)
+                                    .lineLimit(1).truncationMode(.head)
+                            }
+                            Spacer()
+                            if workspace == ws.path {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(Theme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(height: 56)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(Color.white, in: .rect(cornerRadius: 22))
+        }
+    }
+
+    private func load() async {
+        do {
+            let offer = try await app.hostOffer(host.id)
+            self.offer = offer
+            profile = offer.agents.first?.name
+            workspace = offer.workspaces.first?.path
+        } catch {
+            loadError = error.displayText
         }
     }
 
     private func create() {
-        let kind: SessionKind = isAgent ? .agent(profile) : .terminal
-        guard let id = app.createSession(hostID: host.id, workspaceID: workspaceID, kind: kind) else { return }
-        dismiss()
+        guard let profile, let workspace else { return }
+        starting = true
+        startError = nil
         Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            app.path.append(id)
+            do {
+                let route = try await app.openAgent(hostID: host.id, profile: profile, workspace: workspace)
+                dismiss()
+                try? await Task.sleep(for: .milliseconds(350))
+                app.path.append(route)
+            } catch {
+                startError = error.displayText
+                starting = false
+            }
         }
+    }
+}
+
+/// Selectable capsules that wrap onto new lines.
+struct FlowChips: View {
+    let items: [String]
+    @Binding var selection: String?
+    var label: (String) -> String
+
+    var body: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(items, id: \.self) { item in
+                Button { selection = item } label: {
+                    Text(label(item))
+                        .font(.system(size: 14, weight: .medium))
+                        .padding(.horizontal, 14)
+                        .frame(height: 36)
+                        .foregroundStyle(selection == item ? Color.white : Theme.ink)
+                        .background(selection == item ? Theme.accent : Color.black.opacity(0.06), in: .capsule)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
+        let height = rows.last.map { $0.y + $0.height } ?? 0
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let rows = arrange(width: bounds.width, subviews: subviews)
+        for row in rows {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: bounds.minY + row.y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+        }
+    }
+
+    private struct Row {
+        var indices: [Int] = []
+        var y: CGFloat = 0
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = [Row()]
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            var row = rows[rows.count - 1]
+            if !row.indices.isEmpty && row.width + spacing + size.width > width {
+                let y = row.y + row.height + spacing
+                rows.append(Row(y: y))
+                row = rows[rows.count - 1]
+            }
+            row.width += (row.indices.isEmpty ? 0 : spacing) + size.width
+            row.height = max(row.height, size.height)
+            row.indices.append(index)
+            rows[rows.count - 1] = row
+        }
+        return rows
     }
 }

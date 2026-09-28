@@ -1,78 +1,131 @@
 import SwiftUI
 import Observation
+import UIKit
+import NiumaTermCore
 
-/// App-wide state. In the real app this wraps `MobileCore` (design doc §4.2)
-/// and is fed by `CoreObserver` callbacks.
+/// App-wide state over `MobileCore` (design doc §4.2): paired hosts, their
+/// live session lists, and the open agent views.
 @MainActor
 @Observable
 final class AppModel {
-    var hosts: [Host] = MockData.hosts
+    var hosts: [Host] = []
     var path = NavigationPath()
 
+    /// Why the core could not start, which leaves the app unable to pair.
+    var startupError: String?
+
+    @ObservationIgnored private var core: MobileCore?
+    @ObservationIgnored private var events: CoreEvents?
     @ObservationIgnored private var agentModels: [String: AgentSessionModel] = [:]
-    @ObservationIgnored private var terminalModels: [String: TerminalSessionModel] = [:]
 
-    func lookup(_ sessionID: String) -> (host: Host, workspace: Workspace, session: Session)? {
-        for host in hosts {
-            for ws in host.workspaces {
-                if let s = ws.sessions.first(where: { $0.id == sessionID }) {
-                    return (host, ws, s)
-                }
-            }
-        }
-        return nil
-    }
+    init() {
+        do {
+            let core = try MobileCore(stateDir: Self.stateDirectory().path,
+                                      deviceName: UIDevice.current.name,
+                                      appVersion: Self.appVersion)
+            self.core = core
+            hosts = core.hosts().map { Host(id: $0.id, name: $0.name, status: $0.status) }
 
-    /// `attach_agent` — attaching takes control from the desktop (§8.4).
-    func agentModel(for session: Session) -> AgentSessionModel {
-        if let m = agentModels[session.id] { return m }
-        let m = AgentSessionModel(session: session)
-        agentModels[session.id] = m
-        return m
-    }
-
-    /// `attach_terminal`.
-    func terminalModel(for session: Session) -> TerminalSessionModel {
-        if let m = terminalModels[session.id] { return m }
-        let m = TerminalSessionModel(session: session)
-        terminalModels[session.id] = m
-        return m
-    }
-
-    /// `open_terminal` / `open_agent`.
-    func createSession(hostID: String, workspaceID: String, kind: SessionKind) -> String? {
-        guard let h = hosts.firstIndex(where: { $0.id == hostID }),
-              let w = hosts[h].workspaces.firstIndex(where: { $0.id == workspaceID }) else { return nil }
-        let ws = hosts[h].workspaces[w]
-        let title: String
-        switch kind {
-        case .terminal: title = "PowerShell"
-        case .agent(let p): title = p.rawValue
-        }
-        let session = Session(id: UUID().uuidString, title: title, kind: kind, activity: .idle(since: nil), cwd: ws.path)
-        hosts[h].workspaces[w].sessions.append(session)
-        return session.id
-    }
-
-    func rename(_ sessionID: String, to title: String) {
-        for h in hosts.indices {
-            for w in hosts[h].workspaces.indices {
-                if let s = hosts[h].workspaces[w].sessions.firstIndex(where: { $0.id == sessionID }) {
-                    hosts[h].workspaces[w].sessions[s].title = title
-                }
-            }
+            let events = CoreEvents(app: self)
+            self.events = events
+            core.observe(observer: events)
+        } catch {
+            startupError = error.displayText
         }
     }
 
-    func addPairedHost(name: String) {
-        hosts.append(Host(id: UUID().uuidString, name: name, isLaptop: false, status: .online, workspaces: [
-            Workspace(id: UUID().uuidString, name: "home", path: "C:\\Users\\me", sessions: [
-                Session(id: UUID().uuidString, title: "PowerShell", kind: .terminal, activity: .idle(since: nil), cwd: "C:\\Users\\me"),
-            ]),
-        ]))
+    static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    /// Pairing records and the sealed device key live in Application Support,
+    /// which is backed up but never shown to the user.
+    private static func stateDirectory() throws -> URL {
+        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                               appropriateFor: nil, create: true)
+        let dir = base.appendingPathComponent("remote", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    // MARK: Lifecycle
+
+    func setForeground(_ foreground: Bool) {
+        core?.setForeground(foreground: foreground)
+    }
+
+    // MARK: Core events
+
+    func hostChanged(_ record: HostRecord) {
+        if let index = hosts.firstIndex(where: { $0.id == record.id }) {
+            hosts[index].name = record.name
+            hosts[index].status = record.status
+        } else {
+            hosts.append(Host(id: record.id, name: record.name, status: record.status))
+        }
+    }
+
+    func sessionsChanged(host: String, sessions: [SessionRecord]) {
+        guard let index = hosts.firstIndex(where: { $0.id == host }) else { return }
+        hosts[index].sessions = sessions.map { Session(record: $0, hostID: host) }
+    }
+
+    // MARK: Lookups
+
+    func host(_ id: String) -> Host? {
+        hosts.first { $0.id == id }
+    }
+
+    func session(_ route: SessionRoute) -> Session? {
+        host(route.hostID)?.sessions.first { $0.id == route.sessionID }
+    }
+
+    // MARK: Commands
+
+    func pair(_ input: String, relayURL: String? = nil, accessKey: String? = nil) async throws -> HostRecord {
+        guard let core else { throw CoreError.Failed(message: startupError ?? "The app could not start its core.") }
+        let record = try await core.pair(input: input, relayUrl: relayURL, accessKey: accessKey)
+        hostChanged(record)
+        return record
     }
 
     func forget(_ hostID: String) {
+        core?.forget(host: hostID)
         hosts.removeAll { $0.id == hostID }
+        for key in agentModels.keys where key.hasPrefix(hostID + "/") {
+            agentModels[key] = nil
+        }
+    }
+
+    func hostOffer(_ hostID: String) async throws -> HostOffer {
+        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        return try await core.hostInfo(host: hostID)
+    }
+
+    /// `agent.open`; returns the route of the new session.
+    func openAgent(hostID: String, profile: String, workspace: String) async throws -> SessionRoute {
+        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        let session = try await core.openAgent(host: hostID, profile: profile, workspace: workspace)
+        return SessionRoute(hostID: hostID, sessionID: session, kind: .agent)
+    }
+
+    /// Attaching takes control of the session from the desktop (§8.4). The
+    /// model stays cached while the screen is open, so the view survives
+    /// navigation redraws; `closeAgent` detaches.
+    func agentModel(for route: SessionRoute, session: Session?) -> AgentSessionModel? {
+        let key = "\(route.hostID)/\(route.sessionID)"
+        if let model = agentModels[key] { return model }
+        guard let core else { return nil }
+        let model = AgentSessionModel(core: core, route: route,
+                                      title: session?.title ?? "Agent",
+                                      profile: session?.profile)
+        agentModels[key] = model
+        return model
+    }
+
+    /// Drop the view of a session, which detaches from it on the host.
+    func closeAgent(_ route: SessionRoute) {
+        agentModels["\(route.hostID)/\(route.sessionID)"]?.detach()
+        agentModels["\(route.hostID)/\(route.sessionID)"] = nil
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import NiumaTermCore
 
 /// Floating glass composer: queue, text field, pickers from the `settings` slot, Send/Interrupt.
 struct ComposerView: View {
@@ -7,25 +8,27 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            ForEach(model.queue) { q in
+            ForEach(Array(model.queue.enumerated()), id: \.offset) { _, message in
                 HStack(spacing: 8) {
                     Text("QUEUED")
                         .font(Theme.mono(10.5, weight: .semibold))
                         .foregroundStyle(Theme.accent)
-                    Text(q.text)
+                    Text(message.text)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.ink2)
                         .lineLimit(1)
                     Spacer()
-                    Button { withAnimation(.snappy) { model.withdraw(q) } } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(Theme.ink2)
-                            .frame(width: 26, height: 26)
-                            .background(Color.black.opacity(0.06), in: .circle)
+                    if message.id != nil {
+                        Button { model.withdraw(message) } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Theme.ink2)
+                                .frame(width: 26, height: 26)
+                                .background(Color.black.opacity(0.06), in: .circle)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Withdraw")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Withdraw")
                 }
                 .padding(.leading, 14)
                 .padding(.trailing, 8)
@@ -39,28 +42,39 @@ struct ComposerView: View {
                     .lineLimit(1...6)
                     .font(.system(size: 15))
                     .focused(focused)
+                    .disabled(model.ended != nil)
                 HStack(spacing: 6) {
-                    Button {} label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Theme.ink2)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.05), in: .circle)
+                    if !model.models.isEmpty {
+                        Menu {
+                            ForEach(model.models, id: \.model) { choice in
+                                Button {
+                                    model.selectModel(choice.model)
+                                } label: {
+                                    if choice.model == model.model {
+                                        Label(choice.display, systemImage: "checkmark")
+                                    } else {
+                                        Text(choice.display)
+                                    }
+                                }
+                            }
+                        } label: { ChipLabel(text: model.modelLabel) }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Attach image")
 
-                    Menu {
-                        Picker("Model", selection: $model.model) {
-                            ForEach(model.profile.models, id: \.self) { Text($0) }
-                        }
-                    } label: { ChipLabel(text: model.model) }
-
-                    Menu {
-                        Picker("Effort", selection: $model.effort) {
-                            ForEach(model.efforts, id: \.self) { Text($0) }
-                        }
-                    } label: { ChipLabel(text: model.effort) }
+                    if !model.efforts.isEmpty {
+                        Menu {
+                            ForEach(model.efforts, id: \.self) { effort in
+                                Button {
+                                    model.selectEffort(effort)
+                                } label: {
+                                    if effort == model.effort {
+                                        Label(effort.capitalized, systemImage: "checkmark")
+                                    } else {
+                                        Text(effort.capitalized)
+                                    }
+                                }
+                            }
+                        } label: { ChipLabel(text: model.effort?.capitalized ?? "Effort") }
+                    }
 
                     Spacer()
 
@@ -84,9 +98,9 @@ struct ComposerView: View {
             .glassRounded(28)
 
             HStack {
-                Label(model.branch, systemImage: "arrow.triangle.branch")
+                Text(model.phaseLine).lineLimit(1)
                 Spacer()
-                Text(model.contextLine)
+                if let context = model.contextLine { Text(context) }
             }
             .font(Theme.mono(10.5))
             .foregroundStyle(Theme.secondary)
@@ -102,7 +116,7 @@ struct ChipLabel: View {
     let text: String
     var body: some View {
         HStack(spacing: 4) {
-            Text(text)
+            Text(text).lineLimit(1)
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.tertiary)

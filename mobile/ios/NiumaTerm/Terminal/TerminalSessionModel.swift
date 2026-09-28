@@ -8,7 +8,8 @@ import UIKit
 @MainActor
 @Observable
 final class TerminalSessionModel {
-    let session: Session
+    let title: String
+    let cwd: String
     var lines: [AttributedString]
     var input = ""
     var ctrl = false
@@ -16,12 +17,13 @@ final class TerminalSessionModel {
     var cols = 52
     var rows = 24
 
-    init(session: Session) {
-        self.session = session
-        self.lines = [AttributedString("PS \(session.cwd)> ls")] + MockData.listing(cwd: session.cwd)
+    init(title: String, cwd: String) {
+        self.title = title
+        self.cwd = cwd
+        self.lines = [AttributedString("PS \(cwd)> ls")] + MockData.listing(cwd: cwd)
     }
 
-    var prompt: String { "PS \(session.cwd)> " }
+    var prompt: String { "PS \(cwd)> " }
 
     func submit() {
         let command = input
@@ -32,7 +34,7 @@ final class TerminalSessionModel {
             return
         }
         lines.append(AttributedString(prompt + command))
-        lines.append(contentsOf: MockData.output(for: command, cwd: session.cwd))
+        lines.append(contentsOf: MockData.output(for: command, cwd: cwd))
     }
 
     /// Sticky Ctrl: the next typed character becomes a control sequence.

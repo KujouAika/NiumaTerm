@@ -1,46 +1,90 @@
-# NiumaTerm iOS — Demo 工程
+# NiumaTerm iOS
 
-纯 SwiftUI 的界面 Demo，数据全部是 Mock，结构按 `ios-app-design.md` §5 组织，可以直接放进仓库的 `mobile/ios/`。
+A SwiftUI app laid out as in `docs/research/ios-app-design.md` §5. The
+protocol, cryptography, reconnects, and the agent view replica live in the
+Rust core `crates/mobile` (`nmt_mobile`), which UniFFI exposes to Swift as the
+`NiumaTermCore` module.
 
-## 打开
+Status: pairing, the host and session list, and agent sessions (transcript,
+send / queue / withdraw, interrupt, approvals, model and effort, rename, the
+desktop taking a session back and the phone reconnecting) run on the real
+core. Terminal sessions are the next milestone (P2): opening one shows a
+placeholder, and the screens under `Terminal/` are still the prototype fed by
+`Core/MockData.swift`.
 
-1. Mac 上需要 Xcode 26（iOS 26 SDK）。
-2. 双击 `NiumaTerm.xcodeproj`。
-3. Signing & Capabilities 里选择你的 Team；如有需要，改掉 Bundle ID `com.example.niumaterm`。
-4. 选一台 iPhone 模拟器，按 ⌘R 运行。
+## Build
 
-工程使用 Xcode 16 起支持的文件夹同步，`NiumaTerm/` 下新建的文件会自动加入 target。
-`project.yml` 是 XcodeGen 配置，以后加 Notification Service Extension 和 NiumaTermCore 包时再用 `xcodegen` 重新生成工程。
+1. Xcode 26 or later, and the Rust iOS targets:
 
-## 界面与文件
+   ```sh
+   rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+   ```
 
-| 界面 | 文件 |
+2. Build the Rust core. This writes
+   `Packages/NiumaTermCore/NiumaTermCoreFFI.xcframework` and the generated
+   Swift bindings; neither is committed.
+
+   ```sh
+   scripts/build-ios-core.sh                # release, device + simulator
+   scripts/build-ios-core.sh --debug --sim  # faster while developing
+   ```
+
+   Run it again after changing `crates/mobile`, `crates/remote`, or
+   `crates/agent`.
+
+3. Set your signing identity outside the project file, so it never reaches
+   the repository:
+
+   ```sh
+   cp Config/Local.xcconfig.example Config/Local.xcconfig   # gitignored
+   ```
+
+   and fill in `NMT_DEVELOPMENT_TEAM` and `NMT_BUNDLE_ID`. Scripted builds
+   can pass the same names as environment variables instead. Do not pick a
+   team in Xcode's Signing & Capabilities tab: Xcode writes that choice into
+   `project.pbxproj`. Without either, the app still builds for the simulator
+   as `io.f32.NiumaTermMobile`.
+
+4. Open `NiumaTerm.xcodeproj` and run.
+
+## Testing against a local desktop host
+
+1. Start an isolated desktop instance with remote hosting on, on a port apart
+   from the one a running instance uses (47470):
+
+   ```sh
+   mkdir -p /tmp/nmt-host/Test
+   cp ~/Library/Application\ Support/NiumaTerm/Test/config.toml /tmp/nmt-host/Test/
+   printf '\n[remote]\nenabled = true\nlan-port = 47471\ndevice-name = "Test Host"\n' >> /tmp/nmt-host/Test/config.toml
+   NMT_CONFIG_HOME=/tmp/nmt-host scripts/macos-dev-sign.sh target/debug/NiumaTerm --testing
+   ```
+
+2. On the desktop: Settings › Remote › This computer › Show pairing code ›
+   Copy link.
+3. In the simulator: `xcrun simctl openurl booted "$(pbpaste)"`, or Add
+   computer › Paste pairing link in the app. A code works once, for five
+   minutes.
+
+Without a relay the app uses the LAN address in the pairing link; with one it
+goes through the relay (design doc §7.1).
+
+## Files
+
+| Screen | File |
 | --- | --- |
-| 电脑与会话列表（1a） | `Hosts/HostListView.swift` |
-| 新建会话（1b） | `Hosts/NewSessionSheet.swift` |
-| Agent 会话、对话记录、输入框（1c） | `Agent/AgentSessionView.swift`、`Agent/ComposerView.swift` |
-| 审批、桌面收回控制（1d、1g） | `Agent/AgentSheets.swift` |
-| 终端 + 键盘附件栏（1e） | `Terminal/TerminalSessionView.swift` |
-| 扫码配对 + 手动输入（1f） | `Hosts/PairingView.swift`（真机上使用 VisionKit 的 DataScanner） |
-| 设置 | `Settings/SettingsView.swift` |
-| 颜色、字体 | `Theme/Theme.swift` |
-| Liquid Glass 与 iOS 18 回退 | `Compat/Compat.swift` |
+| Hosts and sessions | `Hosts/HostListView.swift` |
+| New agent (profile × workspace from `host.info`) | `Hosts/NewSessionSheet.swift` |
+| Pairing: scan, paste a link, or type a code | `Hosts/PairingView.swift` |
+| Agent session and transcript | `Agent/AgentSessionView.swift`, `Agent/AgentSessionModel.swift` |
+| Composer, model and effort | `Agent/ComposerView.swift` |
+| Approval, session taken back or ended | `Agent/AgentSheets.swift` |
+| Core callbacks onto the main actor | `Core/CoreEvents.swift` |
+| App state over `MobileCore` | `App/AppModel.swift` |
+| Terminal prototype | `Terminal/` |
+| Liquid Glass with iOS 18 fallbacks | `Compat/Compat.swift` |
 
-## Demo 里能试的
+## Fonts
 
-- Agent 会话右上角 `···` → Demo：模拟审批请求、模拟桌面收回控制。
-- Agent 工作中输入消息会进入排队列表；没有输入时按按钮会中断。
-- 终端：点屏幕弹出键盘，输入 `ls`、`git status`、`clear`；Ctrl 为粘滞键（Ctrl 之后按 C 会显示 ^C）；双指捏合调整字号。
-- 模拟器上配对页有一个 “Simulate scan” 按钮。
-
-## 接入真实 Core 时要替换的部分
-
-- `AppModel` 替换为 `MobileCore`：`hosts()`、`observe`、`open_terminal`、`open_agent`、`pair`、`forget`。
-- `AgentSessionModel` 替换为 `AgentHandle` + `AgentObserver`：各属性分别对应 `status`、`settings`、`queue`、`pending` 这几个 slot。
-- `TerminalSessionModel` + `TerminalSessionView` 的文本网格替换为 UIKit 的 `TerminalSurface`（Core Text 按行绘制），输入换成实现了 `UITextInput` 的视图。
-- `Core/MockData.swift` 可以整个删除。
-
-## 字体
-
-把 JetBrains Mono Nerd Font Mono 的 ttf 文件放到 `NiumaTerm/Resources/Fonts/`，启动时会自动注册，不需要改 Info.plist。
-没有放字体时使用 SF Mono。
+Drop the JetBrains Mono Nerd Font Mono `.ttf` files into
+`NiumaTerm/Resources/Fonts/`; they are registered at launch. Without them the
+app uses SF Mono.

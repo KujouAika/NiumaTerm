@@ -1,153 +1,364 @@
 import SwiftUI
 import Observation
+import NiumaTermCore
 
-/// Mirrors the slots of the replicated `AgentView` (design doc §8.3).
-/// Real app: fed by `AgentHandle` / `AgentObserver`; actions become `agent.call` commands.
+/// One row of the transcript as the screen shows it. Consecutive work
+/// items fold into one row, as on the desktop.
+struct TranscriptRowModel: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case user(String, images: Int)
+        case agent(String)
+        case reasoning(String)
+        case work([WorkItem])
+        case compaction(String?)
+        case error(String)
+        case notice(String)
+    }
+
+    /// The transcript index of the row's first entry, which stays the same
+    /// while entries after it stream in.
+    let id: Int
+    let kind: Kind
+}
+
+struct WorkItem: Identifiable, Equatable {
+    enum State: Equatable { case running, done, failed }
+
+    let id: Int
+    let label: String
+    let detail: String
+    let output: String?
+    let state: State
+}
+
+/// Folds transcript entries into rows. Separate from the model so the
+/// grouping is a plain function of the entries.
+enum TranscriptRows {
+    static func build(_ entries: [AgentEntry]) -> [TranscriptRowModel] {
+        var rows: [TranscriptRowModel] = []
+        var work: [WorkItem] = []
+        var workStart = 0
+
+        func flushWork() {
+            if !work.isEmpty {
+                rows.append(TranscriptRowModel(id: workStart, kind: .work(work)))
+                work = []
+            }
+        }
+
+        for entry in entries {
+            let index = Int(entry.index)
+            if let item = workItem(entry.item, index: index) {
+                if work.isEmpty { workStart = index }
+                work.append(item)
+                continue
+            }
+            flushWork()
+            switch entry.item {
+            case .user(let text, let images):
+                rows.append(TranscriptRowModel(id: index, kind: .user(text, images: Int(images))))
+            case .agent(let text):
+                if !text.isEmpty { rows.append(TranscriptRowModel(id: index, kind: .agent(text))) }
+            case .reasoning(let summary):
+                if !summary.isEmpty { rows.append(TranscriptRowModel(id: index, kind: .reasoning(summary))) }
+            case .compaction(let summary):
+                rows.append(TranscriptRowModel(id: index, kind: .compaction(summary)))
+            case .error(let text):
+                rows.append(TranscriptRowModel(id: index, kind: .error(text)))
+            case .notice(let text):
+                rows.append(TranscriptRowModel(id: index, kind: .notice(text)))
+            case .command, .fileChange, .tool:
+                break
+            }
+        }
+        flushWork()
+        return rows
+    }
+
+    private static func workItem(_ item: AgentItem, index: Int) -> WorkItem? {
+        switch item {
+        case .command(let command, let purpose, let output, let status, let exitCode):
+            let state: WorkItem.State
+            if let exitCode {
+                state = exitCode == 0 ? .done : .failed
+            } else {
+                state = workState(status)
+            }
+            return WorkItem(id: index, label: "Run", detail: purpose ?? command, output: output, state: state)
+        case .fileChange(let paths, let diff, let status):
+            return WorkItem(id: index, label: "Edit", detail: paths, output: diff, state: workState(status))
+        case .tool(let kind, let title, let output, let status):
+            return WorkItem(id: index, label: kind, detail: title, output: output, state: workState(status))
+        default:
+            return nil
+        }
+    }
+
+    /// Agents report statuses in their own words; anything that is neither
+    /// finished nor failed is still running.
+    private static func workState(_ status: String?) -> WorkItem.State {
+        guard let status = status?.lowercased() else { return .running }
+        if status.contains("fail") || status.contains("error") || status.contains("declin") || status.contains("reject") {
+            return .failed
+        }
+        if status.contains("complet") || status.contains("done") || status.contains("success") || status == "ok" {
+            return .done
+        }
+        return .running
+    }
+}
+
+/// One agent session on a host, over `AgentHandle` (design doc §8.3). The
+/// host keeps the controller; this mirrors its view and sends commands.
 @MainActor
 @Observable
 final class AgentSessionModel {
-    let session: Session
+    let route: SessionRoute
+    let profile: AgentProfile?
     var title: String
 
-    // transcript
-    var entries: [TranscriptEntry]
-    // status slot
-    var isWorking: Bool
-    var interrupted = false
-    var workStarted: Date
-    var tokens = "6.5k"
-    // composer
+    private(set) var entries: [AgentEntry] = []
+    private(set) var rows: [TranscriptRowModel] = []
+    private(set) var state: AgentState?
+
+    /// When the running turn started, on this phone's clock.
+    private(set) var workStarted: Date?
+
     var draft = ""
-    var queue: [QueuedPrompt] = []
-    // settings slot
-    var model: String
-    var effort = "Medium"
-    let efforts = ["Low", "Medium", "High"]
-    // pending slot
-    var pending: ApprovalRequest?
     var showApproval = false
     var allowForSession = false
-    // handover (§8.4)
-    var takenBack = false
-    // footer
-    var branch = "feature/remote-session"
-    var contextLine = "80k used · 92% left"
 
-    @ObservationIgnored private var nextID: Int
-    @ObservationIgnored private var replyTask: Task<Void, Never>?
+    /// The outcome of the last command when it needs saying.
+    var notice: String?
 
-    init(session: Session) {
-        self.session = session
-        self.title = session.title
-        let seed = MockData.agentSeed(for: session)
-        self.entries = seed.entries
-        self.isWorking = seed.working
-        self.workStarted = Date().addingTimeInterval(-seed.elapsed)
-        self.pending = seed.approval
-        self.model = session.profile?.models.first ?? "default"
-        self.nextID = (seed.entries.map(\.id).max() ?? -1) + 1
-        self.showApproval = seed.approval != nil
+    @ObservationIgnored private var handle: AgentHandle?
+    @ObservationIgnored private var events: AgentEvents?
+    @ObservationIgnored private var shownApproval: String?
+
+    init(core: MobileCore, route: SessionRoute, title: String, profile: AgentProfile?) {
+        self.route = route
+        self.title = title
+        self.profile = profile
+
+        let events = AgentEvents(model: self)
+        self.events = events
+        do {
+            handle = try core.attachAgent(host: route.hostID, session: route.sessionID, observer: events)
+        } catch {
+            notice = error.displayText
+        }
     }
 
-    var profile: AgentProfile { session.profile ?? .claude }
-    var agentName: String { profile.shortName }
+    var agentName: String { profile?.shortName ?? "the agent" }
+    var attached: Bool { state?.attached ?? false }
+    var isWorking: Bool { state?.working ?? false }
+    var ended: ViewEnd? { state?.ended }
+    var queue: [QueuedMessage] { state?.queue ?? [] }
+    var approval: PendingApproval? { state?.approval }
+
     var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
     var showsStop: Bool { isWorking && trimmedDraft.isEmpty }
-    var primaryEnabled: Bool { isWorking || !trimmedDraft.isEmpty }
+    var primaryEnabled: Bool { attached && ended == nil && (isWorking || !trimmedDraft.isEmpty) }
 
-    /// Send, queue (while working), or interrupt.
+    var model: String? { state?.model }
+    var effort: String? { state?.effort }
+    var models: [ModelChoice] { state?.models ?? [] }
+    var efforts: [String] { models.first { $0.model == model }?.efforts ?? [] }
+
+    var modelLabel: String {
+        guard let model else { return "Default model" }
+        return models.first { $0.model == model }?.display ?? model
+    }
+
+    var tokensText: String? {
+        state?.outputTokens.map { Self.compact($0) }
+    }
+
+    var contextLine: String? {
+        guard let used = state?.contextUsed else { return nil }
+        guard let window = state?.contextWindow, window > 0 else { return "\(Self.compact(used)) context" }
+        let left = max(0, 100 - Int(Double(used) / Double(window) * 100))
+        return "\(Self.compact(used)) used · \(left)% left"
+    }
+
+    var phaseLine: String {
+        if let failure = state?.startFailure { return failure }
+        switch state?.phase {
+        case .starting, nil: return attached ? "Starting…" : "Connecting…"
+        case .running: return state?.detail ?? (isWorking ? "Working" : "Ready")
+        case .idle: return "Ready"
+        case .exited: return "Agent exited"
+        }
+    }
+
+    // MARK: Core updates
+
+    func viewChanged(transcriptFrom: UInt32?) {
+        guard let handle else { return }
+        if let from = transcriptFrom {
+            let kept = min(Int(from), entries.count)
+            entries = Array(entries.prefix(kept)) + handle.entries(from: UInt32(kept))
+            rows = TranscriptRows.build(entries)
+        }
+
+        let state = handle.state()
+        self.state = state
+        if let name = state.title, !name.isEmpty { title = name }
+        workStarted = state.workingMs.map { Date().addingTimeInterval(-Double($0) / 1000) }
+
+        // A new approval request opens the sheet once; dismissing it keeps
+        // a row in the transcript to reopen it.
+        switch state.approval {
+        case .some(let approval) where !approval.submitted:
+            if shownApproval != approval.description {
+                shownApproval = approval.description
+                allowForSession = false
+                showApproval = true
+            }
+        default:
+            shownApproval = nil
+            showApproval = false
+        }
+    }
+
+    // MARK: Commands
+
+    /// Send, queue behind the running turn, or interrupt.
     func primaryAction() {
         let text = trimmedDraft
         if !text.isEmpty {
             draft = ""
-            if isWorking {
-                queue.append(QueuedPrompt(text: text))
-            } else {
-                send(text)
-            }
+            send(text)
         } else if isWorking {
             interrupt()
         }
     }
 
-    func withdraw(_ q: QueuedPrompt) {
-        queue.removeAll { $0.id == q.id }
+    private func send(_ text: String) {
+        guard let handle else { return }
+        notice = nil
+        Task {
+            do {
+                let result = try await handle.submit(text: text)
+                switch result {
+                case .accepted:
+                    return
+                case .notReady:
+                    notice = "\(agentName) is still starting."
+                case .answerPending:
+                    notice = "An answer to a question is still being sent."
+                case .conversationChanging:
+                    notice = "The conversation is being rewound or forked."
+                case .commandStarting:
+                    notice = "A command is starting."
+                case .rejected(let message):
+                    notice = message
+                }
+            } catch {
+                notice = error.displayText
+            }
+            // The message did not go out; give it back.
+            if draft.isEmpty { draft = text }
+        }
     }
 
     func interrupt() {
-        replyTask?.cancel()
-        isWorking = false
-        interrupted = true
+        guard let handle else { return }
+        Task {
+            do {
+                let result = try await handle.interrupt()
+                if let restored = result.restoredText, draft.isEmpty {
+                    draft = restored
+                }
+            } catch {
+                notice = error.displayText
+            }
+        }
+    }
+
+    func withdraw(_ message: QueuedMessage) {
+        guard let handle, let id = message.id else { return }
+        Task {
+            do {
+                if try await !handle.withdraw(id: id) {
+                    notice = "\(agentName) already read that message."
+                }
+            } catch {
+                notice = error.displayText
+            }
+        }
     }
 
     func approve() {
-        showApproval = false
-        pending = nil
-        removeWaitingNotice()
-        startTurn {
-            [.tools([ToolCall("Bash", "git commit -m …")]), .agent("Committed.")]
-        }
+        respond(allowForSession ? .acceptForSession : .accept)
     }
 
     func deny() {
+        respond(.decline)
+    }
+
+    private func respond(_ decision: ApprovalDecision) {
+        guard let handle else { return }
         showApproval = false
-        pending = nil
-        removeWaitingNotice()
-        append(.notice("✕ Denied", Theme.secondary))
-        append(.agent("Understood. I left the changes staged and did not commit."))
-    }
-
-    func simulateApproval() {
-        pending = ApprovalRequest(title: "\(agentName) needs approval",
-                                  summary: "Run a command in \(session.cwd.split(separator: "\\").last.map(String.init) ?? "workspace")",
-                                  command: "cargo test -p nmt_remote",
-                                  cwd: session.cwd,
-                                  ruleLabel: "Allow cargo test for this session")
-        append(.notice("◌ Waiting for approval", Theme.attention))
-        showApproval = true
-    }
-
-    private func send(_ text: String) {
-        append(.user(text))
-        startTurn {
-            [.tools([ToolCall("Read", "AGENTS.md"), ToolCall("Grep", "remote")]),
-             .agent("(Demo) Reply from the mock core. Swap `AgentSessionModel` onto `AgentHandle` to drive a real host.")]
-        }
-    }
-
-    private func startTurn(_ steps: @escaping () -> [TranscriptEntry.Kind]) {
-        replyTask?.cancel()
-        interrupted = false
-        isWorking = true
-        workStarted = .now
-        replyTask = Task { [weak self] in
-            for step in steps() {
-                try? await Task.sleep(for: .seconds(1.3))
-                guard let self, !Task.isCancelled else { return }
-                self.append(step)
+        Task {
+            do {
+                let result = try await handle.respondApproval(decision: decision)
+                if result == .rejected {
+                    notice = "\(agentName) did not accept the answer."
+                }
+            } catch {
+                notice = error.displayText
             }
-            guard let self, !Task.isCancelled else { return }
-            self.finishTurn()
         }
     }
 
-    private func finishTurn() {
-        isWorking = false
-        if !queue.isEmpty {
-            let next = queue.removeFirst()
-            send(next.text)
+    func selectModel(_ model: String) {
+        let efforts = models.first { $0.model == model }?.efforts ?? []
+        let effort = effort.flatMap { efforts.contains($0) ? $0 : nil } ?? efforts.first
+        apply(model: model, effort: effort)
+    }
+
+    func selectEffort(_ effort: String) {
+        guard let model else { return }
+        apply(model: model, effort: effort)
+    }
+
+    private func apply(model: String, effort: String?) {
+        guard let handle else { return }
+        Task {
+            do {
+                try await handle.selectModel(model: model, effort: effort)
+            } catch {
+                notice = error.displayText
+            }
         }
     }
 
-    private func removeWaitingNotice() {
-        entries.removeAll {
-            if case .notice(let t, _) = $0.kind { return t.hasPrefix("◌") }
-            return false
+    func rename(_ newTitle: String) {
+        guard let handle else { return }
+        let previous = title
+        title = newTitle
+        Task {
+            do {
+                try await handle.rename(title: newTitle)
+            } catch {
+                title = previous
+                notice = error.displayText
+            }
         }
     }
 
-    private func append(_ kind: TranscriptEntry.Kind) {
-        entries.append(TranscriptEntry(id: nextID, kind: kind))
-        nextID += 1
+    /// Take the session back after the desktop took it (§8.4).
+    func takeControl() {
+        handle?.takeControl()
+    }
+
+    /// Drop the view, which detaches from the session on the host.
+    func detach() {
+        handle = nil
+    }
+
+    static func compact(_ tokens: UInt64) -> String {
+        tokens >= 1000 ? String(format: "%.1fk", Double(tokens) / 1000) : "\(tokens)"
     }
 }

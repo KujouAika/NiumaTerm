@@ -1,7 +1,7 @@
 import SwiftUI
+import NiumaTermCore
 
 struct AgentSessionView: View {
-    @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: AgentSessionModel
     let hostName: String
@@ -14,17 +14,26 @@ struct AgentSessionView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if model.entries.isEmpty && !model.isWorking {
+                    if !model.attached {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Connecting to \(hostName)…")
+                        }
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 120)
+                    } else if model.rows.isEmpty && !model.isWorking {
                         Text("Send a message to start.")
                             .font(.system(size: 15))
                             .foregroundStyle(Theme.tertiary)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 120)
                     }
-                    ForEach(model.entries) { entry in
-                        TranscriptRow(entry: entry)
+                    ForEach(model.rows) { row in
+                        TranscriptRow(row: row)
                     }
-                    if model.pending != nil && !model.showApproval {
+                    if model.approval.map({ !$0.submitted }) == true && !model.showApproval {
                         Button { model.showApproval = true } label: {
                             Label("Review approval request", systemImage: "hand.raised")
                                 .font(.system(size: 14, weight: .semibold))
@@ -35,11 +44,16 @@ struct AgentSessionView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if model.isWorking {
-                        WorkingRow(started: model.workStarted, tokens: model.tokens)
+                    if (model.state?.questions ?? 0) > 0 {
+                        Text("? \(model.agentName) asks a question. Answer it on the computer for now.")
+                            .font(Theme.mono(12.5))
+                            .foregroundStyle(Theme.attention)
                     }
-                    if model.interrupted {
-                        Text("■ Interrupted by you")
+                    if model.isWorking, let started = model.workStarted {
+                        WorkingRow(started: started, tokens: model.tokensText)
+                    }
+                    if let notice = model.notice {
+                        Text(notice)
                             .font(Theme.mono(12.5))
                             .foregroundStyle(Theme.attention)
                     }
@@ -50,7 +64,7 @@ struct AgentSessionView: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: model.entries.count) {
+            .onChange(of: model.rows.last) {
                 withAnimation(.snappy) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
         }
@@ -63,7 +77,7 @@ struct AgentSessionView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
-                    Text("\(model.profile.rawValue) · \(hostName)")
+                    Text("\(model.profile?.displayName ?? "Agent") · \(hostName)")
                         .font(.system(size: 11.5))
                         .foregroundStyle(Theme.secondary)
                 }
@@ -74,65 +88,70 @@ struct AgentSessionView: View {
                         newTitle = model.title
                         renaming = true
                     }
-                    Button("Rewind or fork…", systemImage: "arrow.uturn.backward") {}
-                    Button("Tasks & goal", systemImage: "checklist") {}
-                    Section("Demo") {
-                        Button("Simulate approval request") { model.simulateApproval() }
-                        Button("Simulate desktop taking control") { model.takenBack = true }
-                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
+                .disabled(!model.attached)
             }
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
             Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                model.title = newTitle
-                app.rename(model.session.id, to: newTitle)
-            }
+            Button("Save") { model.rename(newTitle) }
         }
         .sheet(isPresented: $model.showApproval) {
-            if let request = model.pending {
-                ApprovalSheet(model: model, request: request)
+            if let approval = model.approval {
+                ApprovalSheet(model: model, approval: approval)
                     .presentationDetents([.medium, .large])
             }
         }
-        .sheet(isPresented: $model.takenBack) {
-            TakenBackSheet(hostName: hostName, title: model.title,
-                           onReconnect: { model.takenBack = false },
-                           onClose: {
-                               model.takenBack = false
-                               Task {
-                                   try? await Task.sleep(for: .milliseconds(300))
-                                   dismiss()
-                               }
-                           })
+        .sheet(item: Binding(get: { model.ended.map(EndedSheetItem.init) }, set: { _ in })) { item in
+            EndedSheet(end: item.end, hostName: hostName, title: model.title,
+                       onReconnect: { model.takeControl() },
+                       onClose: {
+                           Task {
+                               try? await Task.sleep(for: .milliseconds(300))
+                               dismiss()
+                           }
+                       })
                 .presentationDetents([.height(400)])
                 .interactiveDismissDisabled()
         }
     }
 }
 
+private struct EndedSheetItem: Identifiable {
+    let end: ViewEnd
+    var id: ViewEnd { end }
+}
+
 // MARK: Transcript rows
 
 struct TranscriptRow: View {
-    let entry: TranscriptEntry
+    let row: TranscriptRowModel
     @AppStorage("transcriptMono") private var mono = true
 
     var body: some View {
-        switch entry.kind {
-        case .user(let text):
-            Text(text)
-                .font(.system(size: 15))
-                .foregroundStyle(Theme.ink)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Theme.bubble, in: .rect(cornerRadius: 20))
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.leading, 48)
-                .textSelection(.enabled)
+        switch row.kind {
+        case .user(let text, let images):
+            VStack(alignment: .trailing, spacing: 4) {
+                if images > 0 {
+                    Label("\(images) image\(images == 1 ? "" : "s")", systemImage: "photo")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.secondary)
+                }
+                if !text.isEmpty {
+                    Text(text)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.ink)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Theme.bubble, in: .rect(cornerRadius: 20))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.leading, 48)
         case .agent(let text):
             Text(markdown(text))
                 .font(mono ? Theme.mono(14) : .system(size: 15))
@@ -140,46 +159,104 @@ struct TranscriptRow: View {
                 .foregroundStyle(Theme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
-        case .thinking(let summary):
+        case .reasoning(let summary):
             DisclosureRowView(label: "Thinking", icon: "brain") {
                 Text(summary)
                     .font(.system(size: 13.5))
                     .italic()
                     .foregroundStyle(Theme.secondary)
             }
-        case .tools(let calls):
-            DisclosureRowView(label: "+\(calls.count) tool calls", icon: nil) {
+        case .work(let items):
+            DisclosureRowView(label: workLabel(items), icon: nil) {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(calls) { call in
-                        HStack(spacing: 8) {
-                            Text(call.kind)
-                                .foregroundStyle(Theme.accent)
-                                .frame(minWidth: 40, alignment: .leading)
-                            Text(call.detail)
-                                .foregroundStyle(Theme.ink2)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer(minLength: 4)
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(Theme.online)
-                        }
-                        .font(Theme.mono(12))
-                    }
+                    ForEach(items) { WorkItemRow(item: $0) }
                 }
             }
-        case .notice(let text, let color):
+        case .compaction(let summary):
+            DisclosureRowView(label: "Context compacted", icon: "arrow.down.right.and.arrow.up.left") {
+                Text(summary ?? "No summary was reported.")
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Theme.secondary)
+            }
+        case .error(let text):
             Text(text)
                 .font(Theme.mono(13))
-                .foregroundStyle(color)
+                .foregroundStyle(Theme.attention)
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) { Rectangle().fill(Theme.attention).frame(width: 2) }
+                .textSelection(.enabled)
+        case .notice(let text):
+            Text(text)
+                .font(Theme.mono(13))
+                .foregroundStyle(Theme.secondary)
                 .padding(.leading, 12)
                 .overlay(alignment: .leading) { Rectangle().fill(Theme.rule).frame(width: 2) }
         }
     }
 
+    private func workLabel(_ items: [WorkItem]) -> String {
+        if items.count == 1, let item = items.first { return "\(item.label) · \(item.detail)" }
+        return "Show work (\(items.count))"
+    }
+
     private func markdown(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(s)
+    }
+}
+
+struct WorkItemRow: View {
+    let item: WorkItem
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.snappy) { open.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(item.label)
+                        .foregroundStyle(Theme.accent)
+                        .frame(minWidth: 40, alignment: .leading)
+                    Text(item.detail)
+                        .foregroundStyle(Theme.ink2)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    stateIcon
+                }
+                .font(Theme.mono(12))
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .disabled(item.output?.isEmpty ?? true)
+            if open, let output = item.output {
+                ScrollView(.horizontal) {
+                    Text(output)
+                        .font(Theme.mono(11.5))
+                        .foregroundStyle(Theme.codeText)
+                        .padding(10)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 280)
+                .background(Theme.codeBackground, in: .rect(cornerRadius: 12))
+            }
+        }
+    }
+
+    @ViewBuilder private var stateIcon: some View {
+        switch item.state {
+        case .running:
+            ProgressView().controlSize(.mini)
+        case .done:
+            Image(systemName: "checkmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Theme.online)
+        case .failed:
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Theme.attention)
+        }
     }
 }
 
@@ -197,7 +274,7 @@ struct DisclosureRowView<Content: View>: View {
             } label: {
                 HStack(spacing: 6) {
                     if let icon { Image(systemName: icon).font(.system(size: 12)) }
-                    Text(label)
+                    Text(label).lineLimit(1).truncationMode(.middle)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .rotationEffect(.degrees(open ? 90 : 0))
@@ -217,18 +294,20 @@ struct DisclosureRowView<Content: View>: View {
 
 struct WorkingRow: View {
     let started: Date
-    let tokens: String
+    let tokens: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let seconds = max(0, Int(context.date.timeIntervalSince(started)))
             HStack(spacing: 8) {
                 PulsingDots()
-                Text("Working for \(seconds / 60)m \(seconds % 60)s ·")
+                Text("Working for \(seconds / 60)m \(seconds % 60)s")
                     .foregroundStyle(Theme.secondary)
-                Text("\(tokens) tokens")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.ink)
+                if let tokens {
+                    Text("· \(tokens) tokens")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Theme.ink)
+                }
             }
             .font(Theme.mono(12.5))
         }

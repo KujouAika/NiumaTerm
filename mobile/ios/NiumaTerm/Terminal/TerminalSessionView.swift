@@ -83,7 +83,7 @@ struct TerminalSessionView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
-                    Text(model.session.title).font(.system(size: 16, weight: .semibold))
+                    Text(model.title).font(.system(size: 16, weight: .semibold))
                     Text("\(workspaceName) · \(model.cols)×\(model.rows)")
                         .font(Theme.mono(11.5))
                         .foregroundStyle(Theme.secondary)

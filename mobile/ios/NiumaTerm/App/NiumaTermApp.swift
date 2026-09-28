@@ -4,6 +4,7 @@ import CoreText
 @main
 struct NiumaTermApp: App {
     @State private var app = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         FontRegistrar.registerBundledFonts()
@@ -14,6 +15,12 @@ struct NiumaTermApp: App {
             HostListView()
                 .environment(app)
                 .tint(Theme.accent)
+        }
+        // iOS suspends a background app within seconds, so the links wind
+        // down there and come back, with fresh session lists, on return
+        // (design doc §6).
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            app.setForeground(phase == .active)
         }
     }
 }

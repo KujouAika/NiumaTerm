@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Keys Xcode cannot generate from build settings. The rest of the
+	     Info.plist comes from the INFOPLIST_KEY_* settings. This file sits
+	     outside the synchronized NiumaTerm/ folder so it is not also copied
+	     as a resource. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<!-- Scanning the desktop's pairing QR code with the Camera app
+			     opens niumaterm://pair?... here. -->
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER).pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>niumaterm</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

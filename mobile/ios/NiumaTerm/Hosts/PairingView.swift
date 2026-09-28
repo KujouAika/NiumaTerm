@@ -1,12 +1,18 @@
 import SwiftUI
 import VisionKit
+import os
+
+private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "NiumaTerm", category: "pairing")
 
 /// "Add computer": QR scanner for `niumaterm://pair?...` links, typed code as fallback (§7.1).
 struct PairingView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
+    /// A link the app was opened with, paired at once.
+    var initialLink: String?
     @State private var showManual = false
     @State private var pairing = false
+    @State private var error: String?
 
     private var scannerAvailable: Bool {
         DataScannerViewController.isSupported && DataScannerViewController.isAvailable
@@ -41,13 +47,14 @@ struct PairingView: View {
                 }
             }
             .navigationDestination(isPresented: $showManual) {
-                ManualPairingForm { name in
-                    app.addPairedHost(name: name)
-                    dismiss()
-                }
+                ManualPairingForm { dismiss() }
             }
         }
         .environment(\.colorScheme, .dark)
+        .task {
+            log.info("pairing screen shown, link: \(initialLink != nil)")
+            if let initialLink { pair(initialLink) }
+        }
     }
 
     private var panel: some View {
@@ -64,13 +71,27 @@ struct PairingView: View {
                     .foregroundStyle(Color.white.opacity(0.72))
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 22)
+                if let error {
+                    Text(error)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.codePrompt)
+                        .multilineTextAlignment(.center)
+                        .padding(.bottom, 16)
+                }
                 Button("Enter code instead") { showManual = true }
                     .buttonStyle(SecondaryButtonStyle(dark: true))
-                #if targetEnvironment(simulator)
-                Button("Simulate scan") { pair("niumaterm://pair?code=DEMO") }
-                    .font(.system(size: 14, weight: .medium))
-                    .padding(.top, 12)
-                #endif
+                // The desktop's "Copy link" puts the same link on the
+                // clipboard, which reaches a simulator or an iPad without a
+                // camera pointed at the screen.
+                Button("Paste pairing link", systemImage: "doc.on.clipboard") {
+                    if let link = UIPasteboard.general.string, !link.isEmpty {
+                        pair(link)
+                    } else {
+                        error = "The clipboard holds no pairing link. Use Copy link on the computer first."
+                    }
+                }
+                .font(.system(size: 14, weight: .medium))
+                .padding(.top, 12)
             }
         }
         .foregroundStyle(Color.white)
@@ -81,14 +102,20 @@ struct PairingView: View {
         .padding(8)
     }
 
-    /// Real app: `MobileCore.pair(link_or_code:relay:)`.
     private func pair(_ link: String) {
+        log.info("pairing requested, busy: \(pairing)")
         guard !pairing else { return }
         pairing = true
+        error = nil
         Task {
-            try? await Task.sleep(for: .seconds(1.2))
-            app.addPairedHost(name: "Office PC")
-            dismiss()
+            do {
+                _ = try await app.pair(link)
+                dismiss()
+            } catch {
+                log.error("pairing failed: \(error.displayText, privacy: .public)")
+                self.error = error.displayText
+                pairing = false
+            }
         }
     }
 }
@@ -149,46 +176,71 @@ struct QRScannerView: UIViewControllerRepresentable {
 }
 
 struct ManualPairingForm: View {
-    var onPaired: (String) -> Void
+    @Environment(AppModel.self) private var app
+    var onPaired: () -> Void
     @State private var code = ""
     @State private var relay = ""
     @State private var accessKey = ""
     @State private var pairing = false
+    @State private var error: String?
 
     var body: some View {
         Form {
             Section {
-                TextField("Pairing code", text: $code)
+                TextField("Pairing code or link", text: $code)
                     .font(Theme.mono(17))
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
             } footer: {
-                Text("Shown next to the QR code on the desktop.")
+                Text("Shown next to the QR code on the desktop. A copied pairing link works here too.")
             }
-            Section("Relay") {
-                TextField("Relay URL", text: $relay)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("Access key", text: $accessKey)
+            if !isLink {
+                Section("Relay") {
+                    TextField("Relay URL", text: $relay)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("Access key", text: $accessKey)
+                }
+            }
+            if let error {
+                Section {
+                    Text(error).foregroundStyle(Theme.attention)
+                }
             }
             Section {
-                Button {
-                    pairing = true
-                    Task {
-                        try? await Task.sleep(for: .seconds(1))
-                        onPaired("Office PC")
-                    }
-                } label: {
+                Button(action: pair) {
                     HStack {
                         Text("Pair")
                         if pairing { Spacer(); ProgressView() }
                     }
                 }
-                .disabled(code.isEmpty || relay.isEmpty || pairing)
+                .disabled(code.isEmpty || (!isLink && (relay.isEmpty || accessKey.isEmpty)) || pairing)
             }
         }
         .navigationTitle("Enter Code")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var isLink: Bool {
+        code.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("niumaterm:")
+    }
+
+    private func pair() {
+        pairing = true
+        error = nil
+        Task {
+            do {
+                if isLink {
+                    _ = try await app.pair(code)
+                } else {
+                    _ = try await app.pair(code, relayURL: relay, accessKey: accessKey)
+                }
+                onPaired()
+            } catch {
+                self.error = error.displayText
+                pairing = false
+            }
+        }
     }
 }

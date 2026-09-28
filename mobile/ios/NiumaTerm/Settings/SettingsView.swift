@@ -59,7 +59,7 @@ struct SettingsView: View {
                     Toggle("Require Face ID", isOn: $faceIDLock)
                 }
                 Section {
-                    LabeledContent("Version", value: "0.1 (demo)")
+                    LabeledContent("Version", value: AppModel.appVersion)
                 }
             }
             .tint(Theme.accent)

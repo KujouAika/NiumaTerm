@@ -51,3 +51,10 @@ AGENTS.local.md
 .dev.vars
 
 .scratch
+mobile/ios/DerivedData
+
+# Per-developer signing (team ID, bundle ID); see mobile/ios/Config/Signing.xcconfig.
+mobile/ios/Config/Local.xcconfig
+
+# Xcode per-user state: window layout, breakpoints, scheme choices.
+xcuserdata/

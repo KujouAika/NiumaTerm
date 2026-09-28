@@ -1,42 +1,35 @@
 import SwiftUI
+import NiumaTermCore
 
 /// Approval bottom sheet driven by the `pending` slot.
 struct ApprovalSheet: View {
     @Bindable var model: AgentSessionModel
-    let request: ApprovalRequest
+    let approval: PendingApproval
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Text(model.profile.glyph)
+                Text(model.profile?.glyph ?? "✱")
                     .font(Theme.mono(16, weight: .semibold))
                     .foregroundStyle(Theme.accent)
-                Text(request.title)
+                Text("\(model.profile?.shortName ?? "Agent") needs approval")
                     .font(.system(size: 19, weight: .semibold))
             }
-            Text(request.summary)
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.secondary)
-                .padding(.top, 4)
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("$").foregroundStyle(Theme.codePrompt)
-                Text(request.command).foregroundStyle(Theme.codeText)
+            ScrollView {
+                Text(approval.description)
+                    .font(Theme.mono(12.5))
+                    .foregroundStyle(Theme.codeText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(14)
             }
-            .font(Theme.mono(12.5))
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxHeight: 260)
+            .fixedSize(horizontal: false, vertical: true)
             .background(Theme.codeBackground, in: .rect(cornerRadius: 18))
             .padding(.top, 16)
-            .textSelection(.enabled)
 
-            Text(request.cwd)
-                .font(Theme.mono(11.5))
-                .foregroundStyle(Theme.tertiary)
-                .padding(.horizontal, 4)
-                .padding(.top, 8)
-
-            Toggle(request.ruleLabel, isOn: $model.allowForSession)
+            Toggle("Allow for this session", isOn: $model.allowForSession)
                 .font(.system(size: 15))
                 .tint(Theme.accent)
                 .padding(.horizontal, 14)
@@ -56,12 +49,14 @@ struct ApprovalSheet: View {
         .padding(.horizontal, 20)
         .padding(.top, 28)
         .padding(.bottom, 12)
-        .sensoryFeedback(.warning, trigger: request.id)
+        .sensoryFeedback(.warning, trigger: approval.description)
     }
 }
 
-/// `session.ended { reason: taken_back }` (§8.4).
-struct TakenBackSheet: View {
+/// `session.ended` and a lost host (§8.4). Taken back offers Reconnect,
+/// which takes control again; a closed session only closes.
+struct EndedSheet: View {
+    let end: ViewEnd
     let hostName: String
     let title: String
     var onReconnect: () -> Void
@@ -69,27 +64,55 @@ struct TakenBackSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Image(systemName: "desktopcomputer")
+            Image(systemName: icon)
                 .font(.system(size: 24))
                 .foregroundStyle(Theme.accent)
                 .frame(width: 56, height: 56)
                 .background(Theme.accent.opacity(0.12), in: .circle)
                 .padding(.bottom, 14)
-            Text("\(hostName) took this session back")
+            Text(headline)
                 .font(.system(size: 19, weight: .semibold))
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 6)
-            Text("“\(title)” is controlled on the desktop now. Reconnect to take control again.")
+            Text(message)
                 .font(.system(size: 14.5))
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 22)
             VStack(spacing: 10) {
-                Button("Reconnect", action: onReconnect).buttonStyle(PrimaryButtonStyle())
-                Button("Close", action: onClose).buttonStyle(SecondaryButtonStyle())
+                if end == .takenBack {
+                    Button("Reconnect", action: onReconnect).buttonStyle(PrimaryButtonStyle())
+                    Button("Close", action: onClose).buttonStyle(SecondaryButtonStyle())
+                } else {
+                    Button("Close", action: onClose).buttonStyle(PrimaryButtonStyle())
+                }
             }
         }
         .padding(.horizontal, 22)
         .padding(.top, 28)
+    }
+
+    private var icon: String {
+        switch end {
+        case .takenBack: "desktopcomputer"
+        case .closed: "xmark.circle"
+        case .unreachable: "wifi.slash"
+        }
+    }
+
+    private var headline: String {
+        switch end {
+        case .takenBack: "\(hostName) took this session back"
+        case .closed: "This session ended"
+        case .unreachable: "\(hostName) is out of reach"
+        }
+    }
+
+    private var message: String {
+        switch end {
+        case .takenBack: "“\(title)” is controlled on the desktop now. Reconnect to take control again."
+        case .closed: "“\(title)” was closed on \(hostName)."
+        case .unreachable: "This phone can no longer reach \(hostName). If it was removed there, pair again."
+        }
     }
 }

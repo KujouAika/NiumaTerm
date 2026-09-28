@@ -1,0 +1,5 @@
+// Copy to Config/Local.xcconfig (gitignored) and fill in your own values.
+// See Config/Signing.xcconfig for how they are resolved.
+
+NMT_DEVELOPMENT_TEAM = ABCDE12345
+NMT_BUNDLE_ID = com.yourname.niumaterm

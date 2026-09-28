@@ -1,0 +1,21 @@
+// Signing and identity for the NiumaTerm app target.
+//
+// A team ID ties the project to one developer account, so none is committed.
+// The bundle identifier defaults to the app's own and can be overridden the
+// same way. Each value is taken, in order, from:
+//
+//   1. Config/Local.xcconfig, which is gitignored (copy
+//      Config/Local.xcconfig.example). Xcode reads it for builds started in
+//      the IDE, where shell environment variables are not available.
+//   2. The NMT_DEVELOPMENT_TEAM and NMT_BUNDLE_ID environment variables, which
+//      xcodebuild exposes as build settings, for CI and scripted builds.
+//   3. The defaults below: no team, which builds for the simulator only, and
+//      the app's bundle identifier.
+//
+// Choosing a team in Xcode's Signing & Capabilities tab writes it into
+// project.pbxproj instead; set it here so it stays out of the repository.
+
+#include? "Local.xcconfig"
+
+DEVELOPMENT_TEAM = $(NMT_DEVELOPMENT_TEAM)
+PRODUCT_BUNDLE_IDENTIFIER = $(NMT_BUNDLE_ID:default=io.f32.NiumaTermMobile)

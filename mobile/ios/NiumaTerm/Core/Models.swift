@@ -1,164 +1,119 @@
 import SwiftUI
+import NiumaTermCore
 
-// Plain records standing in for the UniFFI records of NiumaTermCore (design doc §4.2).
+/// An agent as a host names it in `host.info` and on its sessions.
+struct AgentProfile: Hashable {
+    let harness: String
 
-enum AgentProfile: String, CaseIterable, Identifiable, Hashable {
-    case claude = "Claude Code"
-    case codex = "Codex"
-    case deepseek = "DeepSeek"
+    var displayName: String {
+        switch harness {
+        case "claude": "Claude Code"
+        case "codex": "Codex"
+        case "deepseek": "DeepSeek"
+        default: harness.capitalized
+        }
+    }
 
-    var id: String { rawValue }
     var shortName: String {
-        switch self {
-        case .claude: "Claude"
-        case .codex: "Codex"
-        case .deepseek: "DeepSeek"
+        switch harness {
+        case "claude": "Claude"
+        case "codex": "Codex"
+        case "deepseek": "DeepSeek"
+        default: harness.capitalized
         }
     }
+
     var glyph: String {
-        switch self {
-        case .claude: "✱"
-        case .codex: "◎"
-        case .deepseek: "◆"
-        }
-    }
-    var models: [String] {
-        switch self {
-        case .claude: ["opus[1m]", "sonnet", "haiku"]
-        case .codex: ["gpt-5-codex", "gpt-5"]
-        case .deepseek: ["deepseek-v4", "deepseek-r2"]
+        switch harness {
+        case "claude": "✱"
+        case "codex": "◎"
+        case "deepseek": "◆"
+        default: "◇"
         }
     }
 }
 
-enum SessionKind: Hashable {
-    case terminal
-    case agent(AgentProfile)
-}
-
-/// `sessions.list` activity field (design doc §13 item 5).
-enum Activity: Hashable {
-    case idle(since: String?)
-    case working(elapsed: String)
-    case needsApproval
-    case asksQuestion
-}
-
-struct Session: Identifiable {
+struct Session: Identifiable, Hashable {
     let id: String
+    let hostID: String
     var title: String
-    var kind: SessionKind
-    var activity: Activity
-    var controlledOnDesktop = false
-    var cwd: String
+    var kind: SessionType
+    var profile: AgentProfile?
 
-    var profile: AgentProfile? {
-        if case .agent(let p) = kind { return p }
-        return nil
+    init(record: SessionRecord, hostID: String) {
+        id = record.id
+        self.hostID = hostID
+        title = record.title
+        kind = record.kind
+        profile = record.harness.map(AgentProfile.init(harness:))
     }
 
-    var glyph: String { profile?.glyph ?? ">_" }
-
-    var statusText: String {
-        guard let profile else { return "Terminal · idle" }
-        let prefix = profile == .claude ? "" : "\(profile.shortName) · "
-        switch activity {
-        case .idle(let since): return prefix + (since.map { "Idle · \($0)" } ?? "Idle")
-        case .working(let elapsed): return prefix + "● Working · \(elapsed)"
-        case .needsApproval: return prefix + "◌ Needs approval"
-        case .asksQuestion: return prefix + "? Asks a question"
+    var glyph: String {
+        switch kind {
+        case .terminal: ">_"
+        case .agent: profile?.glyph ?? "✱"
+        case .other: "?"
         }
     }
 
-    var statusColor: Color {
-        switch activity {
-        case .working: Theme.accent
-        case .needsApproval, .asksQuestion: Theme.attention
-        case .idle: Theme.secondary
+    var subtitle: String {
+        switch kind {
+        case .terminal: "Terminal"
+        case .agent: profile?.displayName ?? "Agent"
+        case .other: "Session"
         }
     }
 }
 
-struct Workspace: Identifiable {
-    let id: String
-    var name: String
-    var path: String
-    var sessions: [Session]
-
-    var shortPath: String {
-        let parts = path.split(separator: "\\")
-        guard parts.count > 2, let last = parts.last else { return path }
-        return "…\\" + last
-    }
-}
-
-enum HostStatus {
-    case online
-    case connecting
-    case offline(lastSeen: String)
+/// A route on the navigation stack: one session on one host. It carries
+/// the kind because a session just opened here may reach the host's list
+/// only after its screen is already showing.
+struct SessionRoute: Hashable {
+    let hostID: String
+    let sessionID: String
+    let kind: SessionType
 }
 
 struct Host: Identifiable {
     let id: String
     var name: String
-    var isLaptop: Bool
     var status: HostStatus
-    var workspaces: [Workspace]
+    var sessions: [Session] = []
 
-    var isOnline: Bool {
-        if case .online = status { return true }
-        return false
-    }
-    var icon: String { isLaptop ? "laptopcomputer" : "desktopcomputer" }
+    var isOnline: Bool { status == .connected }
+    var icon: String { "desktopcomputer" }
+
     var statusText: String {
         switch status {
-        case .online: "Online · via relay"
+        case .connected: "Online"
         case .connecting: "Connecting…"
-        case .offline(let seen): "Offline · last seen \(seen)"
+        case .reconnecting: "Reconnecting…"
+        case .idle: "Not connected"
+        case .refused: "No longer trusts this phone · pair again"
         }
     }
+
     var statusColor: Color {
         switch status {
-        case .online: Theme.online
-        case .connecting: Theme.attention
-        case .offline: Theme.offline
+        case .connected: Theme.online
+        case .connecting, .reconnecting: Theme.attention
+        case .idle: Theme.offline
+        case .refused: Theme.attention
         }
     }
-}
 
-struct ToolCall: Identifiable {
-    let id = UUID()
-    let kind: String
-    let detail: String
-    init(_ kind: String, _ detail: String) {
-        self.kind = kind
-        self.detail = detail
+    /// Terminals first, then agents, as the design lists them.
+    var orderedSessions: [Session] {
+        sessions.filter { $0.kind == .terminal } + sessions.filter { $0.kind != .terminal }
     }
 }
 
-struct TranscriptEntry: Identifiable {
-    enum Kind {
-        case user(String)
-        case agent(String)
-        case thinking(String)
-        case tools([ToolCall])
-        case notice(String, Color)
+extension Error {
+    /// The core words its errors for people already.
+    var displayText: String {
+        if let core = self as? CoreError, case .Failed(let message) = core {
+            return message
+        }
+        return localizedDescription
     }
-    let id: Int
-    let kind: Kind
-}
-
-struct QueuedPrompt: Identifiable {
-    let id = UUID()
-    let text: String
-}
-
-/// The `pending` slot.
-struct ApprovalRequest: Identifiable {
-    let id = UUID()
-    var title: String
-    var summary: String
-    var command: String
-    var cwd: String
-    var ruleLabel: String
 }
