@@ -5,9 +5,10 @@ struct TerminalSessionView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
-    /// The system appearance. The screen below overrides the scheme to
-    /// match the terminal; sheets over it follow the system instead.
-    @Environment(\.colorScheme) private var systemScheme
+    /// The app's appearance, from the system or the theme setting. The
+    /// screen below overrides the scheme to match the terminal; sheets over
+    /// it follow the app instead.
+    @Environment(\.colorScheme) private var appScheme
     @Bindable var model: TerminalSessionModel
     let hostName: String
 
@@ -94,9 +95,9 @@ struct TerminalSessionView: View {
                     .presentationDetents([.height(400)])
                     .interactiveDismissDisabled()
                     // The sheet belongs to the app, not the terminal: it
-                    // takes the system appearance and a solid background
+                    // takes the app's appearance and a solid background
                     // rather than glass tinted by the terminal behind it.
-                    .environment(\.colorScheme, systemScheme)
+                    .environment(\.colorScheme, appScheme)
                     .presentationBackground(Theme.sheet)
             }
             .toolbarColorScheme(scheme, for: .navigationBar)

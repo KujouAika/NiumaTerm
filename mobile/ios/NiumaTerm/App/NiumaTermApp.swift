@@ -5,6 +5,7 @@ import CoreText
 struct NiumaTermApp: App {
     @State private var app = AppModel()
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("appearance") private var appearance = AppAppearance.system
 
     init() {
         FontRegistrar.registerBundledFonts()
@@ -15,6 +16,9 @@ struct NiumaTermApp: App {
             HostListView()
                 .environment(app)
                 .tint(Theme.accent)
+                .onChange(of: appearance, initial: true) { _, appearance in
+                    appearance.apply()
+                }
         }
         // iOS suspends a background app within seconds, so the links wind
         // down there and come back, with fresh session lists, on return

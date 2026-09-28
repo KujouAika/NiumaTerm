@@ -56,6 +56,44 @@ enum Theme {
     }
 }
 
+/// The app's appearance setting. `system` follows the phone's light or dark
+/// mode; the others hold the app to one of them.
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    /// Impose the setting on every window of the app. It is set on the
+    /// windows rather than as a SwiftUI preferred scheme because a sheet
+    /// open while the setting changes, such as Settings itself, does not
+    /// always follow a new preferred scheme, and never returns to the
+    /// system's once one was set; a window's style covers everything it
+    /// presents, and `.unspecified` hands control back to the system.
+    @MainActor
+    func apply() {
+        let style: UIUserInterfaceStyle = switch self {
+        case .system: .unspecified
+        case .light: .light
+        case .dark: .dark
+        }
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows {
+                window.overrideUserInterfaceStyle = style
+            }
+        }
+    }
+}
+
 extension Color {
     /// A color that follows the appearance of the view it is drawn in.
     init(light: UInt32, lightOpacity: Double = 1, dark: UInt32, darkOpacity: Double = 1) {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Settings (§8.1): paired hosts, notifications, terminal, agent, security, about.
+/// Settings (§8.1): paired hosts, notifications, terminal, agent, security, appearance, about.
 struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage("terminalFontSize") private var fontSize = 11.0
     @AppStorage("transcriptMono") private var transcriptMono = true
     @AppStorage("faceIDLock") private var faceIDLock = false
+    @AppStorage("appearance") private var appearance = AppAppearance.system
 
     @State private var forgetting: Host?
 
@@ -57,6 +58,13 @@ struct SettingsView: View {
                 }
                 Section("Security") {
                     Toggle("Require Face ID", isOn: $faceIDLock)
+                }
+                Section("Appearance") {
+                    Picker("Theme", selection: $appearance) {
+                        ForEach(AppAppearance.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
                 }
                 Section {
                     LabeledContent("Version", value: AppModel.appVersion)
