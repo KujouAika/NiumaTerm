@@ -270,6 +270,10 @@ mach2 = "0.6.0"
 metal = "0.33.0"
 num_cpus = "1.17.0"
 objc2-metal = "0.3.2"
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CALayer",
+] }
 parking = "2.2.1"
 pathfinder_geometry = "0.5.1"
 pin-project = "1.1.13"
@@ -409,7 +413,7 @@ memchr = { version = "2.8.2", default-features = false }
 notify = "8.2.0"
 notify-rust = "4"
 num-traits = "0.2.19"
-objc2 = { version = "0.6.4", features = ["relax-sign-encoding"] }
+objc2 = { version = "0.6.4", features = ["relax-sign-encoding", "relax-void-encoding"] }
 objc2-app-kit = { version = "0.3.2", features = [
     "NSAppearance",
     "NSApplication",
