@@ -69,6 +69,22 @@ Core Text, redrawing only the rows each frame changed (design doc §8.2).
 Without a relay the app uses the LAN address in the pairing link; with one it
 goes through the relay (design doc §7.1).
 
+## TestFlight
+
+`scripts/ios-testflight.sh` builds the core for release, archives the app
+with a build number taken from the time, and uploads it to App Store
+Connect; `--no-upload` exports an `.ipa` instead. The bundle ID needs an
+app record in App Store Connect first, and the first upload creates the
+Apple Distribution certificate, so run it once signed in to Xcode with an
+Admin or Account Holder Apple ID. Testers outside the team join through an
+external group's public link; the first build of each version goes through
+Beta App Review, whose reviewers cannot pair a computer, so the review
+notes should say so.
+
+`NiumaTerm/PrivacyInfo.xcprivacy` declares why the app uses the APIs App
+Store Connect checks for. After adding a dependency, list the release
+binary's imports (`nm -u`) and declare any new ones there.
+
 ## Files
 
 | Screen | File |

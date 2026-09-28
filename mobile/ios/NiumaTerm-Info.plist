@@ -2,8 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Keys Xcode cannot generate from build settings. The rest of the
-	     Info.plist comes from the INFOPLIST_KEY_* settings. This file sits
+	<!-- Keys Xcode cannot generate from build settings, and keys kept out
+	     of project.pbxproj so the project file stays machine-generated. The
+	     rest of the Info.plist comes from the INFOPLIST_KEY_* settings. This file sits
 	     outside the synchronized NiumaTerm/ folder so it is not also copied
 	     as a resource. -->
 	<key>CFBundleURLTypes</key>
@@ -19,5 +20,11 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Export compliance, answered once here instead of on every upload.
+	     The encryption (Noise with standard algorithms) only protects the
+	     user's own data between their devices and computers, which the
+	     developer treats as exempt. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
