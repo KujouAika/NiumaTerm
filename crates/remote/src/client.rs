@@ -7,10 +7,13 @@
 //! Both paths run the same end-to-end channel.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::time::Duration;
 use std::{error, fmt};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use futures::StreamExt as _;
+use futures::stream::FuturesUnordered;
 use nmt_remote_core::channel::{Channel, ClientHandshake};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{ClientHello, DeviceInfo, HostHello, PairAccepted, RelayAccess};
@@ -39,7 +42,22 @@ const RELAY_DELAY: Duration = Duration::from_millis(300);
 /// Addresses remembered per host, most recently working first.
 const MAX_LAN_HINTS: usize = 4;
 
+/// How long one LAN address may take to open a channel. A host on the same
+/// network answers in milliseconds; an address the host no longer has, or a
+/// network that keeps devices apart, only times out. All candidates are
+/// tried together and the relay starts after [`RELAY_DELAY`] regardless, so
+/// a stale address delays nothing unless the relay is out of reach too.
+const LAN_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+
 const FEATURES: &[&str] = &["terminal"];
+
+/// How a channel reaches its host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkPath {
+    /// Directly, at this LAN address.
+    Lan(String),
+    Relay,
+}
 
 /// The host completed the preface but closed instead of answering the
 /// handshake: this device is not, or no longer, paired with it.
@@ -123,7 +141,11 @@ pub async fn pair(
         .await
         .map_err(|_| anyhow!("pairing timed out"))??;
 
-    let mut host = PairedHost::new(host_key, accepted.host.name, address);
+    let mut host = PairedHost::new(host_key, accepted.host.name, address.clone());
+
+    // A device that paired through the relay learns where the host is on
+    // its LAN, so it can go direct once it is on that network.
+    host.lan_hints = merge_lan_hints(&accepted.lan_hints, address.as_deref(), &host.lan_hints);
 
     // The host's relay, handed over inside the encrypted exchange, reaches
     // it later from off the LAN.
@@ -184,7 +206,7 @@ pub(crate) async fn establish(
     host: &mut PairedHost,
     key: &DeviceKey,
     app_version: &str,
-) -> Result<(RelaySocket, Channel)> {
+) -> Result<(RelaySocket, Channel, LinkPath)> {
     let clock = HelloClock(Mutex::new(host.last_hello_ms));
 
     let relay = host.relay.as_ref().and_then(|stored| {
@@ -220,16 +242,43 @@ pub(crate) async fn establish(
 
     let (ws, channel, host_hello, address) = result?;
 
-    if let Some(address) = address {
-        host.lan_hints.retain(|known| known != &address);
-        host.lan_hints.insert(0, address);
-        host.lan_hints.truncate(MAX_LAN_HINTS);
-    }
+    Ok(finish(host, ws, channel, host_hello, address))
+}
+
+/// Open a channel over the LAN only, for a link that runs through the relay
+/// and would rather go direct. Updates `host` as [`establish`] does.
+pub(crate) async fn establish_lan(
+    host: &mut PairedHost,
+    key: &DeviceKey,
+    app_version: &str,
+) -> Result<(RelaySocket, Channel, LinkPath)> {
+    let clock = HelloClock(Mutex::new(host.last_hello_ms));
+
+    let result = lan_path(host, key, app_version, &clock).await;
+
+    host.last_hello_ms = clock.last();
+
+    let (ws, channel, host_hello, address) = result?;
+
+    Ok(finish(host, ws, channel, host_hello, address))
+}
+
+/// Record what a handshake taught about the host, and say how it went.
+fn finish(
+    host: &mut PairedHost,
+    ws: RelaySocket,
+    channel: Channel,
+    host_hello: HostHello,
+    address: Option<String>,
+) -> (RelaySocket, Channel, LinkPath) {
+    host.lan_hints = merge_lan_hints(&host_hello.lan_hints, address.as_deref(), &host.lan_hints);
 
     host.name = host_hello.name;
     host.last_seen = now_ms();
 
-    Ok((ws, channel))
+    let path = address.map_or(LinkPath::Relay, LinkPath::Lan);
+
+    (ws, channel, path)
 }
 
 /// Try the host's known LAN addresses, then wherever DNS-SD finds it now
@@ -241,6 +290,7 @@ async fn lan_path(
     clock: &HelloClock,
 ) -> Result<(RelaySocket, Channel, HostHello, Option<String>)> {
     let mut last_error = anyhow!("no known address for this host");
+    let mut refused = None;
 
     for rediscover in [false, true] {
         let candidates = if rediscover {
@@ -252,31 +302,90 @@ async fn lan_path(
             host.lan_hints.clone()
         };
 
-        for address in candidates {
-            // A fresh hello per attempt: the host may have recorded the
-            // previous one before the attempt failed.
-            let hello = hello(app_version, clock);
+        // Every candidate at once: a stale address costs its timeout only
+        // while the others are already trying. Dropping the rest once one
+        // succeeds closes their sockets; a handshake that reached the host
+        // too only opens and closes a channel there.
+        let mut attempts: FuturesUnordered<_> = candidates
+            .into_iter()
+            .map(|address| {
+                // A fresh hello per attempt, each later than the one before,
+                // so the host takes none of them for a replay.
+                let hello = hello(app_version, clock);
 
-            let attempt = async {
-                let ws = connect_lan(&address).await?;
+                async move {
+                    let attempt = async {
+                        let ws = connect_lan(&address).await?;
 
-                channel_handshake(ws, key, &host.public_key, &hello).await
-            };
+                        channel_handshake(ws, key, &host.public_key, &hello).await
+                    };
 
-            match timeout(CONNECT_TIMEOUT, attempt).await {
-                Ok(Ok((ws, channel, host_hello))) => {
+                    let result = timeout(LAN_ATTEMPT_TIMEOUT, attempt)
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow!("connecting to {address} timed out")));
+
+                    (address, result)
+                }
+            })
+            .collect();
+
+        while let Some((address, result)) = attempts.next().await {
+            match result {
+                Ok((ws, channel, host_hello)) => {
                     return Ok((ws, channel, host_hello, Some(address)));
                 }
-                // The right host answered and said no; another address
-                // would reach the same host.
-                Ok(Err(error)) if error.is::<Refused>() => return Err(error),
-                Ok(Err(error)) => last_error = error,
-                Err(_) => last_error = anyhow!("connecting to {address} timed out"),
+                // Two addresses of one host (Wi-Fi and Ethernet) reach it
+                // with two handshakes, and the host refuses whichever
+                // arrives with the older hello as a replay. A refusal only
+                // counts once no other address got through.
+                Err(error) if error.is::<Refused>() => refused = Some(error),
+                Err(error) => last_error = error,
             }
+        }
+
+        // The right host answered and said no; rediscovering it would reach
+        // the same host.
+        if let Some(refused) = refused {
+            return Err(refused);
         }
     }
 
     Err(last_error)
+}
+
+/// The LAN addresses to remember for a host: the one that just worked
+/// first, then the addresses the host says it has now. The host's list
+/// replaces what was learned before, so an address DHCP has since handed to
+/// another machine drops out instead of being tried forever. A host too old
+/// to send a list leaves the known addresses in place.
+pub(crate) fn merge_lan_hints(
+    advertised: &[String],
+    working: Option<&str>,
+    known: &[String],
+) -> Vec<String> {
+    let advertised: Vec<&str> = advertised
+        .iter()
+        .map(String::as_str)
+        .filter(|address| address.parse::<SocketAddr>().is_ok())
+        .collect();
+
+    let rest = if advertised.is_empty() {
+        known.iter().map(String::as_str).collect()
+    } else {
+        advertised
+    };
+
+    let mut hints: Vec<String> = Vec::new();
+
+    for address in working.into_iter().chain(rest) {
+        if !hints.iter().any(|known| known == address) {
+            hints.push(address.to_owned());
+        }
+    }
+
+    hints.truncate(MAX_LAN_HINTS);
+
+    hints
 }
 
 /// Run `lan`, and `relay` too once the LAN has had a head start or has

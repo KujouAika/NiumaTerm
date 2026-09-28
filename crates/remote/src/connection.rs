@@ -6,6 +6,10 @@
 //! by session id. A reattached view starts over from a checkpoint, which is
 //! why views are addressed by session rather than by stream: stream ids
 //! last only as long as one channel.
+//!
+//! A link through the relay keeps trying the host's LAN addresses in the
+//! background, and moves to the LAN once one answers: a phone paired while
+//! away goes direct when it comes home, without waiting for a reconnect.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +19,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use getrandom::fill;
 use nmt_platform::runtime;
+use nmt_remote_core::channel::Channel;
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::push::{PUSH_REGISTER, PUSH_UNREGISTER, PushRegistration};
@@ -30,14 +35,15 @@ use serde_json::Value;
 use tokio::select;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Notify, oneshot, watch};
-use tokio::task::AbortHandle;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::task::{AbortHandle, JoinHandle};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 use tracing::{debug, info};
 
-use crate::client::{Refused, establish};
+use crate::client::{LinkPath, Refused, establish, establish_lan};
 use crate::link::{Outbound, SendQueue, pump};
 use crate::netwatch;
 use crate::network_pty::NetworkPty;
+use crate::relay::RelaySocket;
 use crate::store::PairedHost;
 
 const MIN_BACKOFF: Duration = Duration::from_millis(500);
@@ -49,6 +55,20 @@ const IDLE_CLOSE: Duration = Duration::from_secs(60);
 
 /// How long a request waits for a link before failing.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A link that came up through the relay tries the LAN this soon: the
+/// connection race gives the LAN only a short head start, and a host that
+/// answers a little slowly on it loses to the relay.
+const FIRST_LAN_ATTEMPT: Duration = Duration::from_secs(10);
+
+/// And again this often while it stays on the relay. A failed attempt costs
+/// a few seconds of connecting in the background.
+const LAN_RETRY: Duration = Duration::from_secs(2 * 60);
+
+/// A LAN channel waits at most this long for the relay link's requests to
+/// finish before replacing it. Moving would fail them, and the new channel
+/// cannot idle much longer before the host's liveness probes give up on it.
+const UPGRADE_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -149,6 +169,34 @@ pub struct RemoteHost {
 
     next_id: AtomicU64,
     supervisor: Mutex<Option<AbortHandle>>,
+
+    /// How the current link reaches the host, while one is up.
+    path: Mutex<Option<LinkPath>>,
+}
+
+/// A LAN channel opened while the link ran through the relay, with the host
+/// record its handshake updated.
+struct Upgrade {
+    ws: RelaySocket,
+    channel: Channel,
+    path: LinkPath,
+    record: PairedHost,
+}
+
+/// Why a link stopped being used.
+enum LinkEnd {
+    Closed,
+    Moved(Box<Upgrade>),
+}
+
+/// A LAN channel being opened in the background. Dropping it stops the
+/// attempt, as when the link it would replace closes first.
+struct LanAttempt(JoinHandle<Result<Upgrade>>);
+
+impl Drop for LanAttempt {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[derive(Clone)]
@@ -216,6 +264,7 @@ impl RemoteHost {
             listed: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             supervisor: Mutex::new(None),
+            path: Mutex::new(None),
         });
 
         let task = runtime().spawn(Arc::clone(&host).supervise());
@@ -231,6 +280,11 @@ impl RemoteHost {
 
     pub fn name(&self) -> String {
         self.record.lock().name.clone()
+    }
+
+    /// How the link reaches the host, while one is up.
+    pub fn path(&self) -> Option<LinkPath> {
+        self.path.lock().clone()
     }
 
     pub fn status(&self) -> watch::Receiver<Status> {
@@ -646,118 +700,155 @@ impl RemoteHost {
         let mut ever_connected = false;
         let mut network = netwatch::changes();
 
+        // A LAN channel the last link opened to move to, used instead of
+        // connecting anew.
+        let mut moved: Option<Box<Upgrade>> = None;
+
         loop {
-            if !self.has_views() {
-                self.status.send_replace(Status::Idle);
+            let (ws, channel, path) = match moved.take() {
+                Some(upgrade) => {
+                    let Upgrade {
+                        ws,
+                        channel,
+                        path,
+                        record,
+                    } = *upgrade;
 
-                self.wake.notified().await;
-            }
-
-            self.status.send_replace(if ever_connected {
-                Status::Reconnecting
-            } else {
-                Status::Connecting
-            });
-
-            let mut record = self.record.lock().clone();
-
-            match establish(&mut record, &self.key, &self.app_version).await {
-                Ok((ws, channel)) => {
                     *self.record.lock() = record.clone();
 
                     (self.on_record)(record);
 
-                    backoff = MIN_BACKOFF;
-                    ever_connected = true;
-
-                    let (queue, queue_rx) = SendQueue::new();
-                    let (inbound, inbound_rx) = mpsc::unbounded_channel();
-
-                    let link = Link {
-                        queue,
-                        calls: Arc::default(),
-                        streams: Arc::default(),
-                    };
-
-                    let probe = Arc::new(Notify::new());
-
-                    let pump =
-                        tokio::spawn(pump(ws, channel, queue_rx, inbound, Arc::clone(&probe)));
-
-                    *self.link.lock() = Some(link.clone());
-
-                    self.status.send_replace(Status::Connected);
-
-                    info!(host = %self.id, "connected to the remote host");
-
-                    // Views the host ended wait for the user to take them up.
-                    let ended = self.ended.lock().clone();
-
-                    let sessions: Vec<_> = self
-                        .views
-                        .lock()
-                        .keys()
-                        .filter(|session| !ended.contains_key(*session))
-                        .cloned()
-                        .collect();
-
-                    for session in sessions {
-                        self.attach(&link, session);
-                    }
-
-                    let agents: Vec<_> = self
-                        .agents
-                        .lock()
-                        .keys()
-                        .filter(|session| !ended.contains_key(*session))
-                        .cloned()
-                        .collect();
-
-                    for session in agents {
-                        self.attach_agent(&link, session);
-                    }
-
-                    network.mark_unchanged();
-
-                    self.dispatch(&link, inbound_rx, &mut network, &probe).await;
-
-                    pump.abort();
-
-                    *self.link.lock() = None;
-
-                    link.calls.lock().clear();
-
-                    for view in self.views.lock().values_mut() {
-                        view.stream = None;
-                    }
-
-                    info!(host = %self.id, "the remote host link closed");
+                    (ws, channel, path)
                 }
-                Err(error) if error.is::<Refused>() => {
-                    self.status.send_replace(Status::Refused);
+                None => {
+                    if !self.has_views() {
+                        self.status.send_replace(Status::Idle);
 
-                    self.end_views();
-
-                    return;
-                }
-                Err(error) => {
-                    debug!(host = %self.id, %error, "connecting to the remote host failed");
-
-                    // A new view or request retries at once, and so does a
-                    // network change, which may have brought the host back;
-                    // otherwise the backoff spreads retries of many clients
-                    // apart.
-                    network.mark_unchanged();
-
-                    select! {
-                        () = sleep(jitter(backoff)) => {}
-
-                        () = self.wake.notified() => {}
-
-                        _ = network.changed() => {}
+                        self.wake.notified().await;
                     }
 
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    self.status.send_replace(if ever_connected {
+                        Status::Reconnecting
+                    } else {
+                        Status::Connecting
+                    });
+
+                    let mut record = self.record.lock().clone();
+
+                    match establish(&mut record, &self.key, &self.app_version).await {
+                        Ok(established) => {
+                            *self.record.lock() = record.clone();
+
+                            (self.on_record)(record);
+
+                            backoff = MIN_BACKOFF;
+                            ever_connected = true;
+
+                            established
+                        }
+                        Err(error) if error.is::<Refused>() => {
+                            self.status.send_replace(Status::Refused);
+
+                            self.end_views();
+
+                            return;
+                        }
+                        Err(error) => {
+                            debug!(host = %self.id, %error, "connecting to the remote host failed");
+
+                            // A new view or request retries at once, and so
+                            // does a network change, which may have brought
+                            // the host back; otherwise the backoff spreads
+                            // retries of many clients apart.
+                            network.mark_unchanged();
+
+                            select! {
+                                () = sleep(jitter(backoff)) => {}
+
+                                () = self.wake.notified() => {}
+
+                                _ = network.changed() => {}
+                            }
+
+                            backoff = (backoff * 2).min(MAX_BACKOFF);
+
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            let (queue, queue_rx) = SendQueue::new();
+            let (inbound, inbound_rx) = mpsc::unbounded_channel();
+
+            let link = Link {
+                queue,
+                calls: Arc::default(),
+                streams: Arc::default(),
+            };
+
+            let probe = Arc::new(Notify::new());
+
+            let pump = tokio::spawn(pump(ws, channel, queue_rx, inbound, Arc::clone(&probe)));
+
+            *self.link.lock() = Some(link.clone());
+
+            self.status.send_replace(Status::Connected);
+
+            info!(host = %self.id, "connected to the remote host");
+
+            // Views the host ended wait for the user to take them up.
+            let ended = self.ended.lock().clone();
+
+            let sessions: Vec<_> = self
+                .views
+                .lock()
+                .keys()
+                .filter(|session| !ended.contains_key(*session))
+                .cloned()
+                .collect();
+
+            for session in sessions {
+                self.attach(&link, session);
+            }
+
+            let agents: Vec<_> = self
+                .agents
+                .lock()
+                .keys()
+                .filter(|session| !ended.contains_key(*session))
+                .cloned()
+                .collect();
+
+            for session in agents {
+                self.attach_agent(&link, session);
+            }
+
+            network.mark_unchanged();
+
+            *self.path.lock() = Some(path.clone());
+
+            let end = self
+                .dispatch(&link, inbound_rx, &mut network, &probe, &path)
+                .await;
+
+            pump.abort();
+
+            *self.link.lock() = None;
+            *self.path.lock() = None;
+
+            link.calls.lock().clear();
+
+            for view in self.views.lock().values_mut() {
+                view.stream = None;
+            }
+
+            match end {
+                LinkEnd::Closed => info!(host = %self.id, "the remote host link closed"),
+                LinkEnd::Moved(upgrade) => {
+                    info!(host = %self.id, "moving the remote host link to the LAN");
+
+                    moved = Some(upgrade);
                 }
             }
         }
@@ -766,20 +857,71 @@ impl RemoteHost {
     /// Route one link's inbound messages until it closes or goes idle. A
     /// network change probes the link, which closes it if it no longer
     /// reaches the host.
+    ///
+    /// A link through the relay also tries the LAN now and then, and a
+    /// network change tries it at once; once a LAN channel is up and no
+    /// request is waiting on this link, it ends with that channel to move to.
     async fn dispatch(
         &self,
         link: &Link,
         mut inbound: UnboundedReceiver<FrameMessage>,
         network: &mut watch::Receiver<u64>,
         probe: &Notify,
-    ) {
+        path: &LinkPath,
+    ) -> LinkEnd {
+        let on_relay = *path == LinkPath::Relay;
+
         let mut idle_since: Option<Instant> = None;
 
+        let mut next_attempt = Instant::now() + FIRST_LAN_ATTEMPT;
+        let mut attempt: Option<LanAttempt> = None;
+        let mut ready: Option<(Box<Upgrade>, Instant)> = None;
+
         loop {
+            if let Some((_, since)) = &ready {
+                if link.calls.lock().is_empty() {
+                    let (upgrade, _) = ready.take().expect("checked above");
+
+                    return LinkEnd::Moved(upgrade);
+                }
+
+                if since.elapsed() >= UPGRADE_WAIT {
+                    ready = None;
+                    next_attempt = Instant::now() + LAN_RETRY;
+                }
+            }
+
+            let due = on_relay && attempt.is_none() && ready.is_none();
+
             let message = select! {
                 message = inbound.recv() => message,
                 Ok(()) = network.changed() => {
                     probe.notify_one();
+
+                    // The new network may be the host's.
+                    next_attempt = Instant::now();
+
+                    continue;
+                }
+
+                () = sleep_until(next_attempt), if due => {
+                    attempt = Some(self.try_lan());
+
+                    continue;
+                }
+
+                result = async { (&mut attempt.as_mut().expect("guarded").0).await }, if attempt.is_some() => {
+                    attempt = None;
+
+                    match result {
+                        Ok(Ok(upgrade)) => ready = Some((Box::new(upgrade), Instant::now())),
+                        Ok(Err(error)) => {
+                            debug!(host = %self.id, %error, "the host is not reachable on the LAN");
+
+                            next_attempt = Instant::now() + LAN_RETRY;
+                        }
+                        Err(_) => next_attempt = Instant::now() + LAN_RETRY,
+                    }
 
                     continue;
                 }
@@ -790,7 +932,7 @@ impl RemoteHost {
                     match (idle, idle_since) {
                         (false, _) => idle_since = None,
                         (true, None) => idle_since = Some(Instant::now()),
-                        (true, Some(since)) if since.elapsed() >= IDLE_CLOSE => return,
+                        (true, Some(since)) if since.elapsed() >= IDLE_CLOSE => return LinkEnd::Closed,
                         (true, Some(_)) => {}
                     }
 
@@ -799,11 +941,31 @@ impl RemoteHost {
             };
 
             let Some(message) = message else {
-                return;
+                return LinkEnd::Closed;
             };
 
             self.route(link, message);
         }
+    }
+
+    /// Open a LAN channel to the host in the background, from a copy of the
+    /// host record that the handshake updates.
+    fn try_lan(&self) -> LanAttempt {
+        let mut record = self.record.lock().clone();
+
+        let key = Arc::clone(&self.key);
+        let app_version = self.app_version.clone();
+
+        LanAttempt(runtime().spawn(async move {
+            let (ws, channel, path) = establish_lan(&mut record, &key, &app_version).await?;
+
+            Ok(Upgrade {
+                ws,
+                channel,
+                path,
+                record,
+            })
+        }))
     }
 
     fn route(&self, link: &Link, message: FrameMessage) {

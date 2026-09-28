@@ -47,9 +47,15 @@ key.
 
 ## How connections are chosen
 
-A client tries the host's LAN addresses at once and the relay after
-300 ms, or as soon as every LAN attempt has failed. The first handshake
-to complete wins. On the same network the LAN usually wins.
+A client tries the host's LAN addresses at once, all of them together, and
+the relay after 300 ms, or as soon as every LAN attempt has failed. The
+first handshake to complete wins. On the same network the LAN usually wins.
+
+The host tells a device its current LAN addresses when they pair and on
+every connection, the relay included. So a device paired through the relay
+goes direct as soon as it is on the host's network, and learns the host's
+new address after DHCP moved it: the stale one costs at most a three-second
+attempt running alongside the others.
 
 ## Local development
 

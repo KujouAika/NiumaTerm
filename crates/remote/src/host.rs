@@ -11,6 +11,8 @@ use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -46,6 +48,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tracing::{debug, info, warn};
 
 use crate::discovery::Advertiser;
+use crate::lan::lan_addresses;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
 use crate::presence::{DISCONNECT_EXPIRY, DISCONNECT_GRACE, Presence, Presences};
 use crate::push_sender::{self, Delivery};
@@ -116,6 +119,14 @@ struct Shared {
 
     /// Posts pushes to the forwarders devices registered.
     push_client: reqwest::Client,
+
+    /// The port the LAN listener took, which may differ from the configured
+    /// one (0 picks any).
+    lan_port: u16,
+
+    /// Set while tests keep the LAN from answering.
+    #[cfg(test)]
+    lan_paused: AtomicBool,
 }
 
 #[derive(Default)]
@@ -195,6 +206,9 @@ impl HostService {
             relay: relay_token.as_ref().map(|_| relay_commands),
             relay_slot: Mutex::new(None),
             push_client: push_sender::client(),
+            lan_port: local_addr.port(),
+            #[cfg(test)]
+            lan_paused: Default::default(),
         });
 
         let task = runtime().spawn(accept_loop(Arc::clone(&shared), listener));
@@ -271,6 +285,13 @@ impl HostService {
         issued
             .is_usable(now_ms())
             .then(|| (issued.code().clone(), issued.expires_at_ms()))
+    }
+
+    /// Close LAN connections as they arrive, as a network that keeps devices
+    /// apart would, until resumed; the relay keeps working.
+    #[cfg(test)]
+    pub(crate) fn pause_lan(&self, paused: bool) {
+        self.shared.lan_paused.store(paused, Ordering::Relaxed);
     }
 
     /// Cut every open channel, as a network drop would.
@@ -819,6 +840,17 @@ impl Connection {
 }
 
 impl Shared {
+    /// Where devices on this machine's LAN reach the host now. Sent at
+    /// pairing and with every handshake, so a device that came in through
+    /// the relay can go direct once it is on the same network, and learns
+    /// the host's new address after DHCP moved it.
+    fn lan_hints(&self) -> Vec<String> {
+        lan_addresses()
+            .into_iter()
+            .map(|ip| format!("{ip}:{}", self.lan_port))
+            .collect()
+    }
+
     /// Record where the device with `key` wants pushes, or that it wants
     /// none.
     fn set_push(&self, key: &[u8; 32], push: Option<PushRegistration>) -> Result<()> {
@@ -906,6 +938,11 @@ async fn accept_loop(shared: Arc<Shared>, listener: TcpListener) {
                 continue;
             }
         };
+
+        #[cfg(test)]
+        if shared.lan_paused.load(Ordering::Relaxed) {
+            continue;
+        }
 
         let Ok(permit) = Arc::clone(&shared.unauthenticated).try_acquire_owned() else {
             debug!(%peer, "dropping a connection: too many pending handshakes");
@@ -1072,7 +1109,7 @@ where
     let accepted = request.accept(&PairAccepted {
         host: shared.config.device.clone(),
         relay: shared.config.relay.clone(),
-        lan_hints: Vec::new(),
+        lan_hints: shared.lan_hints(),
     })?;
 
     send_binary(ws, accepted).await?;
@@ -1132,7 +1169,7 @@ where
         app_version: shared.config.device.app_version.clone(),
         features: FEATURES.iter().map(|&feature| feature.into()).collect(),
         name: shared.config.device.name.clone(),
-        lan_hints: Vec::new(),
+        lan_hints: shared.lan_hints(),
     };
 
     let (channel, msg2) = pending.accept(&hello)?;

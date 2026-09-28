@@ -13,13 +13,15 @@ static CHANGES: OnceLock<watch::Sender<u64>> = OnceLock::new();
 /// never bump it, which leaves the liveness probes and the backoff as the
 /// only way to notice.
 pub(crate) fn changes() -> watch::Receiver<u64> {
-    CHANGES
-        .get_or_init(|| {
-            register();
+    sender().subscribe()
+}
 
-            watch::channel(0).0
-        })
-        .subscribe()
+fn sender() -> &'static watch::Sender<u64> {
+    CHANGES.get_or_init(|| {
+        register();
+
+        watch::channel(0).0
+    })
 }
 
 #[cfg(windows)]
@@ -131,3 +133,10 @@ fn register() {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn register() {}
+
+/// Report an address change the application learned of itself, on
+/// platforms where only it can hear them (iOS, through `NWPathMonitor`).
+/// Links probe and relay links try the LAN, as after a change noticed here.
+pub fn notify_changed() {
+    sender().send_modify(|version| *version += 1);
+}

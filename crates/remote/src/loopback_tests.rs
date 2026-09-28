@@ -19,10 +19,12 @@ use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::client::pair;
+use crate::client::{LinkPath, pair};
 use crate::connection::{AgentUpdate, RemoteHost, Status};
 use crate::host::{HostConfig, HostService};
+use crate::lan::lan_addresses;
 use crate::local_view;
+use crate::netwatch::notify_changed as notify_network_changed;
 use crate::presence::Presence;
 use crate::sessions::{AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl};
 use crate::store::PairedHost;
@@ -444,13 +446,146 @@ fn a_host_off_the_lan_is_paired_and_used_through_the_relay() {
         };
 
         assert_eq!(paired.relay.as_ref().unwrap().open().unwrap(), relay);
-        assert!(paired.lan_hints.is_empty(), "the LAN path cannot have won");
+
+        // The relay won, so no address that worked leads the list: it is
+        // exactly what the host said about itself, for when this device is
+        // on its network. Its LAN listener is closed here, so trying those
+        // addresses first must not keep the relay from carrying the session.
+        let port = host.local_addr().port();
+
+        let mut advertised: Vec<String> = lan_addresses()
+            .into_iter()
+            .map(|ip| format!("{ip}:{port}"))
+            .collect();
+
+        advertised.truncate(4);
+
+        assert_eq!(paired.lan_hints, advertised);
 
         let remote = remote(paired, Arc::new(key));
 
         let mut pty = remote.open_terminal(80, 24).await.unwrap();
 
         run_marker(&mut pty, "RELAYED").await;
+    });
+}
+
+/// Needs a running relay, as the test above. A device paired through the
+/// relay knows the host's LAN addresses and connects over the LAN next time.
+#[test]
+#[ignore = "needs a running relay"]
+fn a_device_paired_through_the_relay_goes_direct_on_the_hosts_lan() {
+    if lan_addresses().is_empty() {
+        eprintln!("skipped: this machine has no LAN address");
+
+        return;
+    }
+
+    let relay = RelayAccess {
+        url: env::var("NMT_TEST_RELAY_URL").expect("NMT_TEST_RELAY_URL"),
+        access_key: env::var("NMT_TEST_RELAY_KEY").expect("NMT_TEST_RELAY_KEY"),
+    };
+
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host_with_relay(&host_dir, SessionRegistry::new(), Some(relay.clone()));
+
+    let key = DeviceKey::generate().unwrap();
+    let code = host.start_pairing().unwrap();
+
+    runtime().block_on(async {
+        let deadline = Instant::now() + WAIT;
+
+        // By pairing slot, with no address: through the relay, unless DNS-SD
+        // finds the host first.
+        let mut paired = loop {
+            match pair(None, &code, &key, info("Client"), None, Some(relay.clone())).await {
+                Ok(paired) => break paired,
+                Err(error) if Instant::now() < deadline => {
+                    eprintln!("retrying pairing: {error:#}");
+
+                    sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => panic!("pairing through the relay failed: {error:#}"),
+            }
+        };
+
+        // Pairing through the relay handed over the host's LAN addresses.
+        assert!(!paired.lan_hints.is_empty());
+
+        // Without the relay, the next connection can only go direct, to an
+        // address learned at pairing.
+        paired.relay = None;
+
+        let client = remote(paired, Arc::new(key));
+
+        client.list_sessions().await.unwrap();
+    });
+}
+
+/// Needs a running relay, as the tests above. A link that came up through the
+/// relay moves to the LAN once the host answers there, and its terminal view
+/// carries on over the new link.
+#[test]
+#[ignore = "needs a running relay"]
+fn a_link_through_the_relay_moves_to_the_lan_once_the_host_answers_there() {
+    if lan_addresses().is_empty() {
+        eprintln!("skipped: this machine has no LAN address");
+
+        return;
+    }
+
+    let relay = RelayAccess {
+        url: env::var("NMT_TEST_RELAY_URL").expect("NMT_TEST_RELAY_URL"),
+        access_key: env::var("NMT_TEST_RELAY_KEY").expect("NMT_TEST_RELAY_KEY"),
+    };
+
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host_with_relay(&host_dir, SessionRegistry::new(), Some(relay.clone()));
+
+    // As on a network that keeps devices apart: everything goes through the
+    // relay, even when DNS-SD finds the host.
+    host.pause_lan(true);
+
+    let key = DeviceKey::generate().unwrap();
+    let code = host.start_pairing().unwrap();
+
+    runtime().block_on(async {
+        let deadline = Instant::now() + WAIT;
+
+        let paired = loop {
+            match pair(None, &code, &key, info("Client"), None, Some(relay.clone())).await {
+                Ok(paired) => break paired,
+                Err(error) if Instant::now() < deadline => {
+                    eprintln!("retrying pairing: {error:#}");
+
+                    sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => panic!("pairing through the relay failed: {error:#}"),
+            }
+        };
+
+        let client = remote(paired, Arc::new(key));
+
+        let mut pty = client.open_terminal(80, 24).await.unwrap();
+
+        run_marker(&mut pty, "RELAYED").await;
+
+        assert_eq!(client.path(), Some(LinkPath::Relay));
+
+        // The device reaches the host's network.
+        host.pause_lan(false);
+
+        notify_network_changed();
+
+        timeout(WAIT, async {
+            while !matches!(client.path(), Some(LinkPath::Lan(_))) {
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the link stayed on {:?}", client.path()));
+
+        run_marker(&mut pty, "DIRECT").await;
     });
 }
 
@@ -821,5 +956,84 @@ fn a_device_that_unregisters_gets_no_pushes() {
         client.unregister_push().await.unwrap();
 
         assert_eq!(host.devices()[0].push, None);
+    });
+}
+
+#[test]
+fn a_device_learns_the_hosts_lan_addresses_and_a_stale_one_does_not_hold_it_up() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host(&host_dir, SessionRegistry::new());
+    let port = host.local_addr().port();
+    let address = format!("127.0.0.1:{port}");
+
+    let advertised: Vec<String> = lan_addresses()
+        .into_iter()
+        .map(|ip| format!("{ip}:{port}"))
+        .collect();
+
+    runtime().block_on(async {
+        let (mut paired, key) = paired_client(&host).await;
+
+        // Pairing hands over the host's addresses behind the one used.
+        let mut expected = vec![address.clone()];
+
+        expected.extend(advertised.iter().cloned());
+        expected.truncate(4);
+
+        assert_eq!(paired.lan_hints, expected);
+
+        // An address the host no longer has, first in line: 192.0.2.0/24 is
+        // reserved for documentation and routes nowhere.
+        paired.lan_hints = vec!["192.0.2.1:47470".into(), address.clone()];
+
+        let (records, mut records_rx) = mpsc::unbounded_channel();
+
+        let client = RemoteHost::new(paired, key, "0.0.0".into(), move |record| {
+            let _ = records.send(record);
+        });
+
+        let started = Instant::now();
+
+        client.list_sessions().await.unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the stale address held the connection up for {:?}",
+            started.elapsed()
+        );
+
+        // The host's list replaced the stale address.
+        let record = timeout(WAIT, records_rx.recv()).await.unwrap().unwrap();
+
+        assert_eq!(record.lan_hints[0], address);
+
+        if !advertised.is_empty() {
+            assert!(!record.lan_hints.contains(&"192.0.2.1:47470".to_owned()));
+        }
+    });
+}
+
+#[test]
+fn parallel_attempts_that_reach_one_host_twice_still_connect() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host(&host_dir, SessionRegistry::new());
+    let address = format!("127.0.0.1:{}", host.local_addr().port());
+
+    runtime().block_on(async {
+        let (mut paired, key) = paired_client(&host).await;
+
+        // Several addresses of one host, as Wi-Fi and Ethernet give: the
+        // host refuses every handshake that arrives after a newer one as a
+        // replay, which must not read as the host refusing the device.
+        paired.lan_hints = vec![address; 4];
+
+        for _ in 0..5 {
+            let client = remote(paired.clone(), Arc::clone(&key));
+
+            client.list_sessions().await.unwrap();
+
+            client.shutdown();
+            host.drop_connections();
+        }
     });
 }

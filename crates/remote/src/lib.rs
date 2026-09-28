@@ -3,6 +3,7 @@
 //! Protocol state machines and codecs live in `nmt_remote_core`; this crate
 //! adds sockets, the runtime, storage, and host terminals.
 
+pub use crate::netwatch::notify_changed as notify_network_changed;
 pub use crate::network_pty::NetworkPty;
 
 pub mod client;
@@ -32,6 +33,8 @@ mod secret;
 #[cfg(feature = "host")]
 mod stream;
 
+#[cfg(test)]
+mod client_tests;
 #[cfg(test)]
 #[cfg(feature = "lan")]
 mod lan_tests;
