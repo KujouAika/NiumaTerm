@@ -37,4 +37,5 @@ windows-sys.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 aes-gcm.workspace = true
 core-foundation.workspace = true
+libc.workspace = true
 security-framework.workspace = true

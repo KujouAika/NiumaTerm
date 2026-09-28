@@ -61,5 +61,73 @@ fn register() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn register() {
+    use std::fs::File;
+    use std::io::{Error, ErrorKind, Read};
+    use std::os::fd::FromRawFd;
+    use std::thread;
+
+    use tracing::warn;
+
+    // A routing socket receives a copy of every routing message the kernel
+    // emits, and address changes arrive as RTM_NEWADDR and RTM_DELADDR. It
+    // needs no privileges and no run loop, unlike SystemConfiguration.
+    //
+    // SAFETY: plain socket creation; the descriptor is checked below.
+    let fd = unsafe { libc::socket(libc::PF_ROUTE, libc::SOCK_RAW, libc::AF_UNSPEC) };
+
+    if fd < 0 {
+        warn!(
+            error = %Error::last_os_error(),
+            "network change notifications are unavailable"
+        );
+
+        return;
+    }
+
+    // SAFETY: `fd` is a fresh descriptor nothing else owns.
+    let mut socket = unsafe { File::from_raw_fd(fd) };
+
+    // The reader lives as long as the process: the notifications serve
+    // every connection, and a blocking read has no cheap way to be woken
+    // for shutdown.
+    let spawned = thread::Builder::new()
+        .name("netwatch".into())
+        .spawn(move || {
+            // Each read returns one whole message; the largest routing
+            // messages stay well under this.
+            let mut message = [0u8; 2048];
+
+            loop {
+                let length = match socket.read(&mut message) {
+                    Ok(length) => length,
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        warn!(%error, "network change notifications stopped");
+
+                        return;
+                    }
+                };
+
+                // Every routing message starts with its length, version and
+                // type, so the type is the fourth byte whatever the message.
+                let Some(&kind) = message[..length].get(3) else {
+                    continue;
+                };
+
+                if matches!(i32::from(kind), libc::RTM_NEWADDR | libc::RTM_DELADDR)
+                    && let Some(changes) = CHANGES.get()
+                {
+                    changes.send_modify(|version| *version += 1);
+                }
+            }
+        });
+
+    if let Err(error) = spawned {
+        warn!(%error, "network change notifications are unavailable");
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn register() {}
