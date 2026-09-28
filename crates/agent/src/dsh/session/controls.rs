@@ -55,6 +55,7 @@ pub(super) struct Controls {
     /// Separate from the session's command lane so an interrupt never waits
     /// behind a conversation switch that can take seconds.
     lane: CommandLane,
+
     client: ApiClient,
     deliver: Delivery,
     pending: HashMap<u64, Pending>,

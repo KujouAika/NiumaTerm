@@ -108,6 +108,7 @@ impl JsonLineProcess {
         runtime.spawn(async move {
             tokio::select! {
                 _ = child.wait() => {}
+
                 () = exit_kill.cancelled() => {}
             }
 
