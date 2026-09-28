@@ -9,6 +9,7 @@ pub mod client;
 pub mod connection;
 pub mod discovery;
 pub mod host;
+pub mod lan;
 pub mod local_view;
 pub mod sessions;
 pub mod store;
@@ -20,6 +21,8 @@ mod relay;
 mod secret;
 mod stream;
 
+#[cfg(test)]
+mod lan_tests;
 #[cfg(test)]
 mod link_tests;
 #[cfg(test)]

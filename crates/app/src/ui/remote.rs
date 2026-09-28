@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -22,6 +21,7 @@ use nmt_platform::runtime;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
+use nmt_remote::lan::lan_addresses;
 use nmt_remote::sessions::{
     AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl,
 };
@@ -280,10 +280,17 @@ pub(crate) fn save_relay_key(cx: &mut App) -> bool {
 }
 
 impl Remote {
-    pub(crate) fn hosting_address(&self) -> Option<String> {
-        self.host
-            .as_ref()
-            .map(|host| format!("{}:{}", local_ip(), host.local_addr().port()))
+    /// Where LAN peers can reach this host, most likely first; `None` while
+    /// hosting is off.
+    pub(crate) fn hosting_addresses(&self) -> Option<Vec<String>> {
+        let port = self.host.as_ref()?.local_addr().port();
+
+        Some(
+            lan_addresses()
+                .into_iter()
+                .map(|ip| format!("{ip}:{port}"))
+                .collect(),
+        )
     }
 
     pub(crate) fn device_id(&self) -> Option<DeviceId> {
@@ -306,7 +313,7 @@ impl Remote {
             host_id: key.id(),
             host_key: *key.public(),
             relay: self.hosted_relay.clone(),
-            addresses: self.hosting_address().into_iter().collect(),
+            addresses: self.hosting_addresses().unwrap_or_default(),
         };
 
         Some(link.to_url())
@@ -1393,24 +1400,6 @@ fn with_default_port(address: &str) -> String {
     } else {
         format!("{address}:{DEFAULT_PORT}")
     }
-}
-
-/// The address other machines on the LAN most likely reach this one at: the
-/// source address of the default route. Connecting a UDP socket sends
-/// nothing; it only selects the route.
-fn local_ip() -> String {
-    UdpSocket::bind(("0.0.0.0", 0))
-        .and_then(|socket| {
-            socket.connect(("192.0.2.1", 9))?;
-
-            socket.local_addr()
-        })
-        .map(|address| address.ip().to_string())
-        .unwrap_or_else(|error| {
-            warn!(%error, "no LAN address found");
-
-            "127.0.0.1".into()
-        })
 }
 
 fn app_window(window: &mut Window, cx: &mut App) -> Option<Entity<AppWindow>> {

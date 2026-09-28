@@ -4349,6 +4349,7 @@ dependencies = [
  "dirs",
  "futures",
  "getrandom 0.4.3",
+ "if-addrs",
  "mdns-sd",
  "nmt_config",
  "nmt_platform",

@@ -113,6 +113,9 @@ snow = "0.10"
 spake2 = "0.4"
 # LAN discovery of hosts (DNS-SD), which mobile platforms browse natively.
 mdns-sd = "0.21"
+# Interface enumeration for the LAN addresses a host shows and puts in
+# pairing links; the same version DNS-SD already links.
+if-addrs = "0.15"
 # The macOS login Keychain, which holds the key that seals remote-session
 # secrets at rest.
 security-framework = "3.7"

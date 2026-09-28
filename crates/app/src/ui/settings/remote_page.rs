@@ -63,9 +63,11 @@ fn hosting_group(state: &Remote) -> SettingGroup {
         )
         .item(relay_apply_item(state));
 
-    let Some(address) = state.hosting_address() else {
+    let Some(addresses) = state.hosting_addresses() else {
         return group;
     };
+
+    let address = addresses.join(", ");
 
     let id = state
         .device_id()
