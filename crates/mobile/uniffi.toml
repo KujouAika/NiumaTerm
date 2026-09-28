@@ -1,0 +1,6 @@
+[bindings.swift]
+# The app imports one Swift module; the C module underneath it is an
+# implementation detail of the xcframework.
+module_name = "NiumaTermCore"
+ffi_module_name = "NiumaTermCoreFFI"
+ffi_module_filename = "NiumaTermCoreFFI"

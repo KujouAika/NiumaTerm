@@ -1,0 +1,17 @@
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+# Generates the Swift bindings of `nmt_mobile`. It lives apart from the
+# library so the bindgen's command-line dependencies never reach the phone.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi = { workspace = true, features = ["cli"] }

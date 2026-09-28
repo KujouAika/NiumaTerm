@@ -1,0 +1,3 @@
+# Build outputs of scripts/build-ios-core.sh.
+/NiumaTermCoreFFI.xcframework/
+/Sources/

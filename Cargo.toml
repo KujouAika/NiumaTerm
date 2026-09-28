@@ -24,10 +24,12 @@ members = [
     "crates/updater",
     "crates/remote_core",
     "crates/remote",
+    "crates/mobile",
 
     "third_party/libghostty-vt-sys",
 
     "tools/readability",
+    "tools/uniffi_bindgen",
 
     # GPUI fork
     "third_party/gpui/collections",
@@ -289,6 +291,7 @@ stacksafe = "1.0.2"
 strum = { version = "0.28.0", features = ["derive"] }
 syn = { version = "2.0.118", features = ["full", "extra-traits", "visit-mut"] }
 thiserror = "2.0.18"
+uniffi = "0.32"
 uuid = { version = "1.23.4", features = ["v4", "v5", "v7", "serde"] }
 waker-fn = "1.2.0"
 web-time = "1.1.0"

@@ -322,6 +322,12 @@ impl RemoteHost {
         self.wake.notify_one();
     }
 
+    /// Stop holding the link up for a session list. Open views keep it; with
+    /// none, the link closes once it has been idle for a while.
+    pub fn stop_listing(&self) {
+        self.listed.store(false, Ordering::Relaxed);
+    }
+
     /// A view of an agent session. It attaches now if connected and
     /// otherwise as soon as a link is up, and again after every reconnect,
     /// each time starting from a snapshot.
