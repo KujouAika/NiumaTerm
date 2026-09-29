@@ -13,7 +13,11 @@ Raw FFI bindings for libghostty-vt.
 - Set `NMT_USE_PREBUILT_LIBGHOSTTY=1` to link `prebuilt/<TARGET>/`
   instead of fetching and building `libghostty-vt` from Ghostty sources via
   Zig. The checked-in Windows package keeps already-localized static archives
-  in `lib/`, so prebuilt builds do not need Zig or LLVM binutils.
+  in `lib/`, so prebuilt builds do not need Zig or LLVM binutils. The macOS
+  package is a single `lib/libghostty-vt.a`, into which Zig already folds
+  simdutf and highway. Regenerate the packages with
+  `scripts/update-libghostty-prebuilt.ps1` (Windows) and
+  `scripts/update-libghostty-prebuilt-macos.sh` (macOS).
 - Set `LIBGHOSTTY_VT_SYS_OPTIMIZE` to `Debug`, `ReleaseSafe`, `ReleaseFast`, or
   `ReleaseSmall` to override the Zig optimize mode used by vendored builds.
 - If the `pkg-config` feature is enabled, the build will use an installed
