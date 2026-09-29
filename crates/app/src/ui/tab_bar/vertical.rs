@@ -97,15 +97,12 @@ const TAB_ROW_GAP: f32 = 6.0;
 /// Edge of a tab row's type icon, and the size its label is set at.
 const TAB_ROW_ICON: f32 = 14.0;
 
-/// Edge of the glyph an `xsmall` icon draws inside the slot above.
+/// Edge of the glyph an `xsmall` icon draws inside the slot above. Every
+/// icon centers its ink in this box, so a status dot centered in the same box
+/// shares the icons' center line; the dot is narrower than their ink, and
+/// aligning its leading edge with theirs instead would leave it visibly off
+/// the column.
 const TAB_ROW_GLYPH: f32 = 12.0;
-
-/// Where a glyph's ink starts inside its own box. Every icon in the slot,
-/// Lucide and the app's own assets alike, keeps a 2-of-24 margin inside its
-/// viewBox, so a status dot drawn without such a margin takes the same inset
-/// explicitly; centering it instead would put its edge 1.5px to the right of
-/// the icons' and make the glyph column look ragged.
-const TAB_ROW_GLYPH_INSET: f32 = TAB_ROW_GLYPH * 2.0 / 24.0;
 
 const TAB_ROW_TEXT: f32 = 13.0;
 
@@ -337,10 +334,9 @@ impl VerticalTabList {
             // is what the eye scans the list for, and its kind only matters
             // once the row is found; sharing the slot also keeps the label
             // from shifting sideways the moment a tab starts working. The
-            // glyph starts on the slot's leading edge, which is the content
-            // column, so its ink lines up with the heading text and the
-            // status icons; centering it in the wider slot would push it a
-            // pixel past them.
+            // glyph box starts on the slot's leading edge, which is the
+            // content column, so icon ink lines up with the heading text;
+            // centering the box in the wider slot would push it a pixel past.
             .child(
                 div()
                     .flex_none()
@@ -353,7 +349,7 @@ impl VerticalTabList {
                             .size(px(TAB_ROW_GLYPH))
                             .flex()
                             .items_center()
-                            .pl(px(TAB_ROW_GLYPH_INSET))
+                            .justify_center()
                             .child(mark)
                             .into_any_element(),
                         (None, true) => {
