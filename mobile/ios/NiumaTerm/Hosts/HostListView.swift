@@ -7,6 +7,7 @@ struct HostListView: View {
     @State private var newSessionHost: Host?
     @State private var pairing: PairingRequest?
     @State private var showSettings = false
+    @State private var pairAfterSettings = false
     @State private var closing: SessionClose?
     @State private var closeError: String?
 
@@ -96,9 +97,6 @@ struct HostListView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Add computer", systemImage: "qrcode.viewfinder") { pairing = PairingRequest(link: nil) }
-                }
             }
             .confirmationDialog(
                 "Close “\(closing?.title ?? "")”?",
@@ -122,8 +120,18 @@ struct HostListView: View {
             .sheet(item: $newSessionHost) { host in
                 NewSessionSheet(host: host)
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
+            // Pairing opens only once Settings has gone, so the two screens
+            // never try to present at the same time.
+            .sheet(isPresented: $showSettings, onDismiss: {
+                if pairAfterSettings {
+                    pairAfterSettings = false
+                    pairing = PairingRequest(link: nil)
+                }
+            }) {
+                SettingsView(onAddTarget: {
+                    pairAfterSettings = true
+                    showSettings = false
+                })
             }
             .fullScreenCover(item: $pairing) { request in
                 PairingView(initialLink: request.link)

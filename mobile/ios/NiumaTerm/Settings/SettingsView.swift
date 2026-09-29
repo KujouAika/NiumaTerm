@@ -19,6 +19,10 @@ struct SettingsView: View {
 
     @State private var forgetting: Host?
 
+    /// Pair another computer; the list presenting Settings shows the pairing
+    /// screen once Settings is gone.
+    let onAddTarget: () -> Void
+
     var body: some View {
         NavigationStack {
             Form {
@@ -34,6 +38,9 @@ struct SettingsView: View {
                             Button("Forget", role: .destructive) { forgetting = host }
                                 .buttonStyle(.borderless)
                         }
+                    }
+                    Button(action: onAddTarget) {
+                        Label("Add target", systemImage: "qrcode.viewfinder")
                     }
                 }
                 Section {
