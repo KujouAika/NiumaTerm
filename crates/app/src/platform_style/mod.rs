@@ -64,6 +64,18 @@ pub trait PlatformStyle {
     /// Margin after the title bar's trailing control group.
     const TITLE_BAR_TRAILING_INSET: f32;
 
+    /// Space between neighboring title bar controls. Each control already
+    /// pads its icon inside a square frame, so this only adds to that.
+    const TITLE_BAR_BUTTON_GAP: f32;
+
+    /// Edge of the square frame of each control in the title bar's leading
+    /// group, which centers a 16-point icon.
+    const TITLE_BAR_BUTTON_SIZE: f32;
+
+    /// Room after the leading group's last control that the sidebar keeps at
+    /// its narrowest, so the group never runs up against the first tab.
+    const TITLE_BAR_CONTROLS_TRAILING_GAP: f32;
+
     /// Below this width a tab collapses to the single glyph slot, because the
     /// leading icon, the close control and the padding around them no longer
     /// fit side by side.

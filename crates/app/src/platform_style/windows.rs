@@ -22,6 +22,14 @@ impl PlatformStyle for Windows {
 
     const TITLE_BAR_TRAILING_INSET: f32 = 0.0;
 
+    const TITLE_BAR_BUTTON_GAP: f32 = 4.0;
+
+    /// The app's standard toolbar frame, matching the controls elsewhere.
+    const TITLE_BAR_BUTTON_SIZE: f32 = 30.0;
+
+    /// The same gap the controls keep between each other.
+    const TITLE_BAR_CONTROLS_TRAILING_GAP: f32 = Self::TITLE_BAR_BUTTON_GAP;
+
     /// The leading icon, the variant's content padding and the close control
     /// side by side (2 + 12 + 4 + 32 + 4 + 16).
     const COMPACT_TAB_WIDTH: f32 = 70.0;

@@ -14,9 +14,7 @@ use nmt_agent::AgentProjection;
 use rust_i18n::t;
 
 use crate::agent_usage::AgentUsageView;
-use crate::ui::composition::{
-    FLOATING_SURFACE_BOTTOM_INSET, TOOLBAR_BUTTON_SIZE, TOOLBAR_ICON_SIZE, toolbar_button,
-};
+use crate::ui::composition::{FLOATING_SURFACE_BOTTOM_INSET, TOOLBAR_ICON_SIZE, toolbar_button};
 use crate::ui::fluent::SELECTION_BAR_WIDTH;
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::remote::RemoteWorkspace;
@@ -302,7 +300,7 @@ const SIDEBAR_PADDING_X: f32 = 12.0;
 /// tab glyphs and the status icons stand under that icon's edge.
 const SIDEBAR_PADDING_LEFT: f32 = match Host::WINDOW_CONTROLS_INSET {
     Some(inset) => inset,
-    None => Host::TITLE_BAR_LEADING_INSET + (TOOLBAR_BUTTON_SIZE - TOOLBAR_ICON_SIZE) / 2.0,
+    None => Host::TITLE_BAR_LEADING_INSET + (Host::TITLE_BAR_BUTTON_SIZE - TOOLBAR_ICON_SIZE) / 2.0,
 };
 
 const SIDEBAR_GROUP_GAP: f32 = 8.0;

@@ -14,6 +14,23 @@ use crate::platform_style::{PlatformStyle, TabDensity};
 /// centers them in the taller title bar.
 const TRAFFIC_LIGHT_HEIGHT: f32 = 14.0;
 
+/// Width of the close, minimize and zoom buttons together: three round
+/// 14-point buttons with the 9 points AppKit leaves between neighbors.
+const TRAFFIC_LIGHTS_WIDTH: f32 = 3.0 * TRAFFIC_LIGHT_HEIGHT + 2.0 * 9.0;
+
+/// Edge of the icon each title bar control centers in its frame.
+const TITLE_BAR_ICON: f32 = 16.0;
+
+/// Visible space between neighboring title bar glyphs, and between the zoom
+/// button and the first glyph, so the leading group reads as one evenly
+/// spaced row with the window buttons.
+const TITLE_BAR_GLYPH_SPACING: f32 = 14.0;
+
+/// Where a glyph's ink starts inside its 16-point icon box. Lucide and the
+/// app's own icons keep a margin of about this much on each side, so the
+/// visible spacing is the box spacing plus two margins.
+const TITLE_BAR_GLYPH_MARGIN: f32 = 1.5;
+
 /// AppKit keeps drawing the window buttons over the transparent title bar,
 /// so the chrome makes room for them at the leading edge.
 pub struct MacOs;
@@ -26,10 +43,32 @@ impl PlatformStyle for MacOs {
         Some((TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_HEIGHT) / 2.0);
 
     /// The three window buttons and their spacing occupy the leading edge.
-    const TITLE_BAR_LEADING_INSET: f32 = 80.0;
+    /// The zoom button's edge carries no ink margin, so the first frame
+    /// starts where its glyph lands the glyph spacing past that edge.
+    const TITLE_BAR_LEADING_INSET: f32 = (TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_HEIGHT) / 2.0
+        + TRAFFIC_LIGHTS_WIDTH
+        + TITLE_BAR_GLYPH_SPACING
+        - TITLE_BAR_GLYPH_MARGIN
+        - (Self::TITLE_BAR_BUTTON_SIZE - TITLE_BAR_ICON) / 2.0;
 
     /// Keeps toggled and hovered controls inside the window's curved edge.
     const TITLE_BAR_TRAILING_INSET: f32 = 12.0;
+
+    /// Frames touch, and the frame is sized so its padding alone spaces the
+    /// glyphs; the frames only show on hover, one at a time.
+    const TITLE_BAR_BUTTON_GAP: f32 = 0.0;
+
+    const TITLE_BAR_BUTTON_SIZE: f32 = TITLE_BAR_ICON + TITLE_BAR_GLYPH_SPACING
+        - 2.0 * TITLE_BAR_GLYPH_MARGIN
+        - Self::TITLE_BAR_BUTTON_GAP;
+
+    /// The last glyph keeps the glyph spacing to the sidebar's edge, as the
+    /// first keeps it to the zoom button; its frame's padding and ink margin
+    /// already cover part of it. The last control is always the next-busy
+    /// arrow, whose ink runs to within half a point of its box rather than
+    /// the usual margin.
+    const TITLE_BAR_CONTROLS_TRAILING_GAP: f32 =
+        TITLE_BAR_GLYPH_SPACING - 0.5 - (Self::TITLE_BAR_BUTTON_SIZE - TITLE_BAR_ICON) / 2.0;
 
     /// The icon and the close control each keep a real inset, so a tab needs
     /// that much more room before it gives both up for the glyph slot.

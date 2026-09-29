@@ -90,11 +90,11 @@ pub(crate) struct PanelToggle {
 /// horizontal scroll stays reachable at the window's minimum width.
 const TAB_STRIP_MIN_WIDTH: f32 = 120.0;
 
-const TITLE_BAR_BUTTON_GAP: f32 = 4.0;
-
 /// Four controls, three internal gaps, and a trailing gap stay reachable
 /// before the first tab, including at the sidebar's drag limit.
-pub(crate) const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * (TOOLBAR_BUTTON_SIZE + TITLE_BAR_BUTTON_GAP);
+pub(crate) const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * Host::TITLE_BAR_BUTTON_SIZE
+    + 3.0 * Host::TITLE_BAR_BUTTON_GAP
+    + Host::TITLE_BAR_CONTROLS_TRAILING_GAP;
 
 /// The session heading in the middle of the bar, and the branch chip beside
 /// it. The chip is set smaller than the title because it qualifies the title
@@ -157,7 +157,7 @@ impl WindowTitleBar {
                     .child(div().flex_none().occlude().child(app_menu_button(cx)))
                     .child(
                         div().flex_none().occlude().child(
-                            toolbar_button("toggle-sidebar")
+                            leading_button("toggle-sidebar")
                                 .icon(if sidebar_collapsed {
                                     SideBarIcon::Expand
                                 } else {
@@ -176,7 +176,7 @@ impl WindowTitleBar {
                     // to jump, which is what keeps that position stable.
                     .child(
                         div().flex_none().occlude().child(
-                            toolbar_button("next-ready-tab")
+                            leading_button("next-ready-tab")
                                 .icon(IconName::Bell)
                                 .tooltip(t!("shell-next-ready-tab"))
                                 .disabled(!has_ready_tab)
@@ -197,7 +197,7 @@ impl WindowTitleBar {
                     )
                     .child(
                         div().flex_none().occlude().child(
-                            toolbar_button("next-busy-tab")
+                            leading_button("next-busy-tab")
                                 .icon(NextBusyTabIcon)
                                 .tooltip(t!("shell-next-busy-tab"))
                                 .disabled(!has_busy_tab)
@@ -294,7 +294,7 @@ fn app_menu_button(cx: &mut Context<AppWindow>) -> impl IntoElement {
     let shell = cx.entity();
 
     modern_dropdown(
-        toolbar_button("app-menu")
+        leading_button("app-menu")
             .icon(IconName::Menu)
             .tooltip(t!("shell-app-menu"))
             .accessibility_label(t!("shell-app-menu")),
@@ -415,6 +415,12 @@ fn connected_devices_button(devices: &[String], cx: &mut Context<AppWindow>) -> 
         }))
 }
 
+/// A control in the leading group, sized by the platform so the group's
+/// spacing matches the window buttons beside it where the host draws them.
+fn leading_button(id: &'static str) -> Button {
+    toolbar_button(id).size(px(Host::TITLE_BAR_BUTTON_SIZE))
+}
+
 fn title_bar_leading_region(width: f32) -> Div {
     // Sidebar alignment yields to the tab strip on narrow windows, while
     // the minimum width keeps every leading control reachable.
@@ -423,7 +429,7 @@ fn title_bar_leading_region(width: f32) -> Div {
         .min_w(px(TITLE_BAR_CONTROLS_WIDTH))
         .flex_initial()
         .overflow_hidden()
-        .gap(px(TITLE_BAR_BUTTON_GAP))
+        .gap(px(Host::TITLE_BAR_BUTTON_GAP))
 }
 
 fn title_bar_trailing_region() -> Div {
