@@ -29,7 +29,7 @@ mod tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{collections, io, iter, path, time};
+use std::{collections, io, iter, mem, path, time};
 
 use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::{TeamPane, TeamRuntime};
@@ -382,11 +382,61 @@ pub(super) fn agent_workspace(roots: Option<&WorkspaceRoots>) -> AgentWorkspace 
 }
 
 /// A conversation to reopen in a tab rooted where it ran, carrying the profile
-/// of the tab that listed it so the new tab launches the same agent.
+/// that continues it: the listing tab's own, or the one of the agent that
+/// recorded it. A conversation that names no directory opens with `fallback`,
+/// the listing tab's directories.
 pub(super) struct PendingAgentResume {
     pub(super) profile: AgentProfile,
-    pub(super) cwd: String,
+    pub(super) cwd: Option<String>,
+    pub(super) fallback: AgentWorkspace,
     pub(super) summary: SessionSummary,
+}
+
+/// A blank agent tab to relaunch in place on `profile`, optionally going on to
+/// continue the conversation `resume` lists once the new session is ready.
+pub(super) struct PendingAgentSwitch {
+    pub(super) tab: TabId,
+    pub(super) profile: AgentProfile,
+    pub(super) resume: Option<SessionSummary>,
+}
+
+/// The launch profile last picked in a composer's agent control, by name.
+/// The unified New Agent Tab entry opens it, so a user who works with one
+/// agent picks it once rather than on every new tab. It lives for the process
+/// only: the configured default profile is what a fresh start opens.
+#[derive(Default)]
+pub(crate) struct PickedAgentProfile(Option<String>);
+
+impl Global for PickedAgentProfile {}
+
+/// The profile a unified New Agent Tab opens: the one last picked in a
+/// composer while it still exists, otherwise the configured default.
+pub(crate) fn unified_agent_profile(cx: &App) -> AgentProfile {
+    let settings = cx.global::<AppSettings>();
+
+    cx.try_global::<PickedAgentProfile>()
+        .and_then(|picked| picked.0.as_deref())
+        .and_then(|name| {
+            settings
+                .config()
+                .agent_profiles
+                .list
+                .iter()
+                .find(|profile| profile.name == name)
+                .cloned()
+        })
+        .unwrap_or_else(|| settings.default_agent_profile_entry())
+}
+
+/// A tab's fallback title for an agent profile: the profile's name, so two
+/// profiles of one agent stay distinguishable, or the agent's own name for an
+/// unnamed profile.
+fn agent_tab_title(profile: &AgentProfile) -> String {
+    if profile.name.trim().is_empty() {
+        profile.kind.display().to_string()
+    } else {
+        profile.name.clone()
+    }
 }
 
 /// What a window did with a paired device's request to close a session.
@@ -2235,16 +2285,28 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         let id = Self::alloc_id(&mut self.next_id);
+        let tab = self.launch_agent_tab(profile, workspace, resume, window, cx);
 
-        // The tab is titled by the profile so multiple profiles of the same
-        // agent stay distinguishable; an unnamed profile falls back to the
-        // agent name.
-        let title = if profile.name.trim().is_empty() {
-            profile.kind.display().to_string()
-        } else {
-            profile.name.clone()
-        };
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Agent(tab),
+            agent_tab_title(profile),
+            window,
+            cx,
+        );
+    }
 
+    /// A started agent tab on `profile`, registered with this window's agent
+    /// monitor and shared with paired devices, but not yet placed in any tab
+    /// list.
+    fn launch_agent_tab(
+        &mut self,
+        profile: &AgentProfile,
+        workspace: AgentWorkspace,
+        resume: Option<SessionSummary>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AgentTab {
         let owner = AgentSession::create(profile.clone(), workspace, None, cx);
         let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
 
@@ -2264,13 +2326,78 @@ impl AppWindow {
 
         owner.start(None, cx);
 
-        self.insert_tab(
-            TabId(id),
-            TabSurface::Agent(AgentTab { owner, pane }),
-            title,
-            window,
-            cx,
-        );
+        AgentTab { owner, pane }
+    }
+
+    /// Relaunch the blank agent tab `request.tab` on another profile, in the
+    /// same place in its tab list. The tab keeps its id and position and the
+    /// unsent message moves across; the old session is dropped, which retires
+    /// its agent process.
+    fn replace_agent_tab(
+        &mut self,
+        request: PendingAgentSwitch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let PendingAgentSwitch {
+            tab: id,
+            profile,
+            resume,
+        } = request;
+
+        let Some(old_pane) = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .find(|tab| tab.id() == id)
+            .and_then(|tab| tab.surface().agent())
+            .cloned()
+        else {
+            return;
+        };
+
+        let Some(workspace) = old_pane
+            .read(cx)
+            .agent_session()
+            .map(|session| session.read(cx).workspace().clone())
+        else {
+            return;
+        };
+
+        let draft = old_pane.update(cx, |pane, cx| pane.take_composer_draft(window, cx));
+        let fresh = self.launch_agent_tab(&profile, workspace, resume, window, cx);
+        let pane = fresh.pane.clone();
+
+        pane.update(cx, |pane, cx| {
+            pane.restore_composer_draft(draft, window, cx)
+        });
+
+        let Some(tabs) = self.workspaces.tabs_for_tab_mut(id) else {
+            return;
+        };
+
+        let old = tabs
+            .list_mut()
+            .find_mut(id)
+            .map(|tab| mem::replace(tab.surface_mut(), TabSurface::Agent(fresh)));
+
+        // A title the blank tab was given from its draft or history belongs
+        // to the old agent's conversation, so the relaunched tab starts from
+        // its new profile's name; a user-authored title still wins.
+        tabs.set_title(id, String::new());
+        tabs.set_default_title(id, agent_tab_title(&profile));
+
+        if let Some(old) = old {
+            for route in old.agent_routes(cx) {
+                self.agent_notifications.remove_route(&route, cx);
+            }
+        }
+
+        if self.workspaces.active_tabs().list().active_id() == id {
+            self.focus_active(window, cx);
+        }
+
+        cx.notify();
     }
 
     pub(crate) fn on_new_agent_tab(
@@ -2279,7 +2406,11 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let profile = cx.global::<AppSettings>().default_agent_profile_entry();
+        let profile = if cx.global::<AppSettings>().config().agent.unified_agent_tab {
+            unified_agent_profile(cx)
+        } else {
+            cx.global::<AppSettings>().default_agent_profile_entry()
+        };
 
         self.open_agent_tab(profile, window, cx);
     }
@@ -3420,12 +3551,19 @@ impl AppWindow {
             // Addressed to the Team that owns the member's room; a member's
             // session is never a tab of its own.
             AgentPaneEvent::TeamPrompt(_) => return,
-            AgentPaneEvent::ResumeElsewhere { cwd, summary } => {
+            AgentPaneEvent::ResumeElsewhere {
+                cwd,
+                summary,
+                profile,
+            } => {
                 // Opening a tab needs a window, which an event
                 // subscription has none of; the next render has one.
                 self.agent_notifications.pending_agent_resume = Some(PendingAgentResume {
-                    profile: session.read(cx).profile().clone(),
+                    profile: profile
+                        .clone()
+                        .unwrap_or_else(|| session.read(cx).profile().clone()),
                     cwd: cwd.clone(),
+                    fallback: session.read(cx).workspace().clone(),
                     summary: summary.clone(),
                 });
 
@@ -3461,6 +3599,28 @@ impl AppWindow {
             // Addressed to paired devices; this window notifies from the
             // lifecycle event that accompanies it.
             AgentPaneEvent::Attention { .. } => return,
+            AgentPaneEvent::SwitchProfile { profile, resume } => {
+                // Only a pick from the composer says which agent the user
+                // wants next time; continuing another agent's conversation
+                // says nothing about that.
+                if resume.is_none() {
+                    cx.set_global(PickedAgentProfile(Some(profile.name.clone())));
+                }
+
+                // Same reason as the resume above: building the replacement
+                // pane needs a window, and the next render has one.
+                if let Some(tab) = self.tab_for_agent_session(&session) {
+                    self.agent_notifications.pending_agent_switch = Some(PendingAgentSwitch {
+                        tab,
+                        profile: profile.clone(),
+                        resume: resume.clone(),
+                    });
+
+                    cx.notify();
+                }
+
+                return;
+            }
         };
 
         apply_monitor_display_change(&mutation, cx);
@@ -3612,13 +3772,15 @@ impl Render for AppWindow {
             // workspace owns that directory, the reopened tab gets that
             // workspace's whole directory list; otherwise the conversation's
             // own directory is all this tab can honestly claim.
-            let workspace =
-                exact_match(&self.workspaces.summaries(), path::Path::new(&request.cwd))
+            let workspace = match request.cwd {
+                Some(cwd) => exact_match(&self.workspaces.summaries(), path::Path::new(&cwd))
                     .and_then(|id| self.workspaces.roots_of(id))
                     .map_or_else(
-                        || AgentWorkspace::single(Some(request.cwd.clone())),
+                        || AgentWorkspace::single(Some(cwd.clone())),
                         |roots| agent_workspace(Some(roots)),
-                    );
+                    ),
+                None => request.fallback,
+            };
 
             self.open_agent_tab_in(
                 &request.profile,
@@ -3627,6 +3789,10 @@ impl Render for AppWindow {
                 window,
                 cx,
             );
+        }
+
+        if let Some(request) = self.agent_notifications.pending_agent_switch.take() {
+            self.replace_agent_tab(request, window, cx);
         }
 
         if let Some(tab) = self.agent_notifications.pending_agent_close.take() {

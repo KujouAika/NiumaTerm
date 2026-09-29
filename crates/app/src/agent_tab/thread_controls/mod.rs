@@ -18,11 +18,12 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use nmt_agent::session::settings::ConversationSettings;
+use nmt_config::profile::AgentProfile;
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
 use crate::agent_tab::commands::setting_value_label;
-use crate::agent_tab::profile::AgentKind;
+use crate::agent_tab::profile::{AgentKind, AgentKindExt as _};
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::thread_controls::effort::effort_panel;
 use crate::agent_tab::thread_controls::harness_rows::{
@@ -100,11 +101,13 @@ pub(super) const EFFORT_TRACK_HEIGHT: Pixels = px(26.0);
 
 pub(super) const EFFORT_THUMB_INSET: Pixels = px(3.0);
 
-/// The dropdown row under the input: the model picker, the effort gauge
-/// where the model has one, and the folded menu for the rest.
+/// The dropdown row under the input: the launch profile picker where the tab
+/// may still change agent, the model picker, the effort gauge where the model
+/// has one, and the folded menu for the rest.
 pub(super) fn render_row(
     state: &ConversationSettings,
     kind: AgentKind,
+    profile: Option<AnyElement>,
     cx: &mut Context<AgentPane>,
 ) -> AnyElement {
     let HarnessSettings {
@@ -128,8 +131,13 @@ pub(super) fn render_row(
         .w_full()
         .gap(px(SETTINGS_PILL_GAP))
         .flex_wrap()
-        .text_color(cx.theme().muted_foreground)
-        .child(settings_group(t!("agent-settings-model"), vec![model]));
+        .text_color(cx.theme().muted_foreground);
+
+    if let Some(profile) = profile {
+        row = row.child(settings_group(t!("agent-settings-agent"), vec![profile]));
+    }
+
+    row = row.child(settings_group(t!("agent-settings-model"), vec![model]));
 
     if let Some(effort) = effort {
         let effort =
@@ -422,4 +430,68 @@ pub(super) fn setting_picker(
         });
 
     settings_pill_frame(pill, cx)
+}
+
+/// The agent a blank tab launches, as a pill leading the settings row: the
+/// current profile's mark and name, opening a menu of every configured
+/// profile. Profiles rather than bare agent kinds are listed, because two
+/// profiles of one kind can point at different endpoints, keys, or models.
+pub(super) fn profile_picker(
+    cx: &mut Context<AgentPane>,
+    current: &AgentProfile,
+    profiles: Vec<AgentProfile>,
+) -> AnyElement {
+    let pane = cx.entity();
+    let name = t!("agent-settings-agent");
+    let current_label = profile_label(current);
+    let current_name = current.name.clone();
+    let current_kind = current.kind;
+
+    let pill = settings_pill(Button::new("agent-profile"))
+        .tooltip(name.clone())
+        .accessibility_label(format!("{name}: {current_label}"))
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(current.kind.icon().size(px(SETTINGS_PILL_ICON)))
+                .child(div().text_size(px(SETTINGS_PILL_TEXT)).child(current_label))
+                .child(
+                    Icon::new(IconName::ChevronDown)
+                        .size(px(SETTINGS_PILL_CHEVRON))
+                        .text_color(cx.theme().muted_foreground.opacity(0.7)),
+                ),
+        )
+        // Anchored bottom-left so the menu opens upward — the row sits at
+        // the bottom edge of the pane.
+        .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
+            let mut menu = menu;
+
+            for profile in profiles.clone() {
+                let pane = pane.clone();
+                let checked = profile.name == current_name && profile.kind == current_kind;
+
+                menu = menu.item(
+                    PopupMenuItem::new(profile_label(&profile))
+                        .icon(profile.kind.icon())
+                        .checked(checked)
+                        .on_click(move |_, _, cx| {
+                            pane.update(cx, |this, cx| this.switch_profile(profile.clone(), cx));
+                        }),
+                );
+            }
+
+            menu
+        });
+
+    settings_pill_frame(pill, cx).into_any_element()
+}
+
+/// A profile's name as a menu shows it; an unnamed profile goes by its agent.
+fn profile_label(profile: &AgentProfile) -> String {
+    if profile.name.trim().is_empty() {
+        profile.kind.display().to_string()
+    } else {
+        profile.name.clone()
+    }
 }

@@ -193,6 +193,18 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                 ),
             )
             .description(t!("settings-agent-questions-one-at-a-time-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-agent-unified-tab"),
+                settings_switch(
+                    |config| config.agent.unified_agent_tab,
+                    |settings, value| {
+                        settings.edit_agent(|section| section.unified_agent_tab = value);
+                    },
+                ),
+            )
+            .description(t!("settings-agent-unified-tab-description").into_owned()),
         );
 
     let mut cli_updates = SettingGroup::new()

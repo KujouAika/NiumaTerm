@@ -7,6 +7,7 @@ use gpui_component::{Icon, IconName, IconNamed, Sizable as _};
 use nmt_config::profile::Profile;
 use rust_i18n::t;
 
+use crate::ui::shell::unified_agent_profile;
 use crate::ui::{AppSettings, AppWindow};
 
 /// A shell tab's mark: the prompt itself, with no box drawn around it. At the
@@ -173,6 +174,24 @@ pub(crate) fn new_tab_menu(
         menu = menu.separator();
     }
 
+    // With the unified tab the agent is chosen in the new tab's composer, so
+    // the menu offers one entry, marked with the agent it will open.
+    if cx.global::<AppSettings>().config().agent.unified_agent_tab && !agent_profiles.is_empty() {
+        let profile = unified_agent_profile(cx);
+        let icon = tab_icon(Some(profile.kind), false);
+        let item_shell = shell.clone();
+
+        menu = menu
+            .item(t!("shell-menu-new-agent-tab"), move |window, cx| {
+                let profile = unified_agent_profile(cx);
+
+                item_shell.update(cx, |this, cx| this.open_agent_tab(profile, window, cx));
+            })
+            .icon(icon);
+
+        return team_entry(menu, shell, cx);
+    }
+
     for (ix, profile) in agent_profiles.into_iter().enumerate() {
         let label = if profile.name.trim().is_empty() {
             t!("tabbar-menu-agent-profile", index = (ix + 1)).into_owned()
@@ -192,6 +211,11 @@ pub(crate) fn new_tab_menu(
             .icon(icon);
     }
 
+    team_entry(menu, shell, cx)
+}
+
+/// The Agent Team entry closing the new-tab menu, where teams are enabled.
+fn team_entry(menu: ModernMenu, shell: &Entity<AppWindow>, cx: &App) -> ModernMenu {
     if !cx.global::<AppSettings>().config().agent.enable_agent_team {
         return menu;
     }

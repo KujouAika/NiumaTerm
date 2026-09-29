@@ -17,6 +17,7 @@ fn summary(id: &str) -> SessionSummary {
         cwd: Some("project".into()),
         last_active: SystemTime::UNIX_EPOCH,
         snippet: None,
+        origin: None,
     }
 }
 

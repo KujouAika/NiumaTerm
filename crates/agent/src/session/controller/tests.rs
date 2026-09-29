@@ -1146,6 +1146,7 @@ fn a_replica_receives_the_conversations_the_host_listed_for_it() {
         cwd: None,
         last_active: SystemTime::UNIX_EPOCH,
         snippet: None,
+        origin: None,
     };
 
     // Protocol pages add up; a new listing starts over.

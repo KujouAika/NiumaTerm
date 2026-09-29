@@ -527,6 +527,7 @@ fn parse_thread_summary(thread: &Value, own_thread: Option<&str>) -> Option<Sess
             .map(str::to_owned),
         last_active: UNIX_EPOCH + Duration::from_secs(seconds),
         snippet: None,
+        origin: None,
     })
 }
 

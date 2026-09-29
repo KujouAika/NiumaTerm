@@ -16,6 +16,7 @@ pub use crate::dsh::session::Session;
 pub(crate) use crate::dsh::host::{
     NPX_ARGUMENTS, NPX_EXECUTABLE, PNPM_DLX_ARGUMENTS, PNPM_DLX_EXECUTABLE,
 };
+pub(crate) use crate::dsh::listing::list_sessions;
 
 mod api;
 mod catalogs;
@@ -24,6 +25,7 @@ mod frames;
 mod generation;
 mod history;
 mod host;
+mod listing;
 mod mapping;
 mod models;
 mod projections;

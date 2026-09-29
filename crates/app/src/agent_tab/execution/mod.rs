@@ -390,6 +390,12 @@ impl AgentSession {
         &self.profile
     }
 
+    /// The directories this tab is configured with; a conversation started
+    /// from now on receives these.
+    pub fn workspace(&self) -> &AgentWorkspace {
+        &self.workspace
+    }
+
     /// What this tab has been left set to, `None` while it still runs on its
     /// launch profile's values.
     pub fn remembered_settings(&self) -> Option<&ThreadSettings> {

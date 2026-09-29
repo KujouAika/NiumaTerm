@@ -169,6 +169,21 @@ impl<S> TabManager<S> {
         tab.title() != previous
     }
 
+    /// Replace the title a tab falls back to when neither the user nor its
+    /// content names it, for a tab whose surface was relaunched as something
+    /// its original default no longer describes.
+    pub fn set_default_title(&mut self, id: TabId, title: String) -> bool {
+        let Some(tab) = self.tabs.find_mut(id) else {
+            return false;
+        };
+
+        let previous = tab.title().to_string();
+
+        tab.default_title = title;
+
+        tab.title() != previous
+    }
+
     /// Set the user-authored title, which takes precedence over OSC updates.
     pub fn rename(&mut self, id: TabId, title: String) {
         if let Some(tab) = self.tabs.find_mut(id) {

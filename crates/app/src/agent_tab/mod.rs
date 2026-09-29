@@ -38,11 +38,11 @@ mod workflows;
 mod tests;
 
 use std::cell::{Ref, RefCell};
-use std::env;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{env, mem};
 
 use futures::channel::oneshot;
 use gpui::prelude::*;
@@ -82,7 +82,7 @@ use nmt_agent::session::controller::{
     SessionController, SessionEffect, SessionFailure, SessionReady, SubmissionBlock,
 };
 use nmt_agent::session::delivery::RecoverablePrompt;
-use nmt_agent::session::history::HistoryStep;
+use nmt_agent::session::history::{HistoryStep, other_agent_sources};
 use nmt_agent::session::input::{
     ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionDraft, QuestionKey, Submission,
 };
@@ -127,9 +127,11 @@ use crate::agent_tab::pane_state::TurnPresentation;
 use crate::agent_tab::questions::panel::QuestionPanel;
 use crate::agent_tab::remote::RemoteAgent;
 use crate::agent_tab::session::errors::operation_error;
-use crate::agent_tab::session::{Backend, Status};
+use crate::agent_tab::session::{Backend, Status, directories_match};
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
-use crate::agent_tab::thread_controls::{launch_model, remember_defaults, render_row};
+use crate::agent_tab::thread_controls::{
+    launch_model, profile_picker, remember_defaults, render_row,
+};
 use crate::agent_tab::transcript::{TranscriptView, last_response_label, transcript_column};
 use crate::agent_tab::view::approval_card::approval_card;
 use crate::agent_tab::view::blocking_overlay::{
@@ -165,9 +167,14 @@ pub enum AgentPaneEvent {
     /// A conversation this pane listed but cannot continue: it ran in another
     /// directory, and a tab is rooted in the one it was opened for. The chrome
     /// owns tabs, so opening it where it worked is left to the chrome.
+    ///
+    /// `profile` is set for a conversation another agent recorded, which only
+    /// a tab launched on that profile can continue; `cwd` is `None` where the
+    /// row names no directory, and the tab then opens in this tab's.
     ResumeElsewhere {
-        cwd: String,
+        cwd: Option<String>,
         summary: SessionSummary,
+        profile: Option<AgentProfile>,
     },
     /// A name for the conversation this pane is holding, derived from the
     /// message that opened it. The pane does not know which tab owns it, so
@@ -194,6 +201,22 @@ pub enum AgentPaneEvent {
         title: String,
         body: String,
     },
+    /// This still-blank tab should run on another launch profile: the user
+    /// picked one, or chose a conversation another agent recorded here, which
+    /// `resume` then names. A session's agent kind is fixed for its lifetime,
+    /// so the chrome that owns the tab replaces it in place with one launched
+    /// on `profile`.
+    SwitchProfile {
+        profile: AgentProfile,
+        resume: Option<SessionSummary>,
+    },
+}
+
+/// What the user had typed into a composer, carried to the pane that
+/// replaces it so a profile switch does not discard an unsent message.
+pub struct ComposerDraft {
+    text: String,
+    attachments: ComposerAttachments,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2970,6 +2993,8 @@ impl AgentPane {
 
         self.load_filesystem_history(cx);
 
+        self.load_other_agent_history(cx);
+
         cx.notify();
     }
 
@@ -3002,6 +3027,85 @@ impl AgentPane {
         let cwd = self.cwd(cx);
 
         self.history_ui.load_filesystem_history(cwd, cx);
+    }
+
+    /// Continue `summary`, recorded by the agent its origin names, in a tab
+    /// launched on that agent's profile. A profile removed since the row was
+    /// listed leaves nothing to launch, which is reported rather than
+    /// silently resuming under a different one.
+    fn resume_with_other_agent(&mut self, summary: SessionSummary, cx: &mut Context<Self>) {
+        let Some(origin) = summary.origin.as_ref() else {
+            return;
+        };
+
+        let Some(profile) = cx
+            .global::<AgentSettings>()
+            .profiles
+            .iter()
+            .find(|profile| profile.kind == origin.kind && profile.name == origin.profile)
+            .cloned()
+        else {
+            self.palette.set_feedback(
+                CommandFeedbackKind::Error,
+                t!("agent-history-profile-missing").to_string(),
+                cx,
+            );
+
+            return;
+        };
+
+        let cwd = self.cwd(cx);
+
+        if directories_match(summary.cwd.as_deref(), cwd.as_deref()) && self.can_switch_profile(cx)
+        {
+            self.emit_event(
+                AgentPaneEvent::SwitchProfile {
+                    profile,
+                    resume: Some(summary),
+                },
+                cx,
+            );
+        } else {
+            self.emit_event(
+                AgentPaneEvent::ResumeElsewhere {
+                    cwd: summary.cwd.clone(),
+                    summary,
+                    profile: Some(profile),
+                },
+                cx,
+            );
+        }
+
+        cx.notify();
+    }
+
+    /// List what every other configured agent recorded, for a tab whose list
+    /// covers all of them. A paired host's conversations are the host's, and
+    /// this computer's records say nothing about them.
+    fn load_other_agent_history(&mut self, cx: &mut Context<Self>) {
+        if !cx.global::<AgentSettings>().unified_agent_tab
+            || self.remote.is_some()
+            || self.team_member
+            || self.side_chat_member
+        {
+            return;
+        }
+
+        let Some(session_host) = self.host.upgrade() else {
+            return;
+        };
+
+        let settings = cx.global::<AgentSettings>();
+
+        let sources = other_agent_sources(
+            &settings.profiles,
+            session_host.read(cx).profile(),
+            &settings.default_agent_profile,
+        );
+
+        let cwd = self.cwd(cx);
+
+        self.history_ui.load_other_agents(sources, cwd, cx);
     }
 
     fn seed_restored_settings(&mut self, seed: SettingsSeed) {
@@ -3052,6 +3156,22 @@ impl AgentPane {
             return;
         }
 
+        // Another agent recorded this one, so only a tab running that agent's
+        // profile can continue it: this tab becomes one if it is still blank
+        // and the conversation belongs here, and a new tab opens otherwise.
+        if let Some(origin) = summary.origin.as_ref()
+            && !(origin.kind == session_kind
+                && origin.profile == session_host.read(cx).profile().name)
+        {
+            let summary = summary.clone();
+
+            self.history_ui.selected = index;
+
+            self.resume_with_other_agent(summary, cx);
+
+            return;
+        }
+
         let cwd = self.cwd(cx);
 
         let outcome = self
@@ -3068,7 +3188,14 @@ impl AgentPane {
 
                 self.history_ui.selected = index;
 
-                self.emit_event(AgentPaneEvent::ResumeElsewhere { cwd, summary }, cx);
+                self.emit_event(
+                    AgentPaneEvent::ResumeElsewhere {
+                        cwd: Some(cwd),
+                        summary,
+                        profile: None,
+                    },
+                    cx,
+                );
 
                 cx.notify();
 
@@ -3362,6 +3489,8 @@ impl AgentPane {
 
         this.load_filesystem_history(cx);
 
+        this.load_other_agent_history(cx);
+
         this
     }
 
@@ -3459,6 +3588,89 @@ impl AgentPane {
 
     pub fn agent_session(&self) -> Option<Entity<AgentSession>> {
         self.host.upgrade()
+    }
+
+    /// Whether this tab may still change which agent it runs. Only a blank
+    /// conversation qualifies: once a turn ran, or a resumed conversation is
+    /// waiting to replay, the session belongs to its agent. Team members,
+    /// side chats, and tabs following a paired host run on a profile chosen
+    /// elsewhere.
+    pub(super) fn can_switch_profile(&self, cx: &App) -> bool {
+        let Some(host) = self.host.upgrade() else {
+            return false;
+        };
+
+        cx.global::<AgentSettings>().unified_agent_tab
+            && !self.team_member
+            && !self.side_chat_member
+            && self.remote.is_none()
+            && self.history_ui.mode != RecentSessionsMode::Loading
+            && self.session.borrow().runtime().status() != Status::Running
+            && self.transcript.read(cx).is_empty()
+            && host.read(cx).saved_conversation().is_none()
+    }
+
+    /// Ask the chrome to relaunch this tab on `profile`. Returns whether the
+    /// request was made; a tab that already runs `profile` or can no longer
+    /// switch is left alone.
+    pub(super) fn switch_profile(&mut self, profile: AgentProfile, cx: &mut Context<Self>) -> bool {
+        if !self.binding.is_current() || !self.can_switch_profile(cx) {
+            return false;
+        }
+
+        let Some(host) = self.host.upgrade() else {
+            return false;
+        };
+
+        let current = host.read(cx).profile();
+
+        if current.name == profile.name && current.kind == profile.kind {
+            return false;
+        }
+
+        self.emit_event(
+            AgentPaneEvent::SwitchProfile {
+                profile,
+                resume: None,
+            },
+            cx,
+        );
+
+        true
+    }
+
+    /// Move the unsent message out of this composer, leaving it empty.
+    pub fn take_composer_draft(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ComposerDraft {
+        let text = self.input.read(cx).text().to_string();
+
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+
+        ComposerDraft {
+            text,
+            attachments: mem::take(&mut self.attachments),
+        }
+    }
+
+    /// Put a draft taken from another composer into this one, with the caret
+    /// at its end.
+    pub fn restore_composer_draft(
+        &mut self,
+        draft: ComposerDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.attachments = draft.attachments;
+
+        if !draft.text.is_empty() {
+            replace_input_with_history(&self.input, draft.text, window, cx);
+        }
+
+        cx.notify();
     }
 
     pub(super) fn emit_event(&self, event: AgentPaneEvent, cx: &mut Context<Self>) {
@@ -4517,6 +4729,7 @@ impl Render for AgentPane {
                                             .child(div().flex_1().min_w_0().child(render_row(
                                                 &self.session.borrow().controls,
                                                 session_kind,
+                                                None,
                                                 cx,
                                             )))
                                             .child(
@@ -4568,6 +4781,13 @@ impl Render for AgentPane {
             .render(&self.session, composer_free, window, cx);
 
         let running = self.session.borrow().runtime().status() == Status::Running;
+
+        let profile = self.can_switch_profile(cx).then(|| {
+            let current = session_host.read(cx).profile().clone();
+            let profiles = cx.global::<AgentSettings>().profiles.clone();
+
+            profile_picker(cx, &current, profiles)
+        });
 
         let update_suspended = self
             .session
@@ -4837,6 +5057,7 @@ impl Render for AgentPane {
                                                 .child(div().flex_1().min_w_0().child(render_row(
                                                     &self.session.borrow().controls,
                                                     session_kind,
+                                                    profile,
                                                     cx,
                                                 )))
                                                 .children(self.render_last_response(cx))

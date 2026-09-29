@@ -444,6 +444,7 @@ fn restored_surface(
                     cwd: None,
                     last_active: SystemTime::UNIX_EPOCH,
                     snippet: None,
+                    origin: None,
                 };
 
                 owner

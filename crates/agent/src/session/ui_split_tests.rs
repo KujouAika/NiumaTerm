@@ -126,6 +126,7 @@ fn summary(id: &str) -> SessionSummary {
         cwd: None,
         last_active: SystemTime::UNIX_EPOCH,
         snippet: None,
+        origin: None,
     }
 }
 

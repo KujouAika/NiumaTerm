@@ -15,15 +15,17 @@ use gpui_component::{
 };
 use nmt_agent::chat::{SessionScope, SessionSummary};
 use nmt_agent::session::history::{
-    CountPublication, SessionHistory, count_scoped_sessions, list_scoped_sessions,
+    CountPublication, HistorySource, SessionHistory, count_scoped_sessions, list_scoped_sessions,
+    list_source,
 };
 use rust_i18n::t;
 
 use crate::agent_tab::commands::move_palette_selection;
 use crate::agent_tab::fade::Fade;
+use crate::agent_tab::profile::{AgentKind, AgentKindExt as _};
 use crate::agent_tab::session::history::FilesystemHistoryRequest;
 use crate::agent_tab::session::{directories_match, directory_label};
-use crate::agent_tab::settings::UI_RADIUS;
+use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
 use crate::agent_tab::transcript::relative_time;
 use crate::agent_tab::view::composer_layout::{
     COMPOSER_PANEL_TUCK, composer_panel, composer_panel_slot,
@@ -166,9 +168,7 @@ impl SessionHistoryUi {
     /// Open the list before its rows exist, for rows another computer is
     /// still listing. It shows once the first of them arrive.
     pub(crate) fn open_awaiting_rows(&mut self) {
-        self.data.sessions.clear();
-
-        self.data.showing_search = false;
+        self.data.clear_rows();
 
         self.mode = RecentSessionsMode::Open;
         self.selected = 0;
@@ -202,9 +202,7 @@ impl SessionHistoryUi {
             return false;
         }
 
-        self.selected = self
-            .selected
-            .min(self.data.sessions.len().saturating_sub(1));
+        self.clamp_selection();
 
         true
     }
@@ -245,12 +243,67 @@ impl SessionHistoryUi {
             SessionScope::AllDirectories => SessionScope::CurrentDirectory,
         };
 
-        self.data.sessions.clear();
+        self.data.clear_rows();
 
-        self.data.showing_search = false;
         self.selected = 0;
 
         self.data.scope
+    }
+
+    /// List the conversations every other configured agent recorded, one
+    /// source at a time as each answers, and fold them into the list. A
+    /// source that has nothing, or whose agent is not installed, adds no
+    /// rows. A scope change retires the listing along with its rows.
+    pub(crate) fn load_other_agents(
+        &mut self,
+        sources: Vec<HistorySource>,
+        cwd: Option<String>,
+        cx: &mut Context<AgentPane>,
+    ) {
+        let request = self.data.begin_other_agents();
+        let scope = self.data.scope;
+
+        for source in sources {
+            let listing = nmt_platform::runtime().spawn(list_source(source, scope, cwd.clone()));
+            let request = request.clone();
+
+            cx.spawn(async move |this, cx| {
+                let Ok(rows) = listing.await else {
+                    return;
+                };
+
+                if rows.is_empty() {
+                    return;
+                }
+
+                let _ = this.update(cx, |this, cx| {
+                    if this.history_ui.data.publish_other_agents(&request, rows) {
+                        this.history_ui.clamp_selection();
+
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Show only this tab's agent's conversations, or every agent's again.
+    pub(crate) fn toggle_agents(&mut self) {
+        let own_agent_only = !self.data.own_agent_only;
+
+        if self.data.set_own_agent_only(own_agent_only) {
+            self.selected = 0;
+
+            self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        }
+    }
+
+    /// Keep the highlight on a row that exists after the list shrank.
+    fn clamp_selection(&mut self) {
+        self.selected = self
+            .selected
+            .min(self.data.sessions.len().saturating_sub(1));
     }
 
     /// Read the list from the harness's transcript directory for `cwd`, off
@@ -394,12 +447,21 @@ impl SessionHistoryUi {
                             let composer_empty = this.input.read(cx).text().len() == 0;
                             let cwd = this.working_directory(cx);
 
+                            // Rows name their agent where the list can hold
+                            // more than one agent's conversations.
+                            let own_kind = if cx.global::<AgentSettings>().unified_agent_tab {
+                                this.agent_kind(cx)
+                            } else {
+                                None
+                            };
+
                             visible_range
                                 .map(|index| {
                                     this.history_ui.render_row(
                                         index,
                                         composer_empty,
                                         cwd.as_deref(),
+                                        own_kind,
                                         cx,
                                     )
                                 })
@@ -442,6 +504,31 @@ impl SessionHistoryUi {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(t!("agent-history-recent-sessions")),
                         )
+                        .when(
+                            cx.global::<AgentSettings>().unified_agent_tab
+                                && self.data.has_other_agents(),
+                            |header| {
+                                header.child(
+                                    Button::new("history-agents")
+                                        .ghost()
+                                        .small()
+                                        .label(
+                                            t!(if self.data.own_agent_only {
+                                                "agent-history-this-agent"
+                                            } else {
+                                                "agent-history-all-agents"
+                                            })
+                                            .into_owned(),
+                                        )
+                                        .tooltip(t!("agent-history-agents-tooltip"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.history_ui.toggle_agents();
+
+                                            cx.notify();
+                                        })),
+                                )
+                            },
+                        )
                         .child(
                             Button::new("history-scope")
                                 .ghost()
@@ -475,12 +562,14 @@ impl SessionHistoryUi {
     /// One history row: title, branch, and relative time, in the settings
     /// row's ghost-control idiom (small, muted, hover lifts the foreground).
     /// `composer_empty` is whether the composer holds nothing, and `cwd` is
-    /// the tab's working directory.
+    /// the tab's working directory. With `own_kind`, the tab's agent, the row
+    /// leads with the mark of the agent that recorded it.
     fn render_row(
         &self,
         index: usize,
         composer_empty: bool,
         cwd: Option<&str>,
+        own_kind: Option<AgentKind>,
         cx: &mut Context<AgentPane>,
     ) -> AnyElement {
         let Some(session) = self.data.sessions.get(index) else {
@@ -513,6 +602,15 @@ impl SessionHistoryUi {
                 }
             }))
             .on_click(cx.listener(move |this, _, _, cx| this.resume_session(index, cx)))
+            .children(own_kind.map(|own| {
+                session
+                    .origin
+                    .as_ref()
+                    .map_or(own, |origin| origin.kind)
+                    .icon()
+                    .xsmall()
+                    .flex_none()
+            }))
             .child(
                 h_flex()
                     .flex_1()

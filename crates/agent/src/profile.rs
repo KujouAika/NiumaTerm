@@ -30,6 +30,11 @@ pub const ANTHROPIC_SUB_MODEL_ENVS: [&str; 3] = [
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 ];
 
+/// Prefix of every provider id [`codex_provider_id`] generates, which tells
+/// the threads of custom-endpoint profiles apart from those Codex ran against
+/// a provider of its own.
+pub(crate) const CODEX_PROVIDER_PREFIX: &str = "niumaterm-";
+
 /// A deterministic provider id keeps Codex history scoped to the profile
 /// without exposing display names as config keys. Profile names are already
 /// unique and act as the identity for restored tabs and remembered settings.
@@ -43,7 +48,7 @@ fn codex_provider_id(profile_name: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
 
-    format!("niumaterm-{hash:016x}")
+    format!("{CODEX_PROVIDER_PREFIX}{hash:016x}")
 }
 
 fn codex_credential_env(provider_id: &str) -> String {

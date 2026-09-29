@@ -51,6 +51,10 @@ pub struct AgentSettings {
     /// the pane opened.
     pub profiles: Vec<AgentProfile>,
 
+    /// Name of the default launch profile, which continues the conversations
+    /// of a record store several profiles share.
+    pub default_agent_profile: String,
+
     /// Tint opacity of the pane background; the window-backdrop arithmetic
     /// stays with the chrome settings that own it.
     pub background_opacity: f32,
@@ -69,6 +73,10 @@ pub struct AgentSettings {
 
     /// Step through the questions of a batch one at a time.
     pub answer_questions_one_at_a_time: bool,
+
+    /// Offer the launch profile as a composer control, so one kind of agent
+    /// tab can become any configured agent before its conversation starts.
+    pub unified_agent_tab: bool,
 }
 
 impl Global for AgentSettings {}
@@ -111,11 +119,13 @@ impl Default for AgentSettings {
             reduce_motion: false,
             git_status_refresh_interval: 30,
             profiles: Vec::new(),
+            default_agent_profile: String::new(),
             background_opacity: 1.0,
             font_fallbacks: FontFallbacks::default(),
             human_friendly_layout: true,
             terminal_background: Hsla::black(),
             answer_questions_one_at_a_time: false,
+            unified_agent_tab: true,
         }
     }
 }

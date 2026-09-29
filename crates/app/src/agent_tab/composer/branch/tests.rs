@@ -544,6 +544,7 @@ fn history_resume_cannot_take_over_an_open_branch_picker(cx: &mut TestAppContext
                 cwd: None,
                 last_active: SystemTime::UNIX_EPOCH,
                 snippet: None,
+                origin: None,
             }];
 
             pane.history_ui.mode = RecentSessionsMode::Open;

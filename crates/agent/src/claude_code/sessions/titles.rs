@@ -121,6 +121,7 @@ fn sessions_in_dir(dir: &Path) -> Vec<SessionSummary> {
                 cwd: head.cwd,
                 last_active,
                 snippet: None,
+                origin: None,
             })
         })
         .collect()

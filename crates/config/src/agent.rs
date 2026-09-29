@@ -49,6 +49,11 @@ pub struct AgentConfig {
     /// all at once.
     #[serde(default, rename = "answer-questions-one-at-a-time")]
     pub answer_questions_one_at_a_time: bool,
+
+    /// Open every agent from one "New Agent Tab" entry and pick the profile
+    /// in the composer, instead of listing each profile in the new-tab menu.
+    #[serde(default = "default_bool_true", rename = "unified-agent-tab")]
+    pub unified_agent_tab: bool,
 }
 
 impl Default for AgentConfig {
@@ -63,6 +68,7 @@ impl Default for AgentConfig {
             enable_agent_team: false,
             token_speed_mode: TokenSpeedMode::default(),
             answer_questions_one_at_a_time: false,
+            unified_agent_tab: true,
         }
     }
 }

@@ -59,6 +59,7 @@ pub(crate) fn sessions(value: &Value, cwd: Option<&str>) -> Vec<SessionSummary> 
                     .map(|millis| UNIX_EPOCH + Duration::from_millis(millis))
                     .unwrap_or(UNIX_EPOCH),
                 snippet: None,
+                origin: None,
             })
         })
         .collect()

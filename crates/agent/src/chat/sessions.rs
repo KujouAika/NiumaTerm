@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::chat::{GenerationSample, Item};
+use crate::session::AgentKind;
 
 /// Which directories a session listing covers. A conversation is recorded
 /// against the directory it ran in, and the tab that lists them is rooted in
@@ -42,6 +43,22 @@ pub struct SessionSummary {
     /// content search, because the excerpt describes the query rather than the
     /// session, and an ordinary list has no query to describe.
     pub snippet: Option<String>,
+
+    /// Which agent, launched on which profile, recorded the conversation.
+    /// `None` on a row the listing tab's own agent reported, which the tab
+    /// continues itself; a row listed from another agent's records carries
+    /// the profile a tab must be launched on to continue it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOrigin>,
+}
+
+/// The agent and launch profile a listed conversation belongs to. A resume id
+/// only resolves in the harness that issued it, and for Codex also only under
+/// the model provider it ran against, so the profile travels with the row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionOrigin {
+    pub kind: AgentKind,
+    pub profile: String,
 }
 
 /// One turn of a resumed conversation. A live turn's shape comes from the turn

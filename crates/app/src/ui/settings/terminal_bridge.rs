@@ -74,10 +74,12 @@ fn agent_snapshot(cx: &App) -> AgentSettings {
         human_friendly_layout: settings.config().appearance.human_friendly_agent_ui_layout,
         git_status_refresh_interval: settings.config().appearance.git_status_refresh_interval,
         profiles: settings.config().agent_profiles.list.clone(),
+        default_agent_profile: settings.config().agent_profiles.default.clone(),
         background_opacity: main_view_background_opacity(cx),
         font_fallbacks: default_font_fallbacks(),
         terminal_background: rgb(theme_default_background().into()).into(),
         answer_questions_one_at_a_time: settings.config().agent.answer_questions_one_at_a_time,
+        unified_agent_tab: settings.config().agent.unified_agent_tab,
     }
 }
 

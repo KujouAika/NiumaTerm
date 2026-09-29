@@ -13,7 +13,7 @@ use tracing::warn;
 use crate::cli::CliAction;
 use crate::tabs::TabId;
 use crate::ui::settings::AppSettings;
-use crate::ui::shell::{AppWindow, PendingAgentResume};
+use crate::ui::shell::{AppWindow, PendingAgentResume, PendingAgentSwitch};
 
 pub(super) struct AgentNotificationState {
     pub(super) agent_monitor: AgentMonitor,
@@ -28,6 +28,10 @@ pub(super) struct AgentNotificationState {
     /// A tab whose agent asked to be closed, waiting for a render to close it.
     /// Closing a tab needs a window for the same reason opening one does.
     pub(super) pending_agent_close: Option<TabId>,
+
+    /// A blank agent tab to relaunch on another profile, waiting for a render
+    /// for the same reason: building its replacement pane needs a window.
+    pub(super) pending_agent_switch: Option<PendingAgentSwitch>,
 }
 
 impl AgentNotificationState {
@@ -37,6 +41,7 @@ impl AgentNotificationState {
             agent_timer_generation: 0,
             pending_agent_resume: None,
             pending_agent_close: None,
+            pending_agent_switch: None,
         }
     }
 

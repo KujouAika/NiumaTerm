@@ -13,6 +13,7 @@ fn rows(id: &str) -> Vec<SessionSummary> {
         cwd: Some("project".into()),
         last_active: SystemTime::UNIX_EPOCH,
         snippet: None,
+        origin: None,
     }]
 }
 
