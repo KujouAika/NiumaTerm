@@ -2,6 +2,9 @@
 # this file, run `xcodegen` in mobile/ios and commit both.
 name: NiumaTerm
 options:
+  # Recorded as LastUpgradeCheck; an older value makes Xcode offer to
+  # upgrade the project settings.
+  xcodeVersion: "27.0"
   deploymentTarget:
     iOS: "26.0"
 settings:
@@ -40,7 +43,17 @@ targets:
       base:
         # A Rust static library records no link dependencies of its own;
         # these are what `--print native-static-libs` reports for it.
-        OTHER_LDFLAGS: $(inherited) -framework Security -framework CoreFoundation -lutil -liconv
+        # Written as a list because Xcode stores list-type settings one
+        # token per entry and rewrites a single string when it opens the
+        # project.
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -framework
+          - Security
+          - -framework
+          - CoreFoundation
+          - -lutil
+          - -liconv
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Config/NiumaTerm.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -56,6 +69,13 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # Export compliance, answered once here instead of on every upload.
+        # The encryption (Noise with standard algorithms) only protects the
+        # user's own data between their devices and computers, which the
+        # developer treats as exempt. It is a build setting rather than an
+        # Info.plist entry because Xcode moves keys it can generate out of
+        # the Info.plist file, rewriting that file and dropping its comments.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

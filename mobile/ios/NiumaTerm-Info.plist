@@ -27,11 +27,5 @@
 	<string>$(NMT_PUSH_ENDPOINT)</string>
 	<key>NMTPushKeyGroup</key>
 	<string>$(AppIdentifierPrefix)$(NMT_APP_BUNDLE_ID).shared</string>
-	<!-- Export compliance, answered once here instead of on every upload.
-	     The encryption (Noise with standard algorithms) only protects the
-	     user's own data between their devices and computers, which the
-	     developer treats as exempt. -->
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 </dict>
 </plist>

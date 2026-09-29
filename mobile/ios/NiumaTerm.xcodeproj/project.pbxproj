@@ -209,7 +209,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					35A02660233E2307F0391839 = {
 						DevelopmentTeam = "$(NMT_DEVELOPMENT_TEAM)";
@@ -374,6 +374,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "NiumaTerm-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NiumaTerm;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by NiumaTerm on your computer.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock NiumaTerm when returning to the app.";
@@ -388,7 +389,13 @@
 					"@executable_path/Frameworks",
 				);
 				OTHER_LDFLAGS = (
-					"$(inherited) -framework Security -framework CoreFoundation -lutil -liconv",
+					"$(inherited)",
+					"-framework",
+					Security,
+					"-framework",
+					CoreFoundation,
+					"-lutil",
+					"-liconv",
 					"-ObjC",
 				);
 				SDKROOT = iphoneos;
@@ -440,6 +447,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "NiumaTerm-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NiumaTerm;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the pairing QR code shown by NiumaTerm on your computer.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock NiumaTerm when returning to the app.";
@@ -454,7 +462,13 @@
 					"@executable_path/Frameworks",
 				);
 				OTHER_LDFLAGS = (
-					"$(inherited) -framework Security -framework CoreFoundation -lutil -liconv",
+					"$(inherited)",
+					"-framework",
+					Security,
+					"-framework",
+					CoreFoundation,
+					"-lutil",
+					"-liconv",
 					"-ObjC",
 				);
 				SDKROOT = iphoneos;
