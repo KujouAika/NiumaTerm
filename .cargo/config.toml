@@ -17,13 +17,17 @@ rustflags = [
     # Rust std also use /MT, avoiding LNK2038 RuntimeLibrary mismatches.
     "-C",
     "target-feature=+crt-static",
-    # Warnings fail Windows builds so they are fixed where they appear. macOS
-    # builds keep them non-fatal: code gated to macOS is never checked on a
-    # Windows machine, so a warning there would otherwise stop a Mac build
-    # nobody could have seen coming.
+    # Warnings fail the build so they are fixed where they appear.
     "-D",
     "warnings",
 ]
+
+# Code gated to one platform is only compiled on that platform, so each
+# platform fails its own build on warnings rather than leaving them for a
+# machine that never sees them. Cargo joins these flags with the target
+# triple's own table above.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-D", "warnings"]
 
 [alias]
 readability = "run --quiet --locked --manifest-path tools/readability/Cargo.toml --"
