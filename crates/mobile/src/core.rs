@@ -331,6 +331,19 @@ impl MobileCore {
 
         TerminalHandle::attach(remote, pty, cols, rows, observer)
     }
+
+    /// End a session on the host, whether a device or the person at the
+    /// host started it. The host's reason for refusing comes back as the
+    /// error; a host too old to close sessions for devices refuses too.
+    pub async fn close_session(&self, host: String, session: String) -> Result<(), CoreError> {
+        let remote = self.remote(&host)?;
+
+        runtime()
+            .spawn(async move { remote.close_session(session).await })
+            .await??;
+
+        Ok(())
+    }
 }
 
 impl MobileCore {

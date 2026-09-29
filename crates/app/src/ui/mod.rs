@@ -14,10 +14,10 @@ pub(crate) use crate::ui::settings::{
     window_background_appearance,
 };
 pub(crate) use crate::ui::shell::{
-    AppWindow, CloseTab, LastActiveWindow, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab,
-    NextWorkspace, PrevTab, PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight,
-    ResizePaneUp, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, TabSurface,
-    ToggleSidebar, WindowRegistry, open_window, selected_window_appearance,
+    AppWindow, CloseTab, DeviceClose, LastActiveWindow, NewAgentTab, NewTab, NewWindow,
+    NewWorkspace, NextTab, NextWorkspace, PrevTab, PrevWorkspace, ResizePaneDown, ResizePaneLeft,
+    ResizePaneRight, ResizePaneUp, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp,
+    TabSurface, ToggleSidebar, WindowRegistry, open_window, selected_window_appearance,
 };
 
 #[cfg(target_os = "macos")]

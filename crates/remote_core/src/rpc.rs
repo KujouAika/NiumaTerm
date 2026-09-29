@@ -43,6 +43,13 @@ pub const AGENT_OPEN: &str = "agent.open";
 /// device's views, as does the host closing the session.
 pub const SESSION_ENDED: &str = "session.ended";
 
+/// End any session the host lists, host tabs included: a headless terminal
+/// ends at once, and the host closes a tab's pane as if its user had. Unlike
+/// `terminal.close` this is a request, so the device learns whether the host
+/// closed the session or refused, as it does when closing would take the
+/// window's last workspace with it.
+pub const SESSION_CLOSE: &str = "session.close";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {

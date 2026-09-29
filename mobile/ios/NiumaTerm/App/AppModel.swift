@@ -201,6 +201,14 @@ final class AppModel {
         terminalModels["\(route.hostID)/\(route.sessionID)"] = nil
     }
 
+    /// End a session on the host, host tabs included. The host lists its
+    /// sessions again once it closed one, which drops the row; a refusal
+    /// throws the host's reason.
+    func closeSession(_ route: SessionRoute) async throws {
+        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        try await core.closeSession(host: route.hostID, session: route.sessionID)
+    }
+
     // MARK: Push notifications
 
     /// Where hosts send this build's pushes; nil when the build has none.

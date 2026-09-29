@@ -41,9 +41,10 @@ use dirs::home_dir;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, AnyView, AnyWindowHandle, App, AppContext, Axis, Bounds, Context, Div, Entity,
-    FocusHandle, Focusable, Global, KeyDownEvent, ObjectFit, Pixels, Render, SharedString,
-    TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds, WindowDecorations,
-    WindowHandle, WindowId, WindowOptions, div, img, point, px, size, transparent_black,
+    EntityId, FocusHandle, Focusable, Global, KeyDownEvent, ObjectFit, Pixels, Render,
+    SharedString, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds,
+    WindowDecorations, WindowHandle, WindowId, WindowOptions, div, img, point, px, size,
+    transparent_black,
 };
 use gpui_component::modern_menu::dispatch_modern_menu_key;
 use gpui_component::resizable::PANEL_MIN_SIZE;
@@ -367,6 +368,16 @@ pub(super) struct PendingAgentResume {
     pub(super) profile: AgentProfile,
     pub(super) cwd: String,
     pub(super) summary: SessionSummary,
+}
+
+/// What a window did with a paired device's request to close a session.
+pub(crate) enum DeviceClose {
+    Closed,
+    /// No tab of this window shows the session.
+    NotHere,
+    /// The session's tab is the last of the window's last workspace, which
+    /// only the person at the host may close.
+    LastWorkspace,
 }
 
 pub(crate) struct AppWindow {
@@ -956,6 +967,8 @@ impl AppWindow {
     /// Close the focused pane of the active (multi-pane) tab, with a confirm
     /// dialog first when its shell has running child processes.
     fn request_close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = self.workspaces.active_tabs().list().active_id();
+
         let id = self
             .workspaces
             .active_tabs()
@@ -981,7 +994,7 @@ impl AppWindow {
             settings.config().system.warn_before_terminating_shell,
             &count,
         ) {
-            self.close_pane_now(id, window, cx);
+            self.close_pane_now(tab, id, window, cx);
 
             return;
         }
@@ -998,12 +1011,29 @@ impl AppWindow {
             t!("shell-close-pane-title"),
             description,
             None,
-            move |this, window, cx| this.close_pane_now(id, window, cx),
+            move |this, window, cx| this.close_pane_now(tab, id, window, cx),
         );
     }
 
-    fn close_pane_now(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
-        let tree = self.workspaces.active_tabs_mut().active_mut().live_mut();
+    /// Close pane `id` of a split tab. The tab need not be active: a paired
+    /// device may close a pane of any tab.
+    fn close_pane_now(
+        &mut self,
+        tab: TabId,
+        id: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_active = self.workspaces.active_tabs().list().active_id() == tab;
+
+        let Some(tree) = self
+            .workspaces
+            .tabs_for_tab_mut(tab)
+            .and_then(|tabs| tabs.list_mut().find_mut(tab))
+            .and_then(|tab| tab.surface_mut().tree_mut())
+        else {
+            return;
+        };
 
         let Some(pane) = tree.remove(id, cx) else {
             return;
@@ -1019,7 +1049,13 @@ impl AppWindow {
         // and ConPTY handle (same Drop chain as a tab close).
         drop(pane);
 
-        self.show_active_tab(window, cx);
+        // Refocusing a tab the user is not looking at would pull keyboard
+        // focus away from what they are doing.
+        if was_active {
+            self.show_active_tab(window, cx);
+        } else {
+            cx.notify();
+        }
     }
 
     /// "You have N temporary workspaces." for the dialogs that end this
@@ -2081,6 +2117,75 @@ impl AppWindow {
         cx.notify();
 
         shared
+    }
+
+    /// Close what shows a session a paired device asked to end: `pane`, the
+    /// pane the session is shared from, or the still-pending agent tab
+    /// devices know by `session`. The device already confirmed, so no dialog
+    /// asks again. A split tab loses only that pane; a tab closing as the
+    /// last of its workspace takes the workspace with it, as it does when
+    /// its user closes it, but never the window's last workspace, which
+    /// would end the window for the person at the host.
+    pub(crate) fn close_for_device(
+        &mut self,
+        pane: Option<EntityId>,
+        session: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DeviceClose {
+        let found = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .find(|tab| {
+                let surface = tab.surface();
+
+                surface.restoring_agent() == Some(session)
+                    || pane.is_some_and(|pane| surface.pane_ids().contains(&pane))
+            })
+            .map(|tab| {
+                let surface = tab.surface();
+
+                let leaf = surface
+                    .tree()
+                    .filter(|tree| !tree.tree().is_single_leaf())
+                    .and_then(|_| {
+                        surface
+                            .leaves()
+                            .into_iter()
+                            .find(|(_, leaf)| Some(leaf.entity_id()) == pane)
+                    })
+                    .map(|(id, _)| id);
+
+                (tab.id(), leaf)
+            });
+
+        let Some((tab, leaf)) = found else {
+            return DeviceClose::NotHere;
+        };
+
+        if let Some(leaf) = leaf {
+            self.close_pane_now(tab, leaf, window, cx);
+
+            return DeviceClose::Closed;
+        }
+
+        let Some(workspace) = self.workspaces.workspace_of_tab(tab) else {
+            return DeviceClose::NotHere;
+        };
+
+        let last_tab = self
+            .workspaces
+            .tabs_of(workspace)
+            .is_some_and(|tabs| tabs.list().len() == 1);
+
+        match (last_tab, self.workspaces.real_len()) {
+            (false, _) => self.close_tab_now(tab, window, cx),
+            (true, 1) => return DeviceClose::LastWorkspace,
+            (true, _) => self.close_workspace_now(workspace, window, cx),
+        }
+
+        DeviceClose::Closed
     }
 
     /// Open an agent tab: an agent chat conversation in place of a terminal.

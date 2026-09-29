@@ -556,6 +556,16 @@ impl RemoteHost {
         );
     }
 
+    /// End any session the host lists, host tabs included, and return once
+    /// the host closed it. The error carries the host's reason for refusing.
+    pub async fn close_session(&self, session: String) -> Result<()> {
+        let _: Value = self
+            .call(rpc::SESSION_CLOSE, &SessionRef { session })
+            .await?;
+
+        Ok(())
+    }
+
     pub(crate) fn send_input(&self, session: &str, bytes: Vec<u8>) {
         let stream = {
             let mut views = self.views.lock();

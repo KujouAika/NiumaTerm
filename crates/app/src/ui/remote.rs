@@ -51,7 +51,7 @@ use uuid::Uuid;
 
 use crate::last_active_window;
 use crate::ui::settings::AgentProfile;
-use crate::ui::{AppSettings, AppWindow};
+use crate::ui::{AppSettings, AppWindow, DeviceClose, WindowRegistry};
 use crate::workspace::WorkspaceManager;
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
@@ -1251,7 +1251,57 @@ fn answer_host(request: HostRequest, cx: &mut App) {
         HostRequest::OpenAgent { params, reply } => {
             let _ = reply.send(open_agent_for_device(params, cx));
         }
+        HostRequest::CloseSession { session, reply } => {
+            let _ = reply.send(close_for_device(&session, cx));
+        }
     }
+}
+
+/// Close the tab pane showing a host session a paired device asked to end,
+/// in whichever window holds it.
+fn close_for_device(session: &str, cx: &mut App) -> Result<(), String> {
+    let remote = cx.global::<Remote>();
+
+    let pane = remote
+        .shared_tabs
+        .iter()
+        .find(|(_, shared)| *shared == session)
+        .map(|(pane, _)| *pane)
+        .or_else(|| {
+            remote
+                .shared_agents
+                .iter()
+                .find(|(_, shared)| shared.id == session)
+                .map(|(pane, _)| *pane)
+        });
+
+    let windows: Vec<_> = cx
+        .global::<WindowRegistry>()
+        .windows()
+        .iter()
+        .map(|entry| (entry.handle, entry.view.clone()))
+        .collect();
+
+    for (handle, view) in windows {
+        let outcome = handle
+            .update(cx, |_, window, cx| {
+                view.update(cx, |app, cx| {
+                    app.close_for_device(pane, session, window, cx)
+                })
+            })
+            .ok()
+            .and_then(Result::ok);
+
+        match outcome {
+            Some(DeviceClose::Closed) => return Ok(()),
+            Some(DeviceClose::LastWorkspace) => {
+                return Err("the last tab of a window is closed on this computer".to_owned());
+            }
+            Some(DeviceClose::NotHere) | None => {}
+        }
+    }
+
+    Err(format!("no tab here shows {session}"))
 }
 
 fn host_offers(cx: &mut App) -> Result<Value, String> {

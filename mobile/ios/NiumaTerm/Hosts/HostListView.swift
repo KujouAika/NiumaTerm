@@ -7,6 +7,8 @@ struct HostListView: View {
     @State private var newSessionHost: Host?
     @State private var pairing: PairingRequest?
     @State private var showSettings = false
+    @State private var closing: SessionClose?
+    @State private var closeError: String?
 
     var body: some View {
         @Bindable var app = app
@@ -42,10 +44,23 @@ struct HostListView: View {
                     ForEach(groups) { group in
                         Section {
                             ForEach(group.sessions) { session in
-                                NavigationLink(value: SessionRoute(hostID: host.id, sessionID: session.id, kind: session.kind)) {
+                                let route = SessionRoute(hostID: host.id, sessionID: session.id, kind: session.kind)
+                                NavigationLink(value: route) {
                                     SessionRow(session: session)
                                 }
                                 .listRowBackground(Theme.rowBackground)
+                                // No destructive role: SwiftUI would slide the
+                                // row out at once, before the person confirms
+                                // or the host agrees to close the session.
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if host.isOnline {
+                                        Button("Close", systemImage: "xmark") {
+                                            closing = SessionClose(route: route, title: session.title,
+                                                                   hostName: host.name)
+                                        }
+                                        .tint(.red)
+                                    }
+                                }
                             }
                         } header: {
                             VStack(alignment: .leading, spacing: 10) {
@@ -85,6 +100,25 @@ struct HostListView: View {
                     Button("Add computer", systemImage: "qrcode.viewfinder") { pairing = PairingRequest(link: nil) }
                 }
             }
+            .confirmationDialog(
+                "Close “\(closing?.title ?? "")”?",
+                isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } }),
+                titleVisibility: .visible,
+                presenting: closing
+            ) { request in
+                Button("Close Session", role: .destructive) { close(request) }
+            } message: { request in
+                Text("The session ends on \(request.hostName), along with anything running in it.")
+            }
+            .alert(
+                "Could not close the session",
+                isPresented: Binding(get: { closeError != nil }, set: { if !$0 { closeError = nil } }),
+                presenting: closeError
+            ) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { message in
+                Text(message)
+            }
             .sheet(item: $newSessionHost) { host in
                 NewSessionSheet(host: host)
             }
@@ -102,6 +136,23 @@ struct HostListView: View {
             }
         }
     }
+
+    private func close(_ request: SessionClose) {
+        Task {
+            do {
+                try await app.closeSession(request.route)
+            } catch {
+                closeError = error.displayText
+            }
+        }
+    }
+}
+
+/// A session the person asked to close, held while they confirm.
+struct SessionClose {
+    let route: SessionRoute
+    let title: String
+    let hostName: String
 }
 
 /// One presentation of the pairing screen. The link travels with it, so

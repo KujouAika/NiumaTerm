@@ -475,6 +475,7 @@ impl Connection {
                             | rpc::AGENT_CALL
                             | rpc::HOST_INFO
                             | rpc::AGENT_OPEN
+                            | rpc::SESSION_CLOSE
                     ) =>
                 {
                     self.agent_request(id, &method, params);
@@ -703,6 +704,57 @@ impl Connection {
 
                     respond(&queue, id, outcome);
                 });
+            }
+            rpc::SESSION_CLOSE => {
+                let session = match parse::<SessionRef>(params) {
+                    Ok(SessionRef { session }) => session,
+                    Err(error) => return respond(&queue, id, Err(error)),
+                };
+
+                match registry.origin(&session) {
+                    None => respond(&queue, id, Err(RpcError::new(ErrorCode::NotFound, session))),
+                    // Nothing on the host shows a headless terminal on its
+                    // own, so it ends here without asking the application.
+                    Some(Origin::Remote) => {
+                        registry.close_remote(&session);
+
+                        respond(&queue, id, Ok(done()));
+                    }
+                    Some(_) => {
+                        let Some(host) = registry.host_requests() else {
+                            return respond(
+                                &queue,
+                                id,
+                                Err(RpcError::new(ErrorCode::Unsupported, method)),
+                            );
+                        };
+
+                        let (reply, answer) = oneshot::channel();
+
+                        if host
+                            .send(HostRequest::CloseSession { session, reply })
+                            .is_err()
+                        {
+                            return respond(
+                                &queue,
+                                id,
+                                Err(RpcError::new(ErrorCode::Unsupported, method)),
+                            );
+                        }
+
+                        tokio::spawn(async move {
+                            let outcome = match answer.await {
+                                Ok(Ok(())) => Ok(done()),
+                                Ok(Err(message)) => Err(RpcError::new(ErrorCode::Denied, message)),
+                                Err(_) => {
+                                    Err(RpcError::new(ErrorCode::Internal, "the host stopped"))
+                                }
+                            };
+
+                            respond(&queue, id, outcome);
+                        });
+                    }
+                }
             }
             rpc::AGENT_ATTACH => {
                 let attach = parse::<SessionRef>(params).and_then(|SessionRef { session }| {

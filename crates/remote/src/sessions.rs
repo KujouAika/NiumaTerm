@@ -64,6 +64,12 @@ pub enum HostRequest {
         params: Value,
         reply: oneshot::Sender<Result<Value, String>>,
     },
+    /// Close the host tab pane that shows `session`. The error explains a
+    /// refusal to the device.
+    CloseSession {
+        session: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 struct AgentEntry {
@@ -435,11 +441,13 @@ impl SessionRegistry {
     }
 
     pub fn origin(&self, session: &str) -> Option<Origin> {
-        self.inner
-            .lock()
+        let inner = self.inner.lock();
+
+        inner
             .sessions
             .get(session)
             .map(|entry| entry.info.origin)
+            .or_else(|| inner.agents.get(session).map(|entry| entry.info.origin))
     }
 
     /// Resize a session's PTY for a remote view.

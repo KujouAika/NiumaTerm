@@ -782,6 +782,9 @@ fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
 
                         let _ = reply.send(Ok(json!({ "session": session })));
                     }
+                    HostRequest::CloseSession { reply, .. } => {
+                        let _ = reply.send(Err("not closed in this test".into()));
+                    }
                 }
             }
         });
@@ -814,6 +817,69 @@ fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
             next_update(&mut updates).await,
             AgentUpdate::Snapshot(_)
         ));
+    });
+}
+
+#[test]
+fn a_device_closes_host_tabs_through_the_application_and_its_own_terminals_directly() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let remote = remote(paired, key);
+
+        let agent = fake_agent(&registry);
+
+        // Only the application can close a host tab, so before it answers
+        // host requests the host refuses and the tab stays.
+        assert!(remote.close_session(agent.clone()).await.is_err());
+        assert!(registry.list().iter().any(|info| info.session == agent));
+
+        let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+        registry.serve_host_requests(requests);
+
+        let closing = Arc::clone(&registry);
+
+        let (asked, mut asked_rx) = mpsc::unbounded_channel();
+
+        runtime().spawn(async move {
+            while let Some(request) = requests_rx.recv().await {
+                if let HostRequest::CloseSession { session, reply } = request {
+                    let _ = asked.send(session.clone());
+
+                    closing.unregister(&session);
+
+                    let _ = reply.send(Ok(()));
+                }
+            }
+        });
+
+        remote.close_session(agent.clone()).await.unwrap();
+
+        assert_eq!(asked_rx.recv().await.as_deref(), Some(agent.as_str()));
+
+        let sessions = remote.list_sessions().await.unwrap();
+
+        assert!(!sessions.iter().any(|info| info.session == agent));
+
+        // A session the host does not list is refused without asking the
+        // application.
+        assert!(remote.close_session("t-missing".into()).await.is_err());
+
+        // A terminal a device started ends on the host without asking the
+        // application, and its views hear that it was closed.
+        let pty = remote.open_terminal(80, 24).await.unwrap();
+        let terminal = pty.session().to_owned();
+
+        remote.close_session(terminal.clone()).await.unwrap();
+
+        wait_ended(&remote, &terminal, Some(EndReason::Closed)).await;
+
+        assert!(asked_rx.try_recv().is_err());
+        assert_eq!(host.terminal_count(), 0);
     });
 }
 
