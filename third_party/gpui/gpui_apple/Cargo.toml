@@ -24,7 +24,6 @@ gpui.workspace = true
 anyhow.workspace = true
 block2.workspace = true
 collections.workspace = true
-core-foundation.workspace = true
 derive_more.workspace = true
 dispatch2.workspace = true
 etagere.workspace = true

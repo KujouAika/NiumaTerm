@@ -11,7 +11,6 @@ use objc2_metal::MTLBlitCommandEncoder;
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use objc2_metal::{MTLOrigin, MTLRegion, MTLSize};
 
-use core_foundation::base::TCFType;
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_core_foundation::CFRetained;
 use objc2_core_video::{
@@ -1535,15 +1534,7 @@ impl MetalRenderer {
         }
 
         for (index, surface) in surfaces.iter().enumerate() {
-            // Safety: `CVPixelBufferRef` is the same toll-free CoreFoundation
-            // object in both crates, and the borrow does not outlive `surface`,
-            // which keeps the buffer retained.
-            let image_buffer = unsafe {
-                &*surface
-                    .image_buffer
-                    .as_concrete_TypeRef()
-                    .cast::<CVPixelBuffer>()
-            };
+            let image_buffer: &CVPixelBuffer = &surface.image_buffer;
             let texture_size = size(
                 DevicePixels::from(CVPixelBufferGetWidth(image_buffer) as i32),
                 DevicePixels::from(CVPixelBufferGetHeight(image_buffer) as i32),

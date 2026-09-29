@@ -20,8 +20,9 @@ pub mod core_media {
         impl_CFTypeDescription, impl_TCFType,
         string::CFString,
     };
-    use core_video::image_buffer::{CVImageBuffer, CVImageBufferRef};
-    use std::{ffi::c_void, ptr};
+    use objc2_core_foundation::CFRetained;
+    use objc2_core_video::CVImageBuffer;
+    use std::{ffi::c_void, ptr, ptr::NonNull};
 
     #[repr(C)]
     pub struct __CMSampleBuffer(c_void);
@@ -46,14 +47,13 @@ pub mod core_media {
             }
         }
 
-        pub fn image_buffer(&self) -> Option<CVImageBuffer> {
+        pub fn image_buffer(&self) -> Option<CFRetained<CVImageBuffer>> {
+            // Safety: the sample buffer owns the image buffer it returns (the
+            // get rule), so retaining it keeps it alive past the sample
+            // buffer's lifetime.
             unsafe {
                 let ptr = CMSampleBufferGetImageBuffer(self.as_concrete_TypeRef());
-                if ptr.is_null() {
-                    None
-                } else {
-                    Some(CVImageBuffer::wrap_under_get_rule(ptr))
-                }
+                NonNull::new(ptr).map(|ptr| CFRetained::retain(ptr))
             }
         }
 
@@ -101,7 +101,7 @@ pub mod core_media {
             buffer: CMSampleBufferRef,
             create_if_necessary: bool,
         ) -> CFArrayRef;
-        fn CMSampleBufferGetImageBuffer(buffer: CMSampleBufferRef) -> CVImageBufferRef;
+        fn CMSampleBufferGetImageBuffer(buffer: CMSampleBufferRef) -> *mut CVImageBuffer;
         fn CMSampleBufferGetSampleTimingInfo(
             buffer: CMSampleBufferRef,
             index: CMItemIndex,
@@ -274,7 +274,7 @@ pub mod core_video {
         /// The arguments to this function must be valid according to CVMetalTextureCacheCreateTextureFromImage
         pub unsafe fn create_texture_from_image(
             &self,
-            source: ::core_video::image_buffer::CVImageBufferRef,
+            source: &objc2_core_video::CVImageBuffer,
             texture_attributes: CFDictionaryRef,
             pixel_format: MTLPixelFormat,
             width: usize,
@@ -316,7 +316,7 @@ pub mod core_video {
         fn CVMetalTextureCacheCreateTextureFromImage(
             allocator: CFAllocatorRef,
             texture_cache: CVMetalTextureCacheRef,
-            source_image: ::core_video::image_buffer::CVImageBufferRef,
+            source_image: &objc2_core_video::CVImageBuffer,
             texture_attributes: CFDictionaryRef,
             pixel_format: MTLPixelFormat,
             width: usize,
