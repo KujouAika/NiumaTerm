@@ -76,6 +76,7 @@ fn sample_agent() -> AgentConfig {
         model_list_style: agent::ModelListStyle::IdOnly,
         enable_agent_team: true,
         token_speed_mode: agent::TokenSpeedMode::Session,
+        answer_questions_one_at_a_time: true,
     }
 }
 

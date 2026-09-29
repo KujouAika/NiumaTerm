@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 use crate::chat::{
-    ContextComposition, ContextSegment, Event, Question, QuestionOption, QuestionResolution,
+    ContextComposition, ContextSegment, Event, Question, QuestionInput, QuestionOption,
+    QuestionResolution,
 };
 use crate::subprocess::InputTicket;
 use crate::subprocess::requests::{DeadlineTimer, RequestClass};
@@ -419,7 +420,10 @@ pub(super) fn parse_questions(input: &Value) -> Vec<Question> {
             }
 
             Some(Question {
-                input: Default::default(),
+                // The tool takes any string as an answer, and the CLI's own
+                // prompt offers typing one in place of the options, so the
+                // card offers the same.
+                input: QuestionInput::Text,
                 header: question["header"].as_str().map(str::to_owned),
                 question: question["question"].as_str()?.to_owned(),
                 multi_select: question["multiSelect"].as_bool().unwrap_or(false),

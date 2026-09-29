@@ -66,6 +66,9 @@ pub struct AgentSettings {
     /// Opaque terminal palette background, resolved by the application when
     /// settings or the selected theme change. Pane opacity is applied at paint.
     pub terminal_background: Hsla,
+
+    /// Step through the questions of a batch one at a time.
+    pub answer_questions_one_at_a_time: bool,
 }
 
 impl Global for AgentSettings {}
@@ -112,6 +115,7 @@ impl Default for AgentSettings {
             font_fallbacks: FontFallbacks::default(),
             human_friendly_layout: true,
             terminal_background: Hsla::black(),
+            answer_questions_one_at_a_time: false,
         }
     }
 }

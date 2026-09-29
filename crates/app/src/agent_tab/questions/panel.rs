@@ -18,7 +18,7 @@ use nmt_agent::session::input::{
 use rust_i18n::t;
 
 use crate::agent_tab::questions::{QuestionEditor, QuestionEditorState, QuestionPresentation};
-use crate::agent_tab::settings::UI_RADIUS;
+use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
 use crate::agent_tab::{AgentPane, PaletteControl};
 
 /// The card that asks the user an agent's questions: which batch of questions
@@ -162,6 +162,37 @@ impl QuestionPanel {
         {
             presentation.focus = (question, option);
         }
+
+        true
+    }
+
+    /// Show the next or previous question of a batch answered a question at
+    /// a time. Moving on needs the shown question answered. Returns whether
+    /// the shown question changed.
+    pub(crate) fn step(&mut self, input: &SessionInput, forward: bool) -> bool {
+        let Some(draft) = self.questions(input) else {
+            return false;
+        };
+
+        let count = draft.questions().len();
+
+        let Some(presentation) = self.active.and_then(|key| self.presentations.get_mut(&key))
+        else {
+            return false;
+        };
+
+        let Some(page) = presentation.page else {
+            return false;
+        };
+
+        let next = match forward {
+            true if page + 1 < count && draft.is_answered(page) => page + 1,
+            false if page > 0 => page - 1,
+            _ => return false,
+        };
+
+        presentation.page = Some(next);
+        presentation.focus = (next, 0);
 
         true
     }
@@ -356,6 +387,19 @@ impl QuestionPanel {
             && composer_free
             && !session.borrow().commands().awaiting_turn;
 
+        let count_in_batch = prompt.questions().len();
+
+        // Stepping applies only while answering; a settled batch reads as a
+        // whole.
+        let stepping = pending
+            && count_in_batch > 1
+            && cx.global::<AgentSettings>().answer_questions_one_at_a_time;
+
+        if let Some(presentation) = self.presentations.get_mut(&active) {
+            presentation.page =
+                stepping.then(|| presentation.page.unwrap_or(0).min(count_in_batch - 1));
+        }
+
         let presentation = self.presentations.get(&active)?;
 
         let status = match prompt.status() {
@@ -495,7 +539,12 @@ impl QuestionPanel {
 
         let mut rows = Vec::new();
 
-        for (index, question) in prompt.questions().iter().enumerate() {
+        for (index, question) in prompt
+            .questions()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| presentation.page.is_none_or(|page| page == *index))
+        {
             let group: SharedString = format!("question-{active:?}-{index}").into();
 
             let mut row = v_flex()
@@ -645,34 +694,62 @@ impl QuestionPanel {
             );
         }
 
+        let footer_label = match presentation.page {
+            Some(page) => t!(
+                "agent-question-step",
+                index = page + 1,
+                total = count_in_batch
+            ),
+            None => t!(status),
+        };
+
         let mut footer = h_flex().w_full().items_center().gap_2().child(
             div()
                 .flex_1()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(t!(status)),
+                .child(footer_label),
         );
 
+        let last_page = presentation
+            .page
+            .is_none_or(|page| page + 1 == count_in_batch);
+
         if pending {
-            footer = footer
-                .child(
-                    Button::new("question-skip")
+            footer = footer.child(
+                Button::new("question-skip")
+                    .ghost()
+                    .disabled(!enabled)
+                    .label(t!(if prompt.mode() == QuestionMode::Async {
+                        "agent-question-dismiss"
+                    } else {
+                        "agent-question-skip"
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| this.skip_current_questions(cx))),
+            );
+
+            if presentation.page.is_some_and(|page| page > 0) {
+                footer = footer.child(
+                    Button::new("question-back")
                         .ghost()
                         .disabled(!enabled)
-                        .label(t!(if prompt.mode() == QuestionMode::Async {
-                            "agent-question-dismiss"
-                        } else {
-                            "agent-question-skip"
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| this.skip_current_questions(cx))),
-                )
-                .child(
-                    Button::new("question-submit")
-                        .primary()
-                        .disabled(!enabled || !prompt.is_complete())
-                        .label(t!("agent-question-submit"))
-                        .on_click(cx.listener(|this, _, _, cx| this.submit_current_questions(cx))),
+                        .label(t!("agent-question-back"))
+                        .on_click(cx.listener(|this, _, _, cx| this.step_questions(false, cx))),
                 );
+            }
+
+            footer = footer.child(match (last_page, presentation.page) {
+                (false, Some(page)) => Button::new("question-next")
+                    .primary()
+                    .disabled(!enabled || !prompt.is_answered(page))
+                    .label(t!("agent-question-next"))
+                    .on_click(cx.listener(|this, _, _, cx| this.step_questions(true, cx))),
+                _ => Button::new("question-submit")
+                    .primary()
+                    .disabled(!enabled || !prompt.is_complete())
+                    .label(t!("agent-question-submit"))
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_current_questions(cx))),
+            });
         }
 
         Some(panel.child(footer).into_any_element())

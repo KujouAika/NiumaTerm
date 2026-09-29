@@ -675,3 +675,84 @@ fn question_editors_survive_unshown_batches_and_reused_positions(cx: &mut TestAp
         });
     });
 }
+
+#[test]
+fn the_highlight_stays_on_the_question_shown_alone() {
+    let mut prompt = QuestionDraft::new(
+        "draft".into(),
+        vec![
+            question("Which database?", false, &["Postgres", "SQLite"]),
+            question("Which extras?", true, &["Metrics", "Tracing"]),
+        ],
+    );
+
+    let mut presentation = QuestionPresentation::new(&prompt);
+
+    presentation.page = Some(1);
+
+    let walked: Vec<(usize, usize)> = (0..3)
+        .map(|_| {
+            presentation.move_focus(&mut prompt, true);
+
+            presentation.focus
+        })
+        .collect();
+
+    assert_eq!(walked, vec![(1, 0), (1, 1), (1, 0)]);
+}
+
+#[gpui::test]
+fn a_batch_answered_one_question_at_a_time_moves_on_only_from_an_answer(cx: &mut TestAppContext) {
+    let (pane, window) = open_pane(cx);
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    cx.update(|_, cx| {
+        cx.update_global::<AgentSettings, _>(|settings, _| {
+            settings.answer_questions_one_at_a_time = true;
+        });
+    });
+
+    deliver_session_event(
+        &pane,
+        Event::InputRequested(QuestionRequest {
+            id: "pair".into(),
+            mode: QuestionMode::Blocking,
+            questions: vec![
+                question("Which database?", false, &["Postgres", "SQLite"]),
+                question("Which extras?", true, &["Metrics", "Tracing"]),
+            ],
+        }),
+        &cx,
+    );
+
+    cx.update(|window, cx| {
+        pane.update(cx, |pane, cx| {
+            let key = pane.session.borrow().input().batches()[0].key();
+            let session = pane.session.clone();
+
+            pane.prompts.render(&session, true, window, cx);
+
+            assert_eq!(pane.prompts.presentations[&key].page, Some(0));
+
+            // The shown question has no answer yet, so there is nowhere to go.
+            assert!(!pane.prompts.step(pane.session.borrow().input(), true));
+
+            pane.toggle_question_option(0, 1, cx);
+
+            assert!(pane.prompts.step(pane.session.borrow().input(), true));
+            assert_eq!(pane.prompts.presentations[&key].page, Some(1));
+            assert_eq!(pane.prompts.presentations[&key].focus, (1, 0));
+
+            // The last question has nowhere further to go, so Enter submits
+            // once it is answered.
+            pane.toggle_question_option(1, 0, cx);
+            pane.advance_or_submit_questions(cx);
+
+            assert_eq!(
+                pane.session.borrow().input().batches()[0].status(),
+                QuestionStatus::Submitting
+            );
+        });
+    });
+}

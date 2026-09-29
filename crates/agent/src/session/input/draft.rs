@@ -241,15 +241,22 @@ impl QuestionDraft {
         }
     }
 
+    /// Whether question `question` has an answer: typed text where text was
+    /// chosen or is the only way to answer, a pick otherwise.
+    pub fn is_answered(&self, question: usize) -> bool {
+        let Some(entry) = self.questions.get(question) else {
+            return false;
+        };
+
+        if self.custom[question] || entry.options.is_empty() {
+            !self.text[question].trim().is_empty()
+        } else {
+            !self.selected[question].is_empty()
+        }
+    }
+
     pub fn is_complete(&self) -> bool {
-        !self.questions.is_empty()
-            && self.selected.iter().enumerate().all(|(index, picks)| {
-                if self.custom[index] || self.questions[index].options.is_empty() {
-                    !self.text[index].trim().is_empty()
-                } else {
-                    !picks.is_empty()
-                }
-            })
+        !self.questions.is_empty() && (0..self.questions.len()).all(|index| self.is_answered(index))
     }
 
     pub fn answers(&self) -> Vec<Vec<String>> {

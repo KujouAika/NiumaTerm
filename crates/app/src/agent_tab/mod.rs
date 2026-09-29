@@ -2071,6 +2071,26 @@ impl AgentPane {
         }
     }
 
+    /// Show the next or previous question of a batch answered one question
+    /// at a time.
+    pub(crate) fn step_questions(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.prompts.step(self.session.borrow().input(), forward) {
+            cx.notify();
+        }
+    }
+
+    /// Enter in an answer: move on to the next question while stepping
+    /// through a batch, submit the batch otherwise.
+    pub(crate) fn advance_or_submit_questions(&mut self, cx: &mut Context<Self>) {
+        if self.prompts.step(self.session.borrow().input(), true) {
+            cx.notify();
+
+            return;
+        }
+
+        self.submit_current_questions(cx);
+    }
+
     pub(crate) fn submit_current_questions(&mut self, cx: &mut Context<Self>) {
         let key = self
             .prompts

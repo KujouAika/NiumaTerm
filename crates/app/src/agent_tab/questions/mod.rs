@@ -45,6 +45,10 @@ impl QuestionEditorState {
 pub(super) struct QuestionPresentation {
     pub(super) editors: Vec<Option<QuestionEditor>>,
     pub(super) focus: (usize, usize),
+
+    /// The one question shown when a batch is answered a question at a
+    /// time; `None` shows them all.
+    pub(super) page: Option<usize>,
 }
 
 impl QuestionPresentation {
@@ -52,6 +56,7 @@ impl QuestionPresentation {
         Self {
             editors: (0..draft.questions().len()).map(|_| None).collect(),
             focus: (0, 0),
+            page: None,
         }
     }
 
@@ -68,6 +73,9 @@ impl QuestionPresentation {
             .questions()
             .iter()
             .enumerate()
+            // Keys walk only the options on screen, so a question stepped
+            // past cannot take the highlight.
+            .filter(|(question, _)| self.page.is_none_or(|page| page == *question))
             .flat_map(|(question, entry)| {
                 (0..entry.options.len()).map(move |option| (question, option))
             })
@@ -128,7 +136,7 @@ impl QuestionEditor {
                             }
                         }
                         ComposerEnterBehavior::Submit | ComposerEnterBehavior::ActivateOrSubmit => {
-                            this.submit_current_questions(cx);
+                            this.advance_or_submit_questions(cx);
                         }
                     }
                 }

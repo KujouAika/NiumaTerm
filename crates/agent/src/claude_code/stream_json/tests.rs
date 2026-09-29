@@ -2,8 +2,9 @@
 use std::thread;
 use std::time::Instant;
 
-use crate::chat::{ContextComposition, Item, TokenUsageBreakdown};
+use crate::chat::{ContextComposition, Item, QuestionInput, TokenUsageBreakdown};
 use crate::claude_code::stream_json::*;
+use crate::session::input::QuestionDraft;
 use crate::subprocess::InputTicket;
 use crate::subprocess::requests::RequestClass;
 use crate::workspace::AgentWorkspace;
@@ -1553,6 +1554,36 @@ fn answered_questions_merge_into_the_original_tool_input() {
         merged["answers"]["Which extras?"],
         json!(["Metrics", "Tracing"])
     );
+}
+
+#[test]
+fn a_typed_answer_reaches_the_tool_in_place_of_a_label() {
+    let questions = parse_questions(&json!({
+        "questions": [
+            {"question": "Which database?", "options": [{"label": "Postgres"}, {"label": "SQLite"}]},
+            {
+                "question": "Which extras?",
+                "multiSelect": true,
+                "options": [{"label": "Metrics"}, {"label": "Tracing"}],
+            },
+        ]
+    }));
+
+    assert!(
+        questions
+            .iter()
+            .all(|question| question.input == QuestionInput::Text)
+    );
+
+    let mut draft = QuestionDraft::new("ask".into(), questions.clone());
+
+    draft.set_text(0, "DuckDB".into());
+    draft.set_text(1, "Profiling".into());
+
+    let merged = merge_question_answers(json!({"questions": []}), &questions, draft.answers());
+
+    assert_eq!(merged["answers"]["Which database?"], json!("DuckDB"));
+    assert_eq!(merged["answers"]["Which extras?"], json!(["Profiling"]));
 }
 
 #[test]

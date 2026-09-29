@@ -44,6 +44,11 @@ pub struct AgentConfig {
     /// Responses included in the composer's generation speed reading.
     #[serde(default, rename = "token-speed-mode")]
     pub token_speed_mode: TokenSpeedMode,
+
+    /// Show the questions an agent asks together one at a time rather than
+    /// all at once.
+    #[serde(default, rename = "answer-questions-one-at-a-time")]
+    pub answer_questions_one_at_a_time: bool,
 }
 
 impl Default for AgentConfig {
@@ -57,6 +62,7 @@ impl Default for AgentConfig {
             model_list_style: ModelListStyle::default(),
             enable_agent_team: false,
             token_speed_mode: TokenSpeedMode::default(),
+            answer_questions_one_at_a_time: false,
         }
     }
 }

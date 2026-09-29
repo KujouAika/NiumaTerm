@@ -939,6 +939,9 @@
 "agent-question-secret-submitted" = "Private answer submitted"
 "agent-question-disconnected" = "Connection lost. Your draft is retained. If a submission was in progress, its delivery could not be confirmed."
 "agent-question-send-pending" = "Wait for the question submission to finish before sending another message."
+"agent-question-step" = "Question %{index} of %{total}"
+"agent-question-back" = "Back"
+"agent-question-next" = "Next"
 
 # macOS menu bar
 "menu-check-for-updates" = "Check for Updates..."
@@ -1122,6 +1125,8 @@ git-toggle-files = "Toggle file tree"
 "settings-agent-token-speed-session" = "Entire session"
 "settings-agent-token-speed-current-turn" = "Current turn"
 "settings-agent-token-speed-description" = "Average output speed across the entire session or the current turn."
+"settings-agent-questions-one-at-a-time" = "Answer questions one at a time"
+"settings-agent-questions-one-at-a-time-description" = "When an agent asks several questions together, show them one by one instead of all at once."
 "settings-remote-title" = "Remote"
 "settings-remote-hosting" = "This computer"
 "settings-remote-enable" = "Allow paired devices to connect"

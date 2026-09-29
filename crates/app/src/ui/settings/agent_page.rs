@@ -180,6 +180,19 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                 ),
             )
             .description(t!("settings-agent-token-speed-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-agent-questions-one-at-a-time"),
+                settings_switch(
+                    |config| config.agent.answer_questions_one_at_a_time,
+                    |settings, value| {
+                        settings
+                            .edit_agent(|section| section.answer_questions_one_at_a_time = value);
+                    },
+                ),
+            )
+            .description(t!("settings-agent-questions-one-at-a-time-description").into_owned()),
         );
 
     let mut cli_updates = SettingGroup::new()

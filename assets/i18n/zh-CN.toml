@@ -938,6 +938,9 @@
 "agent-question-secret-submitted" = "私密回答已提交"
 "agent-question-disconnected" = "连接已断开，草稿已保留。如果当时正在提交，暂时无法确认回答是否送达。"
 "agent-question-send-pending" = "请等待问题回答提交完成，再发送其他消息。"
+"agent-question-step" = "第 %{index} / %{total} 题"
+"agent-question-back" = "上一题"
+"agent-question-next" = "下一题"
 
 # macOS menu bar
 "menu-check-for-updates" = "检查更新..."
@@ -1121,6 +1124,8 @@ git-toggle-files = "显示/隐藏文件树"
 "settings-agent-token-speed-session" = "整个会话"
 "settings-agent-token-speed-current-turn" = "当前一轮"
 "settings-agent-token-speed-description" = "按整个会话或当前一轮的输出 token 与生成耗时计算平均速度。"
+"settings-agent-questions-one-at-a-time" = "逐个回答问题"
+"settings-agent-questions-one-at-a-time-description" = "Agent 同时提出多个问题时，逐个显示，而不是一次性全部列出。"
 "settings-remote-title" = "远程"
 "settings-remote-hosting" = "本机"
 "settings-remote-enable" = "允许已配对设备连接"

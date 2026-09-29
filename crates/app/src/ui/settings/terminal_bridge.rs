@@ -77,6 +77,7 @@ fn agent_snapshot(cx: &App) -> AgentSettings {
         background_opacity: main_view_background_opacity(cx),
         font_fallbacks: default_font_fallbacks(),
         terminal_background: rgb(theme_default_background().into()).into(),
+        answer_questions_one_at_a_time: settings.config().agent.answer_questions_one_at_a_time,
     }
 }
 
