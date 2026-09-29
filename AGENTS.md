@@ -161,15 +161,15 @@ rejects mentions of `cargo check`, `cargo test`, `cargo fmt`, `cargo clippy`,
 
 When an AI coding agent materially contributes to the change, end the
 commit message with a `Co-Authored-By` trailer naming the model that
-performed the work. Write the model ID the agent reports from its runtime,
-followed by a noreply address on the model vendor's domain:
+performed the work, followed by a noreply address on the model vendor's
+domain:
 
 ```text
-Co-Authored-By: <MODEL_ID> <noreply@<vendor>.com>
+Co-Authored-By: <model> <noreply@<vendor>.com>
 ```
 
 Anthropic models use `noreply@anthropic.com` (e.g.
-`claude-opus-5 <noreply@anthropic.com>`), Codex uses `noreply@openai.com`.
+`Claude Opus 5 <noreply@anthropic.com>`), Codex uses `noreply@openai.com`.
 
 ## Local agent instructions
 @AGENTS.local.md
