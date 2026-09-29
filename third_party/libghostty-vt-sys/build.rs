@@ -944,11 +944,18 @@ fn zig_target(target: &str) -> String {
 
 fn configure_zig_target(build: &mut Command, target: &str, host: &str) {
     let is_windows_target = target.contains("windows");
+    let is_apple_target = target.contains("apple");
 
     // Windows binaries run beyond the build machine. Leaving the Zig target
     // implicit can place AVX-512 in compiler_rt, including the memset used by
     // the static CRT before main. x86_64 Windows intentionally requires AVX2.
-    if target != host || is_windows_target {
+    //
+    // Apple binaries ship too, as the release app and as the checked-in
+    // prebuilt archive. An implicit target is the build machine's own CPU
+    // model, so an archive built on a newer Apple chip could use instructions
+    // an older supported Mac lacks; naming the target resolves the CPU to the
+    // architecture's baseline for the OS (Apple M1 for arm64 macOS).
+    if target != host || is_windows_target || is_apple_target {
         let zig_target = zig_target(target);
         build.arg(format!("-Dtarget={zig_target}"));
     }
