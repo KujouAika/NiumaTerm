@@ -271,6 +271,14 @@ impl ListDelegate for AgentProfileList {
 
                             cx.notify();
                         }))
+                        // The row's buttons stop their clicks from reaching
+                        // the row, so a quick double press on edit still opens
+                        // one dialog rather than two.
+                        .on_click(move |event: &ClickEvent, window, cx| {
+                            if event.click_count() == 2 {
+                                open_agent_profile_dialog(Some(row), window, cx);
+                            }
+                        })
                         // The same operations as the row's own controls, plus
                         // duplication, which has no button: it is reached
                         // rarely enough that a third icon would cost the name
