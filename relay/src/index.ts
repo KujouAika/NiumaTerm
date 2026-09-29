@@ -7,8 +7,14 @@
 // channel the host and client run, so the relay sees only ciphertext and a
 // compromised relay can cost availability, never confidentiality.
 //
+// Several users can share one relay. Each has their own access key, and a
+// host belongs to the user whose key registered it: another user's key can
+// neither reach it nor take its host id, and pairing slots are looked up
+// among the presenting user's hosts only. Each user holds at most
+// MAX_CLIENTS_PER_USER client connections at once, across all their hosts.
+//
 // Endpoints (WebSocket upgrades, all require `Authorization: Bearer
-// <ACCESS_KEY>`):
+// <access key>`):
 //   /v1/host/{host_id}               host control socket (+ X-Host-Token)
 //   /v1/host/{host_id}/accept/{conn} host data socket for one client
 //   /v1/client/{host_id}             client connection
@@ -26,13 +32,24 @@ import { handlePush, type PushEnv } from "./push";
 export { PushGateway } from "./push";
 
 export interface Env extends PushEnv {
-  ACCESS_KEY: string;
+  /// The users and the SHA-256 of each one's access key, as a JSON object:
+  /// `{"alice": "<64 lowercase hex digits>"}`. Only hashes are stored, so the
+  /// secret itself holds nothing that opens a socket.
+  ACCESS_KEYS?: string;
   HOST_ROOM: DurableObjectNamespace<HostRoom>;
   DIRECTORY: DurableObjectNamespace<PairingDirectory>;
+  USER_QUOTA: DurableObjectNamespace<UserQuota>;
 }
 
-/// Client connections one host may hold at once.
-const MAX_CLIENTS = 8;
+/// Client connections one user may hold at once, over all of their hosts.
+/// Every client connection makes the host open a data socket and run a
+/// handshake, so this also bounds the work one key can cause.
+const MAX_CLIENTS_PER_USER = 8;
+
+/// A quota entry this young is never dropped as closed: its room accepts the
+/// socket only after the quota answers, so a recount in between would find
+/// no socket for it yet.
+const QUOTA_GRACE_MS = 10_000;
 
 /// Largest frame forwarded. Channel frames are at most 64 KiB of ciphertext.
 const MAX_MESSAGE = 128 * 1024;
@@ -47,6 +64,8 @@ const ATTEMPTS_PER_MINUTE = 30;
 const HOST_ID = /^[0-9a-z]{16}$/;
 const SLOT = /^[0-9A-Z]{3}$/;
 const CONN = /^[0-9a-f]{16}$/;
+const USER = /^[0-9a-z_-]{1,32}$/;
+const KEY_HASH = /^[0-9a-f]{64}$/;
 
 const attempts = new Map<string, { windowStart: number; count: number }>();
 
@@ -56,7 +75,9 @@ export default {
       return handlePush(request, env);
     }
 
-    if (!authorized(request, env)) {
+    const user = await userOf(request, env);
+
+    if (user === null) {
       return new Response("unauthorized", { status: 401 });
     }
 
@@ -76,14 +97,13 @@ export default {
 
     // /v1/pair/{slot}: resolve the slot to its host, then join as a client.
     if (parts[1] === "pair" && parts.length === 3 && SLOT.test(parts[2])) {
-      const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName("directory"));
-      const hostId = await directory.resolve(parts[2]);
+      const hostId = await directory(env, user).resolve(parts[2]);
 
       if (hostId === null) {
         return new Response("no host is showing that code", { status: 404 });
       }
 
-      return room(env, hostId).fetch(roomRequest(request, "client", hostId));
+      return room(env, hostId).fetch(roomRequest(request, "client", hostId, user));
     }
 
     const hostId = parts[2];
@@ -93,27 +113,86 @@ export default {
     }
 
     if (parts[1] === "client" && parts.length === 3) {
-      return room(env, hostId).fetch(roomRequest(request, "client", hostId));
+      return room(env, hostId).fetch(roomRequest(request, "client", hostId, user));
     }
 
     if (parts[1] === "host" && parts.length === 3) {
-      return room(env, hostId).fetch(roomRequest(request, "control", hostId));
+      return room(env, hostId).fetch(roomRequest(request, "control", hostId, user));
     }
 
     if (parts[1] === "host" && parts.length === 5 && parts[3] === "accept" && CONN.test(parts[4])) {
-      return room(env, hostId).fetch(roomRequest(request, `accept:${parts[4]}`, hostId));
+      return room(env, hostId).fetch(roomRequest(request, `accept:${parts[4]}`, hostId, user));
     }
 
     return new Response("not found", { status: 404 });
   },
 };
 
-function authorized(request: Request, env: Env): boolean {
+/// The user whose access key the request presents, or null.
+async function userOf(request: Request, env: Env): Promise<string | null> {
   const presented = request.headers.get("Authorization") ?? "";
-  const expected = `Bearer ${env.ACCESS_KEY ?? ""}`;
 
-  // Without a configured key the relay admits nobody.
-  return (env.ACCESS_KEY ?? "").length > 0 && constantTimeEqual(presented, expected);
+  if (!presented.startsWith("Bearer ")) {
+    return null;
+  }
+
+  const hash = await sha256Hex(presented.slice("Bearer ".length));
+  let user: string | null = null;
+
+  // Every entry is compared, so the time taken does not tell which matched.
+  for (const [name, expected] of accessKeys(env)) {
+    if (constantTimeEqual(hash, expected)) {
+      user = name;
+    }
+  }
+
+  return user;
+}
+
+let parsedKeys: { raw: string; users: [string, string][] } | undefined;
+
+/// `ACCESS_KEYS`, parsed once per isolate and again only when it changes.
+function accessKeys(env: Env): [string, string][] {
+  const raw = env.ACCESS_KEYS ?? "";
+
+  if (parsedKeys?.raw !== raw) {
+    parsedKeys = { raw, users: parseAccessKeys(raw) };
+  }
+
+  return parsedKeys.users;
+}
+
+/// Any malformed entry rejects the whole list, and without a list the relay
+/// admits nobody. A typo then locks every user out at once and gets noticed,
+/// instead of quietly dropping one user's key.
+function parseAccessKeys(raw: string): [string, string][] {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error("ACCESS_KEYS is not JSON");
+
+    return [];
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    console.error("ACCESS_KEYS is not a JSON object");
+
+    return [];
+  }
+
+  const users = Object.entries(parsed);
+
+  for (const [name, hash] of users) {
+    if (!USER.test(name) || typeof hash !== "string" || !KEY_HASH.test(hash)) {
+      console.error(`ACCESS_KEYS has a malformed entry for "${name}"`);
+
+      return [];
+    }
+  }
+
+  return users as [string, string][];
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -149,11 +228,23 @@ function room(env: Env, hostId: string): DurableObjectStub<HostRoom> {
   return env.HOST_ROOM.get(env.HOST_ROOM.idFromName(hostId));
 }
 
-function roomRequest(request: Request, kind: string, hostId: string): Request {
+/// Pairing slots are kept per user: a slot resolves only to hosts of the
+/// user asking, so one user cannot connect to another's pairing code and
+/// spend the few attempts the host allows each code.
+function directory(env: Env, user: string): DurableObjectStub<PairingDirectory> {
+  return env.DIRECTORY.get(env.DIRECTORY.idFromName(`directory:${user}`));
+}
+
+function quota(env: Env, user: string): DurableObjectStub<UserQuota> {
+  return env.USER_QUOTA.get(env.USER_QUOTA.idFromName(user));
+}
+
+function roomRequest(request: Request, kind: string, hostId: string, user: string): Request {
   const forwarded = new Request(request);
 
   forwarded.headers.set("X-Relay-Kind", kind);
   forwarded.headers.set("X-Relay-Host", hostId);
+  forwarded.headers.set("X-Relay-User", user);
 
   return forwarded;
 }
@@ -170,10 +261,34 @@ function randomConn(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/// Refused sockets use the plain accept, not the hibernation API: a close
+/// on a hibernatable socket whose upgrade has not completed never reaches
+/// the client, which would then wait out its whole open timeout instead of
+/// learning at once why it was refused.
+function refuse(code: number, reason: string): Response {
+  const [client, server] = Object.values(new WebSocketPair());
+
+  server.accept();
+  server.close(code, reason);
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
 interface ClientAttachment {
   conn: string;
+  user: string;
   opened: boolean;
   since: number;
+}
+
+interface QuotaEntry {
+  roomId: string;
+  since: number;
+}
+
+interface ControlAttachment {
+  hostId: string;
+  user: string;
 }
 
 /// The sockets of one host: its control socket, its clients, and the data
@@ -190,9 +305,19 @@ export class HostRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const kind = request.headers.get("X-Relay-Kind") ?? "";
     const hostId = request.headers.get("X-Relay-Host") ?? "";
+    const user = request.headers.get("X-Relay-User") ?? "";
+    const owner = await this.ctx.storage.get<string>("owner");
 
     if (kind === "client") {
-      return this.acceptClient();
+      return this.acceptClient(user, owner === user);
+    }
+
+    // The room belongs to the user whose key registered the host; until
+    // then, only a control socket can claim it.
+    const claimable = owner === undefined && kind === "control";
+
+    if (owner !== user && !claimable) {
+      return new Response("this host id belongs to another host", { status: 403 });
     }
 
     // Host sockets prove they belong to the host that registered first.
@@ -200,8 +325,12 @@ export class HostRoom extends DurableObject<Env> {
       return new Response("this host id belongs to another host", { status: 403 });
     }
 
+    if (owner === undefined) {
+      await this.ctx.storage.put("owner", user);
+    }
+
     if (kind === "control") {
-      return this.acceptControl(hostId);
+      return this.acceptControl(hostId, user);
     }
 
     if (kind.startsWith("accept:")) {
@@ -232,7 +361,7 @@ export class HostRoom extends DurableObject<Env> {
     return constantTimeEqual(stored, hash);
   }
 
-  private acceptControl(hostId: string): Response {
+  private acceptControl(hostId: string, user: string): Response {
     // A reconnecting host replaces its previous control socket.
     for (const old of this.ctx.getWebSockets("control")) {
       old.close(1000, "replaced");
@@ -241,33 +370,37 @@ export class HostRoom extends DurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair());
 
     this.ctx.acceptWebSocket(server, ["control"]);
-    server.serializeAttachment({ hostId });
+    server.serializeAttachment({ hostId, user } satisfies ControlAttachment);
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private acceptClient(): Response {
-    const [client, server] = Object.values(new WebSocketPair());
-    const control = this.ctx.getWebSockets("control")[0];
-
-    if (control === undefined) {
-      this.ctx.acceptWebSocket(server, ["refused"]);
-      server.close(4404, "host offline");
-
-      return new Response(null, { status: 101, webSocket: client });
-    }
-
-    if (this.ctx.getWebSockets("client").length >= MAX_CLIENTS) {
-      this.ctx.acceptWebSocket(server, ["refused"]);
-      server.close(4429, "too many clients");
-
-      return new Response(null, { status: 101, webSocket: client });
+  /// A host of another user is refused exactly like an offline one, so a
+  /// key does not reveal which host ids other users have registered.
+  private async acceptClient(user: string, owned: boolean): Promise<Response> {
+    if (!owned || this.ctx.getWebSockets("control").length === 0) {
+      return refuse(4404, "host offline");
     }
 
     const conn = randomConn();
 
+    if (!(await quota(this.env, user).acquire(conn, this.ctx.id.toString()))) {
+      return refuse(4429, "too many clients");
+    }
+
+    // The control socket may have gone while the quota answered.
+    const control = this.ctx.getWebSockets("control")[0];
+
+    if (control === undefined) {
+      await quota(this.env, user).release(conn);
+
+      return refuse(4404, "host offline");
+    }
+
+    const [client, server] = Object.values(new WebSocketPair());
+
     this.ctx.acceptWebSocket(server, ["client", `c:${conn}`]);
-    server.serializeAttachment({ conn, opened: false, since: Date.now() } satisfies ClientAttachment);
+    server.serializeAttachment({ conn, user, opened: false, since: Date.now() } satisfies ClientAttachment);
 
     control.send(JSON.stringify({ t: "conn", id: conn }));
 
@@ -323,10 +456,31 @@ export class HostRoom extends DurableObject<Env> {
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     this.closePeer(ws, code, reason);
+    await this.releaseClient(ws);
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     this.closePeer(ws, 1011, "peer error");
+    await this.releaseClient(ws);
+  }
+
+  /// The conn ids of this room's open client sockets. A user's quota asks
+  /// for them to drop entries whose close it never heard about.
+  liveClients(): string[] {
+    return this.ctx
+      .getWebSockets("client")
+      .filter((ws) => ws.readyState === WebSocket.READY_STATE_OPEN)
+      .map((ws) => (ws.deserializeAttachment() as ClientAttachment).conn);
+  }
+
+  private async releaseClient(ws: WebSocket): Promise<void> {
+    if (!this.ctx.getTags(ws).includes("client")) {
+      return;
+    }
+
+    const { conn, user } = ws.deserializeAttachment() as ClientAttachment;
+
+    await quota(this.env, user).release(conn);
   }
 
   async alarm(): Promise<void> {
@@ -368,16 +522,16 @@ export class HostRoom extends DurableObject<Env> {
       return;
     }
 
-    const { hostId } = ws.deserializeAttachment() as { hostId: string };
-    const directory = this.env.DIRECTORY.get(this.env.DIRECTORY.idFromName("directory"));
+    const { hostId, user } = ws.deserializeAttachment() as ControlAttachment;
+    const slots = directory(this.env, user);
 
     if (request.t === "slot") {
       const ttl = Math.min(Math.max(request.ttl ?? 300, 1), 600);
-      const claimed = await directory.claim(slot, hostId, ttl);
+      const claimed = await slots.claim(slot, hostId, ttl);
 
       ws.send(JSON.stringify({ t: claimed ? "slot_ok" : "slot_taken", slot }));
     } else if (request.t === "slot_release") {
-      await directory.release(slot, hostId);
+      await slots.release(slot, hostId);
     }
   }
 
@@ -439,5 +593,68 @@ export class PairingDirectory extends DurableObject<Env> {
     }
 
     return existing.hostId;
+  }
+}
+
+/// Counts one user's client connections across all of their hosts. Each
+/// entry maps a conn id to the room holding it and when it was taken.
+///
+/// A room reports each close, but a close can go unreported: a deploy drops
+/// every socket, and a socket the relay itself closes may never see its
+/// close handler run. So when the count is full, the quota asks each room
+/// which of its entries are still open and drops the rest before refusing.
+export class UserQuota extends DurableObject<Env> {
+  async acquire(conn: string, roomId: string): Promise<boolean> {
+    if ((await this.ctx.storage.list()).size >= MAX_CLIENTS_PER_USER) {
+      await this.dropClosed();
+    }
+
+    // Only storage calls sit between the count and the put, and the input
+    // gate holds other calls back while those run, so two calls that both
+    // waited on the recount cannot both take the last place.
+    if ((await this.ctx.storage.list()).size >= MAX_CLIENTS_PER_USER) {
+      return false;
+    }
+
+    await this.ctx.storage.put(conn, { roomId, since: Date.now() } satisfies QuotaEntry);
+
+    return true;
+  }
+
+  async release(conn: string): Promise<void> {
+    await this.ctx.storage.delete(conn);
+  }
+
+  private async dropClosed(): Promise<void> {
+    const byRoom = new Map<string, string[]>();
+    const settled = Date.now() - QUOTA_GRACE_MS;
+
+    for (const [conn, entry] of await this.ctx.storage.list<QuotaEntry>()) {
+      if (entry.since <= settled) {
+        byRoom.set(entry.roomId, [...(byRoom.get(entry.roomId) ?? []), conn]);
+      }
+    }
+
+    const rooms = [...byRoom.entries()];
+    const answers = await Promise.allSettled(
+      rooms.map(([roomId]) =>
+        this.env.HOST_ROOM.get(this.env.HOST_ROOM.idFromString(roomId)).liveClients(),
+      ),
+    );
+    const closed: string[] = [];
+
+    // A room that fails to answer keeps its entries; refusing a client is
+    // better than letting a user exceed the limit.
+    answers.forEach((answer, index) => {
+      if (answer.status === "fulfilled") {
+        const live = new Set(answer.value);
+
+        closed.push(...rooms[index][1].filter((conn) => !live.has(conn)));
+      }
+    });
+
+    if (closed.length > 0) {
+      await this.ctx.storage.delete(closed);
+    }
   }
 }

@@ -18,12 +18,48 @@ Objects on SQLite storage are available there.
 cd relay
 npx wrangler login
 npx wrangler deploy
-npx wrangler secret put ACCESS_KEY
 ```
 
-For `ACCESS_KEY`, pick a long random string, for example the output of
-`openssl rand -hex 32`. Every socket must present this key, so a stranger
-who learns the relay URL cannot use your quota.
+Then give each user an access key. Every socket must present one, so a
+stranger who learns the relay URL cannot use your quota. The relay stores
+only the SHA-256 of each key, in the `ACCESS_KEYS` secret:
+
+```sh
+key=$(openssl rand -hex 32)
+echo "$key"                                # give this to the user
+printf %s "$key" | shasum -a 256           # the hash for ACCESS_KEYS
+```
+
+Write the users and their hashes to a JSON file. User names are 1 to 32
+characters of lowercase letters, digits, `_` and `-`:
+
+```json
+{ "alice": "<64 hex digits>", "bob": "<64 hex digits>" }
+```
+
+```sh
+npx wrangler secret put ACCESS_KEYS < access_keys.json
+```
+
+To add or remove a user, edit the file and run the same command again. A
+malformed file locks every user out until it is fixed, so a mistake shows
+at once. Updating a secret deploys a new version, which drops every open
+socket; each reconnect is checked against the new list.
+
+## Users
+
+Users share the relay but not their hosts. A host belongs to the user whose
+key first registered its id: another user's key cannot reach that host,
+cannot take over its id, and does not see its pairing codes. A client of
+another user's host is refused as if the host were offline.
+
+A user holds at most 8 client connections at once, counted over all of
+their hosts. The next one is closed with code 4429.
+
+A host stays with the user name that registered it, not with the key. To
+rotate a user's key, replace the hash under the same name: their hosts keep
+working once they are given the new key, and their devices pair again to
+learn it. A host registered under one name is refused under any other.
 
 `wrangler deploy` prints the Worker URL, for example
 `https://niumaterm-relay.<account>.workers.dev`.
@@ -33,7 +69,7 @@ who learns the relay URL cannot use your quota.
 On the computer that hosts sessions, open Settings > Remote and fill in:
 
 - **Relay URL**: the Worker URL
-- **Relay access key**: the `ACCESS_KEY` value
+- **Relay access key**: that user's access key
 
 Then click **Apply relay**. The host registers with the relay and stays
 registered while hosting is on.
@@ -61,7 +97,8 @@ attempt running alongside the others.
 
 ```sh
 cd relay
-echo ACCESS_KEY=local-test-key-0123456789 > .dev.vars
+hash=$(printf %s local-test-key-0123456789 | shasum -a 256 | cut -d' ' -f1)
+echo "ACCESS_KEYS={\"dev\":\"$hash\"}" > .dev.vars
 npx wrangler dev --local --port 8787 --ip 127.0.0.1
 ```
 
@@ -132,7 +169,7 @@ relay.
 ## Endpoints
 
 All endpoints but `/v1/push` are WebSocket upgrades with
-`Authorization: Bearer <ACCESS_KEY>`.
+`Authorization: Bearer <access key>`.
 
 | Path | Who | Purpose |
 | --- | --- | --- |
