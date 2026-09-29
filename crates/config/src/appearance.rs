@@ -588,19 +588,31 @@ pub fn clamp_git_interval(seconds: u64) -> u64 {
     }
 }
 
-/// The configured UI font, or the default when the config leaves it blank
-/// (an empty family would fall back to gpui's default, not Segoe UI).
+/// Every platform's default UI face. The config persists its defaults, so a
+/// file written on Windows names `Segoe UI`, which macOS lacks, and a family
+/// that is not installed silently resolves to Helvetica. Treating any
+/// platform's default as "the default" gives each system its own face.
+const PLATFORM_DEFAULT_UI_FONTS: &[&str] = &["Segoe UI", ".SystemUIFont"];
+
+/// Every platform's default fixed-pitch face, for the same reason.
+const PLATFORM_DEFAULT_TERMINAL_FONTS: &[&str] = &["Consolas", "Menlo", "monospace"];
+
+/// The configured UI font, or this platform's default when the config leaves
+/// it blank (an empty family would fall back to gpui's default) or names
+/// another platform's default.
 pub fn ui_font_or_default(family: &str) -> String {
-    if family.trim().is_empty() {
-        DEFAULT_UI_FONT.into()
-    } else {
-        family.to_string()
-    }
+    font_or_default(family, PLATFORM_DEFAULT_UI_FONTS, DEFAULT_UI_FONT)
 }
 
 pub fn terminal_font_or_default(family: &str) -> String {
-    if family.trim().is_empty() {
-        DEFAULT_FONT_FAMILY.into()
+    font_or_default(family, PLATFORM_DEFAULT_TERMINAL_FONTS, DEFAULT_FONT_FAMILY)
+}
+
+fn font_or_default(family: &str, platform_defaults: &[&str], default: &str) -> String {
+    let family = family.trim();
+
+    if family.is_empty() || platform_defaults.contains(&family) {
+        default.into()
     } else {
         family.to_string()
     }

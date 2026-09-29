@@ -763,6 +763,39 @@ git-status-refresh-interval = 1
 }
 
 #[test]
+fn every_platform_default_font_loads_as_this_platform_default() {
+    let defaults = AppearanceConfig::default();
+
+    for (ui, mono) in [("Segoe UI", "Consolas"), (".SystemUIFont", "Menlo")] {
+        let config = create_temporary_config(
+            "platform-default-fonts",
+            &format!(
+                r#"
+[appearance]
+ui-font = "{ui}"
+terminal-font-family = "{mono}"
+agent-font-family = "{ui}"
+agent-transcript-font-family = "{mono}"
+"#
+            ),
+        );
+
+        let appearance = &config.appearance;
+
+        assert_eq!(appearance.ui_font, defaults.ui_font);
+        assert_eq!(
+            appearance.terminal_font_family,
+            defaults.terminal_font_family
+        );
+        assert_eq!(appearance.agent_font_family, defaults.agent_font_family);
+        assert_eq!(
+            appearance.agent_transcript_font_family,
+            defaults.agent_transcript_font_family
+        );
+    }
+}
+
+#[test]
 fn older_system_settings_keep_native_notifications_enabled() {
     let config: Config = parse_toml("[system]\nopen-in-best-workspace = false\n").unwrap();
 
