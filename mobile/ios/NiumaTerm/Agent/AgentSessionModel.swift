@@ -146,6 +146,10 @@ enum ComposerSettings {
     /// Mirrors the desktop's Codex skill command compatibility, on by default
     /// there too.
     static let codexSkillsInSlashKey = "codexSkillsInSlash"
+
+    /// Mirrors the desktop's one-question-at-a-time answering, off by default
+    /// there too.
+    static let questionsOneAtATimeKey = "questionsOneAtATime"
 }
 
 extension SkillRecord {
@@ -174,6 +178,18 @@ final class AgentSessionModel {
 
     var draft = ""
     var showApproval = false
+    var showQuestions = false
+
+    /// Answers being composed, per question batch, seeded from what the host
+    /// holds when the batch first arrives.
+    var answers: [String: [QuestionAnswer]] = [:]
+
+    /// Why the last answer from the question sheet did not go through.
+    var questionNotice: String?
+
+    /// When the host skips the shown optional batch on its own, on this
+    /// phone's clock.
+    private(set) var questionSkipsAt: Date?
     var allowForSession = false
 
     /// The outcome of the last command when it needs saying.
@@ -186,6 +202,7 @@ final class AgentSessionModel {
     @ObservationIgnored private var handle: AgentHandle?
     @ObservationIgnored private var events: AgentEvents?
     @ObservationIgnored private var shownApproval: String?
+    @ObservationIgnored private var shownQuestion: String?
 
     init(core: MobileCore, route: SessionRoute, title: String, profile: AgentProfile?) {
         self.route = route
@@ -207,6 +224,9 @@ final class AgentSessionModel {
     var ended: ViewEnd? { state?.ended }
     var queue: [QueuedMessage] { state?.queue ?? [] }
     var approval: PendingApproval? { state?.approval }
+
+    /// The batch the question sheet shows: the oldest one still waiting.
+    var question: QuestionBatch? { state?.questions.first }
 
     var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
     var showsStop: Bool { isWorking && trimmedDraft.isEmpty }
@@ -306,6 +326,25 @@ final class AgentSessionModel {
         default:
             shownApproval = nil
             showApproval = false
+        }
+
+        // A new question batch opens its sheet once, unless an approval
+        // already holds the screen; the transcript keeps a row to open it.
+        answers = answers.filter { id, _ in state.questions.contains { $0.id == id } }
+        if let batch = state.questions.first {
+            if answers[batch.id] == nil {
+                answers[batch.id] = batch.questions.map(\.answer)
+            }
+            questionSkipsAt = batch.skipsInMs.map { Date().addingTimeInterval(Double($0) / 1000) }
+            if shownQuestion != batch.id {
+                shownQuestion = batch.id
+                questionNotice = nil
+                showQuestions = !showApproval
+            }
+        } else {
+            shownQuestion = nil
+            showQuestions = false
+            questionSkipsAt = nil
         }
     }
 
@@ -432,6 +471,89 @@ final class AgentSessionModel {
         }
     }
 
+    // MARK: Questions
+
+    func answer(_ batch: QuestionBatch, _ question: Int) -> QuestionAnswer {
+        answers[batch.id]?[safe: question] ?? QuestionAnswer(selected: [], text: nil)
+    }
+
+    /// Pick or unpick an option; picking one drops typed text, as on the
+    /// computer.
+    func toggle(_ batch: QuestionBatch, question: Int, option: Int) {
+        guard let item = batch.questions[safe: question] else { return }
+        var current = answer(batch, question)
+        let pick = UInt32(option)
+        if !item.multiSelect {
+            current.selected = [pick]
+        } else if let index = current.selected.firstIndex(of: pick) {
+            current.selected.remove(at: index)
+        } else {
+            current.selected.append(pick)
+        }
+        current.text = nil
+        store(batch, question, current)
+    }
+
+    /// Type an answer in place of the options; clearing it brings them back.
+    func setText(_ batch: QuestionBatch, question: Int, text: String) {
+        var current = answer(batch, question)
+        current.text = text.isEmpty ? nil : text
+        store(batch, question, current)
+    }
+
+    func isAnswered(_ batch: QuestionBatch, _ question: Int) -> Bool {
+        let current = answer(batch, question)
+        if let text = current.text { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return !current.selected.isEmpty
+    }
+
+    func isComplete(_ batch: QuestionBatch) -> Bool {
+        batch.questions.indices.allSatisfy { isAnswered(batch, $0) }
+    }
+
+    func submitQuestions(_ batch: QuestionBatch) {
+        settle(batch) { handle, answers in
+            try await handle.answerQuestions(id: batch.id, answers: answers)
+        }
+    }
+
+    func skipQuestions(_ batch: QuestionBatch) {
+        settle(batch) { handle, _ in
+            try await handle.skipQuestions(id: batch.id)
+        }
+    }
+
+    private func store(_ batch: QuestionBatch, _ question: Int, _ answer: QuestionAnswer) {
+        var current = answers[batch.id] ?? batch.questions.map(\.answer)
+        guard current.indices.contains(question) else { return }
+        current[question] = answer
+        answers[batch.id] = current
+        questionNotice = nil
+    }
+
+    private func settle(
+        _ batch: QuestionBatch,
+        _ send: @escaping (AgentHandle, [QuestionAnswer]) async throws -> AnswerResult
+    ) {
+        guard let handle else { return }
+        let composed = answers[batch.id] ?? batch.questions.map(\.answer)
+        questionNotice = nil
+        Task {
+            do {
+                switch try await send(handle, composed) {
+                case .settled, .waiting, .ignored:
+                    showQuestions = false
+                case .incomplete:
+                    questionNotice = "Answer every question first."
+                case .failed:
+                    questionNotice = question?.error ?? "The answer did not reach \(agentName)."
+                }
+            } catch {
+                questionNotice = error.displayText
+            }
+        }
+    }
+
     func selectModel(_ model: String) {
         let efforts = models.first { $0.model == model }?.efforts ?? []
         let effort = effort.flatMap { efforts.contains($0) ? $0 : nil } ?? efforts.first
@@ -480,5 +602,13 @@ final class AgentSessionModel {
 
     static func compact(_ tokens: UInt64) -> String {
         tokens >= 1000 ? String(format: "%.1fk", Double(tokens) / 1000) : "\(tokens)"
+    }
+}
+
+private extension Array {
+    /// A batch can change under a sheet that still shows its old shape, so
+    /// lookups by a question's position must not trap.
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

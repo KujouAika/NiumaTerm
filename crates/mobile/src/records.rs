@@ -2,11 +2,12 @@
 //! they are, and every protocol and view type is converted here, once, so
 //! the desktop types never grow FFI attributes.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use nmt_agent::chat::Item;
+use nmt_agent::chat::{Item, QuestionInput, QuestionMode};
+use nmt_agent::session::input::{QuestionError, QuestionStatus};
 use nmt_agent::session::lifecycle::Status as LifecycleStatus;
-use nmt_agent::session::view::{AgentView, ViewEntry};
+use nmt_agent::session::view::{AgentView, DraftView, ViewEntry};
 use nmt_remote::connection::Status;
 use nmt_remote_core::push::{PushEnvironment, PushKind, PushRegistration};
 use nmt_remote_core::rpc::{
@@ -324,6 +325,62 @@ pub struct PendingApproval {
     pub submitted: bool,
 }
 
+/// How a question takes its answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AnswerInput {
+    /// Only the listed options.
+    SelectionOnly,
+    /// The options, or typed text in their place.
+    Text,
+    /// Typed text that is never shown again, such as a password.
+    Secret,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct QuestionChoice {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct QuestionItem {
+    pub header: Option<String>,
+    pub question: String,
+    pub multi_select: bool,
+    pub options: Vec<QuestionChoice>,
+    pub input: AnswerInput,
+
+    /// The answer as the host holds it, which a batch can arrive with.
+    pub answer: QuestionAnswer,
+}
+
+/// One question's answer: the options picked, or typed text in their place.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct QuestionAnswer {
+    /// Indexes into the question's options.
+    pub selected: Vec<u32>,
+
+    /// Typed text, which replaces the picked options when present.
+    pub text: Option<String>,
+}
+
+/// Questions the agent asked together and waits on as one answer.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct QuestionBatch {
+    pub id: String,
+    pub questions: Vec<QuestionItem>,
+
+    /// The answer is on its way to the agent.
+    pub submitting: bool,
+
+    /// Why the last answer did not reach the agent.
+    pub error: Option<String>,
+
+    /// How long until the host skips an optional batch nobody has started
+    /// answering, measured on this device's clock.
+    pub skips_in_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct QueuedMessage {
     /// Absent until the host has accepted the message into its queue; only
@@ -398,8 +455,8 @@ pub struct AgentState {
 
     pub approval: Option<PendingApproval>,
 
-    /// Question batches waiting for answers.
-    pub questions: u32,
+    /// Question batches waiting for answers, oldest first.
+    pub questions: Vec<QuestionBatch>,
 
     pub queue: Vec<QueuedMessage>,
 
@@ -431,7 +488,7 @@ pub(crate) fn agent_state(
             models: Vec::new(),
             plan_mode: false,
             approval: None,
-            questions: 0,
+            questions: Vec::new(),
             queue: Vec::new(),
             context_used: None,
             context_window: None,
@@ -484,7 +541,18 @@ pub(crate) fn agent_state(
                 description: approval.description.clone(),
                 submitted: approval.submitted,
             }),
-        questions: slots.pending.drafts.len() as u32,
+        questions: slots
+            .pending
+            .drafts
+            .iter()
+            .filter(|draft| {
+                matches!(
+                    draft.status,
+                    QuestionStatus::Pending | QuestionStatus::Submitting
+                )
+            })
+            .map(question_batch)
+            .collect(),
         queue: slots
             .queue
             .prompts
@@ -498,6 +566,64 @@ pub(crate) fn agent_state(
         context_window: usage.and_then(|usage| usage.max_tokens),
         commands: command_records(view),
         skills: skill_records(view),
+    }
+}
+
+fn question_batch(draft: &DraftView) -> QuestionBatch {
+    // The host skips an untouched optional batch this long after asking.
+    const OPTIONAL_WAIT: Duration = Duration::from_secs(120);
+
+    QuestionBatch {
+        id: draft.id.clone(),
+        questions: draft
+            .questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| QuestionItem {
+                header: question.header.clone(),
+                question: question.question.clone(),
+                multi_select: question.multi_select,
+                options: question
+                    .options
+                    .iter()
+                    .map(|option| QuestionChoice {
+                        label: option.label.clone(),
+                        description: option.description.clone(),
+                    })
+                    .collect(),
+                input: match question.input {
+                    QuestionInput::SelectionOnly => AnswerInput::SelectionOnly,
+                    QuestionInput::Text => AnswerInput::Text,
+                    QuestionInput::Secret => AnswerInput::Secret,
+                },
+                answer: QuestionAnswer {
+                    selected: draft
+                        .selected
+                        .get(index)
+                        .map(|picks| picks.iter().map(|pick| *pick as u32).collect())
+                        .unwrap_or_default(),
+                    text: draft
+                        .custom
+                        .get(index)
+                        .copied()
+                        .unwrap_or(false)
+                        .then(|| draft.text.get(index).cloned().unwrap_or_default()),
+                },
+            })
+            .collect(),
+        submitting: draft.status == QuestionStatus::Submitting,
+        error: draft.error.as_ref().map(|error| match error {
+            QuestionError::Disconnected => {
+                "The agent disconnected before the answer arrived.".to_owned()
+            }
+            QuestionError::Rejected(message) => message.clone(),
+        }),
+        skips_in_ms: (draft.mode == QuestionMode::Optional
+            && !draft.touched
+            && draft.status == QuestionStatus::Pending)
+            .then(|| draft.started.instant())
+            .flatten()
+            .map(|started| OPTIONAL_WAIT.saturating_sub(started.elapsed()).as_millis() as u64),
     }
 }
 

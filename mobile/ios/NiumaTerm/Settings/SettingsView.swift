@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage("faceIDLock") private var faceIDLock = false
     @AppStorage("appearance") private var appearance = AppAppearance.system
     @AppStorage(ComposerSettings.codexSkillsInSlashKey) private var codexSkillsInSlash = true
+    @AppStorage(ComposerSettings.questionsOneAtATimeKey) private var questionsOneAtATime = false
 
     @State private var forgetting: Host?
 
@@ -57,10 +58,11 @@ struct SettingsView: View {
                 Section {
                     Toggle("Monospaced transcript", isOn: $transcriptMono)
                     Toggle("Codex skills in / list", isOn: $codexSkillsInSlash)
+                    Toggle("Answer questions one at a time", isOn: $questionsOneAtATime)
                 } header: {
                     Text("Agent")
                 } footer: {
-                    Text("List Codex skills among the / commands; picking one writes its $name form. With this off, / lists commands only and $ lists skills.")
+                    Text("List Codex skills among the / commands; picking one writes its $name form. With this off, / lists commands only and $ lists skills. When an agent asks several questions together, answering one at a time shows them one by one.")
                 }
                 Section("Security") {
                     Toggle("Require Face ID", isOn: $faceIDLock)

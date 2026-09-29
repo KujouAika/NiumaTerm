@@ -1,21 +1,29 @@
+#[cfg(test)]
+#[path = "agent_tests.rs"]
+mod agent_tests;
+
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::anyhow;
 use nmt_agent::catalog::{SlashRefusal, SlashRoute};
-use nmt_agent::chat::{SkillReference, SlashCommandOutcome, SlashCommandRunPolicy};
+use nmt_agent::chat::{
+    Question, QuestionInput, SkillReference, SlashCommandOutcome, SlashCommandRunPolicy,
+};
 use nmt_agent::session::OperationError;
 use nmt_agent::session::command::{
-    AdmitSlashCommand, AgentCommand, ApplyModelSelection, Interrupt, NEW_CONVERSATION_METHOD,
-    Prompt, RenameConversation, RespondApproval, RunSlashCommand, SubmitPrompt, SubmitRefusal,
-    WithdrawQueuedPrompt,
+    AdmitSlashCommand, AgentCommand, AnswerQuestion, ApplyModelSelection, Interrupt,
+    NEW_CONVERSATION_METHOD, Prompt, RenameConversation, RespondApproval, RunSlashCommand,
+    SubmitPrompt, SubmitRefusal, WithdrawQueuedPrompt,
 };
 use nmt_agent::session::commands::{CommandAdmission, PendingSlashCommand};
 use nmt_agent::session::controller::SubmissionBlock;
 use nmt_agent::session::delivery::RecoverablePrompt;
-use nmt_agent::session::input::ApprovalOutcome;
+use nmt_agent::session::input::{
+    ApprovalOutcome, QuestionAction, QuestionDraft, QuestionStatus, Submission,
+};
 use nmt_agent::session::lifecycle::InterruptOutcome;
-use nmt_agent::session::view::{AgentView, ViewOp, ViewSlot};
+use nmt_agent::session::view::{AgentView, DraftAnswers, ViewOp, ViewSlot};
 use nmt_platform::runtime;
 use nmt_remote::connection::{AgentLink, AgentUpdate, RemoteHost};
 use parking_lot::Mutex;
@@ -26,7 +34,7 @@ use tracing::warn;
 
 use crate::commands::{bound_skill, refusal_text, route_line};
 use crate::error::CoreError;
-use crate::records::{AgentEntry, AgentState, ViewEnd, agent_entry, agent_state};
+use crate::records::{AgentEntry, AgentState, QuestionAnswer, ViewEnd, agent_entry, agent_state};
 
 /// The longest title a prompt gives an unnamed conversation, matching what
 /// the desktop takes from its own prompts.
@@ -92,6 +100,19 @@ pub enum SubmitResult {
     },
     /// The line started a new conversation in place of this one.
     ConversationReplaced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AnswerResult {
+    /// The batch no longer waits, or the conversation is changing.
+    Ignored,
+    /// A question has no answer yet.
+    Incomplete,
+    /// The agent took the answer and still waits on other questions.
+    Waiting,
+    Settled,
+    /// The answer did not reach the agent; the batch says why.
+    Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -280,6 +301,72 @@ impl AgentHandle {
         })
     }
 
+    /// Settle the pending batch `id`: with `answers`, or as skipped when
+    /// there are none. Answers are checked the way the desktop checks its
+    /// own before anything is sent.
+    async fn settle_questions(
+        &self,
+        id: &str,
+        answers: Option<Vec<QuestionAnswer>>,
+    ) -> Result<AnswerResult, CoreError> {
+        let draft = self.replica.lock().view.as_ref().and_then(|view| {
+            view.slots
+                .pending
+                .drafts
+                .iter()
+                .find(|draft| draft.id == id && draft.status == QuestionStatus::Pending)
+                .cloned()
+        });
+
+        let Some(draft) = draft else {
+            return Ok(AnswerResult::Ignored);
+        };
+
+        let key = draft.key;
+
+        let (action, answers) = match answers {
+            None => (
+                QuestionAction::Skip,
+                DraftAnswers {
+                    selected: draft.selected.clone(),
+                    text: draft.text.clone(),
+                    custom: draft.custom.clone(),
+                },
+            ),
+            Some(answers) => {
+                let Some(answers) = draft_answers(&draft.questions, answers) else {
+                    return Ok(AnswerResult::Incomplete);
+                };
+
+                let mut check = QuestionDraft::from_view(draft);
+
+                check.set_answers(answers.clone());
+
+                if !check.is_complete() {
+                    return Ok(AnswerResult::Incomplete);
+                }
+
+                (QuestionAction::Answer, answers)
+            }
+        };
+
+        Ok(
+            match self
+                .run(AnswerQuestion {
+                    key,
+                    action,
+                    answers,
+                })
+                .await?
+            {
+                Submission::Ignored => AnswerResult::Ignored,
+                Submission::Waiting => AnswerResult::Waiting,
+                Submission::Settled { .. } => AnswerResult::Settled,
+                Submission::Failed => AnswerResult::Failed,
+            },
+        )
+    }
+
     async fn run<C: AgentCommand>(&self, command: C) -> Result<C::Outcome, CoreError> {
         let link = Arc::clone(&self.link);
         let params = serde_json::to_value(&command)?;
@@ -390,6 +477,20 @@ impl AgentHandle {
 
         serde_json::from_value::<Result<(), String>>(value)?
             .map_err(|message| CoreError::Failed { message })
+    }
+
+    /// Answer the question batch `id`, one answer per question.
+    pub async fn answer_questions(
+        &self,
+        id: String,
+        answers: Vec<QuestionAnswer>,
+    ) -> Result<AnswerResult, CoreError> {
+        self.settle_questions(&id, Some(answers)).await
+    }
+
+    /// Tell the agent the person will not answer the batch `id`.
+    pub async fn skip_questions(&self, id: String) -> Result<AnswerResult, CoreError> {
+        self.settle_questions(&id, None).await
     }
 
     pub async fn interrupt(&self) -> Result<InterruptResult, CoreError> {
@@ -510,6 +611,47 @@ async fn watch_ended(host: Arc<RemoteHost>, observer: Arc<dyn AgentObserver>) {
     while changes.changed().await.is_ok() {
         observer.changed(None);
     }
+}
+
+/// The host's form of one answer per question, or `None` when the count
+/// does not match the batch. Typed text replaces the picks only where the
+/// question takes text, and a single-choice question keeps its first pick.
+fn draft_answers(questions: &[Question], answers: Vec<QuestionAnswer>) -> Option<DraftAnswers> {
+    if answers.len() != questions.len() {
+        return None;
+    }
+
+    let mut draft = DraftAnswers {
+        selected: Vec::new(),
+        text: Vec::new(),
+        custom: Vec::new(),
+    };
+
+    for (question, answer) in questions.iter().zip(answers) {
+        let mut picks: Vec<usize> = answer
+            .selected
+            .into_iter()
+            .map(|pick| pick as usize)
+            .filter(|pick| *pick < question.options.len())
+            .collect();
+
+        if question.multi_select {
+            picks.sort_unstable();
+            picks.dedup();
+        } else {
+            picks.truncate(1);
+        }
+
+        let typed = answer
+            .text
+            .filter(|_| question.input != QuestionInput::SelectionOnly);
+
+        draft.selected.push(picks);
+        draft.custom.push(typed.is_some());
+        draft.text.push(typed.unwrap_or_default());
+    }
+
+    Some(draft)
 }
 
 /// The name a harness without its own title generation gives the

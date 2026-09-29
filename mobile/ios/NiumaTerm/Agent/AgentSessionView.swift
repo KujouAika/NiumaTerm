@@ -55,10 +55,16 @@ struct AgentSessionView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if (model.state?.questions ?? 0) > 0 {
-                        Text("? \(model.agentName) asks a question. Answer it on the computer for now.")
-                            .font(Theme.mono(12.5))
-                            .foregroundStyle(Theme.attention)
+                    if model.question != nil && !model.showQuestions {
+                        Button { model.showQuestions = true } label: {
+                            Label("Answer \(model.agentName)'s question", systemImage: "questionmark.bubble")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.attention)
+                                .padding(.horizontal, 14)
+                                .frame(height: 40)
+                                .background(Theme.attention.opacity(0.1), in: .capsule)
+                        }
+                        .buttonStyle(.plain)
                     }
                     if model.isWorking, let started = model.workStarted {
                         WorkingRow(started: started, tokens: model.tokensText)
@@ -118,6 +124,12 @@ struct AgentSessionView: View {
             TextField("Title", text: $newTitle)
             Button("Cancel", role: .cancel) {}
             Button("Save") { model.rename(newTitle) }
+        }
+        .sheet(isPresented: $model.showQuestions) {
+            if let batch = model.question {
+                QuestionSheet(model: model, batch: batch)
+                    .presentationDetents([.medium, .large])
+            }
         }
         .sheet(isPresented: $model.showApproval) {
             if let approval = model.approval {
