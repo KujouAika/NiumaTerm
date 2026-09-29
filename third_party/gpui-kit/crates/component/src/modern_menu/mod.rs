@@ -25,8 +25,11 @@ use std::rc::Rc;
 use gpui::{
     Action, AnyWindowHandle, App, AppContext as _, Bounds, Context, Font, Global, KeyDownEvent,
     Pixels, Point, SharedString, TextRun, Window, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, font, point, px, size,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px, size,
 };
+
+#[cfg(target_os = "windows")]
+use gpui::font;
 
 use crate::{ActiveTheme as _, Icon};
 
@@ -418,6 +421,9 @@ impl ModernMenu {
 /// Where a menu is put: against a point the caller named, or beside the row of
 /// the menu that opened it.
 enum Placement {
+    // Only the Windows flyout path opens a menu at a caller-named point; the
+    // variant stays on every platform so the placement math is shared.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     Anchored {
         anchor: Point<Pixels>,
         side: metrics::Side,
