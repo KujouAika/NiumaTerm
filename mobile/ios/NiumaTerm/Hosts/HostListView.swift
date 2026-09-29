@@ -20,24 +20,43 @@ struct HostListView: View {
                     }
                 }
                 ForEach(app.hosts) { host in
-                    Section {
-                        ForEach(host.orderedSessions) { session in
-                            NavigationLink(value: SessionRoute(hostID: host.id, sessionID: session.id, kind: session.kind)) {
-                                SessionRow(session: session)
+                    let groups = host.sessionGroups
+                    let header = HostHeader(host: host,
+                                            onNew: host.isOnline ? { newSessionHost = host } : nil,
+                                            onRetry: host.status == .unreachable ? { app.retry(host.id) } : nil)
+                        .textCase(nil)
+                    if groups.isEmpty {
+                        Section {
+                            if host.isOnline {
+                                Text("No sessions. Tap + to start a terminal or an agent.")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Theme.tertiary)
+                                    .listRowBackground(Theme.rowBackground)
                             }
-                            .listRowBackground(Theme.rowBackground)
+                        } header: {
+                            header
                         }
-                        if host.isOnline && host.sessions.isEmpty {
-                            Text("No sessions. Tap + to start a terminal or an agent.")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.tertiary)
+                    }
+                    // One section per workspace; the first also carries the
+                    // host's header, so each host still reads as one block.
+                    ForEach(groups) { group in
+                        Section {
+                            ForEach(group.sessions) { session in
+                                NavigationLink(value: SessionRoute(hostID: host.id, sessionID: session.id, kind: session.kind)) {
+                                    SessionRow(session: session)
+                                }
                                 .listRowBackground(Theme.rowBackground)
+                            }
+                        } header: {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if group.id == groups.first?.id {
+                                    header
+                                }
+                                if groups.count > 1 || group.workspace != nil {
+                                    WorkspaceHeader(name: group.workspace?.name ?? "Other")
+                                }
+                            }
                         }
-                    } header: {
-                        HostHeader(host: host,
-                                   onNew: host.isOnline ? { newSessionHost = host } : nil,
-                                   onRetry: host.status == .unreachable ? { app.retry(host.id) } : nil)
-                            .textCase(nil)
                     }
                 }
             }
@@ -136,6 +155,19 @@ struct HostHeader: View {
         }
         .padding(.top, 8)
         .opacity(host.isOnline ? 1 : 0.7)
+    }
+}
+
+/// Names the host workspace a group of sessions comes from.
+struct WorkspaceHeader: View {
+    let name: String
+
+    var body: some View {
+        Label(name, systemImage: "folder")
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(Theme.secondary)
+            .textCase(nil)
+            .lineLimit(1)
     }
 }
 

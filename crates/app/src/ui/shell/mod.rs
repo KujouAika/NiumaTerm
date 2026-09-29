@@ -3473,6 +3473,8 @@ impl Render for AppWindow {
 
         window.set_window_title(&self.active_tab_title());
 
+        ui::remote::sync_workspaces(self.window_id, &self.workspaces, cx);
+
         if self.chrome.needs_focus {
             self.chrome.needs_focus = false;
 

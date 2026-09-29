@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use anyhow::{Result, anyhow};
 use nmt_config::{CursorShape, active_colors};
 use nmt_platform::{PtyOptions, WinsizeBuilder, create_pty_with_env, default_shell};
-use nmt_remote_core::rpc::{EndReason, Origin, SessionInfo, SessionKind};
+use nmt_remote_core::rpc::{EndReason, Origin, SessionInfo, SessionKind, SessionWorkspace};
 use nmt_terminal::event::{EventListener, Msg, MsgSender, TerminalEvent};
 use nmt_terminal::session::TerminalSessionConfig;
 use nmt_terminal::termio::{SessionOptions, SessionWorker, start_session};
@@ -180,6 +180,7 @@ impl SessionRegistry {
                     rows: 0,
                     kind: SessionKind::Agent,
                     harness: Some(harness),
+                    workspace: None,
                 },
                 control,
             },
@@ -326,6 +327,34 @@ impl SessionRegistry {
     }
 
     pub fn set_title(&self, session: &str, title: String) {
+        self.update_info(session, |info| {
+            if info.title == title {
+                return false;
+            }
+
+            info.title = title;
+
+            true
+        });
+    }
+
+    /// Record the host workspace whose tab shows `session`, which paired
+    /// devices group their session lists by.
+    pub fn set_workspace(&self, session: &str, workspace: Option<SessionWorkspace>) {
+        self.update_info(session, |info| {
+            if info.workspace == workspace {
+                return false;
+            }
+
+            info.workspace = workspace;
+
+            true
+        });
+    }
+
+    /// Change a listed session's info, telling paired devices when `change`
+    /// reports it changed anything.
+    fn update_info(&self, session: &str, change: impl FnOnce(&mut SessionInfo) -> bool) {
         let mut inner = self.inner.lock();
 
         let inner = &mut *inner;
@@ -338,13 +367,9 @@ impl SessionRegistry {
             },
         };
 
-        if info.title == title {
-            return;
+        if change(info) {
+            self.notify();
         }
-
-        info.title = title;
-
-        self.notify();
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
@@ -636,6 +661,7 @@ impl SessionRegistry {
                 rows,
                 kind: SessionKind::Terminal,
                 harness: None,
+                workspace: None,
             },
             control,
             size: watch::channel((cols, rows)).0,

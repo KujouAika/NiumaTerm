@@ -279,6 +279,23 @@ pub struct SessionInfo {
     /// The agent harness, for an agent session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+
+    /// The host workspace whose tab shows the session. Hosts without
+    /// workspaces, and sessions no tab shows, send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<SessionWorkspace>,
+}
+
+/// A workspace on the host, as devices group sessions by it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionWorkspace {
+    /// Stable while the host runs, so a renamed workspace stays one group.
+    pub id: String,
+
+    pub name: String,
+
+    /// Where the host lists the workspace, first at 0.
+    pub position: u32,
 }
 
 /// An agent command. Commands and outcomes are opaque here: the agent

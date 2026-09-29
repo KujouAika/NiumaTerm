@@ -9,7 +9,9 @@ use nmt_agent::session::lifecycle::Status as LifecycleStatus;
 use nmt_agent::session::view::{AgentView, ViewEntry};
 use nmt_remote::connection::Status;
 use nmt_remote_core::push::{PushEnvironment, PushKind, PushRegistration};
-use nmt_remote_core::rpc::{EndReason, HostInfo, Origin, SessionInfo, SessionKind};
+use nmt_remote_core::rpc::{
+    EndReason, HostInfo, Origin, SessionInfo, SessionKind, SessionWorkspace,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum HostStatus {
@@ -65,6 +67,32 @@ pub struct SessionRecord {
 
     /// Started from a device rather than as a tab at the host.
     pub remote_origin: bool,
+
+    /// The host workspace whose tab shows the session; none from hosts
+    /// that do not say, and for sessions no tab shows.
+    pub workspace: Option<SessionWorkspaceRecord>,
+}
+
+/// A host workspace, as the app groups a host's sessions by it.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SessionWorkspaceRecord {
+    /// Stable while the host runs, so a renamed workspace stays one group.
+    pub id: String,
+
+    pub name: String,
+
+    /// Where the host lists the workspace, first at 0.
+    pub position: u32,
+}
+
+impl From<SessionWorkspace> for SessionWorkspaceRecord {
+    fn from(workspace: SessionWorkspace) -> Self {
+        Self {
+            id: workspace.id,
+            name: workspace.name,
+            position: workspace.position,
+        }
+    }
 }
 
 impl From<SessionInfo> for SessionRecord {
@@ -79,6 +107,7 @@ impl From<SessionInfo> for SessionRecord {
             },
             harness: info.harness,
             remote_origin: info.origin == Origin::Remote,
+            workspace: info.workspace.map(SessionWorkspaceRecord::from),
         }
     }
 }

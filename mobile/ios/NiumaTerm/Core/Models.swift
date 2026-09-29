@@ -39,6 +39,7 @@ struct Session: Identifiable, Hashable {
     var title: String
     var kind: SessionType
     var profile: AgentProfile?
+    var workspace: SessionWorkspace?
 
     init(record: SessionRecord, hostID: String) {
         id = record.id
@@ -46,6 +47,9 @@ struct Session: Identifiable, Hashable {
         title = record.title
         kind = record.kind
         profile = record.harness.map(AgentProfile.init(harness:))
+        workspace = record.workspace.map {
+            SessionWorkspace(id: $0.id, name: $0.name, position: Int($0.position))
+        }
     }
 
     var glyph: String {
@@ -63,6 +67,23 @@ struct Session: Identifiable, Hashable {
         case .other: "Session"
         }
     }
+}
+
+/// The host workspace whose tab shows a session.
+struct SessionWorkspace: Hashable {
+    let id: String
+    let name: String
+    let position: Int
+}
+
+/// A host's sessions from one of its workspaces. `workspace` is nil for
+/// sessions no workspace claims, and for every session of a host that does
+/// not report workspaces.
+struct SessionGroup: Identifiable {
+    let workspace: SessionWorkspace?
+    let sessions: [Session]
+
+    var id: String { workspace?.id ?? "" }
 }
 
 /// A route on the navigation stack: one session on one host. It carries
@@ -103,9 +124,23 @@ struct Host: Identifiable {
         }
     }
 
-    /// Terminals first, then agents, as the design lists them.
-    var orderedSessions: [Session] {
-        sessions.filter { $0.kind == .terminal } + sessions.filter { $0.kind != .terminal }
+    /// Sessions grouped by workspace in the host's workspace order, with
+    /// unclaimed sessions last; within a group terminals come first, then
+    /// agents, as the design lists them.
+    var sessionGroups: [SessionGroup] {
+        let grouped = Dictionary(grouping: sessions) { $0.workspace?.id }
+        return grouped.values
+            .map { sessions in
+                SessionGroup(workspace: sessions.first?.workspace,
+                             sessions: sessions.filter { $0.kind == .terminal } + sessions.filter { $0.kind != .terminal })
+            }
+            .sorted { a, b in
+                switch (a.workspace, b.workspace) {
+                case let (a?, b?): (a.position, a.id) < (b.position, b.id)
+                case (_?, nil): true
+                case (nil, _): false
+                }
+            }
     }
 }
 

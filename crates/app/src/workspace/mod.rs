@@ -147,6 +147,22 @@ pub fn default_workspace_name() -> Cow<'static, str> {
     t!("shell-workspace-default-name")
 }
 
+/// The name a workspace is shown by: its own, or for one still carrying the
+/// default name, the last component of its primary directory, which tells
+/// unnamed workspaces apart.
+pub fn workspace_display_label(name: &str, cwd: &str) -> String {
+    if name != "New Workspace" && name != t!("shell-workspace-default-name") {
+        return name.to_string();
+    }
+
+    cwd.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|component| !component.is_empty())
+        .filter(|component| *component != ".")
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_string())
+}
+
 /// Every directory a summary owns, primary first, skipping placeholder
 /// entries that do not name a concrete filesystem location.
 fn summary_roots(ws: &WorkspaceSummary) -> impl Iterator<Item = (bool, Vec<String>)> {
@@ -475,6 +491,22 @@ impl WorkspaceManager {
     /// Tab sets of every workspace (the window-close process sweep).
     pub fn all_tabs(&self) -> impl Iterator<Item = &TabManager<TabSurface>> {
         self.workspaces.items().iter().map(|ws| &ws.tabs)
+    }
+
+    /// Every workspace that holds shells, in order, with the name it is
+    /// shown by and its tabs.
+    pub fn normal_workspaces(
+        &self,
+    ) -> impl Iterator<Item = (WorkspaceId, String, &TabManager<TabSurface>)> {
+        self.workspaces
+            .items()
+            .iter()
+            .filter(|ws| ws.kind == WorkspaceKind::Normal)
+            .map(|ws| {
+                let cwd = ws.roots.as_ref().map_or("", WorkspaceRoots::primary);
+
+                (ws.id, workspace_display_label(&ws.name, cwd), &ws.tabs)
+            })
     }
 
     pub fn is_pinned(&self, id: WorkspaceId) -> bool {

@@ -17,6 +17,7 @@ use app::remote_control::HostControl;
 use app::terminal_tab::view::{HostShare, TerminalPane};
 use gpui::{
     App, BorrowAppContext as _, Entity, EntityId, Global, SharedString, Subscription, Task, Window,
+    WindowId,
 };
 use gpui_component::Root;
 use nmt_platform::runtime;
@@ -38,7 +39,8 @@ use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use nmt_remote_core::push::PushKind;
 use nmt_remote_core::rpc::{
-    AgentOpen, AgentProfileInfo, HostInfo, SessionInfo, SessionKind, SessionRef, WorkspaceInfo,
+    AgentOpen, AgentProfileInfo, HostInfo, SessionInfo, SessionKind, SessionRef, SessionWorkspace,
+    WorkspaceInfo,
 };
 use rust_i18n::t;
 use serde_json::Value;
@@ -50,6 +52,7 @@ use uuid::Uuid;
 use crate::last_active_window;
 use crate::ui::settings::AgentProfile;
 use crate::ui::{AppSettings, AppWindow};
+use crate::workspace::WorkspaceManager;
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
 
@@ -284,6 +287,15 @@ pub(crate) fn save_relay_key(cx: &mut App) -> bool {
 }
 
 impl Remote {
+    /// The host session a pane shows to paired devices, if any.
+    fn session_of(&self, pane: EntityId) -> Option<&str> {
+        self.shared_tabs
+            .get(&pane)
+            .or_else(|| self.viewed_sessions.get(&pane))
+            .or_else(|| self.shared_agents.get(&pane).map(|shared| &shared.id))
+            .map(String::as_str)
+    }
+
     /// Where LAN peers can reach this host, most likely first; `None` while
     /// hosting is off.
     pub(crate) fn hosting_addresses(&self) -> Option<Vec<String>> {
@@ -354,13 +366,8 @@ impl Remote {
         let mut names: Vec<String> = Vec::new();
 
         for pane in panes {
-            let session = self
-                .shared_tabs
-                .get(&pane)
-                .or_else(|| self.viewed_sessions.get(&pane))
-                .or_else(|| self.shared_agents.get(&pane).map(|shared| &shared.id));
-
-            for name in session
+            for name in self
+                .session_of(pane)
                 .map(|session| self.registry.viewers(session))
                 .unwrap_or_default()
             {
@@ -880,6 +887,42 @@ fn withdraw_offer(registry: &SessionRegistry, id: &str, own: &WeakUnboundedSende
         && own.same_channel(&control.requests)
     {
         registry.unregister(id);
+    }
+}
+
+/// Tell paired devices which workspace of `window` each shared session's
+/// tab sits in. The window calls this on every render, which follows tabs
+/// opening, closing, and moving and workspaces being renamed or reordered,
+/// so no mutation path has to remember it; the registry tells devices only
+/// when an assignment actually changed.
+pub(crate) fn sync_workspaces(window: WindowId, workspaces: &WorkspaceManager, cx: &App) {
+    let remote = cx.global::<Remote>();
+
+    for (position, (id, name, tabs)) in workspaces.normal_workspaces().enumerate() {
+        // Workspace ids count up per window, so the window keeps two
+        // windows' workspaces apart.
+        let workspace = SessionWorkspace {
+            id: format!("{}-{}", window.as_u64(), id.0),
+            name,
+            position: u32::try_from(position).unwrap_or(u32::MAX),
+        };
+
+        for tab in tabs.list().items() {
+            let surface = tab.surface();
+
+            let panes = surface.pane_ids();
+
+            let sessions = panes
+                .iter()
+                .filter_map(|pane| remote.session_of(*pane))
+                .chain(surface.restoring_agent());
+
+            for session in sessions {
+                remote
+                    .registry
+                    .set_workspace(session, Some(workspace.clone()));
+            }
+        }
     }
 }
 

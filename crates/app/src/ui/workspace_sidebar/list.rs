@@ -29,7 +29,7 @@ use crate::ui::workspace_sidebar::{
     SELECTION_BAR_INSET, SIDEBAR_ROW_GUTTER, WORKSPACE_NAME_INSET, WorkspaceChrome,
 };
 use crate::ui::{AppSettings, AppWindow, UI_RADIUS, modern_dropdown};
-use crate::workspace::WorkspaceKind;
+use crate::workspace::{WorkspaceKind, workspace_display_label};
 
 /// The scrolling list of workspaces, each heading the tab rows the vertical
 /// tab-bar style places under it. Workspaces can be reordered by drag; the
@@ -576,19 +576,6 @@ impl WorkspaceList {
             .children(progress)
             .into_any_element()
     }
-}
-
-fn workspace_display_label(name: &str, cwd: &str) -> String {
-    if name != "New Workspace" && name != t!("shell-workspace-default-name") {
-        return name.to_string();
-    }
-
-    cwd.trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .find(|component| !component.is_empty())
-        .filter(|component| *component != ".")
-        .map(str::to_string)
-        .unwrap_or_else(|| name.to_string())
 }
 
 /// The full ordered directory list a workspace row exposes through its tooltip
