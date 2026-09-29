@@ -79,6 +79,12 @@ final class AppModel {
         if let index = hosts.firstIndex(where: { $0.id == record.id }) {
             hosts[index].name = record.name
             hosts[index].status = record.status
+            // A list from a dropped link may no longer be true, and its rows
+            // could not be opened anyway; the host lists its sessions again
+            // once the link is back.
+            if record.status != .connected {
+                hosts[index].sessions = []
+            }
         } else if core?.hosts().contains(where: { $0.id == record.id }) == true {
             // Events reach the main actor asynchronously, so one sent just
             // before a host was forgotten can arrive after it; only hosts
