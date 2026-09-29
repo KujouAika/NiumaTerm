@@ -1,9 +1,11 @@
 //! Installed-release checks for DeepSeek integration tests.
 
+#[cfg(windows)]
 use std::time::Duration;
 
 use semver::{Version, VersionReq};
 
+#[cfg(windows)]
 use crate::launcher::{AgentCli, ProcessLimits, run_bounded};
 
 /// The exact release used by the package launchers. The Remote API can change
@@ -12,8 +14,10 @@ const SUPPORTED_VERSIONS: &str = "=0.1.5-rc.1";
 
 /// `dsh --version` only has to start Node and print, but a first run on a cold
 /// machine still pays for module resolution.
+#[cfg(windows)]
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[cfg(windows)]
 const VERSION_OUTPUT_LIMIT: usize = 8 * 1024;
 
 /// What the installed harness is, relative to what this build supports. An
@@ -30,11 +34,14 @@ enum VersionSupport {
     },
     /// The version could not be read at all. Reported, but not treated as a
     /// reason to refuse: a harness that answers its interface works whether or
-    /// not it can describe itself.
+    /// not it can describe itself. Only the installed-harness check, which
+    /// runs on Windows, launches anything that can fail this way.
+    #[cfg(windows)]
     Unknown(String),
 }
 
 /// Ask the installed harness what it is.
+#[cfg(windows)]
 fn describe_version(cli: &AgentCli) -> VersionSupport {
     let run = match nmt_platform::runtime().block_on(run_bounded(
         cli,
@@ -77,6 +84,7 @@ fn classify(installed: &Version) -> VersionSupport {
 
 /// The output is a bare version line, but a warning printed before it would
 /// otherwise make the whole run unreadable, so each line is tried in turn.
+#[cfg(windows)]
 fn parse_version(output: &str) -> Option<Version> {
     output
         .lines()

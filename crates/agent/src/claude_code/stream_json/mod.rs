@@ -1619,7 +1619,7 @@ impl TurnTracker {
         self.state == TurnState::Idle
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     fn state(&self) -> TurnState {
         self.state
     }

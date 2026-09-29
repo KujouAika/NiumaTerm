@@ -13,8 +13,6 @@ use std::{env, fmt};
 
 use futures::FutureExt as _;
 use nmt_platform::process::launch_env_var;
-#[cfg(not(windows))]
-use nmt_platform::shell::default_shell;
 use nmt_platform::{AsyncPty, PtyOptions};
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;

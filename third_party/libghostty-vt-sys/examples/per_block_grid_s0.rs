@@ -1,4 +1,3 @@
-use std::ffi::c_void;
 use std::process::Command;
 use std::{env, ptr};
 
@@ -70,6 +69,8 @@ fn input(cols: u16, lines: usize, dense: bool) -> Vec<u8> {
 
 #[cfg(windows)]
 fn private_bytes() -> usize {
+    use std::ffi::c_void;
+
     #[repr(C)]
     struct ProcessMemoryCountersEx {
         cb: u32,

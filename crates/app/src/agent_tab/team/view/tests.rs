@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use std::path::Path;
 
 use gpui::{AppContext as _, TestAppContext, VisualTestContext, px};
@@ -10,6 +11,7 @@ use nmt_agent::chat::{
     Event, Item, Question, QuestionInput, QuestionMode, QuestionRequest, SendOutcome,
     SlashCommandOutcome, ThreadSettings,
 };
+#[cfg(windows)]
 use nmt_agent::session::lifecycle::Status;
 use nmt_agent::session::team_capabilities::{ModeratorAdmission, RecoveredTeamTurn};
 use nmt_agent::session::test_support::TestBackend;
@@ -20,7 +22,9 @@ use nmt_agent::team::member::{MemberConfig, ProfileReference};
 use nmt_agent::team::model::UserInput;
 use nmt_agent::team::room::Room;
 use nmt_agent::team::session::{AttemptEventKey, TeamError, TeamSession};
-use nmt_config::profile::{AgentProfile, EnvVar};
+use nmt_config::profile::AgentProfile;
+#[cfg(windows)]
+use nmt_config::profile::EnvVar;
 use tempfile::tempdir;
 
 use crate::agent_tab::execution::AgentSession;

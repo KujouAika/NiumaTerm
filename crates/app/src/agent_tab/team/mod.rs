@@ -438,7 +438,7 @@ impl TeamRuntime {
             .insert(id, MemberHost::new(owner, vec![events, changed]));
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     fn member_session(&self, member: MemberId) -> Option<&Entity<AgentSession>> {
         self.hosts.get(&member).map(|host| host.owner.session())
     }

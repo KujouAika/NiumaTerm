@@ -2,7 +2,9 @@ use gpui::{App, Styled as _};
 #[cfg(windows)]
 use gpui::{IntoElement as _, ParentElement as _};
 use gpui_component::Disableable as _;
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
+#[cfg(windows)]
+use gpui_component::button::ButtonVariants as _;
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 #[cfg(windows)]

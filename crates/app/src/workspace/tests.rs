@@ -71,6 +71,7 @@ fn matched(cwds: &[&str], target: &str) -> Option<WorkspaceId> {
     best_match(&summaries(cwds), path::Path::new(target))
 }
 
+#[cfg(windows)]
 fn exactly_matched(cwds: &[&str], target: &str) -> Option<WorkspaceId> {
     exact_match(&summaries(cwds), path::Path::new(target))
 }

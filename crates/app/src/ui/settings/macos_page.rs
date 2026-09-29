@@ -2,7 +2,7 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window};
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_component::{Disableable as _, v_flex};

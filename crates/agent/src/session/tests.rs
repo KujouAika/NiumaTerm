@@ -1,3 +1,6 @@
+// The only test here drives a PowerShell fixture as the agent CLI.
+#![cfg(windows)]
+
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -21,7 +24,6 @@ impl Drop for Scratch {
     }
 }
 
-#[cfg(windows)]
 #[test]
 fn cli_session_starts_sends_images_and_rejects_cross_provider_recovery_without_a_window() {
     use std::path::Path;
