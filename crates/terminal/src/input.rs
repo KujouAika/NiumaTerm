@@ -131,18 +131,30 @@ fn encoded_key(event: &TerminalKey<'_>, flags: KeyEncodeFlags) -> Option<Vec<u8>
     })
 }
 
+/// Whether the modifier the `ctrl-enter` newline shortcut pairs with Enter is
+/// held, and whether the other of Control and Command is. macOS puts the
+/// shortcut on Command: that is the key the agent composer's text input treats
+/// as its secondary Enter there, so one setting names one chord in terminal
+/// and agent tabs alike, and Control-Enter keeps its plain terminal meaning.
+fn secondary_enter_modifiers(modifiers: ModifiersState) -> (bool, bool) {
+    if cfg!(target_os = "macos") {
+        (modifiers.super_key(), modifiers.control_key())
+    } else {
+        (modifiers.control_key(), modifiers.super_key())
+    }
+}
+
 fn modified_enter_action(
     event: &TerminalKey<'_>,
     newline_shortcut: NewlineShortcut,
 ) -> Option<TerminalKeyAction> {
-    if !event.key.eq_ignore_ascii_case("enter")
-        || event.modifiers.alt_key()
-        || event.modifiers.super_key()
-    {
+    let (secondary, other) = secondary_enter_modifiers(event.modifiers);
+
+    if !event.key.eq_ignore_ascii_case("enter") || event.modifiers.alt_key() || other {
         return None;
     }
 
-    let inserts_newline = match (event.modifiers.control_key(), event.modifiers.shift_key()) {
+    let inserts_newline = match (secondary, event.modifiers.shift_key()) {
         (true, false) => newline_shortcut == NewlineShortcut::CtrlEnter,
         (false, true) => newline_shortcut == NewlineShortcut::ShiftEnter,
         _ => return None,

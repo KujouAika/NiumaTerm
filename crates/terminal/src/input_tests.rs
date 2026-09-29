@@ -101,9 +101,17 @@ fn legacy_enter_modifiers_match_windows_terminal() {
     );
 }
 
+/// The modifier the `ctrl-enter` newline shortcut is pressed with: Command on
+/// macOS, where the agent composer reads it too, Control elsewhere.
+#[cfg(target_os = "macos")]
+const SECONDARY_ENTER: ModifiersState = ModifiersState::SUPER;
+
+#[cfg(not(target_os = "macos"))]
+const SECONDARY_ENTER: ModifiersState = ModifiersState::CONTROL;
+
 #[test]
 fn newline_shortcut_controls_modified_enter() {
-    let ctrl_enter = modified("enter", Some("\r"), ModifiersState::CONTROL);
+    let ctrl_enter = modified("enter", Some("\r"), SECONDARY_ENTER);
     let shift_enter = modified("enter", Some("\r"), ModifiersState::SHIFT);
 
     for (shortcut, ctrl_bytes, shift_bytes) in [

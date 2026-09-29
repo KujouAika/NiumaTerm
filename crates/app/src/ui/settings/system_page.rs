@@ -22,6 +22,15 @@ use crate::ui::settings::macos_page::macos_group;
 #[cfg(any(windows, test))]
 use crate::ui::settings::state::AppSettings;
 
+/// How the `ctrl-enter` newline shortcut is pressed on this platform. macOS
+/// text inputs read Command-Enter as the secondary Enter, and terminal tabs
+/// follow them there, so the choice is labeled with the key that works.
+#[cfg(target_os = "macos")]
+const SECONDARY_ENTER_LABEL: &str = "Cmd-Enter";
+
+#[cfg(not(target_os = "macos"))]
+const SECONDARY_ENTER_LABEL: &str = "Ctrl-Enter";
+
 pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
     let page = SettingPage::new(t!("settings-system-title"))
         .default_open(true)
@@ -179,7 +188,7 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                 t!("settings-system-newline-shortcut"),
                 settings_choice(
                     vec![
-                        ("ctrl-enter".into(), "Ctrl-Enter".into()),
+                        ("ctrl-enter".into(), SECONDARY_ENTER_LABEL.into()),
                         ("shift-enter".into(), "Shift-Enter".into()),
                         ("off".into(), t!("settings-common-off").into()),
                     ],

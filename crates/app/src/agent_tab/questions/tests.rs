@@ -71,6 +71,14 @@ fn open_pane(cx: &mut TestAppContext) -> (Entity<AgentPane>, WindowHandle<Root>)
     (pane, window)
 }
 
+/// The keystroke the `ctrl-enter` newline shortcut is pressed with: the text
+/// input binds its secondary Enter to Command on macOS and Control elsewhere.
+#[cfg(target_os = "macos")]
+const SECONDARY_ENTER: &str = "cmd-enter";
+
+#[cfg(not(target_os = "macos"))]
+const SECONDARY_ENTER: &str = "ctrl-enter";
+
 #[gpui::test]
 fn question_editor_enter_uses_current_newline_setting(cx: &mut TestAppContext) {
     for shortcut in [
@@ -78,7 +86,7 @@ fn question_editor_enter_uses_current_newline_setting(cx: &mut TestAppContext) {
         NewlineShortcut::ShiftEnter,
         NewlineShortcut::Off,
     ] {
-        for key in ["enter", "ctrl-enter", "shift-enter"] {
+        for key in ["enter", SECONDARY_ENTER, "shift-enter"] {
             let (pane, window) = open_pane(cx);
 
             let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -132,11 +140,11 @@ fn question_editor_enter_uses_current_newline_setting(cx: &mut TestAppContext) {
             cx.simulate_keystrokes(key);
             cx.run_until_parked();
 
-            let newline = matches!(
-                (shortcut, key),
-                (NewlineShortcut::CtrlEnter, "ctrl-enter")
-                    | (NewlineShortcut::ShiftEnter, "shift-enter")
-            );
+            let newline = match shortcut {
+                NewlineShortcut::CtrlEnter => key == SECONDARY_ENTER,
+                NewlineShortcut::ShiftEnter => key == "shift-enter",
+                NewlineShortcut::Off => false,
+            };
 
             cx.update(|_, cx| {
                 pane.update(cx, |pane, cx| {
