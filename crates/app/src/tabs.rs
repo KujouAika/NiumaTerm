@@ -191,6 +191,19 @@ impl<S> TabManager<S> {
         }
     }
 
+    /// Drop the user-authored title; returns whether the shown title changed.
+    pub fn clear_rename(&mut self, id: TabId) -> bool {
+        let Some(tab) = self.tabs.find_mut(id) else {
+            return false;
+        };
+
+        let previous = tab.title().to_string();
+
+        tab.user_title = None;
+
+        tab.title() != previous
+    }
+
     /// Mark a tab's process as exited (read-only). Ignored if the id is gone.
     pub fn mark_exited(&mut self, id: TabId) {
         if let Some(tab) = self.tabs.find_mut(id) {

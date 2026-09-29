@@ -3570,11 +3570,15 @@ impl AppWindow {
                 return;
             }
             AgentPaneEvent::TitleSuggested(title) => {
-                // A user-authored rename outranks this, so a tab the user
-                // has named keeps its name.
+                // A user-authored rename outranks a suggestion, so a tab the
+                // user has named keeps its name. An agent tab's rename names
+                // the conversation, though, so an empty suggestion (the
+                // conversation was replaced) drops it along with the old
+                // conversation.
                 if let Some(tab_id) = self.tab_for_agent_session(&session)
                     && let Some(tabs) = self.workspaces.tabs_for_tab_mut(tab_id)
-                    && tabs.set_title(tab_id, title.clone())
+                    && (title.is_empty() && tabs.clear_rename(tab_id))
+                        | tabs.set_title(tab_id, title.clone())
                 {
                     cx.notify();
                 }
