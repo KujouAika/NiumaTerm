@@ -21,17 +21,13 @@ Core Text, redrawing only the rows each frame changed (design doc §8.2).
    rustup target add aarch64-apple-ios aarch64-apple-ios-sim
    ```
 
-2. Build the Rust core. This writes
-   `Packages/NiumaTermCore/NiumaTermCoreFFI.xcframework` and the generated
-   Swift bindings; neither is committed.
-
-   ```sh
-   scripts/build-ios-core.sh                # release, device + simulator
-   scripts/build-ios-core.sh --debug --sim  # faster while developing
-   ```
-
-   Run it again after changing `crates/mobile`, `crates/remote`,
-   `crates/terminal`, or `crates/agent`.
+2. Nothing to build by hand: the `NiumaTermCore` target runs
+   `scripts/build-ios-core.sh` on every build. It builds `crates/mobile` with
+   cargo for the chosen destination (device or simulator) and configuration
+   (Debug or Release), and writes the UniFFI Swift bindings to
+   `NiumaTermCore/Generated/`, which is not committed. cargo and Zig are
+   looked up in your login shell, so Xcode finds them even when started from
+   the Dock. Only Apple-silicon simulators are supported.
 
 3. Set your signing identity outside the project file, so it never reaches
    the repository:

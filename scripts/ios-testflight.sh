@@ -2,7 +2,7 @@
 # Build the iOS app for devices and upload it to App Store Connect, where
 # TestFlight hands it to testers.
 #
-#   scripts/ios-testflight.sh             build the core, archive, upload
+#   scripts/ios-testflight.sh             archive and upload
 #   scripts/ios-testflight.sh --no-upload archive and export an .ipa only
 #
 # Needs:
@@ -16,6 +16,7 @@
 #   - Optionally an App Store Connect API key instead of the Xcode account:
 #     NMT_ASC_KEY_PATH (the .p8), NMT_ASC_KEY_ID and NMT_ASC_ISSUER_ID.
 #   - What scripts/build-ios-core.sh needs: the Rust iOS targets and Zig.
+#     The archive runs it, building the core for release.
 #
 # The build number is the UTC time of the build, so every upload is newer
 # than the last without any state to keep. The marketing version stays the
@@ -60,8 +61,6 @@ work="$ios/build/testflight-$build"
 archive="$work/NiumaTerm.xcarchive"
 
 mkdir -p "$work"
-
-"$root/scripts/build-ios-core.sh"
 
 # shellcheck disable=SC2086 # $auth is a list of options, empty without a key.
 xcodebuild archive \

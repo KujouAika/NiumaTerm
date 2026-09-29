@@ -9,9 +9,11 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
-packages:
-  NiumaTermCore:
-    path: Packages/NiumaTermCore
+    # The Rust core is built for Apple-silicon simulators only.
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+    # Where Swift finds the NiumaTermCoreFFI C module that the bindings
+    # import; the app needs it too, to load the NiumaTermCore module.
+    SWIFT_INCLUDE_PATHS: $(inherited) $(SRCROOT)/NiumaTermCore/Generated
 targets:
   NiumaTerm:
     type: application
@@ -26,10 +28,19 @@ targets:
       Debug: Config/Signing.xcconfig
       Release: Config/Signing.xcconfig
     dependencies:
-      - package: NiumaTermCore
+      - target: NiumaTermCore
+      # Copied here by the NiumaTermCore target's build phase. Listing it in
+      # the link phase, rather than in OTHER_LDFLAGS, makes Xcode relink the
+      # app whenever the Rust library changes.
+      - framework: libnmt_mobile.a
+        implicit: true
+        embed: false
       - target: NiumaTermNotifications
     settings:
       base:
+        # A Rust static library records no link dependencies of its own;
+        # these are what `--print native-static-libs` reports for it.
+        OTHER_LDFLAGS: $(inherited) -framework Security -framework CoreFoundation -lutil -liconv
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Config/NiumaTerm.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -49,6 +60,35 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  # The Rust core (crates/mobile) and its UniFFI Swift bindings, built for
+  # the platform and configuration of each build by
+  # scripts/build-ios-core.sh. The bindings are build outputs and are not
+  # committed.
+  NiumaTermCore:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: NiumaTermCore/Generated/NiumaTermCore.swift
+        optional: true
+    preBuildScripts:
+      - name: Build Rust core
+        script: '"$SRCROOT/../../scripts/build-ios-core.sh"'
+        # cargo decides what is out of date, so the phase runs every build.
+        basedOnDependencyAnalysis: false
+        showEnvVarsInLog: false
+        outputFiles:
+          - $(SRCROOT)/NiumaTermCore/Generated/NiumaTermCore.swift
+          - $(SRCROOT)/NiumaTermCore/Generated/NiumaTermCoreFFI.h
+          - $(SRCROOT)/NiumaTermCore/Generated/module.modulemap
+          - $(BUILT_PRODUCTS_DIR)/libnmt_mobile.a
+    settings:
+      base:
+        # The script reads the Rust workspace and writes the bindings into
+        # the source tree, outside what a sandboxed script may touch.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # The generated bindings predate Swift 6 strict concurrency.
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: YES
   # Opens sealed push notifications before they are shown (see
   # NotificationService/NotificationService.swift).
   NiumaTermNotifications:
