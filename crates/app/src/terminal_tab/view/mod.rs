@@ -617,6 +617,7 @@ impl TerminalPane {
             Status::Idle | Status::Connecting => t!("remote-banner-connecting", name = name),
             Status::Reconnecting => t!("remote-banner-reconnecting", name = name),
             Status::Refused => t!("remote-banner-refused", name = name),
+            Status::Unreachable => t!("remote-banner-unreachable", name = name),
         };
 
         Some(text.into_owned().into())

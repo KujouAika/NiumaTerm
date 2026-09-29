@@ -79,7 +79,10 @@ final class AppModel {
         if let index = hosts.firstIndex(where: { $0.id == record.id }) {
             hosts[index].name = record.name
             hosts[index].status = record.status
-        } else {
+        } else if core?.hosts().contains(where: { $0.id == record.id }) == true {
+            // Events reach the main actor asynchronously, so one sent just
+            // before a host was forgotten can arrive after it; only hosts
+            // the core still pairs with may be added back.
             hosts.append(Host(id: record.id, name: record.name, status: record.status))
         }
         // A host keeps the registration, but one paired before pushes
@@ -114,17 +117,12 @@ final class AppModel {
         return record
     }
 
+    /// The core withdraws pushes from the host in the background, if it is
+    /// connected, and drops the host at once, so an unreachable host is
+    /// forgotten without waiting on it.
     func forget(_ hostID: String) {
-        // The host keeps its record of this phone until removed there; asking
-        // it to stop pushing first spares the phone pushes it can no longer
-        // open. The link stays up for that one request.
-        if let core {
-            Task {
-                _ = try? await core.unregisterPush(host: hostID)
-                core.forget(host: hostID)
-                PushKeys.remove(for: hostID)
-            }
-        }
+        core?.forget(host: hostID)
+        PushKeys.remove(for: hostID)
         hosts.removeAll { $0.id == hostID }
         for key in agentModels.keys where key.hasPrefix(hostID + "/") {
             agentModels[key] = nil
@@ -132,6 +130,11 @@ final class AppModel {
         for key in terminalModels.keys where key.hasPrefix(hostID + "/") {
             terminalModels[key] = nil
         }
+    }
+
+    /// Try a host that failed to connect again.
+    func retry(_ hostID: String) {
+        core?.retry(host: hostID)
     }
 
     func hostOffer(_ hostID: String) async throws -> HostOffer {

@@ -3,7 +3,9 @@
 //! Sessions belong to the host and survive network loss, so the client
 //! keeps its views and reconnects under them: after a drop it backs off
 //! from 0.5 s to 30 s with jitter, and on success reattaches every open view
-//! by session id. A reattached view starts over from a checkpoint, which is
+//! by session id. A caller that would rather tell the user than wait can
+//! limit the attempts instead (see [`Retry`]). A reattached view starts
+//! over from a checkpoint, which is
 //! why views are addressed by session rather than by stream: stream ids
 //! last only as long as one channel.
 //!
@@ -17,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use futures::FutureExt as _;
 use getrandom::fill;
 use nmt_platform::runtime;
 use nmt_remote_core::channel::Channel;
@@ -80,6 +83,23 @@ pub enum Status {
     Reconnecting,
     /// The host no longer trusts this device. Pairing again is the fix.
     Refused,
+    /// Every attempt of a [`Retry::Limited`] round failed. The next request,
+    /// view, [`RemoteHost::keep_connected`], or network change starts
+    /// another round.
+    Unreachable,
+}
+
+/// How a link that cannot reach its host keeps trying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retry {
+    /// With growing backoff until the host answers, so open views come back
+    /// on their own whenever it does.
+    Forever,
+    /// `attempts` tries, each given `window` to connect and started a
+    /// `window` after the one before, then [`Status::Unreachable`]. A person
+    /// waiting on the screen learns within a bounded time that the host is
+    /// out of reach instead of watching it connect indefinitely.
+    Limited { attempts: u32, window: Duration },
 }
 
 /// What an agent view receives.
@@ -139,6 +159,7 @@ pub struct RemoteHost {
     id: DeviceId,
     key: Arc<DeviceKey>,
     app_version: String,
+    retry: Retry,
     record: Mutex<PairedHost>,
 
     /// Called with the host record after each connection, which updates its
@@ -245,12 +266,14 @@ impl RemoteHost {
         record: PairedHost,
         key: Arc<DeviceKey>,
         app_version: String,
+        retry: Retry,
         on_record: impl Fn(PairedHost) + Send + Sync + 'static,
     ) -> Arc<Self> {
         let host = Arc::new(Self {
             id: record.id.clone(),
             key,
             app_version,
+            retry,
             record: Mutex::new(record),
             on_record: Box::new(on_record),
             link: Mutex::new(None),
@@ -639,16 +662,30 @@ impl RemoteHost {
 
         let deadline = Instant::now() + REQUEST_TIMEOUT;
 
+        let mut woken = false;
+
         loop {
             if let Some(link) = self.link.lock().clone() {
                 return Ok(link);
             }
 
-            if *status.borrow() == Status::Refused {
-                return Err(Refused.into());
+            match *status.borrow_and_update() {
+                Status::Refused => return Err(Refused.into()),
+                // The round this request started has failed; starting
+                // another would only hold the request until its deadline.
+                Status::Unreachable if woken => {
+                    return Err(anyhow!("{} is not reachable", self.name()));
+                }
+                // The supervisor waits for a wake in these states.
+                Status::Idle | Status::Unreachable => self.wake.notify_one(),
+                // Otherwise one wake cuts a backoff short. More would leave
+                // a stored permit that starts another limited round as soon
+                // as this one gives up.
+                _ if !woken => self.wake.notify_one(),
+                _ => {}
             }
 
-            self.wake.notify_one();
+            woken = true;
 
             if timeout(deadline - Instant::now(), status.changed())
                 .await
@@ -697,6 +734,7 @@ impl RemoteHost {
 
     async fn supervise(self: Arc<Self>) {
         let mut backoff = MIN_BACKOFF;
+        let mut failures = 0;
         let mut ever_connected = false;
         let mut network = netwatch::changes();
 
@@ -721,7 +759,9 @@ impl RemoteHost {
                     (ws, channel, path)
                 }
                 None => {
-                    if !self.has_views() {
+                    // A limited round runs to its end, so a request with no
+                    // view open still gets every attempt.
+                    if failures == 0 && !self.has_views() {
                         self.status.send_replace(Status::Idle);
 
                         self.wake.notified().await;
@@ -735,13 +775,24 @@ impl RemoteHost {
 
                     let mut record = self.record.lock().clone();
 
-                    match establish(&mut record, &self.key, &self.app_version).await {
+                    let started = Instant::now();
+                    let attempt = establish(&mut record, &self.key, &self.app_version);
+
+                    let result = match self.retry {
+                        Retry::Forever => attempt.await,
+                        Retry::Limited { window, .. } => timeout(window, attempt)
+                            .await
+                            .unwrap_or_else(|_| Err(anyhow!("connecting timed out"))),
+                    };
+
+                    match result {
                         Ok(established) => {
                             *self.record.lock() = record.clone();
 
                             (self.on_record)(record);
 
                             backoff = MIN_BACKOFF;
+                            failures = 0;
                             ever_connected = true;
 
                             established
@@ -755,6 +806,35 @@ impl RemoteHost {
                         }
                         Err(error) => {
                             debug!(host = %self.id, %error, "connecting to the remote host failed");
+
+                            if let Retry::Limited { attempts, window } = self.retry {
+                                failures += 1;
+
+                                if failures < attempts {
+                                    sleep_until(started + window).await;
+
+                                    continue;
+                                }
+
+                                failures = 0;
+
+                                self.status.send_replace(Status::Unreachable);
+
+                                // Wakes stored while the round ran came from
+                                // requests and views that round already
+                                // served; only a later one retries.
+                                let _ = self.wake.notified().now_or_never();
+
+                                network.mark_unchanged();
+
+                                select! {
+                                    () = self.wake.notified() => {}
+
+                                    _ = network.changed() => {}
+                                }
+
+                                continue;
+                            }
 
                             // A new view or request retries at once, and so
                             // does a network change, which may have brought

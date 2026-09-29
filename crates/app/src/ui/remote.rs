@@ -21,7 +21,7 @@ use gpui::{
 use gpui_component::Root;
 use nmt_platform::runtime;
 use nmt_remote::client::pair;
-use nmt_remote::connection::{RemoteHost, Status};
+use nmt_remote::connection::{RemoteHost, Retry, Status};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
 use nmt_remote::lan::lan_addresses;
 use nmt_remote::presence::Presence;
@@ -1036,9 +1036,17 @@ fn connection(id: &DeviceId, cx: &mut App) -> Result<Arc<RemoteHost>> {
 
     let updates = remote.record_updates.clone();
 
-    let connection = RemoteHost::new(record, key, APP_VERSION.into(), move |record| {
-        let _ = updates.send(record);
-    });
+    // Remote tabs stay open while their host is away and should resume on
+    // their own when it comes back, so the desktop never stops retrying.
+    let connection = RemoteHost::new(
+        record,
+        key,
+        APP_VERSION.into(),
+        Retry::Forever,
+        move |record| {
+            let _ = updates.send(record);
+        },
+    );
 
     // The settings page shows each host's link state and the sidebar its
     // sessions, which are listed afresh whenever the link comes up.

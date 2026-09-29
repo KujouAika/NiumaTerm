@@ -2,6 +2,7 @@ import SwiftUI
 import NiumaTermCore
 
 struct AgentSessionView: View {
+    @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: AgentSessionModel
     let hostName: String
@@ -14,7 +15,16 @@ struct AgentSessionView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if !model.attached {
+                    if !model.attached && app.host(model.route.hostID)?.status == .unreachable {
+                        VStack(spacing: 10) {
+                            Text("Could not connect to \(hostName).").foregroundStyle(Theme.attention)
+                            Button("Retry") { app.retry(model.route.hostID) }
+                                .buttonStyle(.bordered)
+                        }
+                        .font(.system(size: 15))
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 120)
+                    } else if !model.attached {
                         HStack(spacing: 10) {
                             ProgressView()
                             Text("Connecting to \(hostName)…")

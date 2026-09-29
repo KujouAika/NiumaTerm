@@ -21,6 +21,9 @@ pub enum HostStatus {
     Reconnecting,
     /// The host no longer trusts this device; pairing again is the fix.
     Refused,
+    /// Connecting failed a few times in a row; the app shows the host as
+    /// unreachable until the user retries or the network changes.
+    Unreachable,
 }
 
 impl From<Status> for HostStatus {
@@ -31,6 +34,7 @@ impl From<Status> for HostStatus {
             Status::Connected => Self::Connected,
             Status::Reconnecting => Self::Reconnecting,
             Status::Refused => Self::Refused,
+            Status::Unreachable => Self::Unreachable,
         }
     }
 }

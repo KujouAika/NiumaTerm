@@ -33,6 +33,10 @@ struct TerminalSessionView: View {
                     VStack(spacing: 10) {
                         if let notice = model.notice {
                             Text(notice).foregroundStyle(Theme.attention)
+                        } else if hostStatus == .unreachable {
+                            Text("Could not connect to \(hostName).").foregroundStyle(Theme.attention)
+                            Button("Retry") { app.retry(model.route.hostID) }
+                                .buttonStyle(.bordered)
                         } else {
                             ProgressView()
                             Text("Connecting to \(hostName)…")
@@ -44,7 +48,18 @@ struct TerminalSessionView: View {
                 }
             }
             .overlay(alignment: .top) {
-                if model.attached && (hostStatus == .reconnecting || hostStatus == .connecting) {
+                if model.attached && hostStatus == .unreachable {
+                    Button { app.retry(model.route.hostID) } label: {
+                        Label("Cannot reach \(hostName) · Retry", systemImage: "wifi.exclamationmark")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.attention)
+                            .padding(.horizontal, 14)
+                            .frame(height: 34)
+                            .glassCapsule()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
+                } else if model.attached && (hostStatus == .reconnecting || hostStatus == .connecting) {
                     Label("Reconnecting to \(hostName)…", systemImage: "wifi.exclamationmark")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.primary)

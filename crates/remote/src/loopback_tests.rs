@@ -20,7 +20,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::client::{LinkPath, pair};
-use crate::connection::{AgentUpdate, RemoteHost, Status};
+use crate::connection::{AgentUpdate, RemoteHost, Retry, Status};
 use crate::host::{HostConfig, HostService};
 use crate::lan::lan_addresses;
 use crate::local_view;
@@ -104,7 +104,7 @@ async fn paired_client(host: &HostService) -> (PairedHost, Arc<DeviceKey>) {
 }
 
 fn remote(paired: PairedHost, key: Arc<DeviceKey>) -> Arc<RemoteHost> {
-    RemoteHost::new(paired, key, "0.0.0".into(), |_| {})
+    RemoteHost::new(paired, key, "0.0.0".into(), Retry::Forever, |_| {})
 }
 
 /// Read until `marker` shows up, reporting whether a stream reset came
@@ -380,6 +380,13 @@ fn unpaired_and_revoked_devices_are_refused() {
         client.list_sessions().await.unwrap();
 
         host.remove_device(&key.id()).unwrap();
+
+        // With nothing open the link idles once the host drops it, so the
+        // revocation shows on the next request that connects. One sent
+        // before the client noticed the drop fails on the old link instead.
+        let _ = client.list_sessions().await;
+
+        assert!(client.list_sessions().await.is_err());
 
         wait_status(&client, Status::Refused).await;
     });
@@ -988,7 +995,7 @@ fn a_device_learns_the_hosts_lan_addresses_and_a_stale_one_does_not_hold_it_up()
 
         let (records, mut records_rx) = mpsc::unbounded_channel();
 
-        let client = RemoteHost::new(paired, key, "0.0.0".into(), move |record| {
+        let client = RemoteHost::new(paired, key, "0.0.0".into(), Retry::Forever, move |record| {
             let _ = records.send(record);
         });
 
@@ -1034,6 +1041,49 @@ fn parallel_attempts_that_reach_one_host_twice_still_connect() {
 
             client.shutdown();
             host.drop_connections();
+        }
+    });
+}
+
+#[test]
+fn a_limited_link_gives_up_on_an_unreachable_host_and_retries_on_request() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host(&host_dir, SessionRegistry::new());
+
+    runtime().block_on(async {
+        let (mut paired, key) = paired_client(&host).await;
+
+        // A closed port refuses at once, and without the host nothing
+        // answers a search on the LAN either.
+        drop(host);
+
+        paired.lan_hints = vec!["127.0.0.1:1".into()];
+
+        let window = Duration::from_millis(500);
+
+        let client = RemoteHost::new(
+            paired,
+            key,
+            "0.0.0".into(),
+            Retry::Limited {
+                attempts: 2,
+                window,
+            },
+            |_| {},
+        );
+
+        // A request fails once its round does, well before the request
+        // timeout, rather than starting round after round until then.
+        for _ in 0..2 {
+            let started = Instant::now();
+
+            assert!(client.list_sessions().await.is_err());
+            assert_eq!(*client.status().borrow(), Status::Unreachable);
+
+            let elapsed = started.elapsed();
+
+            assert!(elapsed >= window, "the attempts are a window apart");
+            assert!(elapsed < window * 6, "the round gave up after {elapsed:?}");
         }
     });
 }

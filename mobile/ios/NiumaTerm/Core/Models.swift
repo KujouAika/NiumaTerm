@@ -90,6 +90,7 @@ struct Host: Identifiable {
         case .reconnecting: "Reconnecting…"
         case .idle: "Not connected"
         case .refused: "No longer trusts this phone · pair again"
+        case .unreachable: "Connection failed"
         }
     }
 
@@ -98,7 +99,7 @@ struct Host: Identifiable {
         case .connected: Theme.online
         case .connecting, .reconnecting: Theme.attention
         case .idle: Theme.offline
-        case .refused: Theme.attention
+        case .refused, .unreachable: Theme.attention
         }
     }
 

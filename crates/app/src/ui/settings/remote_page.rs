@@ -385,6 +385,7 @@ fn host_item(host: PairedHost) -> SettingItem {
             Status::Connected => t!("settings-remote-status-connected"),
             Status::Reconnecting => t!("settings-remote-status-reconnecting"),
             Status::Refused => t!("settings-remote-status-refused"),
+            Status::Unreachable => t!("settings-remote-status-unreachable"),
         };
 
         // A connected host's sessions are listed in the workspace sidebar,

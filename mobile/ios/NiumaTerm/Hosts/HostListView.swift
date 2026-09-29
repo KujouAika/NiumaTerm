@@ -34,7 +34,9 @@ struct HostListView: View {
                                 .listRowBackground(Theme.rowBackground)
                         }
                     } header: {
-                        HostHeader(host: host, onNew: host.isOnline ? { newSessionHost = host } : nil)
+                        HostHeader(host: host,
+                                   onNew: host.isOnline ? { newSessionHost = host } : nil,
+                                   onRetry: host.status == .unreachable ? { app.retry(host.id) } : nil)
                             .textCase(nil)
                     }
                 }
@@ -94,6 +96,7 @@ struct PairingRequest: Identifiable {
 struct HostHeader: View {
     let host: Host
     var onNew: (() -> Void)?
+    var onRetry: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -112,6 +115,13 @@ struct HostHeader: View {
                 }
             }
             Spacer()
+            if let onRetry {
+                Button("Retry", action: onRetry)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Retry connecting to \(host.name)")
+            }
             if let onNew {
                 Button(action: onNew) {
                     Image(systemName: "plus")

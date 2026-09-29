@@ -457,6 +457,7 @@ impl RemoteAgent {
             }
             Status::Reconnecting => (t!("remote-banner-reconnecting", name = name), false),
             Status::Refused => (t!("remote-banner-refused", name = name), true),
+            Status::Unreachable => (t!("remote-banner-unreachable", name = name), true),
         };
 
         let banner = h_flex()

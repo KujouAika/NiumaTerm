@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use nmt_platform::runtime;
-use nmt_remote::connection::{RemoteHost, Status};
+use nmt_remote::connection::{RemoteHost, Retry, Status};
 use nmt_remote::store::{PairedHost, load_hosts, load_or_create_identity, save_hosts};
 use nmt_remote::{client, notify_network_changed};
 use nmt_remote_core::identity::DeviceKey;
@@ -13,6 +14,7 @@ use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use parking_lot::Mutex;
 use tokio::select;
 use tokio::task::AbortHandle;
+use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::agent::{AgentHandle, AgentObserver};
@@ -48,6 +50,18 @@ pub struct MobileCore {
     /// session lists stay live.
     foreground: AtomicBool,
 }
+
+/// A person is looking at the host list while the phone connects, so after
+/// three attempts of five seconds each the host shows as unreachable rather
+/// than connecting indefinitely.
+const CONNECT_RETRY: Retry = Retry::Limited {
+    attempts: 3,
+    window: Duration::from_secs(5),
+};
+
+/// How long forgetting a connected host waits for it to withdraw this
+/// phone's pushes before closing the link regardless.
+const FORGET_UNREGISTER_WAIT: Duration = Duration::from_secs(5);
 
 struct Paired {
     remote: Arc<RemoteHost>,
@@ -134,6 +148,16 @@ impl MobileCore {
         notify_network_changed();
     }
 
+    /// Try an unreachable host again at once.
+    pub fn retry(&self, host: String) {
+        // Keeping the host connected wakes its link, which starts a new
+        // round of attempts; in the foreground, where the user can ask for
+        // this, every host is kept connected anyway.
+        if let Ok(remote) = self.remote(&host) {
+            remote.keep_connected();
+        }
+    }
+
     /// Pair with a host from a scanned or pasted `niumaterm://pair` link, or
     /// from a typed code plus the host's relay.
     pub async fn pair(
@@ -152,7 +176,11 @@ impl MobileCore {
     }
 
     /// Forget a host on this device. The host keeps its record of this
-    /// device until the user removes it there.
+    /// device until the user removes it there, so a connected host is asked
+    /// to stop pushing first, sparing the phone pushes it can no longer
+    /// open. The host is gone from this device at once either way: an
+    /// unreachable host could otherwise hold the request, and the host with
+    /// it, for as long as its link keeps retrying.
     pub fn forget(&self, host: String) {
         let removed = {
             let mut hosts = self.hosts.lock();
@@ -168,7 +196,19 @@ impl MobileCore {
                 watcher.abort();
             }
 
-            paired.remote.shutdown();
+            let remote = paired.remote;
+
+            runtime().spawn(async move {
+                if *remote.status().borrow() == Status::Connected
+                    && let Err(error) = timeout(FORGET_UNREGISTER_WAIT, remote.unregister_push())
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow!("the host did not answer")))
+                {
+                    debug!(%error, "withdrawing pushes from a forgotten host failed");
+                }
+
+                remote.shutdown();
+            });
         }
 
         let mut records = self.records.lock();
@@ -311,6 +351,7 @@ impl MobileCore {
             record,
             Arc::clone(&self.key),
             self.device.app_version.clone(),
+            CONNECT_RETRY,
             move |updated| {
                 let mut records = records.lock();
 
