@@ -26,11 +26,21 @@
 Windows and macOS (Apple silicon) are supported.
 Install Rust through rustup; the repository's `rust-toolchain.toml` selects the required toolchain.
 
-### Windows
+### libghostty-vt
 
-> As libghostty-vt is written in Zig but most people do not have Zig toolchain installed on their machines,
-> this repo bundles a prebuilt Windows libghostty.a which is **opt-in** by default. If you don't want to build it by yourself,
-> set `NMT_USE_PREBUILT_LIBGHOSTTY` environment variable to `1`.
+libghostty-vt is written in Zig, and most machines do not have a Zig toolchain installed.
+This repository bundles prebuilt static libraries for Windows (`x86_64-pc-windows-msvc`) and macOS (`aarch64-apple-darwin`)
+under `third_party/libghostty-vt-sys/prebuilt/`. Using them is **opt-in**: set the `NMT_USE_PREBUILT_LIBGHOSTTY`
+environment variable to `1` to link the prebuilt library instead of building libghostty-vt from source.
+The prebuilt libraries are optimized, so debug builds that use them also get a fast VT parser.
+
+To build libghostty-vt from source instead, install Zig **0.16.0** and add `zig` to your `PATH`; the first build
+then clones the pinned Ghostty sources and compiles them.
+
+After updating the pinned Ghostty commit or its patches, regenerate the prebuilt libraries with
+`scripts/update-libghostty-prebuilt.ps1` on Windows and `scripts/update-libghostty-prebuilt-macos.sh` on macOS.
+
+### Windows
 
 ```powershell
 # PowerShell
@@ -48,7 +58,11 @@ If you want to build libghostty-vt on your machine:
 ### macOS
 
 Use an Apple silicon Mac with Xcode and its Metal Toolchain installed. Select the full Xcode installation as the active developer directory. In Xcode, open **Settings → Components** and install **Metal Toolchain** if it is missing.
-Install Zig **0.16.0** and add `zig` to your `PATH`. The Windows prebuilt libghostty library cannot be used on macOS.
+Zig is only needed to build libghostty-vt from source; with the prebuilt library, export `NMT_USE_PREBUILT_LIBGHOSTTY=1` first:
+
+```sh
+export NMT_USE_PREBUILT_LIBGHOSTTY=1
+```
 
 Build from the repository root, then create an application bundle so macOS can display the app icon and provide application services:
 
