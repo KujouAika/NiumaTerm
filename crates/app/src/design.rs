@@ -8,7 +8,11 @@ pub const CARD_RADIUS: Pixels = px(12.0);
 pub const TAB_HEIGHT: Pixels = px(32.0);
 
 /// The settings tab ends on the navigation pane's content divider.
-pub const SETTINGS_NAV_WIDTH: Pixels = px(240.0);
+pub const SETTINGS_NAV_WIDTH: Pixels = px(SETTINGS_NAV_WIDTH_PX);
+
+/// `SETTINGS_NAV_WIDTH` as a plain number, for window geometry computed in
+/// constant expressions, which cannot read a `Pixels` value.
+pub const SETTINGS_NAV_WIDTH_PX: f32 = 240.0;
 
 /// Adjacent file and review panes share a footer baseline at every window size.
 pub const REVIEW_FOOTER_HEIGHT: Pixels = px(32.0);

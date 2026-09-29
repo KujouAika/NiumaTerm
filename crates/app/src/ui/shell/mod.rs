@@ -34,6 +34,7 @@ use std::{collections, io, iter, path, time};
 use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::{TeamPane, TeamRuntime};
 use app::agent_tab::{AgentPane, AgentPaneEvent};
+use app::design::SETTINGS_NAV_WIDTH_PX;
 use app::remote_control::CloseTab as SheetClose;
 use app::terminal_tab::session::HostEvent;
 use app::terminal_tab::view::{AgentInterrupted, TerminalPane};
@@ -241,11 +242,29 @@ pub(crate) fn selected_window_appearance(cx: &App) -> WindowAppearance {
     }
 }
 
-/// Narrower than this the title bar cannot hold the tab strip alongside the
-/// window controls, and shorter than this a terminal pane stops showing a
-/// usable number of rows. Enforced by the platform through WM_GETMINMAXINFO,
-/// so it also bounds interactive resize, not just the initial geometry.
-pub(super) const MIN_WINDOW_WIDTH: f32 = 640.0;
+/// The workspace sidebar's width until the user drags it. The default is
+/// raised to the minimum where the window buttons need more leading room.
+const DEFAULT_SIDEBAR_WIDTH: f32 = f32::max(
+    workspace_sidebar::SIDEBAR_WIDTH,
+    workspace_sidebar::MIN_WIDTH,
+);
+
+/// The settings content lays each row out as label beside control only while
+/// its panel is wider than 480; at 480 or narrower every row stacks and the
+/// page reflows. Two points above that threshold keep rounding at fractional
+/// scale factors from tipping it over.
+const SETTINGS_CONTENT_MIN_WIDTH: f32 = 482.0;
+
+/// Narrower than this, with the workspace sidebar at its default width, the
+/// settings page stacks its rows and the agent composer wraps its toolbar
+/// onto a second line; the tightest of the two is settings, whose navigation
+/// pane has a fixed width. The sidebar default differs per platform (216 on
+/// macOS, 180 on Windows), so the minimum does too: 938 and 902. Shorter
+/// than the minimum height a terminal pane stops showing a usable number of
+/// rows. The platform enforces both during interactive resize, not just for
+/// the initial geometry.
+pub(super) const MIN_WINDOW_WIDTH: f32 =
+    DEFAULT_SIDEBAR_WIDTH + SETTINGS_NAV_WIDTH_PX + SETTINGS_CONTENT_MIN_WIDTH;
 
 const MIN_WINDOW_HEIGHT: f32 = 400.0;
 
@@ -488,7 +507,7 @@ impl AppWindow {
         let sidebar_width = registry_entry
             .and_then(|entry| entry.sidebar_width)
             .map(|width| width.clamp(workspace_sidebar::MIN_WIDTH, workspace_sidebar::MAX_WIDTH))
-            .unwrap_or(workspace_sidebar::SIDEBAR_WIDTH.max(workspace_sidebar::MIN_WIDTH));
+            .unwrap_or(DEFAULT_SIDEBAR_WIDTH);
 
         let mut restore_next_id = 1;
 
