@@ -108,6 +108,54 @@ enum TranscriptRows {
     }
 }
 
+/// A row the composer offers while the draft is a bare `/name` or `$name`.
+enum ComposerSuggestion: Identifiable {
+    case command(SlashCommandRecord)
+    case skill(SkillRecord)
+
+    var id: String {
+        switch self {
+        case .command(let command): "/\(command.name)"
+        case .skill(let skill): skill.path
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .command(let command): "/\(command.name)"
+        case .skill(let skill): skill.token
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .command(let command): command.argumentHint.map { "\($0) · \(command.description)" } ?? command.description
+        case .skill(let skill): skill.detail
+        }
+    }
+
+    var enabled: Bool {
+        switch self {
+        case .command: true
+        case .skill(let skill): skill.enabled
+        }
+    }
+}
+
+enum ComposerSettings {
+    /// Mirrors the desktop's Codex skill command compatibility, on by default
+    /// there too.
+    static let codexSkillsInSlashKey = "codexSkillsInSlash"
+}
+
+extension SkillRecord {
+    /// The scope and description, so skills that share a name read apart.
+    var detail: String {
+        let named = title == name ? description : "\(title) · \(description)"
+        return "\(source) · \(named)"
+    }
+}
+
 /// One agent session on a host, over `AgentHandle` (design doc §8.3). The
 /// host keeps the controller; this mirrors its view and sends commands.
 @MainActor
@@ -130,6 +178,10 @@ final class AgentSessionModel {
 
     /// The outcome of the last command when it needs saying.
     var notice: String?
+
+    /// The skill picked for the draft's `$name`, which tells it apart from
+    /// skills of the same name in other scopes.
+    @ObservationIgnored private var pickedSkill: String?
 
     @ObservationIgnored private var handle: AgentHandle?
     @ObservationIgnored private var events: AgentEvents?
@@ -159,6 +211,42 @@ final class AgentSessionModel {
     var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
     var showsStop: Bool { isWorking && trimmedDraft.isEmpty }
     var primaryEnabled: Bool { attached && ended == nil && (isWorking || !trimmedDraft.isEmpty) }
+
+    var commands: [SlashCommandRecord] { state?.commands ?? [] }
+    var skills: [SkillRecord] { state?.skills ?? [] }
+
+    /// Commands and skills matching the draft while it is still one bare
+    /// `/name` or `$name` token; names starting with the query come first.
+    /// `skillsInSlash` also lists `$name` skills under `/`, for people who
+    /// reach for one key; picking one still writes its `$name` form, since
+    /// that is the only form such a harness invokes.
+    func suggestions(skillsInSlash: Bool) -> [ComposerSuggestion] {
+        guard let sigil = draft.first, sigil == "/" || sigil == "$",
+              !draft.contains(where: \.isWhitespace) else { return [] }
+        let query = draft.dropFirst().lowercased()
+        var candidates = skills
+            .filter { $0.token.first == sigil || (sigil == "/" && skillsInSlash) }
+            .map(ComposerSuggestion.skill)
+        if sigil == "/" {
+            candidates = commands.map(ComposerSuggestion.command) + candidates
+        }
+        let matching = candidates.filter { query.isEmpty || $0.label.dropFirst().lowercased().contains(query) }
+        let leading = matching.filter { $0.label.dropFirst().lowercased().hasPrefix(query) }
+        let inner = matching.filter { !$0.label.dropFirst().lowercased().hasPrefix(query) }
+        return leading + inner
+    }
+
+    func applySuggestion(_ suggestion: ComposerSuggestion) {
+        draft = suggestion.label + " "
+        if case .skill(let skill) = suggestion { pickedSkill = skill.path }
+    }
+
+    /// Put a skill's token in front of what is already typed.
+    func insertSkill(_ skill: SkillRecord) {
+        let rest = trimmedDraft
+        draft = rest.isEmpty ? skill.token + " " : "\(skill.token) \(rest)"
+        pickedSkill = skill.path
+    }
 
     var model: String? { state?.model }
     var effort: String? { state?.effort }
@@ -237,11 +325,23 @@ final class AgentSessionModel {
     private func send(_ text: String) {
         guard let handle else { return }
         notice = nil
+        let skill = pickedSkill
+        pickedSkill = nil
         Task {
             do {
-                let result = try await handle.submit(text: text)
+                let result = try await handle.submit(text: text, skillPath: skill)
                 switch result {
-                case .accepted:
+                case .accepted, .commandStarted:
+                    return
+                case .commandFinished(let message):
+                    notice = message
+                    return
+                case .commandQueued(let count):
+                    notice = count == 1 ? "The command runs when the turn ends."
+                                        : "\(count) commands run when the turn ends."
+                    return
+                case .conversationReplaced:
+                    conversationReplaced()
                     return
                 case .notReady:
                     notice = "\(agentName) is still starting."
@@ -260,6 +360,26 @@ final class AgentSessionModel {
             // The message did not go out; give it back.
             if draft.isEmpty { draft = text }
         }
+    }
+
+    /// Replace the conversation with a new one; the host refuses while a
+    /// turn is running.
+    func newConversation() {
+        guard let handle else { return }
+        notice = nil
+        Task {
+            do {
+                try await handle.newConversation()
+                conversationReplaced()
+            } catch {
+                notice = error.displayText
+            }
+        }
+    }
+
+    /// The host names the new conversation once it has a first message.
+    private func conversationReplaced() {
+        title = profile?.displayName ?? "Agent"
     }
 
     func interrupt() {

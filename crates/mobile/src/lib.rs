@@ -11,4 +11,6 @@ pub mod error;
 pub mod records;
 pub mod terminal;
 
+mod commands;
+
 uniffi::setup_scaffolding!();

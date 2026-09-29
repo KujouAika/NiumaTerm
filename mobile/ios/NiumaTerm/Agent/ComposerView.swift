@@ -5,6 +5,7 @@ import NiumaTermCore
 struct ComposerView: View {
     @Bindable var model: AgentSessionModel
     var focused: FocusState<Bool>.Binding
+    @AppStorage(ComposerSettings.codexSkillsInSlashKey) private var codexSkillsInSlash = true
 
     var body: some View {
         VStack(spacing: 8) {
@@ -37,6 +38,27 @@ struct ComposerView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            let suggestions = model.suggestions(skillsInSlash: codexSkillsInSlash)
+            if !suggestions.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(suggestions) { suggestion in
+                            Button { model.applySuggestion(suggestion) } label: {
+                                SuggestionRow(suggestion: suggestion)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!suggestion.enabled)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 240)
+                .fixedSize(horizontal: false, vertical: true)
+                .glassRounded(20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Message \(model.agentName)", text: $model.draft, axis: .vertical)
                     .lineLimit(1...6)
@@ -44,36 +66,87 @@ struct ComposerView: View {
                     .focused(focused)
                     .disabled(model.ended != nil)
                 HStack(spacing: 6) {
-                    if !model.models.isEmpty {
+                    // Starts a command only from an empty draft, so a tap
+                    // never replaces what is already typed.
+                    Button {
+                        model.draft = "/"
+                        focused.wrappedValue = true
+                    } label: {
+                        Text("/")
+                            .font(Theme.mono(15, weight: .semibold))
+                            .foregroundStyle(Theme.ink)
+                            .frame(width: 32, height: 32)
+                            .background(Theme.fill, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.draft.isEmpty || model.commands.isEmpty || model.ended != nil)
+                    .opacity(model.draft.isEmpty && !model.commands.isEmpty ? 1 : 0.4)
+                    .accessibilityLabel("Commands")
+
+                    if !model.models.isEmpty || !model.efforts.isEmpty {
                         Menu {
-                            ForEach(model.models, id: \.model) { choice in
-                                Button {
-                                    model.selectModel(choice.model)
-                                } label: {
-                                    if choice.model == model.model {
-                                        Label(choice.display, systemImage: "checkmark")
-                                    } else {
-                                        Text(choice.display)
+                            if !model.models.isEmpty {
+                                Menu {
+                                    ForEach(model.models, id: \.model) { choice in
+                                        Button {
+                                            model.selectModel(choice.model)
+                                        } label: {
+                                            if choice.model == model.model {
+                                                Label(choice.display, systemImage: "checkmark")
+                                            } else {
+                                                Text(choice.display)
+                                            }
+                                        }
                                     }
+                                } label: {
+                                    Label("Model", systemImage: "cpu")
+                                    Text(model.modelLabel)
                                 }
                             }
-                        } label: { ChipLabel(text: model.modelLabel) }
+
+                            if !model.efforts.isEmpty {
+                                Menu {
+                                    ForEach(model.efforts, id: \.self) { effort in
+                                        Button {
+                                            model.selectEffort(effort)
+                                        } label: {
+                                            if effort == model.effort {
+                                                Label(effort.capitalized, systemImage: "checkmark")
+                                            } else {
+                                                Text(effort.capitalized)
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    Label("Effort", systemImage: "gauge.with.dots.needle.50percent")
+                                    Text(model.effort?.capitalized ?? "Default")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.ink)
+                                .frame(width: 32, height: 32)
+                                .background(Theme.fill, in: .circle)
+                        }
+                        // Opening upward would otherwise reverse the entries,
+                        // putting Effort above the Model it depends on.
+                        .menuOrder(.fixed)
+                        .accessibilityLabel("Model and effort")
                     }
 
-                    if !model.efforts.isEmpty {
+                    if !model.skills.isEmpty {
                         Menu {
-                            ForEach(model.efforts, id: \.self) { effort in
+                            ForEach(model.skills, id: \.path) { skill in
                                 Button {
-                                    model.selectEffort(effort)
+                                    model.insertSkill(skill)
                                 } label: {
-                                    if effort == model.effort {
-                                        Label(effort.capitalized, systemImage: "checkmark")
-                                    } else {
-                                        Text(effort.capitalized)
-                                    }
+                                    Text(skill.title)
+                                    Text(skill.detail)
                                 }
+                                .disabled(!skill.enabled)
                             }
-                        } label: { ChipLabel(text: model.effort?.capitalized ?? "Effort") }
+                        } label: { ChipLabel(text: "Skills") }
                     }
 
                     Spacer()
@@ -109,6 +182,30 @@ struct ComposerView: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 4)
         .animation(.snappy, value: model.queue.count)
+        .animation(.snappy, value: model.suggestions(skillsInSlash: codexSkillsInSlash).isEmpty)
+    }
+}
+
+struct SuggestionRow: View {
+    let suggestion: ComposerSuggestion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(suggestion.label)
+                .font(Theme.mono(13.5, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+            if !suggestion.detail.isEmpty {
+                Text(suggestion.detail)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .opacity(suggestion.enabled ? 1 : 0.4)
+        .contentShape(.rect)
     }
 }
 

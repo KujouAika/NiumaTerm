@@ -10,6 +10,7 @@ struct AgentSessionView: View {
     @FocusState private var composerFocused: Bool
     @State private var renaming = false
     @State private var newTitle = ""
+    @State private var confirmingNew = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -94,6 +95,10 @@ struct AgentSessionView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button("New conversation", systemImage: "square.and.pencil") {
+                        confirmingNew = true
+                    }
+                    .disabled(model.isWorking || model.ended != nil)
                     Button("Rename", systemImage: "pencil") {
                         newTitle = model.title
                         renaming = true
@@ -103,6 +108,11 @@ struct AgentSessionView: View {
                 }
                 .disabled(!model.attached)
             }
+        }
+        .confirmationDialog("Start a new conversation?", isPresented: $confirmingNew, titleVisibility: .visible) {
+            Button("New Conversation", role: .destructive) { model.newConversation() }
+        } message: {
+            Text("\(model.agentName) restarts on \(hostName) with an empty conversation.")
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $newTitle)

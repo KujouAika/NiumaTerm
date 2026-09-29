@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage("transcriptMono") private var transcriptMono = true
     @AppStorage("faceIDLock") private var faceIDLock = false
     @AppStorage("appearance") private var appearance = AppAppearance.system
+    @AppStorage(ComposerSettings.codexSkillsInSlashKey) private var codexSkillsInSlash = true
 
     @State private var forgetting: Host?
 
@@ -53,8 +54,13 @@ struct SettingsView: View {
                         LabeledContent("Size", value: "\(Int(fontSize)) pt")
                     }
                 }
-                Section("Agent") {
+                Section {
                     Toggle("Monospaced transcript", isOn: $transcriptMono)
+                    Toggle("Codex skills in / list", isOn: $codexSkillsInSlash)
+                } header: {
+                    Text("Agent")
+                } footer: {
+                    Text("List Codex skills among the / commands; picking one writes its $name form. With this off, / lists commands only and $ lists skills.")
                 }
                 Section("Security") {
                     Toggle("Require Face ID", isOn: $faceIDLock)

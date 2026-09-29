@@ -13,6 +13,8 @@ use nmt_remote_core::rpc::{
     EndReason, HostInfo, Origin, SessionInfo, SessionKind, SessionWorkspace,
 };
 
+use crate::commands::{command_records, skill_records};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum HostStatus {
     /// Nothing needs the host, so nothing is connected.
@@ -331,6 +333,41 @@ pub struct QueuedMessage {
     pub text: String,
 }
 
+/// A slash command the composer offers.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SlashCommandRecord {
+    pub name: String,
+    pub description: String,
+    pub argument_hint: Option<String>,
+
+    /// Text typed after the name goes to the command.
+    pub takes_arguments: bool,
+}
+
+/// A skill the composer offers.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SkillRecord {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+
+    /// Where the harness found the skill, such as the user's or the
+    /// workspace's skills, and for a name several skills share, the folder
+    /// that holds this one, so their rows read apart.
+    pub source: String,
+
+    /// Tells apart skills that share a name; [`crate::agent::AgentHandle::submit`]
+    /// takes it to invoke the one the person picked.
+    pub path: String,
+
+    /// A disabled skill is listed but cannot be invoked.
+    pub enabled: bool,
+
+    /// What the composer inserts to invoke the skill, `$name` or `/name`
+    /// depending on the harness.
+    pub token: String,
+}
+
 /// Everything besides the transcript that an agent screen shows.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct AgentState {
@@ -368,6 +405,9 @@ pub struct AgentState {
 
     pub context_used: Option<u64>,
     pub context_window: Option<u64>,
+
+    pub commands: Vec<SlashCommandRecord>,
+    pub skills: Vec<SkillRecord>,
 }
 
 pub(crate) fn agent_state(
@@ -395,6 +435,8 @@ pub(crate) fn agent_state(
             queue: Vec::new(),
             context_used: None,
             context_window: None,
+            commands: Vec::new(),
+            skills: Vec::new(),
         };
     };
 
@@ -454,6 +496,8 @@ pub(crate) fn agent_state(
             .collect(),
         context_used: usage.map(|usage| usage.used_tokens()),
         context_window: usage.and_then(|usage| usage.max_tokens),
+        commands: command_records(view),
+        skills: skill_records(view),
     }
 }
 

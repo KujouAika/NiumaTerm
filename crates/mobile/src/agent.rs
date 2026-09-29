@@ -2,11 +2,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::anyhow;
+use nmt_agent::catalog::{SlashRefusal, SlashRoute};
+use nmt_agent::chat::{SkillReference, SlashCommandOutcome, SlashCommandRunPolicy};
 use nmt_agent::session::OperationError;
 use nmt_agent::session::command::{
-    AgentCommand, ApplyModelSelection, Interrupt, Prompt, RenameConversation, RespondApproval,
-    SubmitPrompt, SubmitRefusal, WithdrawQueuedPrompt,
+    AdmitSlashCommand, AgentCommand, ApplyModelSelection, Interrupt, NEW_CONVERSATION_METHOD,
+    Prompt, RenameConversation, RespondApproval, RunSlashCommand, SubmitPrompt, SubmitRefusal,
+    WithdrawQueuedPrompt,
 };
+use nmt_agent::session::commands::{CommandAdmission, PendingSlashCommand};
 use nmt_agent::session::controller::SubmissionBlock;
 use nmt_agent::session::delivery::RecoverablePrompt;
 use nmt_agent::session::input::ApprovalOutcome;
@@ -15,10 +19,12 @@ use nmt_agent::session::view::{AgentView, ViewOp, ViewSlot};
 use nmt_platform::runtime;
 use nmt_remote::connection::{AgentLink, AgentUpdate, RemoteHost};
 use parking_lot::Mutex;
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::AbortHandle;
 use tracing::warn;
 
+use crate::commands::{bound_skill, refusal_text, route_line};
 use crate::error::CoreError;
 use crate::records::{AgentEntry, AgentState, ViewEnd, agent_entry, agent_state};
 
@@ -72,6 +78,20 @@ pub enum SubmitResult {
     Rejected {
         message: String,
     },
+    /// The line was a command the agent took; what it does shows in the
+    /// transcript.
+    CommandStarted,
+    /// The line was a command that finished at once, with what it reported.
+    CommandFinished {
+        message: Option<String>,
+    },
+    /// The line was a command that runs once the running turn ends;
+    /// `count` commands wait now.
+    CommandQueued {
+        count: u32,
+    },
+    /// The line started a new conversation in place of this one.
+    ConversationReplaced,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -188,6 +208,78 @@ impl AgentHandle {
         })
     }
 
+    async fn send_message(
+        &self,
+        text: String,
+        skill: Option<SkillReference>,
+    ) -> Result<SubmitResult, CoreError> {
+        let prompt = Prompt {
+            fallback_title: fallback_title(&text),
+            title_text: text.clone(),
+            skill: skill.clone(),
+            images: Vec::new(),
+            image_paths: Vec::new(),
+            recoverable: Some(RecoverablePrompt {
+                text: text.clone(),
+                response_annotations: Vec::new(),
+                skill,
+            }),
+            text,
+        };
+
+        Ok(match self.run(SubmitPrompt(prompt)).await? {
+            Ok(submitted) => SubmitResult::Accepted {
+                started_turn: submitted.started_turn,
+            },
+            Err(SubmitRefusal::NotReady) => SubmitResult::NotReady,
+            Err(SubmitRefusal::Blocked(SubmissionBlock::QuestionResponse)) => {
+                SubmitResult::AnswerPending
+            }
+            Err(SubmitRefusal::Blocked(SubmissionBlock::ConversationChange)) => {
+                SubmitResult::ConversationChanging
+            }
+            Err(SubmitRefusal::Blocked(SubmissionBlock::CommandStarting)) => {
+                SubmitResult::CommandStarting
+            }
+            Err(SubmitRefusal::Rejected { message }) => SubmitResult::Rejected { message },
+        })
+    }
+
+    /// Run a harness command, or have it wait by its policy while a turn
+    /// holds the session, as the desktop composer does.
+    async fn run_command(
+        &self,
+        command: PendingSlashCommand,
+        policy: SlashCommandRunPolicy,
+        busy: bool,
+    ) -> Result<SubmitResult, CoreError> {
+        let command = match busy {
+            false => command,
+            true => match self.run(AdmitSlashCommand { command, policy }).await? {
+                CommandAdmission::Execute(command) => command,
+                CommandAdmission::Queued { count, .. } => {
+                    return Ok(SubmitResult::CommandQueued {
+                        count: count as u32,
+                    });
+                }
+                CommandAdmission::Busy { name } => {
+                    return Ok(SubmitResult::Rejected {
+                        message: refusal_text(SlashRefusal::IdleOnly(name)),
+                    });
+                }
+            },
+        };
+
+        Ok(match self.run(RunSlashCommand { command }).await? {
+            SlashCommandOutcome::Accepted => SubmitResult::CommandStarted,
+            SlashCommandOutcome::Completed { message, .. } => {
+                SubmitResult::CommandFinished { message }
+            }
+            SlashCommandOutcome::Rejected { message } => SubmitResult::Rejected { message },
+            SlashCommandOutcome::NotReady => SubmitResult::NotReady,
+        })
+    }
+
     async fn run<C: AgentCommand>(&self, command: C) -> Result<C::Outcome, CoreError> {
         let link = Arc::clone(&self.link);
         let params = serde_json::to_value(&command)?;
@@ -238,37 +330,66 @@ impl AgentHandle {
         self.host.reconnect(self.link.session());
     }
 
-    pub async fn submit(&self, text: String) -> Result<SubmitResult, CoreError> {
-        let prompt = Prompt {
-            fallback_title: fallback_title(&text),
-            title_text: text.clone(),
-            skill: None,
-            images: Vec::new(),
-            image_paths: Vec::new(),
-            recoverable: Some(RecoverablePrompt {
-                text: text.clone(),
-                response_annotations: Vec::new(),
-                skill: None,
-            }),
-            text,
+    /// Send what the person typed: a slash line runs as the command it
+    /// names, anything else goes to the agent as a message. `skill_path` is
+    /// the skill picked for a message that starts with its `$name`.
+    pub async fn submit(
+        &self,
+        text: String,
+        skill_path: Option<String>,
+    ) -> Result<SubmitResult, CoreError> {
+        let (route, skill) = {
+            let replica = self.replica.lock();
+
+            match &replica.view {
+                Some(view) => (
+                    route_line(&text, view),
+                    bound_skill(&text, skill_path.as_deref(), view),
+                ),
+                None => (None, None),
+            }
         };
 
-        Ok(match self.run(SubmitPrompt(prompt)).await? {
-            Ok(submitted) => SubmitResult::Accepted {
-                started_turn: submitted.started_turn,
+        let Some((route, busy)) = route else {
+            return self.send_message(text, skill).await;
+        };
+
+        Ok(match route {
+            SlashRoute::Prompt => return self.send_message(text, None).await,
+            SlashRoute::Refused(refusal) => SubmitResult::Rejected {
+                message: refusal_text(refusal),
             },
-            Err(SubmitRefusal::NotReady) => SubmitResult::NotReady,
-            Err(SubmitRefusal::Blocked(SubmissionBlock::QuestionResponse)) => {
-                SubmitResult::AnswerPending
+            SlashRoute::NewConversation => {
+                self.new_conversation().await?;
+
+                SubmitResult::ConversationReplaced
             }
-            Err(SubmitRefusal::Blocked(SubmissionBlock::ConversationChange)) => {
-                SubmitResult::ConversationChanging
+            SlashRoute::Rename(title) => {
+                self.rename(title).await?;
+
+                SubmitResult::CommandFinished { message: None }
             }
-            Err(SubmitRefusal::Blocked(SubmissionBlock::CommandStarting)) => {
-                SubmitResult::CommandStarting
+            SlashRoute::Backend { command, policy } => {
+                return self.run_command(command, policy, busy).await;
             }
-            Err(SubmitRefusal::Rejected { message }) => SubmitResult::Rejected { message },
+            // The phone's catalog leaves out every command that routes here.
+            _ => SubmitResult::Rejected {
+                message: "This command works on the computer only.".to_owned(),
+            },
         })
+    }
+
+    /// Replace the conversation with a new one, which restarts the agent on
+    /// the host. The host refuses while a turn is running.
+    pub async fn new_conversation(&self) -> Result<(), CoreError> {
+        let link = Arc::clone(&self.link);
+
+        let value = runtime()
+            .spawn(async move { link.call(NEW_CONVERSATION_METHOD, Value::Null).await })
+            .await??;
+
+        serde_json::from_value::<Result<(), String>>(value)?
+            .map_err(|message| CoreError::Failed { message })
     }
 
     pub async fn interrupt(&self) -> Result<InterruptResult, CoreError> {
