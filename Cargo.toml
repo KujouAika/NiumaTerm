@@ -68,6 +68,10 @@ default-members = [
 
 [workspace.lints.cargo]
 non_kebab_case_bins = "allow"
+# Much of the dependency table mirrors the vendored GPUI stack, including
+# platform backends (Wayland, X11, Redox) that no member builds, so dozens of
+# entries trip this lint on every build and bury the warnings that matter.
+unused_workspace_dependencies = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(enable_profiling)"] }
