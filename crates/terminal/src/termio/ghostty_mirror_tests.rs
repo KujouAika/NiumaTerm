@@ -490,8 +490,13 @@ fn subscribe_mid_stream_replays_without_loss_or_duplication() {
 
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
 
+    // The timeout only guards against a hung loop, which otherwise ends once
+    // the pipe is drained. Three read buffers of output go through the parser
+    // here, and an unoptimized build links libghostty in Zig Debug mode, whose
+    // parse path is about 2000 times slower: that alone takes close to twenty
+    // seconds, where an optimized one takes milliseconds.
     runtime.block_on(async {
-        timeout(time::Duration::from_secs(2), machine.run_event_loop())
+        timeout(time::Duration::from_secs(120), machine.run_event_loop())
             .await
             .unwrap()
     });
