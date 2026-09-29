@@ -20,8 +20,9 @@
 //     "host": "<host id>", "sealed": "<base64>", "collapse": "<session id>" }
 //
 // Answers 200 with `{ "status": <APNs status>, "reason"?: "<APNs reason>" }`
-// once APNs answered, 400 for a malformed request, 429 when the token's rate
-// limit is spent, and 501 when this relay has no push key configured.
+// once APNs answered, 400 for a malformed request, 404 on a hostname other
+// than `PUSH_HOST`, 429 when the token's rate limit is spent, and 501 when
+// this relay has no push key configured.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -32,6 +33,10 @@ export interface PushEnv {
   APNS_TEAM_ID?: string;
   /// The app's bundle identifier.
   APNS_TOPIC?: string;
+  /// The only hostname that serves pushes, when set. A custom domain can sit
+  /// behind zone rate-limiting rules, but `*.workers.dev` cannot, so pushes
+  /// left open there would bypass them.
+  PUSH_HOST?: string;
   PUSH_GATEWAY: DurableObjectNamespace<PushGateway>;
 }
 
@@ -71,6 +76,10 @@ const PUSHES_PER_TOKEN_PER_MINUTE = 60;
 const PROVIDER_TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
 export async function handlePush(request: Request, env: PushEnv): Promise<Response> {
+  if (env.PUSH_HOST && new URL(request.url).hostname !== env.PUSH_HOST) {
+    return new Response("not found", { status: 404 });
+  }
+
   if (request.method !== "POST") {
     return new Response("expected POST", { status: 405 });
   }

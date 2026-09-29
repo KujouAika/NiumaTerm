@@ -105,6 +105,24 @@ To enable it on the relay that belongs to the app's developer account:
 3. Build the app with `NMT_PUSH_ENDPOINT` pointing at
    `https://<worker>/v1/push` (see mobile/ios/README.md).
 
+`/v1/push` is open, and every request to it counts against the Worker's
+daily quota, even one it rejects. Rate-limiting rules, which stop requests
+before they reach the Worker, only apply to a domain in your own zone, not
+to `*.workers.dev`. To put pushes behind one:
+
+1. Add a Custom Domain to the Worker, for example `push.example.com`
+   (Workers & Pages > the Worker > Settings > Domains & Routes).
+2. Serve pushes only there, so the `workers.dev` address cannot bypass the
+   rule; it then answers `/v1/push` with 404:
+
+   ```sh
+   echo push.example.com | npx wrangler secret put PUSH_HOST
+   ```
+
+3. In the zone, add a rate-limiting rule matching that hostname and the
+   path `/v1/push` (Security > WAF > Rate limiting rules).
+4. Build the app with `NMT_PUSH_ENDPOINT` on that domain.
+
 Without the secrets the endpoint answers 501 and hosts send nothing. A
 push with a made-up 64-digit hex token must come back `400 BadDeviceToken`
 from both environments; `BadEnvironmentKeyInToken` means the key lacks an
