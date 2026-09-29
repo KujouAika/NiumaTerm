@@ -55,16 +55,21 @@ pub(crate) struct TabStrip {
     drag_over: Option<(usize, bool)>,
 
     /// Strip width recorded during the previous prepaint, which is what
-    /// `Auto Size` divides between the tabs. Held in a cell because the
+    /// the tabs divide between them. Held in a cell because the
     /// measurement arrives from a prepaint callback, long after `render` has
     /// given up its borrow.
     measured_width: rc::Rc<cell::Cell<f32>>,
 }
 
-/// Narrowest a tab gets under `Auto Size`: one glyph slot centered in the
-/// pill's content padding, plus the gap and borders the tab draws around it
+/// Narrowest a tab gets: one glyph slot centered in the pill's content
+/// padding, plus the gap and borders the tab draws around it
 /// (2 borders + 32 padding + 16 slot + 4 gap).
-const MIN_AUTO_TAB_WIDTH: f32 = 54.0;
+const MIN_TAB_WIDTH: f32 = 54.0;
+
+/// Widest a tab gets while the strip has room to spare. Past this width a
+/// tab adds only empty space after its title, and a few tabs stretched across
+/// a wide window read as one bar rather than separate targets.
+const MAX_TAB_WIDTH: f32 = 220.0;
 
 impl TabStrip {
     pub(crate) fn new() -> Self {
@@ -164,25 +169,14 @@ impl TabStrip {
         let closeable = tab_count > 1 || settings_workspace;
         let shell = cx.entity();
 
-        // Width from the Appearance setting; long titles clip inside the tab's
-        // own overflow_hidden. Auto Size treats that value as the upper bound
-        // and divides the strip between the tabs instead.
-        let settings = cx.global::<AppSettings>();
-        let configured_width = settings.config().appearance.tab_width as f32;
-        let auto_size = settings.config().appearance.tab_auto_size;
-        let tab_shape = settings.config().appearance.tab_shape;
+        // The strip is divided between the tabs; long titles clip inside the
+        // tab's own overflow_hidden.
+        let tab_shape = cx.global::<AppSettings>().config().appearance.tab_shape;
 
         let tab_width = if settings_workspace {
             SETTINGS_NAV_WIDTH.into()
-        } else if auto_size {
-            auto_tab_width(
-                self.measured_width.get(),
-                tab_count,
-                configured_width,
-                tab_shape,
-            )
         } else {
-            configured_width
+            fitted_tab_width(self.measured_width.get(), tab_count, tab_shape)
         };
 
         let density = tab_density(tab_width);
@@ -649,22 +643,20 @@ impl TabStrip {
             .id("tab-strip-drop")
             .w_full()
             .min_w_0()
-            // Auto Size needs the width the strip actually got, which layout
+            // Tab widths need the width the strip actually got, which layout
             // only settles after this render. Recording it and asking for one
             // more render converges in a single extra frame, and the equality
             // guard keeps that from repeating every frame.
-            .when(auto_size, |this| {
-                this.on_prepaint(move |bounds, _, cx| {
-                    let width: f32 = bounds.size.width.into();
+            .on_prepaint(move |bounds, _, cx| {
+                let width: f32 = bounds.size.width.into();
 
-                    if measured_width.get() != width {
-                        measured_width.set(width);
+                if measured_width.get() != width {
+                    measured_width.set(width);
 
-                        // `Window::refresh` is a no-op mid-draw, so the redraw
-                        // is requested through the shell entity instead.
-                        measured_shell.update(cx, |_, cx| cx.notify());
-                    }
-                })
+                    // `Window::refresh` is a no-op mid-draw, so the redraw is
+                    // requested through the shell entity instead.
+                    measured_shell.update(cx, |_, cx| cx.notify());
+                }
             })
             .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
                 if let Some((to, _)) = this.tab_strip_mut().drag_over.take() {
@@ -708,18 +700,16 @@ fn tab_gap(shape: TabShape) -> f32 {
 /// the tabs.
 const NEW_TAB_BUTTON_WIDTH: f32 = TOOLBAR_BUTTON_SIZE;
 
-/// Width one tab takes under `Auto Size`. Tabs hold `configured` while the row
-/// has room and then shrink together, never past the point where the leading
-/// icon would be clipped. Below that the row overflows and the strip's
-/// horizontal scroll takes over.
-fn auto_tab_width(strip_width: f32, tab_count: usize, configured: f32, shape: TabShape) -> f32 {
-    let floor = MIN_AUTO_TAB_WIDTH.min(configured);
-
+/// Width one tab takes. Tabs hold `MAX_TAB_WIDTH` while the row has room and
+/// then shrink together, never past the point where the leading icon would be
+/// clipped. Below that the row overflows and the strip's horizontal scroll
+/// takes over.
+fn fitted_tab_width(strip_width: f32, tab_count: usize, shape: TabShape) -> f32 {
     // A strip that has never been laid out reports no width. Starting from the
-    // configured width keeps the first frame at full size rather than flashing
-    // every tab down to the floor and back.
+    // widest tab keeps the first frame at full size rather than flashing every
+    // tab down to the floor and back.
     if tab_count == 0 || strip_width <= 0.0 {
-        return configured;
+        return MAX_TAB_WIDTH;
     }
 
     // One gap per tab: between neighbours, plus one before the new-tab button.
@@ -729,9 +719,9 @@ fn auto_tab_width(strip_width: f32, tab_count: usize, configured: f32, shape: Ta
     let share = (strip_width - reserved) / tab_count as f32;
 
     if share.is_finite() {
-        share.clamp(floor, configured)
+        share.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
     } else {
-        configured
+        MAX_TAB_WIDTH
     }
 }
 

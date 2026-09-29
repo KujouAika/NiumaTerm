@@ -1,7 +1,7 @@
 pub use nmt_config::agent::{CollapseRows, ModelListStyle};
 #[cfg(test)]
 pub use nmt_config::appearance::{DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_UI_FONT};
-pub use nmt_config::appearance::{InputStyle, MIN_TAB_WIDTH, TabBarStyle, WindowBackdrop};
+pub use nmt_config::appearance::{InputStyle, TabBarStyle, WindowBackdrop};
 pub use nmt_config::profile::{AgentKind, AgentProfile, AgentProfileLauncher, EnvVar, Profile};
 
 use std::borrow::Cow;

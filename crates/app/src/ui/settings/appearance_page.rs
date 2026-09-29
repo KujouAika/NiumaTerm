@@ -2,7 +2,6 @@ use gpui::Entity;
 use gpui_component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
 };
-use nmt_config::appearance::MAX_TAB_WIDTH;
 use rust_i18n::t;
 
 use crate::ui;
@@ -10,14 +9,13 @@ use crate::ui::settings::fields::{
     background_image_field, background_image_opacity_field, background_opacity_field,
     settings_choice, settings_number, settings_switch, tab_shape_field,
 };
-use crate::ui::settings::state::{AppSettings, MIN_TAB_WIDTH, SettingsEditing, WindowBackdrop};
+use crate::ui::settings::state::{AppSettings, SettingsEditing, WindowBackdrop};
 use crate::ui::settings::theme_gallery::theme_list;
 
 pub(super) fn appearance_page(
     editing: Entity<SettingsEditing>,
     backdrop: WindowBackdrop,
     background_image_enabled: bool,
-    tab_auto_size: bool,
     show_git_status: bool,
 ) -> SettingPage {
     let filter = editing.clone();
@@ -291,34 +289,6 @@ pub(super) fn appearance_page(
                     )
                     .default_value("horizontal"),
                 ))
-                .item(SettingItem::new(
-                    t!("settings-appearance-tab-auto-size"),
-                    settings_switch(
-                        |config| config.appearance.tab_auto_size,
-                        |settings, value| {
-                            settings.edit_appearance(|section| section.tab_auto_size = value);
-                        },
-                    ),
-                ))
-                .item(
-                    SettingItem::new(
-                        t!("settings-appearance-tab-width"),
-                        settings_number(
-                            NumberFieldOptions {
-                                min: MIN_TAB_WIDTH,
-                                max: MAX_TAB_WIDTH,
-                                step: 1.0,
-                            },
-                            |config| config.appearance.tab_width,
-                            |settings, value| {
-                                settings.edit_appearance(|section| section.tab_width = value);
-                            },
-                        ),
-                    )
-                    // Auto Size derives the width from the strip, so the entry
-                    // would report a value the tabs no longer use.
-                    .disabled(tab_auto_size),
-                )
                 .item(SettingItem::new(
                     t!("settings-appearance-tab-shape"),
                     tab_shape_field(),

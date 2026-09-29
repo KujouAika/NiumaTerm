@@ -270,7 +270,6 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
             editing,
             backdrop,
             background_image_enabled,
-            cx.global::<AppSettings>().config().appearance.tab_auto_size,
             cx.global::<AppSettings>()
                 .config()
                 .appearance

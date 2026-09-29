@@ -28,8 +28,6 @@ fn sample_appearance() -> AppearanceConfig {
         show_daily_token_usage: true,
         show_git_status_on_title_bar: true,
         git_status_refresh_interval: 15,
-        tab_width: 150.0,
-        tab_auto_size: true,
         tab_bar_style: appearance::TabBarStyle::Vertical,
         ui_font: "Arial".to_string(),
         terminal_font_family: "Cascadia Code".to_string(),
@@ -721,7 +719,6 @@ terminal-font-size = -1
 agent-font-size = 500
 agent-transcript-font-size = nan
 terminal-line-height = inf
-tab-width = 9999
 background-opacity = -5
 background-image-opacity = nan
 background-image = " "
@@ -752,7 +749,6 @@ git-status-refresh-interval = 1
         appearance.terminal_line_height,
         defaults.terminal_line_height
     );
-    assert_eq!(appearance.tab_width, appearance::MAX_TAB_WIDTH);
     assert_eq!(appearance.background_opacity, 0.2);
     assert_eq!(
         appearance.background_image_opacity,

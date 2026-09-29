@@ -25,11 +25,6 @@ pub const DEFAULT_UI_FONT: &str = "Segoe UI";
 #[cfg(not(target_os = "windows"))]
 pub const DEFAULT_UI_FONT: &str = ".SystemUIFont";
 
-pub const MIN_TAB_WIDTH: f64 = 120.0;
-pub const DEFAULT_TAB_WIDTH: f64 = 220.0;
-
-pub const MAX_TAB_WIDTH: f64 = MIN_TAB_WIDTH * 3.0;
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputStyle {
@@ -176,10 +171,6 @@ fn default_git_status_refresh_interval() -> u64 {
     30
 }
 
-fn default_tab_width() -> f64 {
-    DEFAULT_TAB_WIDTH
-}
-
 /// The proportional face the interface is drawn in.
 ///
 /// Named through GPUI's `.SystemUIFont` token rather than by family wherever
@@ -301,15 +292,6 @@ pub struct AppearanceConfig {
         rename = "git-status-refresh-interval"
     )]
     pub git_status_refresh_interval: u64,
-
-    /// Fixed tab width in pixels (120–360; clamped on load).
-    #[serde(default = "default_tab_width", rename = "tab-width")]
-    pub tab_width: f64,
-
-    /// Shrink tabs toward a minimum as the strip fills, instead of holding
-    /// `tab_width`.
-    #[serde(default, rename = "tab-auto-size")]
-    pub tab_auto_size: bool,
 
     /// Tab strip placement: a horizontal row in the title bar, or vertical
     /// rows nested under each workspace in the sidebar.
@@ -452,8 +434,6 @@ impl Default for AppearanceConfig {
             show_daily_token_usage: false,
             show_git_status_on_title_bar: false,
             git_status_refresh_interval: default_git_status_refresh_interval(),
-            tab_width: default_tab_width(),
-            tab_auto_size: false,
             tab_bar_style: TabBarStyle::default(),
             ui_font: default_ui_font(),
             terminal_font_family: default_terminal_font_family(),
@@ -618,16 +598,6 @@ fn font_or_default(family: &str, platform_defaults: &[&str], default: &str) -> S
     }
 }
 
-/// Clamp a persisted tab width to the allowed range, falling back to the
-/// default for non-finite values.
-pub fn clamp_tab_width(width: f64) -> f64 {
-    if width.is_finite() {
-        width.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
-    } else {
-        DEFAULT_TAB_WIDTH
-    }
-}
-
 pub fn clamp_terminal_font_size(size: f64) -> f64 {
     if size.is_finite() {
         size.clamp(6.0, 72.0)
@@ -692,7 +662,6 @@ impl AppearanceConfig {
 
         self.terminal_line_height = clamp_terminal_line_height(self.terminal_line_height);
 
-        self.tab_width = clamp_tab_width(self.tab_width);
         self.background_opacity = clamp_background_opacity(self.background_opacity);
 
         self.background_image_opacity =
