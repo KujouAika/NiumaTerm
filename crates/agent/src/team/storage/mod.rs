@@ -5,9 +5,10 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use std::{io, thread};
 
 use nmt_platform::durable_file;
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,12 @@ use crate::team::model::RoomId;
 use crate::team::room::Room;
 
 const VERSION: u32 = 3;
+
+/// How long opening a room waits out a lock that may only be held by a child
+/// process between fork and exec.
+const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(250);
+
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
 /// The directory under the data directory that holds one directory per room.
 const ROOMS_DIRECTORY: &str = "agent-teams";
@@ -220,7 +227,21 @@ fn lock_room(directory: &Path) -> Result<File, StorageError> {
         .write(true)
         .open(directory.join("owner.lock"))?;
 
-    lock.try_lock().map_err(io::Error::other)?;
+    // The lock belongs to the open file rather than to this descriptor, and a
+    // child forked by another thread holds a copy of every open file until it
+    // execs, the close-on-exec flag notwithstanding. A PTY child runs its
+    // setup between the two, so a room just released here can read as locked
+    // for a few milliseconds. Retrying briefly waits that out, while a room
+    // another instance really holds still fails within a moment.
+    let deadline = Instant::now() + LOCK_RETRY_WINDOW;
 
-    Ok(lock)
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(LOCK_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(io::Error::other(error).into()),
+        }
+    }
 }
