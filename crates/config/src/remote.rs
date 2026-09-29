@@ -33,8 +33,8 @@ impl Default for RemoteConfig {
             lan_port: 47470,
             device_name: String::new(),
             relay_url: String::new(),
-            lan_announce: true,
-            lan_browse: true,
+            lan_announce: false,
+            lan_browse: false,
         }
     }
 }

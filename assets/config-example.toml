@@ -34,7 +34,7 @@ command-blocks = true
 show-daily-token-usage = false
 show-git-status-on-title-bar = false
 git-status-refresh-interval = 30
-tab-bar-style = "horizontal"
+tab-bar-style = "vertical"
 ui-font = "Segoe UI"
 terminal-font-family = "Consolas"
 terminal-font-size = 14.0
@@ -72,6 +72,8 @@ codex-skill-command-compat = true
 model-list-style = "name-and-id"
 enable-agent-team = false
 token-speed-mode = "session"
+answer-questions-one-at-a-time = false
+unified-agent-tab = true
 
 [system]
 restore-last-session-when-opening = true
@@ -95,3 +97,5 @@ enabled = false
 lan-port = 47470
 device-name = ""
 relay-url = ""
+lan-announce = false
+lan-browse = false

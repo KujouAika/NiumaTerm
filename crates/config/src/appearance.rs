@@ -91,9 +91,9 @@ where
 #[serde(rename_all = "kebab-case")]
 pub enum TabBarStyle {
     /// A row of tabs across the title bar.
-    #[default]
     Horizontal,
     /// Tabs nested under their workspace in the sidebar.
+    #[default]
     Vertical,
 }
 
