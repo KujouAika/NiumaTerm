@@ -142,6 +142,7 @@ pub(crate) struct DialogProps {
     width: Pixels,
     max_width: Option<Pixels>,
     margin_top: Option<Pixels>,
+    centered: bool,
     close_button: bool,
 
     overlay: bool,
@@ -154,6 +155,7 @@ impl Default for DialogProps {
     fn default() -> Self {
         Self {
             margin_top: None,
+            centered: false,
             width: px(448.),
             max_width: None,
             overlay: true,
@@ -377,6 +379,13 @@ impl Dialog {
         self
     }
 
+    /// Center the dialog in the window and open it without the slide-down
+    /// motion, defaults to `false`. `margin_top` is ignored when centered.
+    pub fn centered(mut self, centered: bool) -> Self {
+        self.props.centered = centered;
+        self
+    }
+
     /// Sets the width of the dialog, defaults to 448px.
     ///
     /// See also [`Self::width`]
@@ -499,6 +508,7 @@ impl RenderOnce for Dialog {
             );
         let y = self.props.margin_top.unwrap_or(view_size.height / 10.) + px(layer_ix as f32 * 16.);
         let x = view_size.width / 2. - self.props.width / 2.;
+        let centered = self.props.centered;
 
         let base_size = window.text_style().font_size;
         let rem_size = window.rem_size();
@@ -570,120 +580,137 @@ impl RenderOnce for Dialog {
                                     window.close_dialog(cx);
                                 }
                             })
+                            // A centered popup's height depends on its content, so a
+                            // flex wrapper centers it rather than a precomputed offset.
                             .popup(
-                                v_flex()
-                                    .id(layer_ix)
-                                    .bg(cx.theme().tokens.background)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .rounded(cx.theme().radius_lg)
-                                    .min_h_24()
-                                    .pt(paddings.top)
-                                    .pb(paddings.bottom)
-                                    .gap(paddings.top.max(px(8.)))
-                                    .refine_style(&self.style)
-                                    .px_0()
-                                    // There style is high priority, can't be overridden.
-                                    .absolute()
-                                    .occlude()
-                                    .relative()
-                                    .left(x)
-                                    .top(y)
-                                    .w(self.props.width)
-                                    .when_some(self.props.max_width, |this, w| this.max_w(w))
+                                div()
+                                    .when(centered, |this| {
+                                        this.absolute()
+                                            .inset_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                    })
                                     .child(
                                         v_flex()
-                                            .flex_1()
-                                            .overflow_hidden()
-                                            .gap_y_2()
-                                            .when_some(self.header, |this, header| {
+                                            .id(layer_ix)
+                                            .bg(cx.theme().tokens.background)
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .rounded(cx.theme().radius_lg)
+                                            .min_h_24()
+                                            .pt(paddings.top)
+                                            .pb(paddings.bottom)
+                                            .gap(paddings.top.max(px(8.)))
+                                            .refine_style(&self.style)
+                                            .px_0()
+                                            // There style is high priority, can't be overridden.
+                                            .absolute()
+                                            .occlude()
+                                            .relative()
+                                            .when(!centered, |this| this.left(x).top(y))
+                                            .w(self.props.width)
+                                            .when_some(self.props.max_width, |this, w| {
+                                                this.max_w(w)
+                                            })
+                                            .child(
+                                                v_flex()
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .gap_y_2()
+                                                    .when_some(self.header, |this, header| {
+                                                        this.child(
+                                                            div()
+                                                                .pl(paddings.left)
+                                                                .pr(paddings.right)
+                                                                .child(header),
+                                                        )
+                                                    })
+                                                    .when_some(self.title, |this, title| {
+                                                        this.child(
+                                                            DialogTitle::new()
+                                                                .pl(paddings.left)
+                                                                .pr(paddings.right)
+                                                                .child(title),
+                                                        )
+                                                    })
+                                                    .when_some(
+                                                        self.content_builder,
+                                                        |this, builder| {
+                                                            this.child(builder(
+                                                                DialogContent::new()
+                                                                    .gap(paddings.bottom)
+                                                                    .pl(paddings.left)
+                                                                    .pr(paddings.right),
+                                                                window,
+                                                                cx,
+                                                            ))
+                                                        },
+                                                    )
+                                                    .when(!self.children.is_empty(), |this| {
+                                                        this.child(
+                                                            div().flex_1().overflow_hidden().child(
+                                                                // Body
+                                                                v_flex()
+                                                                    .size_full()
+                                                                    .overflow_y_scrollbar()
+                                                                    .pl(paddings.left)
+                                                                    .pr(paddings.right)
+                                                                    .children(self.children),
+                                                            ),
+                                                        )
+                                                    }),
+                                            )
+                                            .when_some(self.footer, |this, footer| {
                                                 this.child(
                                                     div()
                                                         .pl(paddings.left)
                                                         .pr(paddings.right)
-                                                        .child(header),
+                                                        .child(footer),
                                                 )
                                             })
-                                            .when_some(self.title, |this, title| {
-                                                this.child(
-                                                    DialogTitle::new()
-                                                        .pl(paddings.left)
-                                                        .pr(paddings.right)
-                                                        .child(title),
-                                                )
-                                            })
-                                            .when_some(self.content_builder, |this, builder| {
-                                                this.child(builder(
-                                                    DialogContent::new()
-                                                        .gap(paddings.bottom)
-                                                        .pl(paddings.left)
-                                                        .pr(paddings.right),
-                                                    window,
-                                                    cx,
-                                                ))
-                                            })
-                                            .when(!self.children.is_empty(), |this| {
-                                                this.child(
-                                                    div().flex_1().overflow_hidden().child(
-                                                        // Body
-                                                        v_flex()
-                                                            .size_full()
-                                                            .overflow_y_scrollbar()
-                                                            .pl(paddings.left)
-                                                            .pr(paddings.right)
-                                                            .children(self.children),
-                                                    ),
-                                                )
-                                            }),
-                                    )
-                                    .when_some(self.footer, |this, footer| {
-                                        this.child(
-                                            div()
-                                                .pl(paddings.left)
-                                                .pr(paddings.right)
-                                                .child(footer),
-                                        )
-                                    })
-                                    .children(self.props.close_button.then(|| {
-                                        let top = (paddings.top - px(10.)).max(px(8.));
-                                        let right = (paddings.right - px(10.)).max(px(8.));
+                                            .children(self.props.close_button.then(|| {
+                                                let top = (paddings.top - px(10.)).max(px(8.));
+                                                let right = (paddings.right - px(10.)).max(px(8.));
 
-                                        gpui_base::DialogClose::new()
-                                            .absolute()
-                                            .top(top)
-                                            .right(right)
-                                            .child(
-                                                Button::new("close")
-                                                    .small()
-                                                    .ghost()
-                                                    .icon(IconName::Close),
+                                                gpui_base::DialogClose::new()
+                                                    .absolute()
+                                                    .top(top)
+                                                    .right(right)
+                                                    .child(
+                                                        Button::new("close")
+                                                            .small()
+                                                            .ghost()
+                                                            .icon(IconName::Close),
+                                                    )
+                                            }))
+                                            .with_animation(
+                                                "slide-down",
+                                                animation.clone(),
+                                                move |this, delta| {
+                                                    // This is equivalent to `shadow_xl` with an extra opacity.
+                                                    let shadow = vec![
+                                                        BoxShadow {
+                                                            color: hsla(0., 0., 0., 0.1 * delta),
+                                                            offset: point(px(0.), px(20.)),
+                                                            blur_radius: px(25.),
+                                                            spread_radius: px(-5.),
+                                                            inset: false,
+                                                        },
+                                                        BoxShadow {
+                                                            color: hsla(0., 0., 0., 0.1 * delta),
+                                                            offset: point(px(0.), px(8.)),
+                                                            blur_radius: px(10.),
+                                                            spread_radius: px(-6.),
+                                                            inset: false,
+                                                        },
+                                                    ];
+                                                    this.when(!centered, |this| this.top(y * delta))
+                                                        .shadow(shadow)
+                                                },
                                             )
-                                    }))
-                                    .with_animation(
-                                        "slide-down",
-                                        animation.clone(),
-                                        move |this, delta| {
-                                            // This is equivalent to `shadow_xl` with an extra opacity.
-                                            let shadow = vec![
-                                                BoxShadow {
-                                                    color: hsla(0., 0., 0., 0.1 * delta),
-                                                    offset: point(px(0.), px(20.)),
-                                                    blur_radius: px(25.),
-                                                    spread_radius: px(-5.),
-                                                    inset: false,
-                                                },
-                                                BoxShadow {
-                                                    color: hsla(0., 0., 0., 0.1 * delta),
-                                                    offset: point(px(0.), px(8.)),
-                                                    blur_radius: px(10.),
-                                                    spread_radius: px(-6.),
-                                                    inset: false,
-                                                },
-                                            ];
-                                            this.top(y * delta).shadow(shadow)
-                                        },
-                                    )
-                                    .text_selection_scope(selection_scope),
+                                            .text_selection_scope(selection_scope),
+                                    ),
                             ),
                     )
                     .with_animation("fade-in", animation, move |this, delta| this.opacity(delta)),
