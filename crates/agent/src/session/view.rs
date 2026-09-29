@@ -24,6 +24,7 @@ use crate::chat::{
     ThreadSettings,
 };
 use crate::progress::{GoalStatus, TaskList};
+use crate::session::AgentKind;
 use crate::session::branch::BranchPicker;
 use crate::session::commands::PendingSlashCommand;
 use crate::session::controller::SessionController;
@@ -149,6 +150,11 @@ pub struct SettingsView {
 pub struct CatalogView {
     pub commands: Option<Vec<SlashCommandInfo>>,
     pub skills: Option<SkillCatalog>,
+
+    /// The harness, which decides the commands its adapter adds to these and
+    /// how a slash line routes. Absent from hosts that predate it.
+    #[serde(default)]
+    pub kind: Option<AgentKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

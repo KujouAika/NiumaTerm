@@ -1,7 +1,8 @@
 //! Pure slash-command parsing and catalog logic for the agent composer.
 
 pub(super) use nmt_agent::catalog::{
-    merge_catalog, parse_skill_prefix, parse_slash_command, reconcile_skill_binding,
+    SlashRefusal, SlashRoute, merge_catalog, parse_skill_prefix, parse_slash_command,
+    reconcile_skill_binding, route_slash,
 };
 
 #[cfg(test)]
@@ -12,14 +13,12 @@ use std::borrow::Cow;
 
 use nmt_agent::catalog::{
     ChoiceError, SkillError, prepare_skill_selection as prepare_core_skill_selection,
-    resolve_choice as resolve_core_choice, validate_skill_binding as validate_core_skill_binding,
+    validate_skill_binding as validate_core_skill_binding,
 };
 use nmt_agent::chat::{
     SkillCatalog, SkillInfo, SkillReference, SlashCommandArguments, SlashCommandInfo,
     SlashCommandRunPolicy, SlashCommandSource, ThreadSettings,
 };
-use nmt_agent::session::capabilities::Capabilities;
-use nmt_agent::session::commands::PendingSlashCommand;
 use nmt_agent::session::lifecycle::Status;
 use rust_i18n::t;
 
@@ -44,19 +43,6 @@ pub(super) fn prepare_skill_selection(
 ) -> Result<(String, SkillReference), String> {
     prepare_core_skill_selection(skill)
         .map_err(|_| t!("agent-command-skill-disabled-by-codex", name = &skill.name).into_owned())
-}
-
-pub(super) fn resolve_choice(input: &str, choices: &[(String, String)]) -> Result<String, String> {
-    resolve_core_choice(input, choices).map_err(|error| {
-        t!(
-            match error {
-                ChoiceError::Unknown => "agent-command-value-unknown",
-                ChoiceError::Ambiguous => "agent-command-value-ambiguous",
-            },
-            value = input
-        )
-        .into_owned()
-    })
 }
 
 pub(super) fn local_commands() -> Vec<SlashCommandInfo> {
@@ -285,138 +271,37 @@ pub(super) fn move_palette_selection(
     })
 }
 
-/// What a slash line typed into the composer asks for, once it has been
-/// checked against the catalog and the harness's capabilities.
-pub(super) enum SlashRoute {
-    /// Refused with a message; the line stays in the composer for correction.
-    Refused(String),
-    /// A skill written as a command, which the harness expands when it
-    /// arrives as an ordinary message.
-    Prompt,
-    Model(String),
-    Permissions(String),
-    NewConversation,
-    Resume,
-    Status,
-    Rewind,
-    Rename(String),
-    Fork,
-    Find(String),
-    /// A question answered beside the conversation.
-    Side(String),
-    /// A setting command whose value applies nowhere this side.
-    Unapplied,
-    /// A command the harness itself runs.
-    Backend {
-        command: PendingSlashCommand,
-        policy: SlashCommandRunPolicy,
-    },
-}
-
-/// Route slash line `input`, or `None` when it is not one. `catalog` is the
-/// merged command list, `skills` the harness's skill catalog, `choices` the
-/// values a choice command accepts, and `busy` whether a turn or command
-/// still holds the session.
-pub(super) fn route_slash(
-    input: &str,
-    catalog: &[SlashCommandInfo],
-    caps: &Capabilities,
-    skills: Option<&SkillCatalog>,
-    choices: impl FnOnce(&str) -> Vec<(String, String)>,
-    busy: bool,
-) -> Option<SlashRoute> {
-    let parsed = parse_slash_command(input)?;
-
-    if parsed.name.is_empty() {
-        return Some(SlashRoute::Refused(
-            t!("agent-composer-choose-command").to_string(),
-        ));
-    }
-
-    let Some(command) = catalog.iter().find(|command| command.name == parsed.name) else {
-        // Where a skill is invoked by writing its name into the prompt, a
-        // slash line naming one is a message the harness expands, so refusing
-        // it as an unknown command would block the only way to reach a skill
-        // at all.
-        let names_a_skill = skills
-            .is_some_and(|catalog| catalog.skills.iter().any(|skill| skill.name == parsed.name));
-
-        return Some(match caps.slash_skills_are_prompts && names_a_skill {
-            true => SlashRoute::Prompt,
-            false => SlashRoute::Refused(
-                t!("agent-composer-unknown-command", name = &parsed.name).into_owned(),
-            ),
-        });
-    };
-
-    // `/skills` owns a picker stage. A selected row rewrites the composer to
-    // `$name`; the slash input itself is never a provider command or an
-    // ordinary user turn.
-    if command.arguments == SlashCommandArguments::Skills {
-        let message = match skills {
-            None => t!("agent-composer-skill-discovery-loading-period").to_string(),
-            Some(catalog) if catalog.skills.is_empty() && !catalog.errors.is_empty() => {
-                catalog.errors[0].clone()
-            }
-            Some(catalog) if catalog.skills.is_empty() => {
-                t!("agent-composer-no-skills-period").to_string()
-            }
-            Some(_) => t!("agent-composer-choose-skill").to_string(),
-        };
-
-        return Some(SlashRoute::Refused(message));
-    }
-
-    if command.arguments == SlashCommandArguments::None && !parsed.arguments.trim().is_empty() {
-        return Some(SlashRoute::Refused(
-            t!("agent-composer-command-no-arguments", name = &command.name).into_owned(),
-        ));
-    }
-
-    if command.arguments == SlashCommandArguments::Choices {
-        if parsed.arguments.trim().is_empty() {
-            return Some(SlashRoute::Refused(
-                t!("agent-composer-choose-value", name = &command.name).into_owned(),
-            ));
+/// The composer's wording of a refused slash line.
+pub(super) fn slash_refusal_message(refusal: SlashRefusal) -> String {
+    match refusal {
+        SlashRefusal::ChooseCommand => t!("agent-composer-choose-command").into_owned(),
+        SlashRefusal::Unknown(name) => {
+            t!("agent-composer-unknown-command", name = &name).into_owned()
         }
-
-        match resolve_choice(&parsed.arguments, &choices(&command.name)) {
-            Ok(value) if command.name == "model" => return Some(SlashRoute::Model(value)),
-            Ok(value) if command.name == "permissions" => {
-                return Some(SlashRoute::Permissions(value));
-            }
-            Ok(_) => {}
-            Err(message) => return Some(SlashRoute::Refused(message)),
+        SlashRefusal::SkillsLoading => {
+            t!("agent-composer-skill-discovery-loading-period").into_owned()
         }
-    }
-
-    Some(match command.name.as_str() {
-        "new" | "clear" if busy => SlashRoute::Refused(
-            t!("agent-composer-command-idle-only", name = &command.name).into_owned(),
-        ),
-        "new" | "clear" => SlashRoute::NewConversation,
-        "resume" => SlashRoute::Resume,
-        "status" => SlashRoute::Status,
-        "rewind" if caps.file_rewind => SlashRoute::Rewind,
-        "rename" if caps.session_rename => SlashRoute::Rename(parsed.arguments),
-        "fork" if caps.session_fork => SlashRoute::Fork,
-        // Where the conversation is a file this side rewrites, the rewind
-        // picker cuts the same branch and offers restoring the files that turn
-        // touched alongside it. Opening a second picker for the smaller half
-        // of what one command already does would only hide the choice behind
-        // the name it was reached by.
-        "fork" if caps.file_rewind => SlashRoute::Rewind,
-        "find" if caps.session_search => SlashRoute::Find(parsed.arguments),
-        "side" if caps.side_questions || caps.side_threads => SlashRoute::Side(parsed.arguments),
-        "model" | "permissions" => SlashRoute::Unapplied,
-        _ => SlashRoute::Backend {
-            command: PendingSlashCommand {
-                name: command.name.clone(),
-                arguments: parsed.arguments,
+        SlashRefusal::NoSkills => t!("agent-composer-no-skills-period").into_owned(),
+        SlashRefusal::SkillDiscovery(error) => error,
+        SlashRefusal::ChooseSkill => t!("agent-composer-choose-skill").into_owned(),
+        SlashRefusal::NoArguments(name) => {
+            t!("agent-composer-command-no-arguments", name = &name).into_owned()
+        }
+        SlashRefusal::ChooseValue(name) => {
+            t!("agent-composer-choose-value", name = &name).into_owned()
+        }
+        SlashRefusal::Choice { error, value } => t!(
+            match error {
+                ChoiceError::Unknown => "agent-command-value-unknown",
+                ChoiceError::Ambiguous => "agent-command-value-ambiguous",
             },
-            policy: command.run_policy,
-        },
-    })
+            value = &value
+        )
+        .into_owned(),
+        SlashRefusal::IdleOnly(name) => {
+            t!("agent-composer-command-idle-only", name = &name).into_owned()
+        }
+    }
 }
 
 /// The `/status` answer: the harness, its state, the settings the next

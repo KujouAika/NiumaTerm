@@ -19,10 +19,11 @@ use nmt_agent::chat::Item;
 use nmt_agent::session::AgentKind;
 use nmt_agent::session::branch::{BRANCH_METHOD, BranchStep, BranchUpdate, RewindAction};
 use nmt_agent::session::capabilities::AgentCapabilities as _;
-use nmt_agent::session::command::{AgentCommand, PromptImage, run_remote};
+use nmt_agent::session::command::{AgentCommand, NEW_CONVERSATION_METHOD, PromptImage, run_remote};
 use nmt_agent::session::controller::{SessionController, SessionEffect};
 use nmt_agent::session::history::{HISTORY_METHOD, HistoryStep, list_scoped_sessions};
 use nmt_agent::session::input::{QuestionCompletion, QuestionKey};
+use nmt_agent::session::lifecycle::Status as SessionStatus;
 use nmt_agent::session::restore::{ResumeStart, SettingsSeed};
 use nmt_agent::session::view::{
     AgentView, IMAGE_METHOD, ImageData, ImageRef, ViewOp, ViewPublisher, ViewSlot,
@@ -165,6 +166,13 @@ fn answer(
             // message rather than a transport error around it.
             let _ = reply.send(serde_json::to_value(outcome).map_err(|error| error.to_string()));
         }
+        AgentRequest::Call { method, reply, .. } if method == NEW_CONVERSATION_METHOD => {
+            let outcome = start_new_conversation(session, cx);
+
+            publish(session, publisher, views);
+
+            let _ = reply.send(serde_json::to_value(outcome).map_err(|error| error.to_string()));
+        }
         AgentRequest::Call {
             method,
             params,
@@ -188,6 +196,31 @@ fn answer(
             let _ = reply.send(outcome);
         }
     }
+}
+
+/// Replace the host's conversation for a view on another computer, as `/new`
+/// does in the host's own pane. Returns the message a refusal shows.
+fn start_new_conversation(
+    session: &mut AgentSession,
+    cx: &mut Context<AgentSession>,
+) -> Result<(), String> {
+    // A running turn or command, or a branch operation, still writes into the
+    // conversation a restart would drop.
+    let busy = {
+        let controller = session.controller.borrow();
+
+        controller.runtime().status() == SessionStatus::Running
+            || controller.commands().awaiting_turn
+            || controller.branch().holds_composer()
+    };
+
+    if busy {
+        return Err(t!("agent-composer-command-idle-only", name = "new").into_owned());
+    }
+
+    session.reset(cx);
+
+    Ok(())
 }
 
 /// Take one branch step for a view on another computer, the way the host's
@@ -499,6 +532,18 @@ impl RemoteAgent {
 
         runtime().spawn(async move {
             let value = link.call(BRANCH_METHOD, params?).await?;
+
+            Ok(serde_json::from_value(value)?)
+        })
+    }
+
+    /// Ask the host to replace its conversation with a new one, returning
+    /// the message of a refusal.
+    pub(crate) fn new_conversation(&self) -> JoinHandle<Result<Result<(), String>>> {
+        let link = Arc::clone(&self.link);
+
+        runtime().spawn(async move {
+            let value = link.call(NEW_CONVERSATION_METHOD, Value::Null).await?;
 
             Ok(serde_json::from_value(value)?)
         })

@@ -177,6 +177,13 @@ impl EventEmitter<PresentationEffect> for AgentSession {}
 
 impl EventEmitter<AgentPaneEvent> for AgentSession {}
 
+/// The session replaced its conversation with a new one, whether its own
+/// pane or a view on another computer asked. Panes drop what they kept for
+/// the old conversation.
+pub(super) struct ConversationReset;
+
+impl EventEmitter<ConversationReset> for AgentSession {}
+
 #[derive(Clone)]
 pub(super) enum ExecutionSignal {
     Accepted {
@@ -1280,6 +1287,8 @@ impl AgentSession {
         self.resume_on_ready = None;
 
         cx.emit(AgentPaneEvent::TitleSuggested(String::new()));
+
+        cx.emit(ConversationReset);
 
         self.sync_side_chat(cx);
 

@@ -1,4 +1,4 @@
-use nmt_agent::catalog::ParsedSlashCommand;
+use nmt_agent::catalog::{ParsedSlashCommand, resolve_choice};
 
 use crate::agent_tab::commands::*;
 use crate::agent_tab::{CachedCatalog, SlashPalette};

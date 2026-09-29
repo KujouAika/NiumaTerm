@@ -285,6 +285,12 @@ impl AgentCommand for AdmitSlashCommand {
     }
 }
 
+/// The call a view in another process starts a new conversation with. It is
+/// not an [`AgentCommand`]: replacing the conversation restarts the harness
+/// process, which the session owner does rather than the controller. The
+/// outcome is `Result<(), String>`, the message of a refusal.
+pub const NEW_CONVERSATION_METHOD: &str = "new_conversation";
+
 /// Why a command sent from another process did not run.
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteCommandError {

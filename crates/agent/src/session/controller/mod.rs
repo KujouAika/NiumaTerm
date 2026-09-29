@@ -1738,6 +1738,7 @@ impl SessionController {
             catalogs: CatalogView {
                 commands: self.command_catalog.clone(),
                 skills: self.skill_catalog.clone(),
+                kind: Some(self.kind),
             },
             pending: self.input.view(),
             queue: QueueView {

@@ -104,7 +104,8 @@ use crate::agent_tab::commands::{
     PaletteCatalogEntry, PaletteDirection, SlashRoute, filter_palette_catalog,
     filter_skill_catalog, local_commands, merge_catalog, move_palette_selection,
     parse_skill_prefix, parse_slash_command, prepare_skill_selection, reconcile_skill_binding,
-    route_slash, setting_value_label, status_summary, validate_skill_binding,
+    route_slash, setting_value_label, slash_refusal_message, status_summary,
+    validate_skill_binding,
 };
 use crate::agent_tab::composer::attachments::{
     ComposerAttachments, MAX_ATTACHMENTS, THUMBNAIL, has_image, prepare_paste, scratch_dir,
@@ -116,7 +117,7 @@ use crate::agent_tab::composer::{
     rewind_palette_model, row_prompt_target,
 };
 use crate::agent_tab::execution::{
-    AgentSession, ChildReader, CommandBinding, PresentationEffect, SessionOwner,
+    AgentSession, ChildReader, CommandBinding, ConversationReset, PresentationEffect, SessionOwner,
 };
 use crate::agent_tab::fade::FrostedLayer;
 use crate::agent_tab::input_history::{
@@ -1647,15 +1648,10 @@ impl AgentPane {
             return false;
         }
 
-        // These start a new conversation process, search the history, or
-        // open a second transcript, and a remote view has no path to any of
-        // them yet. Rewind, fork, and resume run on the host.
-        if self.remote.is_some()
-            && matches!(
-                route,
-                SlashRoute::NewConversation | SlashRoute::Find(_) | SlashRoute::Side(_)
-            )
-        {
+        // These search the history or open a second transcript, and a
+        // remote view has no path to either yet. A new conversation, rewind,
+        // fork, and resume run on the host.
+        if self.remote.is_some() && matches!(route, SlashRoute::Find(_) | SlashRoute::Side(_)) {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
                 t!("agent-remote-unavailable").into_owned(),
@@ -1666,9 +1662,12 @@ impl AgentPane {
         }
 
         match route {
-            SlashRoute::Refused(message) => {
-                self.palette
-                    .set_feedback(CommandFeedbackKind::Error, message, cx);
+            SlashRoute::Refused(refusal) => {
+                self.palette.set_feedback(
+                    CommandFeedbackKind::Error,
+                    slash_refusal_message(refusal),
+                    cx,
+                );
 
                 false
             }
@@ -3317,6 +3316,15 @@ impl AgentPane {
         })
         .detach();
 
+        // A view on another computer can replace the conversation too, so
+        // the pane follows the session rather than its own `/new`.
+        cx.subscribe(host, |this, _, _: &ConversationReset, cx| {
+            if this.binding.is_current() {
+                this.forget_conversation(cx);
+            }
+        })
+        .detach();
+
         cx.subscribe(host, |this, _, event: &PresentationEffect, cx| {
             if this.binding.is_current()
                 && this.binding.generation == event.generation
@@ -3880,10 +3888,44 @@ impl AgentPane {
             return;
         }
 
+        // A replica has no harness process to restart; the host replaces its
+        // conversation and the replica follows the host's view of the new one.
+        if let Some(remote) = &self.remote {
+            let sent = remote.new_conversation();
+
+            cx.spawn(async move |this, cx| {
+                let outcome = sent
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|outcome| outcome);
+
+                let _ = this.update(cx, |this, cx| match outcome {
+                    Ok(Ok(())) => this.forget_conversation(cx),
+                    Ok(Err(message)) => {
+                        this.palette
+                            .set_feedback(CommandFeedbackKind::Error, message, cx);
+                    }
+                    Err(error) => this.palette.set_feedback(
+                        CommandFeedbackKind::Error,
+                        format!("{error:#}"),
+                        cx,
+                    ),
+                });
+            })
+            .detach();
+
+            return;
+        }
+
+        // The session tells every pane showing it, this one included, through
+        // `ConversationReset`.
         if let Some(host) = self.host.upgrade() {
             host.update(cx, |host, cx| host.reset(cx));
         }
+    }
 
+    /// Drop what the pane kept for a conversation its session replaced.
+    fn forget_conversation(&mut self, cx: &mut Context<Self>) {
         self.clear_conversation_presentation(cx);
 
         self.palette.skill_binding = None;
