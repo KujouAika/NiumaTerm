@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{AnyElement, Div, Edges, Stateful, div, px};
+use gpui::{AnyElement, Div, Edges, Stateful, px};
 use gpui_component::TitleBar;
 use gpui_component::button::Button;
 use gpui_component::input::Input;
@@ -36,6 +36,10 @@ impl PlatformStyle for MacOs {
     const COMPACT_TAB_WIDTH: f32 = 82.0;
 
     const FULL_TAB_WIDTH: f32 = 112.0;
+
+    /// A macOS source list marks its selected row with the fill alone, which
+    /// lets the workspace names start on the column under the close button.
+    const SIDEBAR_SELECTION_MARK: bool = false;
 
     /// State the reserved leading edge on the bar itself, so the room kept
     /// clear for the window buttons and the width the leading region is
@@ -88,41 +92,42 @@ impl PlatformStyle for MacOs {
         input.text_left()
     }
 
-    /// The heading rests on the bottom edge the attached tab strip occupies,
-    /// so switching between tab layouts keeps the bar's content on one line.
+    /// The heading centers in the bar, on the same line as the window buttons
+    /// and the leading controls, which AppKit and the bar both center
+    /// vertically.
     fn session_heading_slot(slot: Div) -> Div {
-        slot
+        slot.items_center()
     }
 
-    /// The row reaches back into the gutter the workspace rows' fills use, so
-    /// its hover fill starts on the same edge as theirs.
+    /// The status area already reaches into the gutter, so the row keeps its
+    /// place in it.
     fn sidebar_agent_usage(usage: AnyElement) -> AnyElement {
-        div()
-            .ml(px(-SIDEBAR_ROW_GUTTER))
-            .child(usage)
-            .into_any_element()
+        usage
     }
 
-    /// The sidebar already offsets the row into its gutter, so the row adds no
-    /// leading padding or border of its own and its text keeps the column.
+    /// The status area offsets the row into its gutter, so the row pads its
+    /// icon back onto the content column and keeps the text off the trailing
+    /// edge.
     fn agent_usage_row(row: Button) -> Button {
-        row.pl_0().pr_1().border_0()
+        row.pl(px(SIDEBAR_ROW_GUTTER)).pr_1()
     }
 
-    /// The content column starts under the close button's inner edge, so the
-    /// heading reaches back into the gutter to stand under the button itself.
+    /// The content column starts under the close button's leading edge, so
+    /// the heading stays on it.
     fn sidebar_heading(heading: Div) -> Div {
-        heading.ml(px(-SIDEBAR_ROW_GUTTER))
+        heading
     }
 
-    /// The area stays on the content column; only the quota row reaches into
-    /// the gutter.
+    /// Both status rows reach back into the gutter the workspace row fills
+    /// use, so their hover fills start on the same edge as those fills; each
+    /// row pads its icon back onto the content column.
     fn sidebar_status(status: Stateful<Div>) -> Stateful<Div> {
-        status
+        status.ml(px(-SIDEBAR_ROW_GUTTER))
     }
 
-    /// Symmetric padding keeps the usage text off both edges of the row fill.
+    /// Matches the quota row under it, so the two icons share the content
+    /// column.
     fn token_usage_row(row: Button) -> Button {
-        row.px_1()
+        Self::agent_usage_row(row)
     }
 }

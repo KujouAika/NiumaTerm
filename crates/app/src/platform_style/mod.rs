@@ -75,6 +75,11 @@ pub trait PlatformStyle {
     /// controls instead.
     const FULL_TAB_WIDTH: f32;
 
+    /// Whether the selected workspace row carries an accent mark in its
+    /// leading gutter in addition to its fill. Without the mark the row's name
+    /// needs no lane cleared for it and starts on the content column.
+    const SIDEBAR_SELECTION_MARK: bool;
+
     /// The title bar itself.
     fn title_bar(bar: TitleBar) -> TitleBar;
 

@@ -20,6 +20,7 @@ use crate::ui::composition::{
     toolbar_button,
 };
 use crate::ui::fluent::{SELECTION_BAR_HEIGHT, SELECTION_BAR_RADIUS, SELECTION_BAR_WIDTH};
+use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle};
 use crate::ui::tab_bar::{accept_row_drops, new_tab_menu};
 use crate::ui::workspace_sidebar::drag::{WorkspaceDrag, WorkspaceDragPreview};
@@ -571,7 +572,7 @@ impl WorkspaceList {
             })
             // After the row itself, because the row's selected fill would
             // otherwise paint over the bar's lane.
-            .children(highlight_active.then(|| selection_bar(cx)))
+            .children((highlight_active && Host::SIDEBAR_SELECTION_MARK).then(|| selection_bar(cx)))
             .children(progress)
             .into_any_element()
     }

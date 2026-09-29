@@ -294,13 +294,14 @@ impl IconNamed for CloseTemporaryWorkspacesIcon {
 /// The panel owns the horizontal text inset; row fills extend into its gutter.
 const SIDEBAR_PADDING_X: f32 = 12.0;
 
-/// Where the host draws its window buttons over the title bar, the visible
-/// row fill starts directly below the close button: the outer panel offset
-/// comes off and the row's negative margin is restored. Elsewhere the content
+/// Where the host draws its window buttons over the title bar, the content
+/// column starts under the close button's leading edge, so the heading, the
+/// workspace names, the tab glyphs and the status icons stand on that edge
+/// while the row fills reach past it into the gutter. Elsewhere the content
 /// column starts where the app menu button's icon does, so the heading, the
 /// tab glyphs and the status icons stand under that icon's edge.
 const SIDEBAR_PADDING_LEFT: f32 = match Host::WINDOW_CONTROLS_INSET {
-    Some(inset) => inset + SIDEBAR_ROW_GUTTER,
+    Some(inset) => inset,
     None => Host::TITLE_BAR_LEADING_INSET + (TOOLBAR_BUTTON_SIZE - TOOLBAR_ICON_SIZE) / 2.0,
 };
 
@@ -322,7 +323,12 @@ const SIDEBAR_STATUS_ROW_GAP: f32 = 2.0;
 const SELECTION_BAR_INSET: f32 = 2.0;
 
 /// Names retain an 8px gap after the selection mark on active and idle rows.
-const WORKSPACE_NAME_INSET: f32 = SELECTION_BAR_INSET + SELECTION_BAR_WIDTH + 8.0;
+/// A host that marks the selected row by its fill alone has no mark to clear,
+/// so its names start on the content column like the tab glyphs do.
+const WORKSPACE_NAME_INSET: f32 = match Host::SIDEBAR_SELECTION_MARK {
+    true => SELECTION_BAR_INSET + SELECTION_BAR_WIDTH + 8.0,
+    false => SIDEBAR_ROW_GUTTER,
+};
 
 /// The two readouts the status cluster draws. The shell owns both, so their
 /// refresh loops survive a sidebar collapse and a tab-bar style change.

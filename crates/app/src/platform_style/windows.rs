@@ -28,6 +28,10 @@ impl PlatformStyle for Windows {
 
     const FULL_TAB_WIDTH: f32 = 100.0;
 
+    /// A Fluent navigation view marks its selected row with an accent bar on
+    /// the leading edge.
+    const SIDEBAR_SELECTION_MARK: bool = true;
+
     /// State the leading gap on the bar itself rather than relying on the
     /// component's default padding, so the gap and the width the leading
     /// region is measured against cannot drift apart.
