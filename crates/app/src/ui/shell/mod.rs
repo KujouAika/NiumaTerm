@@ -3799,13 +3799,7 @@ impl Render for AppWindow {
             .flex()
             .flex_col()
             // All chrome inherits the configured UI font; terminal panes override it.
-            .font(ui::font_with_default_fallback(
-                cx.global::<AppSettings>()
-                    .config()
-                    .appearance
-                    .ui_font
-                    .clone(),
-            ))
+            .font(ui::chrome_font(cx))
             .key_context("AppWindow");
 
         Self::bind_actions(shell, cx)

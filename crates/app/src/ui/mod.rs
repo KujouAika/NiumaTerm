@@ -57,6 +57,7 @@ use std::sync::LazyLock;
 
 use gpui::{App, Font, FontFallbacks, SharedString, font};
 use gpui_component::modern_menu::{prewarm_modern_menu, set_default_font};
+use nmt_config::appearance::DEFAULT_UI_FONT;
 
 pub(crate) const UI_BORDER_OPACITY: f32 = 0.5;
 
@@ -83,6 +84,32 @@ pub(crate) fn font_with_default_fallback(family: impl Into<SharedString>) -> Fon
     font
 }
 
+/// The font every chrome surface inherits: the configured UI family when this
+/// system has it, otherwise the platform's default UI face.
+///
+/// A family that is not installed does not fail to load; GPUI quietly draws it
+/// in Helvetica. A config carried over from Windows names `Segoe UI`, which
+/// macOS lacks, and Helvetica's short ascent then centers every line box below
+/// the glyphs, so chrome text rides visibly above the icons beside it.
+pub(crate) fn chrome_font(cx: &App) -> Font {
+    let configured = font_with_default_fallback(
+        cx.global::<AppSettings>()
+            .config()
+            .appearance
+            .ui_font
+            .clone(),
+    );
+
+    let text_system = cx.text_system();
+    let resolved = text_system.get_font_for_id(text_system.resolve_font(&configured));
+
+    if resolved.is_some_and(|resolved| resolved.family == configured.family) {
+        configured
+    } else {
+        font_with_default_fallback(DEFAULT_UI_FONT)
+    }
+}
+
 /// Keep the context menu window built and carrying the chrome font.
 ///
 /// The menu is drawn in a window of its own, so it inherits no text style from
@@ -91,13 +118,7 @@ pub(crate) fn font_with_default_fallback(family: impl Into<SharedString>) -> Fon
 /// this is called from the shell's render and follows a font setting that
 /// changes underneath it.
 pub(crate) fn sync_modern_menu(cx: &mut App) {
-    let font = font_with_default_fallback(
-        cx.global::<AppSettings>()
-            .config()
-            .appearance
-            .ui_font
-            .clone(),
-    );
+    let font = chrome_font(cx);
 
     set_default_font(cx, font);
 
