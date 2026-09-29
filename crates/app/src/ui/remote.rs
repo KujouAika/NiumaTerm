@@ -23,6 +23,7 @@ use gpui_component::Root;
 use nmt_platform::runtime;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Retry, Status};
+use nmt_remote::discovery::{Browser, NearbyHost};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
 use nmt_remote::lan::lan_addresses;
 use nmt_remote::presence::Presence;
@@ -114,6 +115,13 @@ pub(crate) struct Remote {
 
     busy: bool,
 
+    /// The LAN browse for other computers; `None` when DNS-SD could not
+    /// start on this machine.
+    browser: Option<Browser>,
+
+    /// Hosts the browse found, in name order, this computer included.
+    nearby: Vec<NearbyHost>,
+
     /// Set once the startup windows restored their tabs. Hosting waits for
     /// it: a device reconnecting after this app restarted asks for tabs by
     /// the ids they are restored under, and would find none before then.
@@ -181,8 +189,12 @@ pub(crate) fn initialize(cx: &mut App) {
         hosted_relay: None,
         status: None,
         busy: false,
+        browser: None,
+        nearby: Vec::new(),
         tabs_restored: false,
     });
+
+    browse_lan(cx);
 
     cx.spawn(async move |cx| {
         while let Some(record) = records.recv().await {
@@ -195,6 +207,29 @@ pub(crate) fn initialize(cx: &mut App) {
                     }
                 }
             });
+        }
+    })
+    .detach();
+}
+
+/// Keep the nearby host list current for the settings page. Browsing only
+/// listens for records hosts already multicast, so it runs whether or not
+/// hosting is on.
+fn browse_lan(cx: &mut App) {
+    let (browser, mut updates) = match Browser::start() {
+        Ok(started) => started,
+        Err(error) => {
+            warn!(%error, "LAN discovery is unavailable");
+
+            return;
+        }
+    };
+
+    cx.global_mut::<Remote>().browser = Some(browser);
+
+    cx.spawn(async move |cx| {
+        while let Some(nearby) = updates.recv().await {
+            cx.update_global::<Remote, _>(|remote, _| remote.nearby = nearby);
         }
     })
     .detach();
@@ -393,6 +428,27 @@ impl Remote {
         self.connections
             .get(id)
             .map_or(Status::Idle, |host| *host.status().borrow())
+    }
+
+    /// Other computers announcing themselves on the LAN, or `None` when
+    /// this machine cannot browse for them.
+    pub(crate) fn nearby_hosts(&self) -> Option<Vec<NearbyHost>> {
+        self.browser.as_ref()?;
+
+        let own = self.device_id();
+
+        Some(
+            self.nearby
+                .iter()
+                .filter(|host| own.as_ref().is_none_or(|own| own.as_str() != host.id))
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Whether a nearby host is one this computer paired with.
+    pub(crate) fn is_paired_host(&self, id: &str) -> bool {
+        self.hosts.iter().any(|host| host.id.as_str() == id)
     }
 
     pub(crate) fn host_offers(&self, id: &DeviceId) -> Option<&HostInfo> {
@@ -941,10 +997,20 @@ pub(crate) fn tab_title_changed(pane: &Entity<TerminalPane>, title: &str, cx: &m
 /// LAN for the host showing the code.
 pub(crate) fn pair_with_host(cx: &mut App) {
     let remote = cx.global::<Remote>();
-    let typed_address = remote.address.trim();
+    let code = remote.code.to_string();
+    let address = remote.address.to_string();
 
-    let parsed = if remote.code.trim().starts_with("niumaterm:") {
-        PairingLink::parse(&remote.code).map(|link| {
+    pair_with(&code, &address, cx);
+}
+
+/// Pair with the computer at `typed_address` using `code`, a pairing code
+/// or link; an empty address searches the LAN. The outcome is reported in
+/// the connect form's status line.
+pub(crate) fn pair_with(code: &str, typed_address: &str, cx: &mut App) {
+    let typed_address = typed_address.trim();
+
+    let parsed = if code.trim().starts_with("niumaterm:") {
+        PairingLink::parse(code).map(|link| {
             let address = if typed_address.is_empty() {
                 link.addresses.first().cloned()
             } else {
@@ -954,7 +1020,7 @@ pub(crate) fn pair_with_host(cx: &mut App) {
             (link.code, address, Some(link.host_key), link.relay)
         })
     } else {
-        PairingCode::parse(&remote.code).map(|code| {
+        PairingCode::parse(code).map(|code| {
             let address = (!typed_address.is_empty()).then(|| with_default_port(typed_address));
 
             (code, address, None, None)

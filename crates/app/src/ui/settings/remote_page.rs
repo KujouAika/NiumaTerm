@@ -1,12 +1,16 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ClipboardItem, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window,
+    App, AppContext as _, ClipboardItem, InteractiveElement as _, IntoElement as _,
+    ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, DialogClose, DialogFooter};
+use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, DialogAction, DialogClose, DialogFooter};
+use gpui_component::input::{Input, InputState};
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_flex, v_flex};
 use nmt_remote::connection::Status;
+use nmt_remote::discovery::NearbyHost;
 use nmt_remote::presence::Presence;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
 use nmt_remote_core::rpc::SessionInfo;
@@ -336,7 +340,187 @@ fn computers_group(state: &Remote) -> SettingGroup {
         group = group.item(host_item(host.clone()));
     }
 
+    let nearby = state.nearby_hosts();
+
+    group = group.item(nearby_status_item(nearby.as_ref().map(Vec::len)));
+
+    for host in nearby.unwrap_or_default() {
+        let paired = state.is_paired_host(&host.id);
+
+        group = group.item(nearby_item(host, paired));
+    }
+
     group
+}
+
+/// Whether this computer is browsing the LAN, and what it found so far.
+/// `found` is `None` when DNS-SD could not start here.
+fn nearby_status_item(found: Option<usize>) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        let (status, color) = match found {
+            None => (t!("settings-remote-nearby-unavailable"), cx.theme().warning),
+            Some(0) => (t!("settings-remote-nearby-searching"), cx.theme().success),
+            Some(count) => (
+                t!("settings-remote-nearby-found", count = count),
+                cx.theme().success,
+            ),
+        };
+
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(Label::new(t!("settings-remote-nearby")).text_sm())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().size(px(8.)).rounded_full().bg(color))
+                    .child(
+                        Label::new(status)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            .into_any_element()
+    })
+}
+
+/// A computer found on the LAN. One not paired yet offers to pair while
+/// hovered; a paired one already connects on its own.
+fn nearby_item(host: NearbyHost, paired: bool) -> SettingItem {
+    SettingItem::render(move |options, _, cx| {
+        let note = if paired {
+            Some(t!("settings-remote-device-paired"))
+        } else if host.pairing {
+            Some(t!("settings-remote-nearby-showing-code"))
+        } else {
+            None
+        };
+
+        let group = SharedString::from(format!("remote-nearby-{}", host.id));
+        let pair_host = host.clone();
+
+        h_flex()
+            .group(group.clone())
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Label::new(host.name.clone()).text_sm())
+                            .children(note.map(|note| {
+                                Label::new(note)
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                            })),
+                    )
+                    .child(
+                        Label::new(host.address.clone())
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            .when(!paired, |row| {
+                row.child(
+                    div()
+                        .invisible()
+                        .group_hover(group, |this| this.visible())
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "remote-nearby-pair-{}",
+                                host.id
+                            )))
+                            .outline()
+                            .label(t!("settings-remote-pair"))
+                            .disabled(options.is_disabled() || cx.global::<Remote>().busy())
+                            .on_click(
+                                move |_, window, cx: &mut App| {
+                                    open_nearby_pairing(&pair_host, window, cx)
+                                },
+                            ),
+                        ),
+                )
+            })
+            .into_any_element()
+    })
+}
+
+/// Ask for the code the nearby computer shows, then pair with it at the
+/// address its record gave. Progress and errors land in the connect form's
+/// status line, which stays on screen once the dialog closes.
+fn open_nearby_pairing(host: &NearbyHost, window: &mut Window, cx: &mut App) {
+    let input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder(t!("settings-remote-nearby-code-placeholder"))
+    });
+
+    input.update(cx, |input, cx| input.focus(window, cx));
+
+    let title = t!(
+        "settings-remote-nearby-pair-title",
+        name = host.name.as_str()
+    );
+
+    let hint = t!(
+        "settings-remote-nearby-pair-hint",
+        name = host.name.as_str()
+    );
+
+    let address = host.address.clone();
+
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let code_input = input.clone();
+        let address = address.clone();
+
+        dialog
+            .title(title.clone())
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        Label::new(hint.clone())
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(Input::new(&input)),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        DialogClose::new().child(
+                            Button::new("remote-nearby-pair-cancel")
+                                .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                                .label(t!("settings-common-cancel")),
+                        ),
+                    )
+                    .child(
+                        DialogAction::new().child(
+                            Button::new("remote-nearby-pair-confirm")
+                                .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                                .primary()
+                                .label(t!("settings-remote-pair")),
+                        ),
+                    ),
+            )
+            .on_ok(move |_, _, cx| {
+                let code = code_input.read(cx).value().trim().to_owned();
+
+                if code.is_empty() {
+                    return false;
+                }
+
+                remote::pair_with(&code, &address, cx);
+
+                true
+            })
+    });
 }
 
 /// Forgetting drops the pairing keys, and getting them back takes a new
