@@ -72,6 +72,10 @@ non_kebab_case_bins = "allow"
 # platform backends (Wayland, X11, Redox) that no member builds, so dozens of
 # entries trip this lint on every build and bury the warnings that matter.
 unused_workspace_dependencies = "allow"
+# Vendored manifests keep their upstream shape, so each resync does not have
+# to reapply local edits for a lints table or an explicit readme field.
+missing_lints_inheritance = "allow"
+manual_readme = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(enable_profiling)"] }
@@ -241,7 +245,6 @@ backtrace = "0.3.76"
 cbindgen = { version = "0.29.4", default-features = false }
 chrono = { version = "0.4.45", features = ["serde"] }
 core-foundation-sys = "0.8.7"
-core-video = "0.6.1"
 cosmic-text = "0.19.0"
 ctor = "1.0.12"
 derive_more = { version = "2.1.1", features = [
