@@ -115,9 +115,8 @@ pub(crate) struct Remote {
 
     busy: bool,
 
-    /// The LAN browse for other computers; `None` when DNS-SD could not
-    /// start on this machine.
-    browser: Option<Browser>,
+    /// The LAN browse for other computers.
+    browse: LanBrowse,
 
     /// Hosts the browse found, in name order, this computer included.
     nearby: Vec<NearbyHost>,
@@ -137,6 +136,24 @@ pub(crate) struct RemoteWorkspace {
     pub(crate) name: String,
     pub(crate) sessions: Vec<SessionInfo>,
     pub(crate) offers: Option<HostInfo>,
+}
+
+/// Whether this computer browses the LAN for other hosts.
+enum LanBrowse {
+    Off,
+    /// The setting is on but DNS-SD could not start here.
+    Unavailable,
+    /// Held for its drop, which stops the browse.
+    On {
+        _browser: Browser,
+    },
+}
+
+/// Other computers on the LAN as the settings page shows them.
+pub(crate) enum Nearby {
+    Off,
+    Unavailable,
+    Found(Vec<NearbyHost>),
 }
 
 /// One shared agent tab: the id paired devices know it by, the task
@@ -189,12 +206,12 @@ pub(crate) fn initialize(cx: &mut App) {
         hosted_relay: None,
         status: None,
         busy: false,
-        browser: None,
+        browse: LanBrowse::Off,
         nearby: Vec::new(),
         tabs_restored: false,
     });
 
-    browse_lan(cx);
+    sync_lan_browse(cx);
 
     cx.spawn(async move |cx| {
         while let Some(record) = records.recv().await {
@@ -212,24 +229,48 @@ pub(crate) fn initialize(cx: &mut App) {
     .detach();
 }
 
-/// Keep the nearby host list current for the settings page. Browsing only
-/// listens for records hosts already multicast, so it runs whether or not
-/// hosting is on.
-fn browse_lan(cx: &mut App) {
+/// Start or stop browsing the LAN for other hosts to match the setting.
+/// Browsing only listens for records hosts already multicast, so it runs
+/// whether or not hosting is on. Runs on every settings change; a browse
+/// that failed to start is retried on the next one.
+pub(crate) fn sync_lan_browse(cx: &mut App) {
+    let wanted = cx.global::<AppSettings>().config().remote.lan_browse;
+    let remote = cx.global_mut::<Remote>();
+
+    match (wanted, &remote.browse) {
+        (true, LanBrowse::On { .. }) | (false, LanBrowse::Off) => return,
+        (false, _) => {
+            remote.browse = LanBrowse::Off;
+
+            remote.nearby.clear();
+
+            return;
+        }
+        (true, _) => {}
+    }
+
     let (browser, mut updates) = match Browser::start() {
         Ok(started) => started,
         Err(error) => {
             warn!(%error, "LAN discovery is unavailable");
 
+            remote.browse = LanBrowse::Unavailable;
+
             return;
         }
     };
 
-    cx.global_mut::<Remote>().browser = Some(browser);
+    remote.browse = LanBrowse::On { _browser: browser };
 
     cx.spawn(async move |cx| {
         while let Some(nearby) = updates.recv().await {
-            cx.update_global::<Remote, _>(|remote, _| remote.nearby = nearby);
+            cx.update_global::<Remote, _>(|remote, _| {
+                // A list still queued when the browse stopped would
+                // otherwise refill the cleared one.
+                if matches!(remote.browse, LanBrowse::On { .. }) {
+                    remote.nearby = nearby;
+                }
+            });
         }
     })
     .detach();
@@ -282,6 +323,12 @@ pub(crate) fn sync_hosting(cx: &mut App) {
 
     if enabled != cx.global::<Remote>().host.is_some() {
         set_hosting(enabled, cx);
+    }
+
+    let announce = cx.global::<AppSettings>().config().remote.lan_announce;
+
+    if let Some(host) = &cx.global::<Remote>().host {
+        host.set_announced(announce);
     }
 }
 
@@ -430,20 +477,23 @@ impl Remote {
             .map_or(Status::Idle, |host| *host.status().borrow())
     }
 
-    /// Other computers announcing themselves on the LAN, or `None` when
-    /// this machine cannot browse for them.
-    pub(crate) fn nearby_hosts(&self) -> Option<Vec<NearbyHost>> {
-        self.browser.as_ref()?;
+    /// Other computers announcing themselves on the LAN.
+    pub(crate) fn nearby_hosts(&self) -> Nearby {
+        match self.browse {
+            LanBrowse::Off => Nearby::Off,
+            LanBrowse::Unavailable => Nearby::Unavailable,
+            LanBrowse::On { .. } => {
+                let own = self.device_id();
 
-        let own = self.device_id();
-
-        Some(
-            self.nearby
-                .iter()
-                .filter(|host| own.as_ref().is_none_or(|own| own.as_str() != host.id))
-                .cloned()
-                .collect(),
-        )
+                Nearby::Found(
+                    self.nearby
+                        .iter()
+                        .filter(|host| own.as_ref().is_none_or(|own| own.as_str() != host.id))
+                        .cloned()
+                        .collect(),
+                )
+            }
+        }
     }
 
     /// Whether a nearby host is one this computer paired with.
@@ -548,6 +598,7 @@ fn start_host(relay: Option<RelayAccess>, cx: &mut App) -> Result<HostService> {
             args,
             registry,
             relay,
+            announce: config.remote.lan_announce,
             on_change: Arc::new(move || {
                 let _ = changed.send(());
             }),

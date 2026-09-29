@@ -17,7 +17,7 @@ use nmt_remote_core::rpc::SessionInfo;
 use rust_i18n::t;
 
 use crate::ui::AppSettings;
-use crate::ui::remote::{self, Remote};
+use crate::ui::remote::{self, Nearby, Remote};
 use crate::ui::settings::fields::settings_switch;
 
 pub(super) fn remote_page(cx: &App) -> SettingPage {
@@ -66,7 +66,17 @@ fn hosting_group(state: &Remote) -> SettingGroup {
             )
             .description(t!("settings-remote-relay-key-description").into_owned()),
         )
-        .item(relay_apply_item(state));
+        .item(relay_apply_item(state))
+        .item(
+            SettingItem::new(
+                t!("settings-remote-lan-announce"),
+                settings_switch(
+                    |config| config.remote.lan_announce,
+                    |settings, value| settings.edit_remote(|section| section.lan_announce = value),
+                ),
+            )
+            .description(t!("settings-remote-lan-announce-description").into_owned()),
+        );
 
     let Some(addresses) = state.hosting_addresses() else {
         return group;
@@ -340,11 +350,26 @@ fn computers_group(state: &Remote) -> SettingGroup {
         group = group.item(host_item(host.clone()));
     }
 
-    let nearby = state.nearby_hosts();
+    group = group.item(
+        SettingItem::new(
+            t!("settings-remote-lan-browse"),
+            settings_switch(
+                |config| config.remote.lan_browse,
+                |settings, value| settings.edit_remote(|section| section.lan_browse = value),
+            ),
+        )
+        .description(t!("settings-remote-lan-browse-description").into_owned()),
+    );
 
-    group = group.item(nearby_status_item(nearby.as_ref().map(Vec::len)));
+    let hosts = match state.nearby_hosts() {
+        Nearby::Off => return group,
+        Nearby::Unavailable => return group.item(nearby_status_item(None)),
+        Nearby::Found(hosts) => hosts,
+    };
 
-    for host in nearby.unwrap_or_default() {
+    group = group.item(nearby_status_item(Some(hosts.len())));
+
+    for host in hosts {
         let paired = state.is_paired_host(&host.id);
 
         group = group.item(nearby_item(host, paired));

@@ -85,6 +85,7 @@ fn start_host_with_relay(
             args,
             registry,
             relay,
+            announce: true,
             on_change: Arc::new(|| {}),
         },
     )

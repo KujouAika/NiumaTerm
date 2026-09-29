@@ -85,6 +85,11 @@ pub struct HostConfig {
     /// receive it, key included, inside the encrypted pairing exchange.
     pub relay: Option<RelayAccess>,
 
+    /// Publish a DNS-SD record so LAN clients find this host without an
+    /// address. Off keeps the computer name and device id off the network;
+    /// devices then need an address or the relay.
+    pub announce: bool,
+
     /// Runs on a runtime thread after pairing records change and when a
     /// device's presence changes, so a view that lists them can refresh.
     pub on_change: Arc<dyn Fn() + Send + Sync>,
@@ -108,8 +113,9 @@ struct Shared {
     state: Mutex<State>,
     unauthenticated: Arc<Semaphore>,
 
-    /// Absent when multicast is unavailable; clients then enter the address.
-    advertiser: Option<Advertiser>,
+    /// Absent while announcing is off or multicast is unavailable; clients
+    /// then enter the address.
+    advertiser: Mutex<Option<Advertiser>>,
 
     /// Commands to the relay link, when a relay is configured.
     relay: Option<UnboundedSender<RelayCommand>>,
@@ -180,9 +186,11 @@ impl HostService {
 
         let local_addr = listener.local_addr()?;
 
-        let advertiser = Advertiser::start(&config.device.name, key.id(), local_addr.port())
-            .inspect_err(|error| warn!(%error, "LAN discovery is unavailable"))
-            .ok();
+        let advertiser = if config.announce {
+            start_advertiser(&config.device.name, &key, local_addr.port())
+        } else {
+            None
+        };
 
         let relay_token = match &config.relay {
             Some(_) => store::load_or_create_relay_token(&dir)
@@ -202,7 +210,7 @@ impl HostService {
             dir,
             config,
             unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED)),
-            advertiser,
+            advertiser: Mutex::new(advertiser),
             relay: relay_token.as_ref().map(|_| relay_commands),
             relay_slot: Mutex::new(None),
             push_client: push_sender::client(),
@@ -269,6 +277,34 @@ impl HostService {
         self.shared.advertise_slot(Some(code.slot()));
 
         Ok(code)
+    }
+
+    /// Publish or withdraw this host's DNS-SD record without restarting
+    /// it, so connected devices and the terminals they opened carry on.
+    pub fn set_announced(&self, announced: bool) {
+        let shared = &self.shared;
+
+        let mut advertiser = shared.advertiser.lock();
+
+        if !announced {
+            *advertiser = None;
+
+            return;
+        }
+
+        if advertiser.is_some() {
+            return;
+        }
+
+        let started = start_advertiser(&shared.config.device.name, &shared.key, shared.lan_port);
+
+        // A code shown while the record was withdrawn still needs its slot,
+        // or a client searching for it would never find this host.
+        if let (Some(started), Some((code, _))) = (&started, self.pairing()) {
+            started.set_pairing_slot(Some(code.slot()));
+        }
+
+        *advertiser = started;
     }
 
     pub fn cancel_pairing(&self) {
@@ -947,7 +983,7 @@ impl Shared {
     /// Publish the showing code's slot on the LAN and the relay, or
     /// withdraw it.
     fn advertise_slot(&self, slot: Option<&str>) {
-        if let Some(advertiser) = &self.advertiser {
+        if let Some(advertiser) = &*self.advertiser.lock() {
             advertiser.set_pairing_slot(slot);
         }
 
@@ -965,6 +1001,12 @@ impl Shared {
             }
         }
     }
+}
+
+fn start_advertiser(name: &str, key: &DeviceKey, port: u16) -> Option<Advertiser> {
+    Advertiser::start(name, key.id(), port)
+        .inspect_err(|error| warn!(%error, "LAN discovery is unavailable"))
+        .ok()
 }
 
 fn bind(port: u16) -> Result<StdTcpListener> {

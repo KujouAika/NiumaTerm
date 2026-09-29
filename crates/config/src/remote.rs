@@ -17,6 +17,13 @@ pub struct RemoteConfig {
     /// Empty keeps hosting LAN-only. Its access key is stored sealed beside
     /// the device key, not here.
     pub relay_url: String,
+
+    /// Announce this host over DNS-SD so LAN devices find it without an
+    /// address. Only takes effect while hosting is on.
+    pub lan_announce: bool,
+
+    /// Browse the LAN for other hosts to list in settings.
+    pub lan_browse: bool,
 }
 
 impl Default for RemoteConfig {
@@ -26,6 +33,8 @@ impl Default for RemoteConfig {
             lan_port: 47470,
             device_name: String::new(),
             relay_url: String::new(),
+            lan_announce: true,
+            lan_browse: true,
         }
     }
 }

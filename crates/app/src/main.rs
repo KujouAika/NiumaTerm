@@ -448,6 +448,7 @@ fn on_settings_changed(cx: &mut App) {
     update::on_settings_changed(cx);
 
     ui::remote::sync_hosting(cx);
+    ui::remote::sync_lan_browse(cx);
 
     // Terminal and agent scrolling are their own elements carrying
     // their own switch; this one covers every container that scrolls
