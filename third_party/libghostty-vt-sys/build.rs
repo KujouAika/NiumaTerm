@@ -12,261 +12,6 @@ const GHOSTTY_COMMIT: &str = "b0c421fcd2e290629d4285c181b52fe2f2095f06";
 const GHOSTTY_PATCH_VERSION: &str = "reflow-trim-blank-v9-grow-cursor-y-v3-kitty-screen-pos-v3-blockset-v5-alt-primary-v1-block-vt-v1-baseb0c421f";
 const PREBUILT_ENV: &str = "NMT_USE_PREBUILT_LIBGHOSTTY";
 
-/// Locate an LLVM binutils tool (`llvm-objcopy` / `llvm-nm`) on Windows.
-///
-/// Search order: `LLVM_OBJCOPY`/`LLVM_NM` env override -> `PATH` -> the LLVM
-/// component bundled with a Visual Studio install. Panics if not found — the
-/// Windows static link rewrites ghostty-vt's vendored simdutf symbols (see
-/// [`localize_simdutf_lib`]) and cannot proceed without it.
-fn find_llvm_tool(tool: &str) -> PathBuf {
-    let env_key = tool.to_uppercase().replace('-', "_"); // llvm-objcopy -> LLVM_OBJCOPY
-
-    if let Ok(p) = env::var(&env_key) {
-        let pb = PathBuf::from(&p);
-        assert!(pb.exists(), "{env_key}={p} does not exist");
-        return pb;
-    }
-
-    if Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return PathBuf::from(tool);
-    }
-
-    for base in [
-        "C:/Program Files/Microsoft Visual Studio",
-        "C:/Program Files (x86)/Microsoft Visual Studio",
-    ] {
-        let Ok(years) = std::fs::read_dir(base) else {
-            continue;
-        };
-
-        for year in years.flatten() {
-            let Ok(editions) = std::fs::read_dir(year.path()) else {
-                continue;
-            };
-
-            for edition in editions.flatten() {
-                let cand = edition
-                    .path()
-                    .join("VC/Tools/Llvm/x64/bin")
-                    .join(format!("{tool}.exe"));
-                if cand.exists() {
-                    return cand;
-                }
-            }
-        }
-    }
-
-    panic!(
-        "could not find `{tool}`. The Windows static link rewrites ghostty-vt's \
-         vendored simdutf symbols and needs LLVM binutils. Install the \"C++ Clang \
-         tools for Windows\" VS component, or set {env_key}=<path to {tool}.exe>."
-    );
-}
-
-/// Rewrite ghostty-vt's vendored `simdutf::*` symbols to a `gvt_`-prefixed
-/// namespace inside a copy of `lib_file` placed in `OUT_DIR`, returning the
-/// directory holding the rewritten library.
-///
-/// terminal links the Rust `simdutf` crate, and ghostty-vt bundles its own
-/// simdutf; both export the same C++ symbols, which multiply-define in a cdylib
-/// link (LNK1169). Renaming ghostty's copy (definitions *and* the cross-object
-/// refs in `vt.obj`/`base64.obj`) keeps ghostty self-consistent while leaving the
-/// Rust crate as the only plain `simdutf`, so a single static link has no
-/// collision and needs no extra runtime DLL. Panics on any failure (missing
-/// tools, missing library, objcopy error) — there is no silent fallback.
-fn localize_simdutf_lib(search_dirs: &[PathBuf], lib_file: &str) -> PathBuf {
-    let src = search_dirs
-        .iter()
-        .map(|d| d.join(lib_file))
-        .find(|p| p.exists())
-        .unwrap_or_else(|| {
-            panic!("expected {lib_file} under one of {search_dirs:?} for simdutf rewrite")
-        });
-
-    let nm = find_llvm_tool("llvm-nm");
-    let objcopy = find_llvm_tool("llvm-objcopy");
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
-    let dst_dir = out_dir.join("simdutf-localized");
-    let dst = dst_dir.join(lib_file);
-
-    std::fs::create_dir_all(&dst_dir).expect("create simdutf-localized dir");
-
-    std::fs::copy(&src, &dst)
-        .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", src.display(), dst.display()));
-
-    let nm_out = Command::new(&nm)
-        .arg(&dst)
-        .output()
-        .unwrap_or_else(|e| panic!("run {}: {e}", nm.display()));
-
-    assert!(
-        nm_out.status.success(),
-        "llvm-nm failed on {}",
-        dst.display()
-    );
-
-    let listing = String::from_utf8_lossy(&nm_out.stdout);
-
-    let mut syms = std::collections::BTreeSet::new();
-
-    for line in listing.lines() {
-        let Some(sym) = line.split_whitespace().last() else {
-            continue;
-        };
-
-        // Mangled C++ symbols contain `simdutf` but no path separators; skip
-        // archive-member header tokens (object/library file paths).
-        if sym.contains("simdutf")
-            && !sym.contains('\\')
-            && !sym.contains('/')
-            && !sym.ends_with(".obj")
-            && !sym.ends_with(".lib")
-        {
-            syms.insert(sym.to_string());
-        }
-    }
-
-    assert!(
-        !syms.is_empty(),
-        "no simdutf symbols found in {} — ghostty-vt layout changed; revisit the rewrite",
-        dst.display()
-    );
-
-    let map_path = dst_dir.join(format!("{lib_file}.redefine.txt"));
-
-    let mut map = String::with_capacity(syms.len() * 64);
-
-    for s in &syms {
-        map.push_str(s);
-        map.push(' ');
-        map.push_str("gvt_");
-        map.push_str(s);
-        map.push('\n');
-    }
-
-    std::fs::write(&map_path, map).expect("write redefine map");
-
-    // Rewrite per member, not whole-archive: zig's COFF writer emits the big
-    // zig-compilation-unit object (`*_zcu.obj`) in a shape LLVM's COFF reader
-    // rejects ("SymbolTableIndex out of range"), but that member carries no
-    // simdutf symbols — only the simdutf/vt/base64 objects do. Extract the
-    // archive, objcopy only the members that actually mention a mapped
-    // symbol, and re-archive; members we don't touch are never parsed by
-    // objcopy at all.
-    let ar = find_llvm_tool("llvm-ar");
-
-    let members_dir = dst_dir.join(format!("{lib_file}.members"));
-
-    if members_dir.exists() {
-        std::fs::remove_dir_all(&members_dir).expect("clear members dir");
-    }
-
-    std::fs::create_dir_all(&members_dir).expect("create members dir");
-
-    let order_out = Command::new(&ar)
-        .arg("t")
-        .arg(&dst)
-        .output()
-        .unwrap_or_else(|e| panic!("run {}: {e}", ar.display()));
-
-    assert!(
-        order_out.status.success(),
-        "llvm-ar t failed on {}",
-        dst.display()
-    );
-
-    let member_order: Vec<String> = String::from_utf8_lossy(&order_out.stdout)
-        .lines()
-        .map(|l| {
-            Path::new(l.trim())
-                .file_name()
-                .expect("archive member has a file name")
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    {
-        let unique: std::collections::BTreeSet<&String> = member_order.iter().collect();
-
-        assert_eq!(
-            unique.len(),
-            member_order.len(),
-            "duplicate member basenames in {} — per-member rewrite needs unique names",
-            dst.display()
-        );
-    }
-
-    let extract = Command::new(&ar)
-        .arg("x")
-        .arg(&dst)
-        .current_dir(&members_dir)
-        .status()
-        .unwrap_or_else(|e| panic!("run {}: {e}", ar.display()));
-
-    assert!(extract.success(), "llvm-ar x failed on {}", dst.display());
-
-    for member in &member_order {
-        let member_path = members_dir.join(member);
-        let nm_member = Command::new(&nm)
-            .arg(&member_path)
-            .output()
-            .unwrap_or_else(|e| panic!("run {}: {e}", nm.display()));
-
-        let needs_rewrite = nm_member.status.success()
-            && String::from_utf8_lossy(&nm_member.stdout)
-                .lines()
-                .filter_map(|l| l.split_whitespace().last())
-                .any(|sym| syms.contains(sym));
-
-        if !needs_rewrite {
-            continue;
-        }
-
-        let status = Command::new(&objcopy)
-            .arg(format!("--redefine-syms={}", map_path.display()))
-            .arg(&member_path)
-            .status()
-            .unwrap_or_else(|e| panic!("run {}: {e}", objcopy.display()));
-
-        assert!(
-            status.success(),
-            "llvm-objcopy --redefine-syms failed on member {member} of {lib_file}"
-        );
-    }
-
-    std::fs::remove_file(&dst).expect("remove pre-rewrite archive");
-
-    let mut rebuild = Command::new(&ar);
-
-    rebuild.arg("rcs").arg(&dst).current_dir(&members_dir);
-
-    for member in &member_order {
-        rebuild.arg(member);
-    }
-
-    let status = rebuild
-        .status()
-        .unwrap_or_else(|e| panic!("run {}: {e}", ar.display()));
-
-    assert!(
-        status.success(),
-        "llvm-ar rcs failed rebuilding {}",
-        dst.display()
-    );
-
-    std::fs::remove_dir_all(&members_dir).ok();
-
-    println!("cargo:rerun-if-env-changed=LLVM_OBJCOPY");
-    println!("cargo:rerun-if-env-changed=LLVM_NM");
-
-    dst_dir
-}
-
 #[derive(Clone, Copy)]
 enum LinkMode {
     Dynamic,
@@ -349,7 +94,7 @@ fn main() {
             "LIBGHOSTTY_VT_INSTALL_DIR must not be empty when set"
         );
 
-        link_install_prefix_impl(link_mode, PathBuf::from(dir), true, &[]);
+        link_install_prefix_impl(link_mode, PathBuf::from(dir), &[]);
 
         return;
     }
@@ -501,8 +246,8 @@ fn build_vendored(link_mode: LinkMode) {
         include_dir.join("ghostty").join("vt.h").display()
     );
 
-    emit_link_metadata(link_mode, &target, &search_dirs, true);
-    emit_windows_static_dependency_links(link_mode, &target, &[zig_cache_dir.join("o")], true);
+    emit_link_metadata(link_mode, &target, &search_dirs);
+    emit_windows_static_dependency_links(link_mode, &target, &[zig_cache_dir.join("o")]);
     emit_include_metadata(&[include_dir]);
 }
 
@@ -528,13 +273,12 @@ fn link_prebuilt(link_mode: LinkMode) {
 
     let static_deps_dir = install_prefix.join("lib");
 
-    link_install_prefix_impl(link_mode, install_prefix, false, &[static_deps_dir]);
+    link_install_prefix_impl(link_mode, install_prefix, &[static_deps_dir]);
 }
 
 fn link_install_prefix_impl(
     link_mode: LinkMode,
     install_prefix: PathBuf,
-    localize_windows_simdutf: bool,
     extra_dependency_roots: &[PathBuf],
 ) {
     let target = env::var("TARGET").expect("TARGET must be set");
@@ -568,34 +312,12 @@ fn link_install_prefix_impl(
         dependency_roots.push(PathBuf::from(dir));
     }
 
-    emit_link_metadata(link_mode, &target, &search_dirs, localize_windows_simdutf);
-    emit_windows_static_dependency_links(
-        link_mode,
-        &target,
-        &dependency_roots,
-        localize_windows_simdutf,
-    );
+    emit_link_metadata(link_mode, &target, &search_dirs);
+    emit_windows_static_dependency_links(link_mode, &target, &dependency_roots);
     emit_include_metadata(&[include_dir]);
 }
 
-fn emit_link_metadata(
-    link_mode: LinkMode,
-    target: &str,
-    search_dirs: &[PathBuf],
-    localize_windows_simdutf: bool,
-) {
-    // Windows static: link a simdutf-rewritten copy of the main archive (its
-    // bundled simdutf.obj is the LNK1169 source against the Rust simdutf crate).
-    // Emit the rewritten copy's dir FIRST so the linker prefers it over the
-    // original under `search_dirs`.
-    if localize_windows_simdutf
-        && matches!(link_mode, LinkMode::Static)
-        && target.contains("windows")
-    {
-        let localized = localize_simdutf_lib(search_dirs, "ghostty-vt-static.lib");
-        println!("cargo:rustc-link-search=native={}", localized.display());
-    }
-
+fn emit_link_metadata(link_mode: LinkMode, target: &str, search_dirs: &[PathBuf]) {
     for dir in search_dirs {
         println!("cargo:rustc-link-search=native={}", dir.display());
     }
@@ -625,12 +347,7 @@ fn has_matching_library(link_mode: LinkMode, target: &str, dir: &Path) -> bool {
         })
 }
 
-fn emit_windows_static_dependency_links(
-    link_mode: LinkMode,
-    target: &str,
-    roots: &[PathBuf],
-    localize_windows_simdutf: bool,
-) {
+fn emit_windows_static_dependency_links(link_mode: LinkMode, target: &str, roots: &[PathBuf]) {
     if !matches!(link_mode, LinkMode::Static) || !target.contains("windows") {
         return;
     }
@@ -646,17 +363,6 @@ fn emit_windows_static_dependency_links(
         let library_dir = library
             .parent()
             .unwrap_or_else(|| panic!("{} has no parent directory", library.display()));
-
-        // Rewrite the standalone simdutf archive to the same `gvt_` namespace as
-        // the bundled copy in ghostty-vt-static.lib, and search the rewritten
-        // copy first, so no plain `simdutf` symbol reaches the final link.
-        if dependency == "simdutf" && localize_windows_simdutf {
-            let localized = localize_simdutf_lib(
-                std::slice::from_ref(&library_dir.to_path_buf()),
-                "simdutf.lib",
-            );
-            println!("cargo:rustc-link-search=native={}", localized.display());
-        }
 
         println!("cargo:rustc-link-search=native={}", library_dir.display());
         println!("cargo:rustc-link-lib=static={dependency}");
