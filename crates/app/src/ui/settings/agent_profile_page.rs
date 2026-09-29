@@ -101,6 +101,7 @@ fn delete_profile(ix: usize, window: &mut Window, cx: &mut App) {
 
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
+            .centered(true)
             .confirm()
             .title(t!("settings-agent-profile-delete-title"))
             .description(description.clone())
@@ -544,7 +545,6 @@ fn agent_profile_dialog(
 
     let settings_height = window.viewport_size().height;
     let dialog_height = settings_height * 0.72;
-    let dialog_top = (settings_height - dialog_height) * 0.5;
 
     // Deleting lives in the profile list's own row control, so this
     // dialog stays an editor: everything in it is reversible by cancelling.
@@ -571,7 +571,7 @@ fn agent_profile_dialog(
     dialog
         .title(title)
         .overlay_closable(false)
-        .margin_top(dialog_top)
+        .centered(true)
         .w(px(1000.))
         .h(dialog_height)
         .content(move |content, _, _| {

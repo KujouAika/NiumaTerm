@@ -1510,7 +1510,7 @@ impl AppWindow {
         let shell = cx.entity();
 
         window.open_dialog(cx, move |dialog, _, _| {
-            close_last_workspace_dialog(dialog, &shell, id, &message, &note)
+            close_last_workspace_dialog(dialog.centered(true), &shell, id, &message, &note)
         });
     }
 

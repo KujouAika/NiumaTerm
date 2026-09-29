@@ -9,7 +9,7 @@ use std::{collections, fs, path};
 
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Div, Entity, PathPromptOptions, Render, SharedString, Window, div, px, relative,
+    App, Context, Div, Entity, PathPromptOptions, Render, SharedString, Window, div, relative,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dialog::{
@@ -433,8 +433,8 @@ pub(super) fn open_new_workspace_dialog(window: &mut Window, cx: &mut Context<Ap
 
     let shell = cx.entity();
 
-    window.open_dialog(cx, move |dialog, window, _| {
-        new_workspace_dialog(dialog, &name_input, &dirs, &shell, window)
+    window.open_dialog(cx, move |dialog, _, _| {
+        new_workspace_dialog(dialog, &name_input, &dirs, &shell)
     });
 }
 
@@ -448,8 +448,8 @@ pub(super) fn open_workspace_dirs_dialog(
     let editor = cx.new(|cx| WorkspaceDirsEditor::new(Some(roots), cx));
     let shell = cx.entity();
 
-    window.open_dialog(cx, move |dialog, window, cx| {
-        workspace_dirs_dialog(dialog, &editor, &shell, id, window, cx)
+    window.open_dialog(cx, move |dialog, _, cx| {
+        workspace_dirs_dialog(dialog, &editor, &shell, id, cx)
     });
 }
 
@@ -458,19 +458,17 @@ fn new_workspace_dialog(
     name_input: &Entity<InputState>,
     dirs: &Entity<WorkspaceDirsEditor>,
     shell: &Entity<AppWindow>,
-    window: &Window,
 ) -> Dialog {
     let name_input = name_input.clone();
     let dirs = dirs.clone();
     let content_name = name_input.clone();
     let content_dirs = dirs.clone();
     let shell = shell.clone();
-    let margin_top = ((window.viewport_size().height - px(300.)) * 0.5).max(px(16.));
 
     dialog
         .title(t!("shell-workspace-new-title"))
         .overlay_closable(false)
-        .margin_top(margin_top)
+        .centered(true)
         .button_props(
             DialogButtonProps::default()
                 .ok_text(t!("shell-workspace-create"))
@@ -527,18 +525,16 @@ fn workspace_dirs_dialog(
     editor: &Entity<WorkspaceDirsEditor>,
     shell: &Entity<AppWindow>,
     id: WorkspaceId,
-    window: &Window,
     cx: &App,
 ) -> Dialog {
     let editor = editor.clone();
     let content_editor = editor.clone();
     let shell = shell.clone();
-    let margin_top = ((window.viewport_size().height - px(300.)) * 0.5).max(px(16.));
 
     dialog
         .title(t!("shell-workspace-edit-title"))
         .overlay_closable(false)
-        .margin_top(margin_top)
+        .centered(true)
         .button_props(
             DialogButtonProps::default()
                 .ok_text(t!("shell-workspace-save"))

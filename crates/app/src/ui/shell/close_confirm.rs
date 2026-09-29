@@ -73,6 +73,7 @@ pub(super) fn open_close_confirm(
         let on_confirm = Rc::clone(&on_confirm);
 
         alert
+            .centered(true)
             .confirm()
             .title(title.clone())
             .description(
@@ -104,6 +105,7 @@ pub(super) fn open_save_failed_close(
     // round-trip), so this dialog won't re-trigger.
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
+            .centered(true)
             .title(t!("settings-save-failed-title"))
             .description(
                 v_flex()

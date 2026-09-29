@@ -52,6 +52,7 @@ fn build_file_use_prompt(window: &mut Window, prompt: FileUsePrompt, cx: &mut Ap
         let footer = file_use_footer(prompt.reason);
 
         dialog
+            .centered(true)
             .title(title.clone())
             .overlay_closable(false)
             .content(move |content, _, cx| {
@@ -182,7 +183,7 @@ pub(crate) fn open_recovery_warning(
     handle
         .update(cx, move |_, window, cx| {
             window.open_dialog(cx, move |dialog, _, _| {
-                build_recovery_dialog(dialog, &applications)
+                build_recovery_dialog(dialog.centered(true), &applications)
             });
         })
         .is_ok()

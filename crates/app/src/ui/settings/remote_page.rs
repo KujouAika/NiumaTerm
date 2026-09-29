@@ -505,6 +505,7 @@ fn open_nearby_pairing(host: &NearbyHost, window: &mut Window, cx: &mut App) {
         let address = address.clone();
 
         dialog
+            .centered(true)
             .title(title.clone())
             .child(
                 v_flex()
@@ -558,6 +559,7 @@ fn confirm_forget(host: &PairedHost, window: &mut Window, cx: &mut App) {
         let forget_id = id.clone();
 
         dialog
+            .centered(true)
             .title(title.clone())
             .child(t!("settings-remote-forget-message"))
             .footer(

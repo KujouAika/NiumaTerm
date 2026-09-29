@@ -67,7 +67,7 @@ pub(crate) fn request_update(key: InstallationKey, window: &mut Window, cx: &mut
     }
 
     window.open_dialog(cx, move |dialog, _, _| {
-        active_work_dialog(dialog, &key, busy)
+        active_work_dialog(dialog.centered(true), &key, busy)
     });
 }
 

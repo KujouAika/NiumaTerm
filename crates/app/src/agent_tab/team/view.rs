@@ -702,6 +702,7 @@ impl TeamPane {
                                 let attempts = attempts.clone();
 
                                 alert
+                                    .centered(true)
                                     .confirm()
                                     .title(t!("team-end-interrupted"))
                                     .description(

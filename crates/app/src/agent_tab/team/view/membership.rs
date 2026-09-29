@@ -121,15 +121,15 @@ impl MemberDraft {
         window.open_dialog(cx, move |dialog, _, _| {
             let pane = pane.clone();
 
-            dialog
-                .title(t!("team-add-member"))
-                .content(move |content, window, cx| {
+            dialog.centered(true).title(t!("team-add-member")).content(
+                move |content, window, cx| {
                     content.child(pane.update(cx, |pane, cx| {
                         pane.member_draft
                             .render_member_form(pane.error.clone(), window, cx)
                             .into_any_element()
                     }))
-                })
+                },
+            )
         });
     }
 

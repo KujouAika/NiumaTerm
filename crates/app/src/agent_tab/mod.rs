@@ -974,7 +974,7 @@ impl AgentPane {
         let pane = cx.entity();
 
         window.open_dialog(cx, move |dialog, _, _| {
-            cache_expiry_dialog(dialog, &pane, &idle)
+            cache_expiry_dialog(dialog.centered(true), &pane, &idle)
         });
     }
 
@@ -2531,6 +2531,7 @@ impl AgentPane {
             let pane = pane.clone();
 
             alert
+                .centered(true)
                 .confirm()
                 .title(t!("agent-side-close-title"))
                 .description(t!("agent-side-close-description").into_owned())

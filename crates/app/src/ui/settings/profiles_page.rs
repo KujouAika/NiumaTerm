@@ -213,6 +213,7 @@ fn terminal_profile_card(ix: usize, count: usize) -> SettingItem {
 
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
+                        .centered(true)
                         .confirm()
                         .title(t!("settings-profiles-remove-title"))
                         .description(
