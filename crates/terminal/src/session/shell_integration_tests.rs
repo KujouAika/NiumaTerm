@@ -424,7 +424,6 @@ fn list_view_session(editor_setup: &str) -> (TerminalSession, Vec<HostEvent>) {
         working_dir: Some(env!("CARGO_MANIFEST_DIR").into()),
         cols: 100,
         rows: 30,
-        manage_process_tree: true,
         ..TerminalSessionConfig::default()
     };
 

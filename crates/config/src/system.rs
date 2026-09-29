@@ -43,10 +43,6 @@ pub struct SystemConfig {
     )]
     pub restore_last_session_when_opening: bool,
 
-    /// Manage each tab's shell with a Windows Job Object (kill tree on close).
-    #[serde(default, rename = "manage-subprocess-job")]
-    pub manage_subprocess_job: bool,
-
     /// When to warn before closing a pane, tab, workspace, or window.
     #[serde(default, rename = "warn-before-terminating-shell")]
     pub warn_before_terminating_shell: WarnBeforeTerminatingShell,
@@ -80,7 +76,6 @@ impl Default for SystemConfig {
     fn default() -> Self {
         Self {
             restore_last_session_when_opening: true,
-            manage_subprocess_job: false,
             warn_before_terminating_shell: WarnBeforeTerminatingShell::default(),
             confirm_before_closing_workspace: true,
             prioritize_ui_threads: false,

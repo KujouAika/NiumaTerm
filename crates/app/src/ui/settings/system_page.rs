@@ -134,19 +134,7 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                     system_notification_enabled,
                     set_system_notification_enabled,
                 ),
-            ))
-            .item(
-                SettingItem::new(
-                    t!("settings-system-manage-job"),
-                    settings_switch(
-                        |config| config.system.manage_subprocess_job,
-                        |settings, value| {
-                            settings.edit_system(|section| section.manage_subprocess_job = value);
-                        },
-                    ),
-                )
-                .description(t!("settings-system-manage-job-description").into_owned()),
-            ),
+            )),
     );
 
     #[cfg(target_os = "macos")]

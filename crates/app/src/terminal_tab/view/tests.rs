@@ -82,7 +82,6 @@ fn restored_grid_reaches_the_shell_before_its_first_output(cx: &mut TestAppConte
             improve_powershell_compatibility: true,
             input_style: Default::default(),
             cursor_shape: Default::default(),
-            manage_subprocess_job: false,
             command_blocks: false,
             smooth_wheel: false,
             scroll_to_bottom_when_typing: true,

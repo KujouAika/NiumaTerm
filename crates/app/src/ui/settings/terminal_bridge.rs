@@ -89,7 +89,6 @@ fn terminal_snapshot(cx: &App) -> TerminalSettings {
     TerminalSettings {
         input_style: settings.config().appearance.input_style,
         cursor_shape: settings.config().cursor.shape,
-        manage_subprocess_job: settings.config().system.manage_subprocess_job,
         command_blocks: settings.config().appearance.command_blocks,
         smooth_wheel: settings
             .config()

@@ -8,7 +8,6 @@ fn system_section_defaults_when_absent() {
 
     assert_eq!(config.system, SystemConfig::default());
     assert!(config.system.restore_last_session_when_opening);
-    assert!(!config.system.manage_subprocess_job);
     assert_eq!(
         config.system.warn_before_terminating_shell,
         WarnBeforeTerminatingShell::WhenChildProcessesRunning

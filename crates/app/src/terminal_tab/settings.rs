@@ -22,10 +22,6 @@ pub struct TerminalSettings {
     pub input_style: InputStyle,
     pub cursor_shape: CursorShape,
 
-    /// Wrap spawned shells in a job object so closing the tab tears down the
-    /// whole process tree.
-    pub manage_subprocess_job: bool,
-
     /// Draw finished commands as separated blocks with header chrome.
     pub command_blocks: bool,
 

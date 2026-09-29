@@ -167,7 +167,6 @@ pub(crate) fn streaming_controller(
 
     let settings = TerminalSettings {
         input_style: InputStyle::Waterfall,
-        manage_subprocess_job: false,
         command_blocks: true,
         font_family: "Consolas".into(),
         font_size: 14.0,

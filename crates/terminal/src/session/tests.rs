@@ -221,7 +221,6 @@ fn local_session_publishes_engine_output_and_host_events() {
             args: vec!["/D".into(), "/Q".into()],
             cols: 90,
             rows: 25,
-            manage_process_tree: true,
             ..TerminalSessionConfig::default()
         },
         ROUTE,

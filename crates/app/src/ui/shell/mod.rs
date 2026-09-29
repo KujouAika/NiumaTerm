@@ -1049,9 +1049,8 @@ impl AppWindow {
         let pane = self.active_pane();
         let settings = cx.global::<AppSettings>();
 
-        let count = if settings.config().system.manage_subprocess_job
-            && settings.config().system.warn_before_terminating_shell
-                != WarnBeforeTerminatingShell::Disabled
+        let count = if settings.config().system.warn_before_terminating_shell
+            != WarnBeforeTerminatingShell::Disabled
         {
             pane.read(cx).child_process_count()
         } else {
@@ -1167,9 +1166,8 @@ impl AppWindow {
     fn close_process_count(&self, tree: &TabSurface, cx: &App) -> io::Result<usize> {
         let settings = cx.global::<AppSettings>();
 
-        if !settings.config().system.manage_subprocess_job
-            || settings.config().system.warn_before_terminating_shell
-                == WarnBeforeTerminatingShell::Disabled
+        if settings.config().system.warn_before_terminating_shell
+            == WarnBeforeTerminatingShell::Disabled
         {
             return Ok(0);
         }

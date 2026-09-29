@@ -33,9 +33,7 @@ use nmt_input::event::ElementState;
 use nmt_input::keyboard::{Key, KeyLocation, ModifiersState};
 use nmt_input::{KeyEncodeFlags, KeyInput, bracket_paste, encode_terminal_input};
 use nmt_platform::process::ProcessTree;
-use nmt_platform::{
-    AsyncPty, PtyOptions, WinsizeBuilder, create_managed_pty_with_env, create_pty_with_env,
-};
+use nmt_platform::{AsyncPty, PtyOptions, WinsizeBuilder, create_managed_pty_with_env};
 use parking_lot::Mutex;
 use tracing::error;
 
@@ -174,12 +172,7 @@ impl TerminalSession {
             bootstrap: config.bootstrap.as_deref(),
         };
 
-        let pty = if config.manage_process_tree {
-            create_managed_pty_with_env(pty_options)
-        } else {
-            create_pty_with_env(pty_options)
-        }
-        .map_err(|error| {
+        let pty = create_managed_pty_with_env(pty_options).map_err(|error| {
             error!("session create_pty failed: {error:?}");
 
             EngineError::new(
