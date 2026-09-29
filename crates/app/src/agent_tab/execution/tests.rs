@@ -1,10 +1,10 @@
 use std::cell::RefCell;
-use std::fs;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{fs, thread};
 
 use gpui::{AppContext as _, Image, ImageFormat, Render, TestAppContext, VisualTestContext};
 use gpui_component::Root;
@@ -261,12 +261,15 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
         )
     });
 
-    for _ in 0..100 {
-        if released.load(Ordering::SeqCst) && !scratch.exists() {
-            break;
-        }
+    // Closing shuts the backend down and removes the scratch directory on the
+    // application's tokio runtime, which runs on real threads. The test
+    // executor's timers advance simulated time and return at once, so waiting
+    // on them gives that task no time at all when the machine is busy; the
+    // wait has to be measured on the wall clock.
+    let deadline = Instant::now() + Duration::from_secs(5);
 
-        cx.background_executor.timer(Duration::from_millis(1)).await;
+    while !(released.load(Ordering::SeqCst) && !scratch.exists()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
     }
 
     assert!(released.load(Ordering::SeqCst));
