@@ -119,7 +119,7 @@ struct ComposerView: View {
                                     }
                                 } label: {
                                     Label("Effort", systemImage: "gauge.with.dots.needle.50percent")
-                                    Text(model.effort?.capitalized ?? "Default")
+                                    Text(model.effort?.capitalized ?? tr("Default"))
                                 }
                             }
                         } label: {
@@ -146,7 +146,7 @@ struct ComposerView: View {
                                 }
                                 .disabled(!skill.enabled)
                             }
-                        } label: { ChipLabel(text: "Skills") }
+                        } label: { ChipLabel(text: tr("Skills")) }
                     }
 
                     Spacer()

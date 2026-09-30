@@ -475,12 +475,12 @@ extension TerminalSurface: UIEditMenuInteractionDelegate {
                              suggestedActions: [UIMenuElement]) -> UIMenu? {
         var actions: [UIMenuElement] = []
         if selection != nil {
-            actions.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+            actions.append(UIAction(title: tr("Copy"), image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
                 self?.model.copySelection()
             })
         }
         if UIPasteboard.general.hasStrings {
-            actions.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
+            actions.append(UIAction(title: tr("Paste"), image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
                 self?.model.paste()
             })
         }

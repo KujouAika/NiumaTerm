@@ -96,7 +96,7 @@ struct AgentSessionView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
-                    Text([model.profile?.displayName ?? "Agent", hostName, linkText]
+                    Text([model.profile?.displayName ?? tr("Agent"), hostName, linkText]
                             .compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Theme.secondary)
@@ -166,7 +166,7 @@ struct TranscriptRow: View {
         case .user(let text, let images):
             VStack(alignment: .trailing, spacing: 4) {
                 if images > 0 {
-                    Label("\(images) image\(images == 1 ? "" : "s")", systemImage: "photo")
+                    Label("\(images) images", systemImage: "photo")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.secondary)
                 }
@@ -190,7 +190,7 @@ struct TranscriptRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         case .reasoning(let summary):
-            DisclosureRowView(label: "Thinking", icon: "brain") {
+            DisclosureRowView(label: tr("Thinking"), icon: "brain") {
                 Text(summary)
                     .font(.system(size: 13.5))
                     .italic()
@@ -203,8 +203,8 @@ struct TranscriptRow: View {
                 }
             }
         case .compaction(let summary):
-            DisclosureRowView(label: "Context compacted", icon: "arrow.down.right.and.arrow.up.left") {
-                Text(summary ?? "No summary was reported.")
+            DisclosureRowView(label: tr("Context compacted"), icon: "arrow.down.right.and.arrow.up.left") {
+                Text(summary ?? tr("No summary was reported."))
                     .font(.system(size: 13.5))
                     .foregroundStyle(Theme.secondary)
             }
@@ -226,7 +226,7 @@ struct TranscriptRow: View {
 
     private func workLabel(_ items: [WorkItem]) -> String {
         if items.count == 1, let item = items.first { return "\(item.label) · \(item.detail)" }
-        return "Show work (\(items.count))"
+        return tr("Show work (\(items.count))")
     }
 
     private func markdown(_ s: String) -> AttributedString {

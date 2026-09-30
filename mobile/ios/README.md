@@ -128,3 +128,27 @@ binary's imports (`nm -u`) and declare any new ones there.
 Drop the JetBrains Mono Nerd Font Mono `.ttf` files into
 `NiumaTerm/Resources/Fonts/`; they are registered at launch. Without them the
 app uses SF Mono.
+
+## Localization
+
+The app ships in English and Simplified Chinese. Settings › Language
+follows the system by default (the system languages, or the per-app
+language in the iOS Settings app) and can pin either language; the switch
+takes effect at once, without a relaunch.
+
+- Strings live in `NiumaTerm/Localizable.xcstrings`, keyed by the English
+  text. System permission prompts are in `NiumaTerm/InfoPlist.xcstrings`
+  and follow the system language only.
+- A `Text`, `Button`, `Label`, or other SwiftUI literal is looked up
+  through the `locale` environment set at the app root. Text built outside
+  a view literal, such as a model's status line or a `String` handed to a
+  helper view, goes through `tr(...)` in `App/Localization.swift`, which
+  resolves in the chosen language and redraws its reader on a switch.
+  Navigation titles also go through `tr`, because UIKit keeps the first
+  title SwiftUI hands it.
+- Building in Xcode adds new keys to the catalog; `xcodebuild` does not.
+  After adding strings from the command line, compare the keys the
+  compiler extracted (`*.stringsdata` under the build's
+  `Objects-normal/arm64`) with the catalog, and add the Chinese for each
+  new one.
+- Error text from the Rust core stays English.

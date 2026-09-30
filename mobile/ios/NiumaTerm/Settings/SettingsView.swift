@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage(ComposerSettings.questionsOneAtATimeKey) private var questionsOneAtATime = false
     @AppStorage(NetworkPreference.storageKey) private var networkPreference = NetworkPreference.auto
 
+    @Bindable private var localization = Localization.shared
     @State private var forgetting: Host?
 
     /// Pair another computer; the list presenting Settings shows the pairing
@@ -94,6 +95,13 @@ struct SettingsView: View {
                     Text("Automatic uses the local network when it reaches the computer, and the relay otherwise. Always Relay or Always LAN keeps every connection on that path; a computer paired without a relay cannot be reached with Always Relay.")
                 }
                 Section {
+                    Picker("Language", selection: $localization.language) {
+                        ForEach(AppLanguage.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                }
+                Section {
                     LabeledContent("Version", value: AppModel.appVersion)
                 }
             }
@@ -104,7 +112,7 @@ struct SettingsView: View {
             .onChange(of: networkPreference) {
                 app.setNetworkPreference(networkPreference)
             }
-            .navigationTitle("Settings")
+            .navigationTitle(tr("Settings"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

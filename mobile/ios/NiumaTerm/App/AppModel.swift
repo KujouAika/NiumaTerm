@@ -120,7 +120,7 @@ final class AppModel {
     // MARK: Commands
 
     func pair(_ input: String, relayURL: String? = nil, accessKey: String? = nil) async throws -> HostRecord {
-        guard let core else { throw CoreError.Failed(message: startupError ?? "The app could not start its core.") }
+        guard let core else { throw CoreError.Failed(message: startupError ?? tr("The app could not start its core.")) }
         let record = try await core.pair(input: input, relayUrl: relayURL, accessKey: accessKey)
         hostChanged(record)
         Task { await startPush() }
@@ -148,13 +148,13 @@ final class AppModel {
     }
 
     func hostOffer(_ hostID: String) async throws -> HostOffer {
-        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
         return try await core.hostInfo(host: hostID)
     }
 
     /// `agent.open`; returns the route of the new session.
     func openAgent(hostID: String, profile: String, workspace: String) async throws -> SessionRoute {
-        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
         let session = try await core.openAgent(host: hostID, profile: profile, workspace: workspace)
         return SessionRoute(hostID: hostID, sessionID: session, kind: .agent)
     }
@@ -167,7 +167,7 @@ final class AppModel {
         if let model = agentModels[key] { return model }
         guard let core else { return nil }
         let model = AgentSessionModel(core: core, route: route,
-                                      title: session?.title ?? "Agent",
+                                      title: session?.title ?? tr("Agent"),
                                       profile: session?.profile)
         agentModels[key] = model
         return model
@@ -182,7 +182,7 @@ final class AppModel {
     /// Start a shell on the host and return the route of its screen, whose
     /// view is already attached.
     func openTerminal(hostID: String) async throws -> SessionRoute {
-        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
         let grid = TerminalMetrics.estimatedGrid()
         let events = TerminalEvents()
         let handle = try await core.openTerminal(host: hostID, cols: UInt16(grid.cols), rows: UInt16(grid.rows),
@@ -199,7 +199,7 @@ final class AppModel {
         let key = "\(route.hostID)/\(route.sessionID)"
         if let model = terminalModels[key] { return model }
         guard let core else { return nil }
-        let model = TerminalSessionModel(core: core, route: route, title: session?.title ?? "Terminal")
+        let model = TerminalSessionModel(core: core, route: route, title: session?.title ?? tr("Terminal"))
         terminalModels[key] = model
         return model
     }
@@ -215,7 +215,7 @@ final class AppModel {
     /// sessions again once it closed one, which drops the row; a refusal
     /// throws the host's reason.
     func closeSession(_ route: SessionRoute) async throws {
-        guard let core else { throw CoreError.Failed(message: "The app could not start its core.") }
+        guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
         try await core.closeSession(host: route.hostID, session: route.sessionID)
     }
 

@@ -69,8 +69,8 @@ struct NewSessionSheet: View {
     }
 
     private var startLabel: String {
-        guard let profile else { return "Start agent" }
-        return "Start \(profile)"
+        guard let profile else { return tr("Start agent") }
+        return tr("Start \(profile)")
     }
 
     private var terminalChoice: some View {

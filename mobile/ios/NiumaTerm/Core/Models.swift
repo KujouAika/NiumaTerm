@@ -62,9 +62,9 @@ struct Session: Identifiable, Hashable {
 
     var subtitle: String {
         switch kind {
-        case .terminal: "Terminal"
-        case .agent: profile?.displayName ?? "Agent"
-        case .other: "Session"
+        case .terminal: tr("Terminal")
+        case .agent: profile?.displayName ?? tr("Agent")
+        case .other: tr("Session")
         }
     }
 }
@@ -108,9 +108,9 @@ enum NetworkPreference: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .auto: "Automatic"
-        case .relay: "Always Relay"
-        case .lan: "Always LAN"
+        case .auto: tr("Automatic")
+        case .relay: tr("Always Relay")
+        case .lan: tr("Always LAN")
         }
     }
 
@@ -148,20 +148,20 @@ struct Host: Identifiable {
     /// The network the link runs over, as session title bars show it.
     var linkText: String? {
         switch link {
-        case .lan: "LAN"
-        case .relay: "Relay"
+        case .lan: tr("LAN")
+        case .relay: tr("Relay")
         case nil: nil
         }
     }
 
     var statusText: String {
         switch status {
-        case .connected: "Online"
-        case .connecting: "Connecting…"
-        case .reconnecting: "Reconnecting…"
-        case .idle: "Not connected"
-        case .refused: "No longer trusts this phone · pair again"
-        case .unreachable: "Connection failed"
+        case .connected: tr("Online")
+        case .connecting: tr("Connecting…")
+        case .reconnecting: tr("Reconnecting…")
+        case .idle: tr("Not connected")
+        case .refused: tr("No longer trusts this phone · pair again")
+        case .unreachable: tr("Connection failed")
         }
     }
 

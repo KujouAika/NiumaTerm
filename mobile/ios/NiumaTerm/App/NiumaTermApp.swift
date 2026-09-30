@@ -17,6 +17,7 @@ struct NiumaTermApp: App {
             HostListView()
                 .environment(app)
                 .tint(Theme.accent)
+                .modifier(AppLocaleEnvironment())
                 .onChange(of: appearance, initial: true) { _, appearance in
                     appearance.apply()
                 }

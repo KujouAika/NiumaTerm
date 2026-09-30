@@ -67,9 +67,9 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .system: "System"
-        case .light: "Light"
-        case .dark: "Dark"
+        case .system: tr("System")
+        case .light: tr("Light")
+        case .dark: tr("Dark")
         }
     }
 

@@ -84,9 +84,9 @@ enum TranscriptRows {
             } else {
                 state = workState(status)
             }
-            return WorkItem(id: index, label: "Run", detail: purpose ?? command, output: output, state: state)
+            return WorkItem(id: index, label: tr("Run"), detail: purpose ?? command, output: output, state: state)
         case .fileChange(let paths, let diff, let status):
-            return WorkItem(id: index, label: "Edit", detail: paths, output: diff, state: workState(status))
+            return WorkItem(id: index, label: tr("Edit"), detail: paths, output: diff, state: workState(status))
         case .tool(let kind, let title, let output, let status):
             return WorkItem(id: index, label: kind, detail: title, output: output, state: workState(status))
         default:
@@ -218,7 +218,7 @@ final class AgentSessionModel {
         }
     }
 
-    var agentName: String { profile?.shortName ?? "the agent" }
+    var agentName: String { profile?.shortName ?? tr("the agent") }
     var attached: Bool { state?.attached ?? false }
     var isWorking: Bool { state?.working ?? false }
     var ended: ViewEnd? { state?.ended }
@@ -274,7 +274,7 @@ final class AgentSessionModel {
     var efforts: [String] { models.first { $0.model == model }?.efforts ?? [] }
 
     var modelLabel: String {
-        guard let model else { return "Default model" }
+        guard let model else { return tr("Default model") }
         return models.first { $0.model == model }?.display ?? model
     }
 
@@ -284,18 +284,18 @@ final class AgentSessionModel {
 
     var contextLine: String? {
         guard let used = state?.contextUsed else { return nil }
-        guard let window = state?.contextWindow, window > 0 else { return "\(Self.compact(used)) context" }
+        guard let window = state?.contextWindow, window > 0 else { return tr("\(Self.compact(used)) context") }
         let left = max(0, 100 - Int(Double(used) / Double(window) * 100))
-        return "\(Self.compact(used)) used · \(left)% left"
+        return tr("\(Self.compact(used)) used · \(left)% left")
     }
 
     var phaseLine: String {
         if let failure = state?.startFailure { return failure }
         switch state?.phase {
-        case .starting, nil: return attached ? "Starting…" : "Connecting…"
-        case .running: return state?.detail ?? (isWorking ? "Working" : "Ready")
-        case .idle: return "Ready"
-        case .exited: return "Agent exited"
+        case .starting, nil: return attached ? tr("Starting…") : tr("Connecting…")
+        case .running: return state?.detail ?? (isWorking ? tr("Working") : tr("Ready"))
+        case .idle: return tr("Ready")
+        case .exited: return tr("Agent exited")
         }
     }
 
@@ -376,20 +376,20 @@ final class AgentSessionModel {
                     notice = message
                     return
                 case .commandQueued(let count):
-                    notice = count == 1 ? "The command runs when the turn ends."
-                                        : "\(count) commands run when the turn ends."
+                    notice = count == 1 ? tr("The command runs when the turn ends.")
+                                        : tr("\(count) commands run when the turn ends.")
                     return
                 case .conversationReplaced:
                     conversationReplaced()
                     return
                 case .notReady:
-                    notice = "\(agentName) is still starting."
+                    notice = tr("\(agentName) is still starting.")
                 case .answerPending:
-                    notice = "An answer to a question is still being sent."
+                    notice = tr("An answer to a question is still being sent.")
                 case .conversationChanging:
-                    notice = "The conversation is being rewound or forked."
+                    notice = tr("The conversation is being rewound or forked.")
                 case .commandStarting:
-                    notice = "A command is starting."
+                    notice = tr("A command is starting.")
                 case .rejected(let message):
                     notice = message
                 }
@@ -418,7 +418,7 @@ final class AgentSessionModel {
 
     /// The host names the new conversation once it has a first message.
     private func conversationReplaced() {
-        title = profile?.displayName ?? "Agent"
+        title = profile?.displayName ?? tr("Agent")
     }
 
     func interrupt() {
@@ -440,7 +440,7 @@ final class AgentSessionModel {
         Task {
             do {
                 if try await !handle.withdraw(id: id) {
-                    notice = "\(agentName) already read that message."
+                    notice = tr("\(agentName) already read that message.")
                 }
             } catch {
                 notice = error.displayText
@@ -463,7 +463,7 @@ final class AgentSessionModel {
             do {
                 let result = try await handle.respondApproval(decision: decision)
                 if result == .rejected {
-                    notice = "\(agentName) did not accept the answer."
+                    notice = tr("\(agentName) did not accept the answer.")
                 }
             } catch {
                 notice = error.displayText
@@ -544,9 +544,9 @@ final class AgentSessionModel {
                 case .settled, .waiting, .ignored:
                     showQuestions = false
                 case .incomplete:
-                    questionNotice = "Answer every question first."
+                    questionNotice = tr("Answer every question first.")
                 case .failed:
-                    questionNotice = question?.error ?? "The answer did not reach \(agentName)."
+                    questionNotice = question?.error ?? tr("The answer did not reach \(agentName).")
                 }
             } catch {
                 questionNotice = error.displayText

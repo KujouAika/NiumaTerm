@@ -153,7 +153,9 @@ struct AccessoryBar: View {
                 ForEach(AccessoryKey.defaultLayout) { key in
                     let on = (key.action == .ctrl && model.ctrl) || (key.action == .alt && model.alt)
                     Button { model.press(key) } label: {
-                        Text(key.label)
+                        // The other keys are named as printed on keyboards,
+                        // which stay the same in every language.
+                        Text(key.action == .paste ? tr("Paste") : key.label)
                             .font(Theme.mono(14, weight: .medium))
                             .foregroundStyle(on ? Theme.onAccent : Color.primary)
                             .padding(.horizontal, 10)

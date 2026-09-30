@@ -55,7 +55,7 @@ final class TerminalSessionModel {
     /// Adopt a session this phone just started.
     init(handle: TerminalHandle, events: TerminalEvents, route: SessionRoute) {
         self.route = route
-        title = "Terminal"
+        title = tr("Terminal")
         self.handle = handle
         self.events = events
         events.model = self

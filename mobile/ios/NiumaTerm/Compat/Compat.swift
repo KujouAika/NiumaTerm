@@ -50,8 +50,8 @@ struct SecondaryButtonStyle: ButtonStyle {
 }
 
 struct SectionLabel: View {
-    let text: String
-    init(_ text: String) { self.text = text }
+    let text: LocalizedStringKey
+    init(_ text: LocalizedStringKey) { self.text = text }
     var body: some View {
         Text(text)
             .font(.system(size: 12, weight: .semibold))

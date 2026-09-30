@@ -12,7 +12,7 @@ struct ApprovalSheet: View {
                 Text(model.profile?.glyph ?? "✱")
                     .font(Theme.mono(16, weight: .semibold))
                     .foregroundStyle(Theme.accent)
-                Text("\(model.profile?.shortName ?? "Agent") needs approval")
+                Text("\(model.profile?.shortName ?? tr("Agent")) needs approval")
                     .font(.system(size: 19, weight: .semibold))
             }
 
@@ -92,7 +92,7 @@ struct QuestionSheet: View {
             }
 
             if let skipsAt = model.questionSkipsAt, skipsAt > .now {
-                (Text("Skipped automatically in ") + Text(timerInterval: Date.now...skipsAt, countsDown: true))
+                Text("Skipped automatically in \(Text(timerInterval: Date.now...skipsAt, countsDown: true))")
                     .font(Theme.mono(12))
                     .foregroundStyle(Theme.secondary)
                     .padding(.bottom, 8)
@@ -195,7 +195,7 @@ private struct QuestionCard: View {
                         get: { answer.text ?? "" },
                         set: { model.setText(batch, question: index, text: $0) }
                     )
-                    let prompt = item.options.isEmpty ? "Your answer" : "Or type your own answer"
+                    let prompt: LocalizedStringKey = item.options.isEmpty ? "Your answer" : "Or type your own answer"
                     Group {
                         if item.input == .secret {
                             SecureField(prompt, text: text)
@@ -272,17 +272,17 @@ struct EndedSheet: View {
 
     private var headline: String {
         switch end {
-        case .takenBack: "\(hostName) took this session back"
-        case .closed: "This session ended"
-        case .unreachable: "\(hostName) is out of reach"
+        case .takenBack: tr("\(hostName) took this session back")
+        case .closed: tr("This session ended")
+        case .unreachable: tr("\(hostName) is out of reach")
         }
     }
 
     private var message: String {
         switch end {
-        case .takenBack: "“\(title)” is controlled on the desktop now. Reconnect to take control again."
-        case .closed: "“\(title)” was closed on \(hostName)."
-        case .unreachable: "This phone can no longer reach \(hostName). If it was removed there, pair again."
+        case .takenBack: tr("“\(title)” is controlled on the desktop now. Reconnect to take control again.")
+        case .closed: tr("“\(title)” was closed on \(hostName).")
+        case .unreachable: tr("This phone can no longer reach \(hostName). If it was removed there, pair again.")
         }
     }
 }

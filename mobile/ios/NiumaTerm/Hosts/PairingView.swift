@@ -87,7 +87,7 @@ struct PairingView: View {
                     if let link = UIPasteboard.general.string, !link.isEmpty {
                         pair(link)
                     } else {
-                        error = "The clipboard holds no pairing link. Use Copy link on the computer first."
+                        error = tr("The clipboard holds no pairing link. Use Copy link on the computer first.")
                     }
                 }
                 .font(.system(size: 14, weight: .medium))
@@ -218,7 +218,7 @@ struct ManualPairingForm: View {
                 .disabled(code.isEmpty || (!isLink && (relay.isEmpty || accessKey.isEmpty)) || pairing)
             }
         }
-        .navigationTitle("Enter Code")
+        .navigationTitle(tr("Enter Code"))
         .navigationBarTitleDisplayMode(.inline)
     }
 

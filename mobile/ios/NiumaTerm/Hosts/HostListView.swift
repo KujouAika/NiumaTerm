@@ -69,7 +69,7 @@ struct HostListView: View {
                                     header
                                 }
                                 if groups.count > 1 || group.workspace != nil {
-                                    WorkspaceHeader(name: group.workspace?.name ?? "Other")
+                                    WorkspaceHeader(name: group.workspace?.name ?? tr("Other"))
                                 }
                             }
                         }
@@ -91,7 +91,7 @@ struct HostListView: View {
                     }
                 }
             }
-            .navigationTitle("Computers")
+            .navigationTitle(tr("Computers"))
             .navigationDestination(for: SessionRoute.self) { SessionScreen(route: $0) }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -260,7 +260,7 @@ struct SessionScreen: View {
 
     var body: some View {
         let session = app.session(route)
-        let hostName = app.host(route.hostID)?.name ?? "Computer"
+        let hostName = app.host(route.hostID)?.name ?? tr("Computer")
         switch route.kind {
         case .agent:
             if let model = app.agentModel(for: route, session: session) {
