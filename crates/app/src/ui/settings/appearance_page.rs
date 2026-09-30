@@ -83,54 +83,7 @@ pub(super) fn appearance_page(
         .group(
             SettingGroup::new()
                 .title(t!("settings-appearance-window"))
-                .item(SettingItem::new(
-                    t!("settings-appearance-window-backdrop"),
-                    settings_choice(
-                        vec![
-                            (
-                                "mica-alt".into(),
-                                t!("settings-appearance-window-backdrop-mica-alt").into(),
-                            ),
-                            (
-                                "mica".into(),
-                                t!("settings-appearance-window-backdrop-mica").into(),
-                            ),
-                            (
-                                "acrylic".into(),
-                                t!("settings-appearance-window-backdrop-acrylic").into(),
-                            ),
-                            ("off".into(), t!("settings-common-off").into()),
-                        ],
-                        |config| config.appearance.window_backdrop.into(),
-                        |settings, value| {
-                            settings
-                                .edit_appearance(|section| section.window_backdrop = value.into());
-                        },
-                    )
-                    .default_value("acrylic"),
-                ))
-                .item(SettingItem::new(
-                    t!("settings-appearance-effect-on-content-area"),
-                    settings_switch(
-                        |config| config.appearance.transparent_main_view,
-                        |settings, value| {
-                            settings
-                                .edit_appearance(|section| section.transparent_main_view = value);
-                        },
-                    ),
-                ))
-                .item(
-                    SettingItem::new(
-                        t!("settings-appearance-background-opacity"),
-                        background_opacity_field(),
-                    )
-                    // The Mica materials replace the background with what DWM
-                    // draws, so a custom opacity has nothing left to act on.
-                    .disabled(matches!(
-                        backdrop,
-                        WindowBackdrop::Off | WindowBackdrop::MicaAlt | WindowBackdrop::Mica
-                    )),
-                )
+                .items(backdrop_items(backdrop))
                 .item(SettingItem::new(
                     t!("settings-appearance-background-image"),
                     background_image_field(),
@@ -369,4 +322,61 @@ pub(super) fn appearance_page(
                     .disabled(!show_git_status),
                 ),
         )
+}
+
+/// Mica, Mica Alt, and Acrylic are DWM system backdrops that exist only on
+/// Windows. macOS always draws the window opaque, so the material choice, the
+/// switch that extends the material into the tabs, and the opacity that tints
+/// it change nothing there.
+fn backdrop_items(backdrop: WindowBackdrop) -> Vec<SettingItem> {
+    if cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+
+    vec![
+        SettingItem::new(
+            t!("settings-appearance-window-backdrop"),
+            settings_choice(
+                vec![
+                    (
+                        "mica-alt".into(),
+                        t!("settings-appearance-window-backdrop-mica-alt").into(),
+                    ),
+                    (
+                        "mica".into(),
+                        t!("settings-appearance-window-backdrop-mica").into(),
+                    ),
+                    (
+                        "acrylic".into(),
+                        t!("settings-appearance-window-backdrop-acrylic").into(),
+                    ),
+                    ("off".into(), t!("settings-common-off").into()),
+                ],
+                |config| config.appearance.window_backdrop.into(),
+                |settings, value| {
+                    settings.edit_appearance(|section| section.window_backdrop = value.into());
+                },
+            )
+            .default_value("acrylic"),
+        ),
+        SettingItem::new(
+            t!("settings-appearance-effect-on-content-area"),
+            settings_switch(
+                |config| config.appearance.transparent_main_view,
+                |settings, value| {
+                    settings.edit_appearance(|section| section.transparent_main_view = value);
+                },
+            ),
+        ),
+        SettingItem::new(
+            t!("settings-appearance-background-opacity"),
+            background_opacity_field(),
+        )
+        // The Mica materials replace the background with what DWM draws, so a
+        // custom opacity has nothing left to act on.
+        .disabled(matches!(
+            backdrop,
+            WindowBackdrop::Off | WindowBackdrop::MicaAlt | WindowBackdrop::Mica
+        )),
+    ]
 }

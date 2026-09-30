@@ -66,6 +66,7 @@ use crate::ui::settings::about_page::about_page;
 use crate::ui::settings::agent_page::agent_page;
 use crate::ui::settings::appearance_page::appearance_page;
 use crate::ui::settings::hooks::{AgentHooks, Hook};
+use crate::ui::settings::opacity::window_backdrop;
 use crate::ui::settings::profiles_page::profiles_page;
 use crate::ui::settings::remote_page::remote_page;
 use crate::ui::settings::system_page::system_page;
@@ -238,11 +239,7 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
         .list
         .clone();
 
-    let backdrop = cx
-        .global::<AppSettings>()
-        .config()
-        .appearance
-        .window_backdrop;
+    let backdrop = window_backdrop(cx);
 
     let background_image_enabled = cx
         .global::<AppSettings>()

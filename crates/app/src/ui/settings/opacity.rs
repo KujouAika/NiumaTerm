@@ -21,12 +21,28 @@ pub(super) fn effective_surface_background_opacity(
     window_opacity * (1.0 - image_opacity.unwrap_or(0.0))
 }
 
+/// The backdrop in effect. macOS has no DWM materials and always draws the
+/// window opaque, so text and chrome keep the same contrast whatever sits
+/// behind the window. Pinning `Off` there also leaves the opacity slider inert
+/// (`effective_background_opacity` returns full opacity), so a value carried
+/// over from a Windows config cannot change a Mac window.
+pub(super) fn window_backdrop(cx: &App) -> WindowBackdrop {
+    if cfg!(target_os = "macos") {
+        return WindowBackdrop::Off;
+    }
+
+    cx.global::<AppSettings>()
+        .config()
+        .appearance
+        .window_backdrop
+}
+
 pub(crate) fn surface_background_opacity(cx: &App) -> f32 {
     let settings = cx.global::<AppSettings>();
 
     effective_surface_background_opacity(
         effective_background_opacity(
-            settings.config().appearance.window_backdrop,
+            window_backdrop(cx),
             settings.config().appearance.background_opacity,
         ),
         settings
@@ -40,12 +56,15 @@ pub(crate) fn surface_background_opacity(cx: &App) -> f32 {
 
 /// The tint strength inside a tab. Full opacity confines the backdrop to
 /// the chrome so terminal and agent content stays readable over wallpaper.
+/// macOS always does so: its window is opaque, and the content-area switch
+/// that could let a background image through the tabs is not offered there.
 pub(crate) fn main_view_background_opacity(cx: &App) -> f32 {
-    if cx
-        .global::<AppSettings>()
-        .config()
-        .appearance
-        .transparent_main_view
+    if !cfg!(target_os = "macos")
+        && cx
+            .global::<AppSettings>()
+            .config()
+            .appearance
+            .transparent_main_view
     {
         surface_background_opacity(cx)
     } else {
@@ -71,7 +90,7 @@ pub(crate) fn background_image_layer_opacity(cx: &App) -> f32 {
 
     effective_background_image_layer_opacity(
         effective_background_opacity(
-            settings.config().appearance.window_backdrop,
+            window_backdrop(cx),
             settings.config().appearance.background_opacity,
         ),
         settings.config().appearance.background_image_opacity,
@@ -95,10 +114,5 @@ pub(super) fn window_background_appearance_for(
 
 /// Select the DWM backdrop material for the configured mode.
 pub(crate) fn window_background_appearance(cx: &App) -> WindowBackgroundAppearance {
-    window_background_appearance_for(
-        cx.global::<AppSettings>()
-            .config()
-            .appearance
-            .window_backdrop,
-    )
+    window_background_appearance_for(window_backdrop(cx))
 }
