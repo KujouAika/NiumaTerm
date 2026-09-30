@@ -1,4 +1,5 @@
-//! Machine-owned local state (window geometry), stored as
+//! Machine-owned local state (window geometry and what agent harnesses
+//! last reported), stored as
 //! `local_state.toml` next to `config.toml`.
 //!
 //! Unlike `config.toml` this file is not meant for hand editing: it is
@@ -13,6 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use nmt_profile::AgentKind;
 use serde::{Deserialize, Serialize};
 use toml::{from_str as parse_toml, to_string as serialize_toml};
 
@@ -26,6 +28,23 @@ fn is_false(value: &bool) -> bool {
 pub struct LocalState {
     #[serde(default)]
     pub windows: Vec<WindowLocalState>,
+
+    /// What each agent profile's harness last reported for its thread
+    /// controls. Omitted while empty so a file without it stays unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_controls: Vec<AgentControlsState>,
+}
+
+/// The thread controls one agent profile's harness last reported, before any
+/// tab's own picks. A tab that has not launched its harness shows them, so
+/// its pickers are filled before the first message launches one, including
+/// right after a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentControlsState {
+    pub agent: AgentKind,
+    pub profile: String,
+    #[serde(default)]
+    pub settings: AgentTabSettings,
 }
 
 /// The thread-settings picks one agent tab is running under, carried into the
@@ -260,6 +279,30 @@ fn save_windows_to(path: &Path, windows: &[WindowLocalState]) -> io::Result<()> 
         let mut state = decode(content)?;
 
         state.windows = windows.to_vec();
+
+        serialize_toml(&state).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    })
+}
+
+/// Record what one profile's harness reported, replacing its previous entry.
+/// Other profiles' entries and the windows are kept as the file holds them,
+/// since other windows and instances write the same file.
+pub fn save_agent_controls(entry: AgentControlsState) -> io::Result<()> {
+    save_agent_controls_to(&local_state_file_path(), entry)
+}
+
+fn save_agent_controls_to(path: &Path, entry: AgentControlsState) -> io::Result<()> {
+    persistence::update(path, |content| {
+        let mut state = decode(content)?;
+
+        match state
+            .agent_controls
+            .iter_mut()
+            .find(|saved| saved.agent == entry.agent && saved.profile == entry.profile)
+        {
+            Some(saved) => *saved = entry.clone(),
+            None => state.agent_controls.push(entry.clone()),
+        }
 
         serialize_toml(&state).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     })

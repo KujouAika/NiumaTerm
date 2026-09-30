@@ -1,5 +1,6 @@
 use std::env;
 
+use nmt_profile::AgentKind;
 use tempfile::tempdir;
 
 use crate::local_state::*;
@@ -14,6 +15,7 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
     assert_eq!(try_load_from(&path).unwrap(), LocalState::default());
 
     let state = LocalState {
+        agent_controls: Vec::new(),
         windows: vec![
             WindowLocalState {
                 window: Some(WindowState {
@@ -225,6 +227,7 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
     };
 
     let state = LocalState {
+        agent_controls: Vec::new(),
         windows: vec![WindowLocalState {
             window: None,
             session: Some(SessionState {
@@ -248,6 +251,7 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
 
     // A single-pane tab serializes without any `panes` key at all.
     let flat = LocalState {
+        agent_controls: Vec::new(),
         windows: vec![WindowLocalState {
             window: None,
             session: Some(SessionState {
@@ -334,6 +338,7 @@ active_tab = 0
     // A workspace without additions writes no key at all, so an older
     // build reads back exactly what it wrote.
     let single = LocalState {
+        agent_controls: Vec::new(),
         windows: vec![WindowLocalState {
             window: None,
             session: Some(SessionState {
@@ -421,4 +426,38 @@ fn git_tab_roundtrips_without_acquiring_a_shell_or_agent() {
     let legacy: TabState = toml::from_str("cwd = '/project'\n").unwrap();
 
     assert!(legacy.git_cwd.is_none());
+}
+
+#[test]
+fn agent_controls_replace_their_profile_and_keep_windows() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("local_state.toml");
+
+    save_windows_to(&path, &[WindowLocalState::default()]).unwrap();
+
+    let entry = |profile: &str, model: &str| AgentControlsState {
+        agent: AgentKind::Codex,
+        profile: profile.into(),
+        settings: AgentTabSettings {
+            model: Some(model.into()),
+            ..AgentTabSettings::default()
+        },
+    };
+
+    save_agent_controls_to(&path, entry("Codex", "first")).unwrap();
+    save_agent_controls_to(&path, entry("Work", "other")).unwrap();
+    save_agent_controls_to(&path, entry("Codex", "second")).unwrap();
+
+    let state = try_load_from(&path).unwrap();
+
+    assert_eq!(state.windows.len(), 1);
+    assert_eq!(
+        state.agent_controls,
+        vec![entry("Codex", "second"), entry("Work", "other")]
+    );
+
+    // Saving windows leaves the reported controls alone.
+    save_windows_to(&path, &[]).unwrap();
+
+    assert_eq!(try_load_from(&path).unwrap().agent_controls.len(), 2);
 }
