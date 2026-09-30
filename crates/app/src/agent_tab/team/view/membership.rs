@@ -18,7 +18,7 @@ use rust_i18n::t;
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::team::TeamRuntime;
 use crate::agent_tab::team::view::TeamPane;
-use crate::agent_tab::thread_controls::{launch_effort, launch_model};
+use crate::agent_tab::thread_controls::launch_pins;
 
 struct DiceIcon;
 
@@ -71,9 +71,13 @@ impl MemberDraft {
 
         // A member joins on its profile's values; its own picks afterwards
         // are the room's to keep.
+        let pins = launch_pins(kind, &profile);
+
         let settings = ThreadSettings {
-            model: launch_model(kind, &profile),
-            effort: launch_effort(&profile),
+            model: pins.model,
+            effort: pins.effort,
+            approval: pins.approval,
+            sandbox: pins.sandbox,
             ..ThreadSettings::default()
         };
 

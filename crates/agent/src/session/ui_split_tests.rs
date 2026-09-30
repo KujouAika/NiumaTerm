@@ -10,7 +10,7 @@ use crate::session::history::{CountPublication, SessionHistory};
 use crate::session::lifecycle::{SessionRuntime, Status};
 use crate::session::naming::ConversationNaming;
 use crate::session::restore::SettingsSeed;
-use crate::session::settings::ConversationSettings;
+use crate::session::settings::{ConversationSettings, ProfilePins};
 use crate::session::test_support::TestBackend;
 use crate::session::update_readiness::{ConversationWork, Readiness};
 use crate::session::workflows::WorkflowData;
@@ -80,8 +80,10 @@ fn ready_priority_keeps_profile_then_current_then_branch_settings() {
         AgentKind::Claude,
         ThreadSettings::default(),
         Some(&stored),
-        Some("profile"),
-        None,
+        &ProfilePins {
+            model: Some("profile".into()),
+            ..ProfilePins::default()
+        },
     );
 
     assert_eq!(settings.settings.model.as_deref(), Some("profile"));
@@ -94,8 +96,7 @@ fn ready_priority_keeps_profile_then_current_then_branch_settings() {
             ..Default::default()
         },
         None,
-        None,
-        None,
+        &ProfilePins::default(),
     );
 
     assert_eq!(settings.settings.model.as_deref(), Some("profile"));
@@ -110,8 +111,7 @@ fn ready_priority_keeps_profile_then_current_then_branch_settings() {
         AgentKind::Claude,
         ThreadSettings::default(),
         None,
-        None,
-        None,
+        &ProfilePins::default(),
     );
 
     assert_eq!(settings.settings.model.as_deref(), Some("branch"));

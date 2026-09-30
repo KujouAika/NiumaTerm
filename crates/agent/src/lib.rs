@@ -82,6 +82,16 @@ pub struct LaunchConfig {
     /// from. `None` leaves the deployment's default. The shared host is keyed
     /// without it, because the composition belongs to a conversation.
     pub agent_preset: Option<String>,
+
+    /// Approval setting the profile pins for every conversation it starts,
+    /// already checked against the harness's own values. `None` leaves it to
+    /// the agent's configuration and the remembered thread settings. Claude
+    /// Code takes it as a launch flag; Codex receives it with every turn.
+    pub approval: Option<String>,
+
+    /// Sandbox policy the profile pins, with the same meaning of `None`.
+    /// Only Codex has one, and it receives it with every turn.
+    pub sandbox: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

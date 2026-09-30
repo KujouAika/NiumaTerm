@@ -65,7 +65,7 @@ use crate::agent_tab::profile::{
 };
 use crate::agent_tab::session::RestorationReadiness;
 use crate::agent_tab::settings::AgentSettings;
-use crate::agent_tab::thread_controls::{launch_effort, launch_model};
+use crate::agent_tab::thread_controls::launch_pins;
 use crate::agent_tab::{AgentAttention, AgentPaneEvent, RecoveryReadiness};
 use crate::utils::on_runtime;
 
@@ -952,8 +952,7 @@ impl AgentSession {
             return;
         };
 
-        let model = launch_model(self.kind, &self.profile);
-        let effort = launch_effort(&self.profile);
+        let pins = launch_pins(self.kind, &self.profile);
 
         let mut session = self.controller.borrow_mut();
 
@@ -969,8 +968,7 @@ impl AgentSession {
             self.kind,
             reported.settings,
             self.remembered.as_ref(),
-            model.as_deref(),
-            effort.as_deref(),
+            &pins,
         );
 
         drop(session);
@@ -1509,12 +1507,22 @@ impl AgentSession {
             let mut session = self.controller.borrow_mut();
 
             if !preserve_settings {
-                if let Some(model) = launch_model(kind, &self.profile) {
+                let pins = launch_pins(kind, &self.profile);
+
+                if let Some(model) = pins.model {
                     session.controls.set_model(model);
                 }
 
-                if let Some(effort) = launch_effort(&self.profile) {
-                    session.controls.settings.effort = Some(effort);
+                let settings = &mut session.controls.settings;
+
+                for (pin, slot) in [
+                    (pins.effort, &mut settings.effort),
+                    (pins.approval, &mut settings.approval),
+                    (pins.sandbox, &mut settings.sandbox),
+                ] {
+                    if pin.is_some() {
+                        *slot = pin;
+                    }
                 }
             }
 
@@ -1763,8 +1771,7 @@ impl AgentSession {
             .borrow_mut()
             .set_ready_defaults(ReadyDefaults {
                 stored: self.remembered.clone(),
-                model: launch_model(self.kind, &self.profile),
-                effort: launch_effort(&self.profile),
+                pins: launch_pins(self.kind, &self.profile),
             });
     }
 

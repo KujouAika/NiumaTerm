@@ -1,7 +1,7 @@
 use crate::chat::ThreadSettings;
 use crate::session::AgentKind;
 use crate::session::restore::SettingsSeed;
-use crate::session::settings::ConversationSettings;
+use crate::session::settings::{ConversationSettings, ProfilePins};
 
 fn seeded(seed: SettingsSeed) -> ConversationSettings {
     ConversationSettings {
@@ -34,7 +34,12 @@ fn resumed_codex_thread_uses_only_the_locally_remembered_reviewer() {
 
     let mut controls = seeded(SettingsSeed::Reviewer);
 
-    controls.ready(AgentKind::Codex, backend, Some(&stored), None, None);
+    controls.ready(
+        AgentKind::Codex,
+        backend,
+        Some(&stored),
+        &ProfilePins::default(),
+    );
 
     assert_eq!(
         controls.settings,
@@ -72,8 +77,10 @@ fn claude_profile_and_local_settings_survive_later_ready_events() {
         AgentKind::Claude,
         backend.clone(),
         Some(&local),
-        Some("profile-model"),
-        None,
+        &ProfilePins {
+            model: Some("profile-model".into()),
+            ..ProfilePins::default()
+        },
     );
 
     let initial = controls.settings.clone();
@@ -88,8 +95,10 @@ fn claude_profile_and_local_settings_survive_later_ready_events() {
         AgentKind::Claude,
         backend,
         Some(&local),
-        Some("profile-model"),
-        None,
+        &ProfilePins {
+            model: Some("profile-model".into()),
+            ..ProfilePins::default()
+        },
     );
 
     assert_eq!(controls.settings, initial);
@@ -113,11 +122,90 @@ fn a_pinned_profile_effort_outranks_the_thread_and_the_remembered_pick() {
         AgentKind::DeepSeek,
         backend,
         Some(&local),
-        None,
-        Some("max"),
+        &ProfilePins {
+            effort: Some("max".into()),
+            ..ProfilePins::default()
+        },
     );
 
     assert_eq!(controls.settings.effort.as_deref(), Some("max"));
+}
+
+#[test]
+fn a_pinned_profile_approval_outranks_the_thread_and_the_remembered_pick() {
+    let backend = ThreadSettings {
+        approval: Some("default".into()),
+        ..ThreadSettings::default()
+    };
+
+    let local = ThreadSettings {
+        approval: Some("plan".into()),
+        ..ThreadSettings::default()
+    };
+
+    let mut controls = seeded(SettingsSeed::Defaults);
+
+    controls.ready(
+        AgentKind::Claude,
+        backend.clone(),
+        Some(&local),
+        &ProfilePins {
+            approval: Some("acceptEdits".into()),
+            ..ProfilePins::default()
+        },
+    );
+
+    assert_eq!(controls.settings.approval.as_deref(), Some("acceptEdits"));
+
+    // A resumed conversation keeps what the provider restored rather than
+    // taking the pin again.
+    let mut resumed = seeded(SettingsSeed::None);
+
+    resumed.ready(
+        AgentKind::Claude,
+        backend,
+        Some(&local),
+        &ProfilePins {
+            approval: Some("acceptEdits".into()),
+            ..ProfilePins::default()
+        },
+    );
+
+    assert_eq!(resumed.settings.approval.as_deref(), Some("default"));
+}
+
+#[test]
+fn pinned_codex_approval_and_sandbox_outrank_the_remembered_picks() {
+    let backend = ThreadSettings {
+        approval: Some("on-request".into()),
+        sandbox: Some("workspaceWrite".into()),
+        ..ThreadSettings::default()
+    };
+
+    let local = ThreadSettings {
+        approval: Some("untrusted".into()),
+        sandbox: Some("readOnly".into()),
+        ..ThreadSettings::default()
+    };
+
+    let mut controls = seeded(SettingsSeed::Defaults);
+
+    controls.ready(
+        AgentKind::Codex,
+        backend,
+        Some(&local),
+        &ProfilePins {
+            approval: Some("never".into()),
+            sandbox: Some("dangerFullAccess".into()),
+            ..ProfilePins::default()
+        },
+    );
+
+    assert_eq!(controls.settings.approval.as_deref(), Some("never"));
+    assert_eq!(
+        controls.settings.sandbox.as_deref(),
+        Some("dangerFullAccess")
+    );
 }
 
 #[test]
@@ -134,7 +222,12 @@ fn no_pinned_effort_leaves_the_remembered_pick_in_place() {
 
     let mut controls = seeded(SettingsSeed::Defaults);
 
-    controls.ready(AgentKind::DeepSeek, backend, Some(&local), None, None);
+    controls.ready(
+        AgentKind::DeepSeek,
+        backend,
+        Some(&local),
+        &ProfilePins::default(),
+    );
 
     assert_eq!(controls.settings.effort.as_deref(), Some("medium"));
 }

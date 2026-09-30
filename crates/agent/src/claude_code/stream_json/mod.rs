@@ -253,7 +253,9 @@ impl Session {
             session_id: resume,
             turn: TurnTracker::default(),
             applied_model: initial_model,
-            applied_permission: None,
+            // A pinned mode rides the launch flag, so the CLI already runs
+            // under it and a later pick compares against it.
+            applied_permission: launch.approval.clone(),
             active_slash_command: None,
             structured_commands_published: false,
             compacting: false,
@@ -1395,16 +1397,21 @@ impl Session {
 
         // The initialize response arrives before any turn and carries the
         // model catalog, so the pickers show real values immediately. It
-        // does NOT report the session's current permission mode, and the CLI
-        // resolves its startup mode from user config — so the initial value
-        // comes from the same config file (`permissions.defaultMode`); the
-        // first turn's `init` message then confirms or corrects it. A model
+        // does NOT report the session's current permission mode. A mode
+        // passed as a launch flag is the one the CLI runs under; otherwise
+        // the CLI resolves its startup mode from user config, so the initial
+        // value comes from the same config file (`permissions.defaultMode`).
+        // The first turn's `init` message then confirms or corrects it. A model
         // resolved at spawn reaches the CLI as `--model`, so it is already
         // applied here; a launch that named none starts on the catalog's
         // "default" entry.
         if !self.ready {
-            let permission =
-                Some(configured_permission_mode().unwrap_or_else(|| "default".to_string()));
+            let permission = Some(
+                self.applied_permission
+                    .clone()
+                    .or_else(configured_permission_mode)
+                    .unwrap_or_else(|| "default".to_string()),
+            );
 
             let model = self
                 .applied_model
@@ -1524,6 +1531,13 @@ fn claude_command(
     // conversation.
     if let Some(effort) = &launch.effort {
         command.args(["--effort", effort]);
+    }
+
+    // A mode given at launch holds from the first turn. Switching after the
+    // handshake would leave the CLI on its configured mode until the first
+    // message carries a `set_permission_mode` request.
+    if let Some(mode) = &launch.approval {
+        command.args(["--permission-mode", mode]);
     }
 
     // The CLI resolves the model once during its handshake and builds the

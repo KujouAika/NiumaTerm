@@ -2,7 +2,9 @@
 
 use nmt_profile::{AgentKind, AgentProfile, AgentProfileLauncher};
 
+use crate::claude_code::stream_json::PERMISSION_OPTIONS;
 use crate::codex::ProviderConfig;
+use crate::codex::app_server::{APPROVAL_OPTIONS, SANDBOX_OPTIONS};
 use crate::{LaunchConfig, dsh};
 
 pub const ANTHROPIC_MODEL_ENV: &str = "ANTHROPIC_MODEL";
@@ -196,6 +198,8 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
         // A profile names no composition; the pane supplies the one the user
         // last picked when it starts a conversation.
         agent_preset: None,
+        approval: profile_approval(profile),
+        sandbox: profile_sandbox(profile),
     }
 }
 
@@ -215,6 +219,38 @@ fn profile_effort(profile: &AgentProfile) -> Option<String> {
     let effort = profile.effort.trim();
 
     (!effort.is_empty() && effort != "default").then(|| effort.to_string())
+}
+
+/// The approval setting this profile pins, or `None` when it leaves the
+/// choice to the harness and the remembered pick. Claude Code's permission
+/// modes and Codex's approval policies share the field but not their values,
+/// so a value outside this kind's list (left over from a kind switch or a
+/// hand edit) pins nothing rather than reaching a harness that would refuse
+/// it. `default` is the picker's own label for "no choice".
+fn profile_approval(profile: &AgentProfile) -> Option<String> {
+    let options: &[&str] = match profile.kind {
+        AgentKind::Claude => &PERMISSION_OPTIONS,
+        AgentKind::Codex => &APPROVAL_OPTIONS,
+        AgentKind::DeepSeek => &[],
+    };
+
+    pinned_value(&profile.approval, options)
+}
+
+/// The sandbox policy this profile pins. Only Codex has one.
+fn profile_sandbox(profile: &AgentProfile) -> Option<String> {
+    let options: Vec<&str> = match profile.kind {
+        AgentKind::Codex => SANDBOX_OPTIONS.iter().map(|(value, _)| *value).collect(),
+        AgentKind::Claude | AgentKind::DeepSeek => Vec::new(),
+    };
+
+    pinned_value(&profile.sandbox, &options)
+}
+
+fn pinned_value(value: &str, options: &[&str]) -> Option<String> {
+    let value = value.trim();
+
+    (value != "default" && options.contains(&value)).then(|| value.to_string())
 }
 
 pub fn launch_model(kind: AgentKind, launch: LaunchConfig) -> Option<String> {

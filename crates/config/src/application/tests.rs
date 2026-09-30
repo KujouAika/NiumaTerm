@@ -104,6 +104,8 @@ fn sample_agent_profiles() -> Vec<profile::AgentProfile> {
             value: "bar".to_string(),
         }],
         vision_model: false,
+        approval: "acceptEdits".to_string(),
+        sandbox: String::new(),
     }]
 }
 

@@ -6,6 +6,7 @@
 mod tests;
 
 use std::borrow::Cow;
+use std::iter;
 
 use app::agent_tab::{AgentKind, AgentKindExt as _};
 use gpui::prelude::FluentBuilder as _;
@@ -26,6 +27,8 @@ use gpui_component::switch::Switch;
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
+use nmt_agent::claude_code::stream_json;
+use nmt_agent::codex::app_server;
 use rust_i18n::t;
 
 use crate::ui::settings::card::{card_row, card_text_input, description_hint};
@@ -465,6 +468,71 @@ fn effort_label(option: &str) -> Cow<'static, str> {
     }
 }
 
+/// The label an approval or sandbox value shows, in the words the
+/// conversation's own pickers use so the two read alike.
+fn approval_value_label(value: &str) -> Cow<'static, str> {
+    match value {
+        "auto" => t!("agent-setting-value-auto"),
+        "acceptEdits" => t!("agent-setting-value-accept-edits"),
+        "plan" => t!("agent-setting-value-plan"),
+        "bypassPermissions" => t!("agent-setting-value-bypass-permissions"),
+        "untrusted" => t!("agent-setting-value-untrusted"),
+        "on-request" => t!("agent-setting-value-on-request"),
+        "never" => t!("agent-setting-value-never"),
+        "readOnly" => t!("agent-setting-value-read-only"),
+        "workspaceWrite" => t!("agent-setting-value-workspace-write"),
+        "dangerFullAccess" => t!("agent-setting-value-full-access"),
+        _ => t!("agent-setting-value-default"),
+    }
+}
+
+/// A dropdown pinning one of the harness's own values into the profile field
+/// `field` selects, currently holding `stored`. `default` heads the list and stands for no pin. A stored
+/// value outside `options`, left by a kind switch or a hand edit, shows as
+/// `default` because the launch ignores it the same way.
+fn pinned_value_choice(
+    id: &'static str,
+    options: Vec<&'static str>,
+    stored: &str,
+    field: fn(&mut AgentProfile) -> &mut String,
+    cx: &Context<AgentProfileDraft>,
+) -> AnyElement {
+    let stored = stored.trim();
+
+    let selected = options
+        .iter()
+        .copied()
+        .find(|option| *option == stored)
+        .unwrap_or(UNPINNED_VALUE);
+
+    draft_choice(
+        id,
+        approval_value_label(selected),
+        iter::once(UNPINNED_VALUE)
+            .chain(
+                options
+                    .into_iter()
+                    .filter(|option| *option != UNPINNED_VALUE),
+            )
+            .map(|option| (option, approval_value_label(option).into()))
+            .collect(),
+        move |option| option == selected,
+        move |draft, option| {
+            // Stored empty rather than as `default`, so the harness keeps
+            // resolving its own configured value instead of being handed one.
+            *field(&mut draft.profile) = if option == UNPINNED_VALUE {
+                String::new()
+            } else {
+                option.to_string()
+            };
+        },
+        cx,
+    )
+}
+
+/// The picker's word for "no pin", shared by every pinned-value dropdown.
+const UNPINNED_VALUE: &str = "default";
+
 /// Idle spans a profile can warn at before the next message rebuilds the
 /// provider's prompt cache, in minutes. `0` is off, which is also what a
 /// profile written before this field existed carries.
@@ -624,6 +692,11 @@ fn select_profile_kind(draft: &mut AgentProfileDraft, profile_kind: AgentKind) {
         // follows the kind for as long as the executable does.
         draft.profile.launcher = builtin.launcher;
     }
+
+    // Approval and sandbox values are each harness's own vocabulary, so a
+    // pin made for the previous kind means nothing to the new one.
+    draft.profile.approval.clear();
+    draft.profile.sandbox.clear();
 
     draft.profile.kind = profile_kind;
 }
@@ -805,6 +878,33 @@ fn agent_profile_dialog_content(
         cx,
     );
 
+    let claude_permission_control = pinned_value_choice(
+        "agent-profile-dialog-permission-mode",
+        stream_json::PERMISSION_OPTIONS.to_vec(),
+        &profile.approval,
+        |profile| &mut profile.approval,
+        cx,
+    );
+
+    let codex_approval_control = pinned_value_choice(
+        "agent-profile-dialog-approval",
+        app_server::APPROVAL_OPTIONS.to_vec(),
+        &profile.approval,
+        |profile| &mut profile.approval,
+        cx,
+    );
+
+    let codex_sandbox_control = pinned_value_choice(
+        "agent-profile-dialog-sandbox",
+        app_server::SANDBOX_OPTIONS
+            .iter()
+            .map(|(value, _)| *value)
+            .collect(),
+        &profile.sandbox,
+        |profile| &mut profile.sandbox,
+        cx,
+    );
+
     let cache_warn_minutes = profile.cache_warn_minutes;
 
     let cache_warn_control = draft_choice(
@@ -950,6 +1050,28 @@ fn agent_profile_dialog_content(
             effort_control,
             cx,
         ))
+        .map(|this| match profile.kind {
+            AgentKind::Claude => this.child(card_row(
+                t!("settings-agent-profile-permission-mode"),
+                t!("settings-agent-profile-permission-mode-description"),
+                claude_permission_control,
+                cx,
+            )),
+            AgentKind::Codex => this
+                .child(card_row(
+                    t!("settings-agent-profile-approval"),
+                    t!("settings-agent-profile-approval-description"),
+                    codex_approval_control,
+                    cx,
+                ))
+                .child(card_row(
+                    t!("settings-agent-profile-sandbox"),
+                    t!("settings-agent-profile-sandbox-description"),
+                    codex_sandbox_control,
+                    cx,
+                )),
+            AgentKind::DeepSeek => this,
+        })
         .child(card_row(
             t!("settings-agent-profile-custom-endpoint"),
             t!("settings-agent-profile-custom-endpoint-description"),

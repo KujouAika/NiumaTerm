@@ -41,6 +41,16 @@ pub struct ConversationSettings {
     pub agent_presets: Vec<AgentPreset>,
 }
 
+/// The controls a launch profile forces on every conversation it starts.
+/// Each `None` leaves that control to the harness and the remembered pick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfilePins {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub approval: Option<String>,
+    pub sandbox: Option<String>,
+}
+
 /// Overlay remembered controls on what a Ready reported: each remembered
 /// pick wins where one exists. A remembered composition already travelled
 /// with the creation request, and the harness refuses to recompose a
@@ -63,8 +73,7 @@ impl ConversationSettings {
         kind: AgentKind,
         settings: ThreadSettings,
         stored: Option<&ThreadSettings>,
-        startup_model: Option<&str>,
-        startup_effort: Option<&str>,
+        pins: &ProfilePins,
     ) {
         let effort = settings.effort.clone().or(self.settings.effort.clone());
 
@@ -112,15 +121,20 @@ impl ConversationSettings {
             next.approvals_reviewer = Some(reviewer);
         }
 
-        // A launch profile's pinned model and effort outrank both the thread
-        // and the remembered picks, but only when the defaults are seeded.
+        // A launch profile's pins outrank both the thread and the remembered
+        // picks, but only when the defaults are seeded.
         if seed_thread_defaults {
-            if let Some(model) = startup_model {
-                next.model = Some(model.to_string());
-            }
+            let pinned = [
+                (&pins.model, &mut next.model),
+                (&pins.effort, &mut next.effort),
+                (&pins.approval, &mut next.approval),
+                (&pins.sandbox, &mut next.sandbox),
+            ];
 
-            if let Some(effort) = startup_effort {
-                next.effort = Some(effort.to_string());
+            for (pin, slot) in pinned {
+                if pin.is_some() {
+                    slot.clone_from(pin);
+                }
             }
         }
 

@@ -1,4 +1,5 @@
-//! The controls a conversation runs under -- model, preset, effort -- and the
+//! The controls a conversation runs under -- model, preset, effort, approval --
+//! and the
 //! tab's memory of what the user last picked.
 //!
 //! Which of these the pane applies and which the harness replays on its own is
@@ -11,6 +12,7 @@ mod defaults_tests;
 
 use gpui::App;
 use nmt_agent::profile::launch_model as effective_launch_model;
+use nmt_agent::session::settings::ProfilePins;
 use nmt_config::profile::AgentProfile;
 
 use crate::agent_tab::AgentPane;
@@ -23,11 +25,17 @@ pub(crate) fn launch_model(kind: AgentKind, profile: &AgentProfile) -> Option<St
     effective_launch_model(kind, agent_launch(profile))
 }
 
-/// The reasoning effort this pane's profile pins. Claude receives it as a
-/// launch flag and Codex as a thread-start parameter; the picker shows it
-/// either way.
-pub(crate) fn launch_effort(profile: &AgentProfile) -> Option<String> {
-    agent_launch(profile).effort
+/// Every control this pane's profile pins, as a new conversation's Ready
+/// applies them over the thread and the remembered picks.
+pub(crate) fn launch_pins(kind: AgentKind, profile: &AgentProfile) -> ProfilePins {
+    let launch = agent_launch(profile);
+
+    ProfilePins {
+        model: effective_launch_model(kind, launch.clone()),
+        effort: launch.effort,
+        approval: launch.approval,
+        sandbox: launch.sandbox,
+    }
 }
 
 /// Remember the conversation's current controls as this tab's own state, so

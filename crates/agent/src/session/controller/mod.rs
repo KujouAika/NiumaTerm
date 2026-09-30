@@ -44,7 +44,7 @@ use crate::session::restore::{
     ConversationRestore, LoadedReplay, ReadyAction, ReplayAction, ReplayLoaded, ReplayRead,
     ResumeStart, SettingsSeed,
 };
-use crate::session::settings::ConversationSettings;
+use crate::session::settings::{ConversationSettings, ProfilePins};
 use crate::session::side::{SideQuestionOutcome, SideQuestions};
 use crate::session::update_readiness::{ConversationWork, Readiness, prepare_stop};
 use crate::session::view::{
@@ -71,14 +71,13 @@ pub enum SubmissionBlock {
 }
 
 /// The host's settings a conversation may start from: what the tab was last
-/// left set to and its launch profile's model and effort. Which of them apply
-/// is the controller's own decision, made from its settings seed when the
-/// session reports ready.
+/// left set to and its launch profile's pins. Which of them apply is the
+/// controller's own decision, made from its settings seed when the session
+/// reports ready.
 #[derive(Clone, Default)]
 pub struct ReadyDefaults {
     pub stored: Option<ThreadSettings>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
+    pub pins: ProfilePins,
 }
 
 pub struct SessionController {
@@ -1531,25 +1530,16 @@ impl SessionController {
         let defaults = &self.ready_defaults;
 
         // A reviewer keeps the tab's own settings but not the launch profile's
-        // model and effort; a resumed or branched conversation keeps what the
-        // provider restored.
-        let (stored, model, effort) = match self.controls.seed {
-            SettingsSeed::Defaults => (
-                defaults.stored.clone(),
-                defaults.model.clone(),
-                defaults.effort.clone(),
-            ),
-            SettingsSeed::Reviewer => (defaults.stored.clone(), None, None),
-            SettingsSeed::None => (None, None, None),
+        // pins; a resumed or branched conversation keeps what the provider
+        // restored.
+        let (stored, pins) = match self.controls.seed {
+            SettingsSeed::Defaults => (defaults.stored.clone(), defaults.pins.clone()),
+            SettingsSeed::Reviewer => (defaults.stored.clone(), ProfilePins::default()),
+            SettingsSeed::None => (None, ProfilePins::default()),
         };
 
-        self.controls.ready(
-            self.kind,
-            settings,
-            stored.as_ref(),
-            model.as_deref(),
-            effort.as_deref(),
-        );
+        self.controls
+            .ready(self.kind, settings, stored.as_ref(), &pins);
 
         let selection = self
             .runtime

@@ -53,6 +53,44 @@ fn a_pinned_effort_reaches_the_launch_and_default_leaves_it_unset() {
 }
 
 #[test]
+fn pinned_approval_and_sandbox_reach_the_launch_only_in_their_harness_vocabulary() {
+    let profile = |kind, approval: &str, sandbox: &str| AgentProfile {
+        kind,
+        executable: "agent".into(),
+        approval: approval.into(),
+        sandbox: sandbox.into(),
+        ..AgentProfile::default()
+    };
+
+    let claude = agent_launch(&profile(AgentKind::Claude, "acceptEdits", "readOnly"));
+
+    assert_eq!(claude.approval.as_deref(), Some("acceptEdits"));
+    assert_eq!(claude.sandbox, None, "Claude Code has no sandbox policy");
+
+    let codex = agent_launch(&profile(AgentKind::Codex, "never", "dangerFullAccess"));
+
+    assert_eq!(codex.approval.as_deref(), Some("never"));
+    assert_eq!(codex.sandbox.as_deref(), Some("dangerFullAccess"));
+
+    // A value from the other harness, left behind by a kind switch or a hand
+    // edit, would be refused by the harness, so it pins nothing.
+    assert_eq!(
+        agent_launch(&profile(AgentKind::Codex, "acceptEdits", "")).approval,
+        None
+    );
+    assert_eq!(
+        agent_launch(&profile(AgentKind::Claude, "never", "")).approval,
+        None
+    );
+
+    for unset in ["", "default", "  "] {
+        let launch = agent_launch(&profile(AgentKind::Codex, unset, unset));
+
+        assert_eq!((launch.approval, launch.sandbox), (None, None));
+    }
+}
+
+#[test]
 fn replacing_sub_models_points_every_tier_at_the_profile_model() {
     let profile = AgentProfile {
         kind: AgentKind::Claude,

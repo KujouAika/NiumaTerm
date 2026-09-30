@@ -1761,6 +1761,35 @@ fn a_resumed_launch_carries_both_the_session_id_and_the_directories() {
     );
 }
 
+#[test]
+fn a_pinned_permission_mode_rides_the_launch_and_none_leaves_the_flag_out() {
+    let arguments = |approval: Option<&str>| -> Vec<String> {
+        let launch = LaunchConfig {
+            executable: "claude".into(),
+            approval: approval.map(str::to_owned),
+            ..LaunchConfig::default()
+        };
+
+        let launcher = AgentCli::from_launch(&launch, "claude");
+
+        claude_command(&launcher, &launch, &AgentWorkspace::default(), None, &None)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    };
+
+    let pinned = arguments(Some("acceptEdits"));
+
+    let flag = pinned
+        .iter()
+        .position(|arg| arg == "--permission-mode")
+        .expect("permission mode flag");
+
+    assert_eq!(pinned[flag + 1], "acceptEdits");
+
+    assert!(!arguments(None).iter().any(|arg| arg == "--permission-mode"));
+}
+
 /// The CLI synthesizes a message around an API failure and reports the same
 /// failure in the turn result, so the message's text is not also a reply.
 #[test]
