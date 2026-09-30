@@ -2305,6 +2305,23 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AgentTab {
+        let tab = self.create_agent_tab(profile, workspace, resume, window, cx);
+
+        tab.owner.start(None, cx);
+
+        tab
+    }
+
+    /// `launch_agent_tab` without the launch, for a caller that decides
+    /// when the harness starts.
+    fn create_agent_tab(
+        &mut self,
+        profile: &AgentProfile,
+        workspace: AgentWorkspace,
+        resume: Option<SessionSummary>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AgentTab {
         let owner = AgentSession::create(profile.clone(), workspace, None, cx);
         let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
 
@@ -2321,8 +2338,6 @@ impl AppWindow {
                 .clone()
                 .update(cx, |session, _| session.resume_when_ready(summary));
         }
-
-        owner.start(None, cx);
 
         AgentTab { owner, pane }
     }
@@ -2362,9 +2377,21 @@ impl AppWindow {
             return;
         };
 
+        // Picking an agent chooses which harness the next message launches,
+        // not a request to launch it now, and flipping through agents would
+        // otherwise start and retire one process per pick. Continuing a
+        // listed conversation does need the harness.
+        let deferred = resume.is_none();
+
         let draft = old_pane.update(cx, |pane, cx| pane.take_composer_draft(window, cx));
-        let fresh = self.launch_agent_tab(&profile, workspace, resume, window, cx);
+        let fresh = self.create_agent_tab(&profile, workspace, resume, window, cx);
         let pane = fresh.pane.clone();
+
+        if deferred {
+            pane.update(cx, |pane, cx| pane.defer_launch(cx));
+        } else {
+            fresh.owner.start(None, cx);
+        }
 
         pane.update(cx, |pane, cx| {
             pane.restore_composer_draft(draft, window, cx)

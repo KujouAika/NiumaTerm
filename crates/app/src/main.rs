@@ -22,6 +22,7 @@ use std::future::Future;
 use std::rc::Rc;
 use std::{env, path, process, time};
 
+use app::agent_tab::execution::install_reported_controls;
 use app::agent_tab::input_history;
 use app::assets::AppAssets;
 use app::{syntax, utils};
@@ -379,6 +380,8 @@ fn on_finish_launching(
 
     let clear_saved_sessions = !restore_last_session_when_opening
         && remembered_state.windows.iter().any(|w| w.session.is_some());
+
+    install_reported_controls(remembered_state.agent_controls, cx);
 
     let mut initials = remembered_state.windows;
 

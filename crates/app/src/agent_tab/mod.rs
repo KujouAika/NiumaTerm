@@ -261,6 +261,17 @@ pub struct AgentPane {
     /// ready.
     pending_side_prompt: Option<String>,
 
+    /// The start epoch at which this tab waits for the user before
+    /// launching its harness: a failed start the user set aside for a blank
+    /// tab, or a tab switched to another agent from such a tab. Keyed by
+    /// epoch so any later start, and the failure it may report, is shown as
+    /// usual.
+    deferred_launch: Option<u64>,
+
+    /// The composer's content is sent once the harness launched on the
+    /// user's behalf reports ready.
+    send_on_ready: bool,
+
     #[cfg(test)]
     owned_session: Option<SessionOwner>,
 
@@ -1001,6 +1012,10 @@ impl AgentPane {
 
         let text = self.input.read(cx).text().to_string();
 
+        if self.launch_for_input(&text, cx) {
+            return;
+        }
+
         if parse_slash_command(&text).is_some() {
             self.submit_current_slash(window, cx);
 
@@ -1221,7 +1236,9 @@ impl AgentPane {
                         && self.is_command_busy()
                     {
                         Some(SharedString::from(t!("agent-composer-available-when-idle")))
-                    } else if command.source == SlashCommandSource::Local {
+                    } else if command.source == SlashCommandSource::Local || self.launch_deferred()
+                    {
+                        // Submitting launches a deferred harness first.
                         None
                     } else {
                         match self.session.borrow().runtime().status() {
@@ -1601,6 +1618,10 @@ impl AgentPane {
     pub(crate) fn submit_current_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.input.read(cx).text().to_string();
 
+        if self.launch_for_input(&input, cx) {
+            return;
+        }
+
         if self.submit_slash_input(&input, window, cx) {
             self.input_history_navigation.record_input_history(
                 &self.input_history_scope,
@@ -1905,7 +1926,12 @@ impl AgentPane {
             Some(SharedString::from(t!("agent-composer-disabled-by-codex")))
         } else {
             // A skill is invoked through the harness, so it needs a session
-            // that has finished starting and has not ended.
+            // that has finished starting and has not ended, or one whose
+            // launch waits for this submission.
+            if self.launch_deferred() {
+                return None;
+            }
+
             match self.session.borrow().runtime().status() {
                 Status::Starting => Some(SharedString::from(t!("agent-composer-agent-starting"))),
                 Status::Exited => Some(SharedString::from(t!("agent-composer-agent-exited"))),
@@ -3173,6 +3199,20 @@ impl AgentPane {
             return;
         }
 
+        // No harness runs while its launch is deferred, so the pick launches
+        // one that continues the conversation once it is ready.
+        if self.launch_deferred() {
+            let summary = summary.clone();
+
+            self.history_ui.selected = index;
+
+            session_host.update(cx, |host, _| host.resume_when_ready(summary));
+
+            self.start_session(None, cx);
+
+            return;
+        }
+
         let cwd = self.cwd(cx);
 
         let outcome = self
@@ -3411,6 +3451,8 @@ impl AgentPane {
             team_member: false,
             side_chat_member: false,
             pending_side_prompt: None,
+            deferred_launch: None,
+            send_on_ready: false,
             #[cfg(test)]
             owned_session: None,
             history_ui: SessionHistoryUi::default(),
@@ -4168,13 +4210,105 @@ impl AgentPane {
         self.session.borrow_mut().clear_commands();
 
         self.palette.feedback = None;
-        self.history_ui.mode = RecentSessionsMode::Hidden;
+
+        // `/new` asks for an empty conversation, so the list stays out of the
+        // way. A tab set back to blank after a failed start is a new tab
+        // again and offers the list as one does; the reset above dropped any
+        // transcript directory read still in flight, so it is read again.
+        if self.launch_deferred() {
+            self.history_ui.mode = RecentSessionsMode::Automatic;
+
+            self.load_filesystem_history(cx);
+        } else {
+            self.history_ui.mode = RecentSessionsMode::Hidden;
+        }
 
         cx.notify();
     }
 
     pub(crate) fn shows_start_overlay(&self) -> bool {
-        self.session.borrow().runtime().status() == Status::Starting
+        self.session.borrow().runtime().status() == Status::Starting && !self.launch_deferred()
+    }
+
+    /// Whether no harness runs and the next request that needs one launches
+    /// it.
+    pub fn launch_deferred(&self) -> bool {
+        self.deferred_launch == Some(self.session.borrow().runtime().epoch())
+    }
+
+    /// Hold a tab that has not launched its harness until the user sends
+    /// something or picks a recent session.
+    pub fn defer_launch(&mut self, cx: &mut Context<Self>) {
+        self.deferred_launch = Some(self.session.borrow().runtime().epoch());
+
+        if let Some(host) = self.host.upgrade() {
+            host.update(cx, |host, cx| host.show_reported_controls(cx));
+        }
+
+        cx.notify();
+    }
+
+    /// Launch the harness for input submitted while its launch is deferred.
+    /// The composer keeps the input, which goes out once the harness
+    /// reports ready; a launch that fails again leaves it there to retry.
+    /// Returns whether the input was held for the launch.
+    fn launch_for_input(&mut self, input: &str, cx: &mut Context<Self>) -> bool {
+        if !self.launch_deferred() {
+            return false;
+        }
+
+        if !input.trim().is_empty() {
+            self.send_on_ready = true;
+
+            self.start_session(None, cx);
+        }
+
+        true
+    }
+
+    /// Send the input `launch_for_input` held once the harness it launched is
+    /// ready. Sending clears the composer through the window, which a ready
+    /// event does not carry, so this runs in the frame that event repaints.
+    fn send_held_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.send_on_ready {
+            return;
+        }
+
+        let status = self.session.borrow().runtime().status();
+
+        match status {
+            Status::Starting => {}
+            Status::Idle => {
+                self.send_on_ready = false;
+
+                self.send_user_message_now(window, cx);
+            }
+            Status::Running | Status::Exited => self.send_on_ready = false,
+        }
+    }
+
+    /// Leave a failed start for a blank tab that still lists recent sessions
+    /// and accepts input, instead of only retrying or closing.
+    pub(crate) fn return_to_blank_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.binding.is_current() {
+            return;
+        }
+
+        let Some(host) = self.host.upgrade() else {
+            return;
+        };
+
+        // Set before the reset, whose `ConversationReset` reads it to offer
+        // the recent-session list again.
+        self.deferred_launch = Some(self.session.borrow().runtime().epoch());
+
+        host.update(cx, |host, cx| {
+            host.clear_failed_start(cx);
+
+            host.show_reported_controls(cx);
+        });
+
+        cx.notify();
     }
 
     pub(crate) fn start_session(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
@@ -4803,11 +4937,14 @@ impl Render for AgentPane {
         let update_overlay =
             update_overlay(self.session.borrow().runtime().update_suspension(), cx);
 
+        // A failure set aside for a blank tab has already been read; the
+        // next launch reports its own.
         let start_failure = self
             .session
             .borrow()
             .runtime()
             .start_failure()
+            .filter(|_| !self.launch_deferred())
             .map(str::to_owned);
 
         let start_overlay = start_overlay(start_failure, self.shows_start_overlay(), cx);
@@ -4816,6 +4953,8 @@ impl Render for AgentPane {
         // the composer through, so the prompt it cut in front of is put back
         // here, in the frame that answer asked for.
         self.branch.fill_branch_prompt(&self.input, window, cx);
+
+        self.send_held_input(window, cx);
 
         let branch_flow_active = self.branch_flow_holds_composer();
         let branch_flow_working = self.branch_flow_is_working();

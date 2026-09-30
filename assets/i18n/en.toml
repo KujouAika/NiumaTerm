@@ -541,6 +541,7 @@
 "agent-start-starting" = "STARTING AGENT"
 "agent-start-retry" = "Retry"
 "agent-start-close-tab" = "Close Tab"
+"agent-start-blank-tab" = "Back to Blank Tab"
 
 # Agent update flow
 "agent-update-waiting-label" = "WAITING FOR UPDATE"

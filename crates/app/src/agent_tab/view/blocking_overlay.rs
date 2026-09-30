@@ -168,9 +168,11 @@ pub(crate) fn update_overlay(
 /// What the blocking layer shows during the harness's start. When a start
 /// counts as still running is the session's own call.
 ///
-/// A start that failed keeps the layer and answers with the two things
-/// left to do, because the pane behind it has no conversation to return
-/// to: the transcript holds one error row and nothing else.
+/// A start that failed keeps the layer and answers with what is left to
+/// do, because the pane behind it has no conversation to return to: the
+/// transcript holds one error row and nothing else. Returning to a blank
+/// tab clears that row and defers the next launch until the user sends
+/// something or picks a recent session.
 /// `failure` is the start's error, if it failed, and `starting` whether the
 /// session still counts the start as running.
 pub(crate) fn start_overlay(
@@ -203,6 +205,15 @@ pub(crate) fn start_overlay(
                             .label(t!("agent-start-retry"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.start_session(None, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("agent-start-blank-tab")
+                            .outline()
+                            .small()
+                            .label(t!("agent-start-blank-tab"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.return_to_blank_tab(cx);
                             })),
                     )
                     .child(

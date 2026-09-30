@@ -1299,3 +1299,201 @@ mod command_catalog_cache_tests {
         cx.run_until_parked();
     }
 }
+
+/// A failed start set aside for a blank tab leaves the harness down until
+/// the user sends something, and what was typed goes out once the harness
+/// launched for it is ready.
+mod failed_start_tests {
+    use std::path::PathBuf;
+    use std::{env, fs, process};
+
+    use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
+    use nmt_agent::AgentWorkspace;
+    use nmt_agent::chat::{Event, SendOutcome, SlashCommandOutcome, ThreadSettings};
+    use nmt_agent::input_history::AgentInputHistory as InputHistoryService;
+    use nmt_agent::session::lifecycle::{StartOutcome, Status};
+    use nmt_config::profile::{AgentKind, AgentProfile};
+
+    use crate::agent_tab::input_history::AgentInputHistory;
+    use crate::agent_tab::session::{Backend, TestBackend};
+    use crate::agent_tab::settings::AgentSettings;
+    use crate::agent_tab::tests::deliver_session_event;
+    use crate::agent_tab::{AgentPane, RecentSessionsMode};
+
+    fn history_path() -> PathBuf {
+        env::temp_dir().join(format!("nmt-failed-start-history-{}.json", process::id()))
+    }
+
+    fn open_pane(
+        cx: &mut TestAppContext,
+    ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
+        let profile = AgentProfile {
+            name: "Failed Start Test".into(),
+            kind: AgentKind::Codex,
+            // Every launch is superseded by one the test installs by hand.
+            executable: "missing-agent.exe".into(),
+            ..AgentProfile::default()
+        };
+
+        let mut pane = None;
+
+        let window = cx.update(|cx| {
+            gpui_component::init(cx);
+
+            cx.set_global(AgentSettings::default());
+
+            // A sent message is recorded in the input history.
+            cx.set_global(AgentInputHistory(InputHistoryService::open(history_path())));
+
+            cx.open_window(Default::default(), |window, cx| {
+                let agent =
+                    cx.new(|cx| AgentPane::new(profile, AgentWorkspace::default(), window, cx));
+
+                pane = Some(agent.clone());
+
+                cx.new(|cx| gpui_component::Root::new(agent, window, cx))
+            })
+            .expect("open Agent test window")
+        });
+
+        (pane.expect("create Agent pane"), window)
+    }
+
+    #[gpui::test]
+    fn blank_tab_after_failed_start_launches_on_send(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.install_started_session(Err("codex missing".into()), epoch, "Codex", cx);
+
+                assert!(!pane.transcript.read(cx).is_empty(), "failure row shown");
+
+                pane.return_to_blank_tab(cx);
+            });
+        });
+
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                assert!(pane.transcript.read(cx).is_empty());
+                assert!(pane.history_ui.mode == RecentSessionsMode::Automatic);
+                assert!(pane.launch_deferred());
+
+                pane.input
+                    .update(cx, |input, cx| input.set_value("hello", window, cx));
+
+                pane.send_user_message_now(window, cx);
+
+                assert_eq!(pane.session.borrow().runtime().status(), Status::Starting);
+                assert!(pane.send_on_ready);
+                assert_eq!(pane.input.read(cx).text().to_string(), "hello");
+
+                // Stands in for the launch the send asked for.
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
+
+                assert!(matches!(
+                    pane.session.borrow_mut().runtime_mut().install(
+                        epoch,
+                        Ok(Backend::Test(TestBackend::new(
+                            [SendOutcome::StartedTurn],
+                            SlashCommandOutcome::Accepted,
+                            Vec::new(),
+                        )))
+                    ),
+                    StartOutcome::Installed
+                ));
+            });
+        });
+
+        deliver_session_event(&pane, Event::Ready(ThreadSettings::default()), &cx);
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.send_held_input(window, cx);
+
+                assert!(!pane.send_on_ready);
+                assert_eq!(pane.input.read(cx).text().len(), 0, "held input sent");
+            });
+        });
+
+        cx.run_until_parked();
+
+        let history = history_path();
+
+        let _ = fs::remove_file(history.with_extension("json.lock"));
+        let _ = fs::remove_file(history);
+    }
+
+    #[gpui::test]
+    fn deferred_tab_shows_no_start_until_input(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                // Stands in for a tab created without a launch: a start epoch
+                // that no harness answers.
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.defer_launch(cx);
+
+                assert!(pane.launch_deferred());
+                assert!(!pane.shows_start_overlay());
+
+                pane.input
+                    .update(cx, |input, cx| input.set_value("/status", window, cx));
+
+                pane.send_user_message_now(window, cx);
+
+                assert!(!pane.launch_deferred());
+                assert!(pane.shows_start_overlay());
+                assert!(pane.send_on_ready);
+                assert_eq!(pane.input.read(cx).text().to_string(), "/status");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deferred_tab_shows_last_reported_controls(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        deliver_session_event(
+            &pane,
+            Event::Ready(ThreadSettings {
+                model: Some("reported-model".into()),
+                effort: Some("high".into()),
+                ..ThreadSettings::default()
+            }),
+            &cx,
+        );
+
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                // A tab on the same profile that never launched starts with
+                // empty controls.
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.session.borrow_mut().controls.settings = ThreadSettings::default();
+
+                pane.defer_launch(cx);
+
+                let session = pane.session.borrow();
+
+                assert_eq!(
+                    session.controls.settings.model.as_deref(),
+                    Some("reported-model")
+                );
+                assert_eq!(session.controls.settings.effort.as_deref(), Some("high"));
+            });
+        });
+    }
+}

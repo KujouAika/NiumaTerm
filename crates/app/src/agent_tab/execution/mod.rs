@@ -20,11 +20,13 @@ use std::time::{Duration, Instant};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::stream::ReadyChunks;
-use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{
+    App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Global, Task, WeakEntity,
+};
 use nmt_agent::background_task::BackgroundTaskKey;
 use nmt_agent::chat::{
-    Event, Item, QuestionMode, SessionSummary, SlashCommandOutcome, TeamDecisionRequest,
-    ThreadSettings,
+    AgentPreset, ApprovalPreset, Event, Item, ModelInfo, QuestionMode, SessionSummary,
+    SlashCommandOutcome, TeamDecisionRequest, ThreadSettings,
 };
 use nmt_agent::codex::app_server::SideStart;
 use nmt_agent::launcher::AgentCli;
@@ -44,11 +46,13 @@ use nmt_agent::{
     AgentEvent, AgentEventKind, AgentRoute, AgentWorkspace, agent_process, normalize_body,
     normalize_title,
 };
+use nmt_config::local_state::{AgentControlsState, save_agent_controls};
 use nmt_config::profile::AgentProfile;
 use rust_i18n::t;
 use serde_json::Value;
 use tokio::fs::remove_dir_all;
 use tokio::task::JoinHandle;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::agent_tab::composer::attachments::scratch_dir;
@@ -56,7 +60,9 @@ use crate::agent_tab::execution::children::ChildReaders;
 use crate::agent_tab::execution::inbox::{
     EventBatch, MAX_MESSAGES_PER_BATCH, MAX_UPDATE_TIME, channel,
 };
-use crate::agent_tab::profile::{AgentKind, agent_launch};
+use crate::agent_tab::profile::{
+    AgentKind, agent_launch, saved_settings_from_thread, thread_settings_from_saved,
+};
 use crate::agent_tab::session::RestorationReadiness;
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::thread_controls::{launch_effort, launch_model};
@@ -183,6 +189,54 @@ impl EventEmitter<AgentPaneEvent> for AgentSession {}
 pub(super) struct ConversationReset;
 
 impl EventEmitter<ConversationReset> for AgentSession {}
+
+/// The thread controls a profile's harness last reported, as reported,
+/// before any tab overlaid its own picks.
+#[derive(Clone, Default)]
+struct ReportedControls {
+    settings: ThreadSettings,
+    models: Vec<ModelInfo>,
+    approval_presets: Vec<ApprovalPreset>,
+    agent_presets: Vec<AgentPreset>,
+}
+
+/// Reported controls by profile. A tab that has not launched its harness has
+/// no report of its own, and without these its pickers would show nothing
+/// until the first message launches one.
+#[derive(Default)]
+struct ReportedControlsByProfile {
+    profiles: HashMap<(AgentKind, String), ReportedControls>,
+
+    /// Whether changed settings are written to local state. Only the app
+    /// installs the saved entries and turns this on, so a test session never
+    /// writes the user's file.
+    persist: bool,
+}
+
+impl Global for ReportedControlsByProfile {}
+
+/// Seed the reported controls with what earlier runs saved, and keep saving
+/// what the harnesses report from now on. Only settings are saved: the model
+/// and preset catalogs come back with the next launch.
+pub fn install_reported_controls(saved: Vec<AgentControlsState>, cx: &mut App) {
+    let profiles = saved
+        .into_iter()
+        .map(|entry| {
+            (
+                (entry.agent, entry.profile),
+                ReportedControls {
+                    settings: thread_settings_from_saved(&entry.settings),
+                    ..ReportedControls::default()
+                },
+            )
+        })
+        .collect();
+
+    cx.set_global(ReportedControlsByProfile {
+        profiles,
+        persist: true,
+    });
+}
 
 #[derive(Clone)]
 pub(super) enum ExecutionSignal {
@@ -773,6 +827,8 @@ impl AgentSession {
             event => event,
         };
 
+        self.record_reported_controls(&event, cx);
+
         let effect = self.controller.borrow_mut().apply_event(epoch, event);
 
         if let SessionEffect::Branch(update) = effect {
@@ -819,6 +875,107 @@ impl AgentSession {
         self.publish(effect, cx);
 
         self.advance_commands(cx);
+    }
+
+    /// Keep what the harness reports about its controls for tabs on this
+    /// profile that have not launched one.
+    fn record_reported_controls(&self, event: &Event, cx: &mut Context<Self>) {
+        let apply: &dyn Fn(&mut ReportedControls) = match event {
+            Event::Ready(settings) => &|reported| {
+                // The composition and approval arrive with their own
+                // catalogs, so a Ready without them keeps the known ones.
+                reported.settings = ThreadSettings {
+                    approval: settings
+                        .approval
+                        .clone()
+                        .or(reported.settings.approval.take()),
+                    agent_preset: settings
+                        .agent_preset
+                        .clone()
+                        .or(reported.settings.agent_preset.take()),
+                    ..settings.clone()
+                };
+            },
+            Event::Models(models) => &|reported| reported.models = models.clone(),
+            Event::ApprovalPresets { presets, current } => &|reported| {
+                reported.approval_presets = presets.clone();
+                reported.settings.approval = current.clone();
+            },
+            Event::AgentPresets { presets, current } => &|reported| {
+                reported.agent_presets = presets.clone();
+                reported.settings.agent_preset = current.clone();
+            },
+            _ => return,
+        };
+
+        let all = cx.default_global::<ReportedControlsByProfile>();
+        let persist = all.persist;
+
+        let reported = all
+            .profiles
+            .entry((self.kind, self.profile.name.clone()))
+            .or_default();
+
+        let before = reported.settings.clone();
+
+        apply(reported);
+
+        if !persist || reported.settings == before {
+            return;
+        }
+
+        let entry = AgentControlsState {
+            agent: self.kind,
+            profile: self.profile.name.clone(),
+            settings: saved_settings_from_thread(&reported.settings),
+        };
+
+        cx.background_spawn(async move {
+            if let Err(error) = save_agent_controls(entry) {
+                warn!("failed to save reported agent controls: {error}");
+            }
+        })
+        .detach();
+    }
+
+    /// Show what this profile's harness last reported on a tab that has not
+    /// launched one, seeded the way that launch's Ready would be: the tab's
+    /// remembered picks over the report and the launch profile's pins over
+    /// both. The launch reseeds the controls, so nothing set here outlives
+    /// the real report.
+    pub(crate) fn show_reported_controls(&mut self, cx: &mut Context<Self>) {
+        let Some(reported) = cx
+            .try_global::<ReportedControlsByProfile>()
+            .and_then(|all| all.profiles.get(&(self.kind, self.profile.name.clone())))
+            .cloned()
+        else {
+            return;
+        };
+
+        let model = launch_model(self.kind, &self.profile);
+        let effort = launch_effort(&self.profile);
+
+        let mut session = self.controller.borrow_mut();
+
+        let controls = &mut session.controls;
+
+        controls.models = reported.models;
+        controls.approval_presets = reported.approval_presets;
+        controls.agent_presets = reported.agent_presets;
+
+        controls.seed_settings(SettingsSeed::Defaults);
+
+        controls.ready(
+            self.kind,
+            reported.settings,
+            self.remembered.as_ref(),
+            model.as_deref(),
+            effort.as_deref(),
+        );
+
+        drop(session);
+
+        cx.notify();
     }
 
     pub(crate) fn advance_commands(&mut self, cx: &mut Context<Self>) {
@@ -1287,6 +1444,28 @@ impl AgentSession {
 
         let retiring = self.controller.borrow_mut().reset_for_restart();
 
+        self.forget_conversation(cx);
+
+        self.start(None, false, move |_, _| drop(retiring), cx);
+    }
+
+    /// Return a tab whose harness failed to start to a blank conversation
+    /// without launching the harness again. A missing or broken CLI would
+    /// only fail the same way, so the next launch waits for the user to ask
+    /// for something that needs it. The runtime is left alone: retiring it
+    /// would open a new start epoch and show the tab as starting.
+    pub(crate) fn clear_failed_start(&mut self, cx: &mut Context<Self>) {
+        if self.is_closed() {
+            return;
+        }
+
+        self.controller.borrow_mut().clear_conversation();
+
+        self.forget_conversation(cx);
+    }
+
+    /// Drop what would bring a cleared conversation back and tell the panes.
+    fn forget_conversation(&mut self, cx: &mut Context<Self>) {
         // A new conversation replaces the restored one, so a restore must
         // not bring the old one back.
         self.restored_conversation = None;
@@ -1297,8 +1476,6 @@ impl AgentSession {
         cx.emit(ConversationReset);
 
         self.sync_side_chat(cx);
-
-        self.start(None, false, move |_, _| drop(retiring), cx);
     }
 
     pub(crate) fn start(
