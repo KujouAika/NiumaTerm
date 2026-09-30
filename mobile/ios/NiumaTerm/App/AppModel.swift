@@ -36,7 +36,10 @@ final class AppModel {
                                       deviceName: UIDevice.current.name,
                                       appVersion: Self.appVersion)
             self.core = core
-            hosts = core.hosts().map { Host(id: $0.id, name: $0.name, status: $0.status) }
+            // Before anything connects, so no link starts on a path the
+            // user ruled out.
+            core.setNetworkMode(mode: NetworkPreference.stored.mode)
+            hosts = core.hosts().map(Host.init(record:))
 
             let events = CoreEvents(app: self)
             self.events = events
@@ -79,6 +82,7 @@ final class AppModel {
         if let index = hosts.firstIndex(where: { $0.id == record.id }) {
             hosts[index].name = record.name
             hosts[index].status = record.status
+            hosts[index].link = record.link
             // A list from a dropped link may no longer be true, and its rows
             // could not be opened anyway; the host lists its sessions again
             // once the link is back.
@@ -89,7 +93,7 @@ final class AppModel {
             // Events reach the main actor asynchronously, so one sent just
             // before a host was forgotten can arrive after it; only hosts
             // the core still pairs with may be added back.
-            hosts.append(Host(id: record.id, name: record.name, status: record.status))
+            hosts.append(Host(record: record))
         }
         // A host keeps the registration, but one paired before pushes
         // existed, or that dropped a token APNs refused, needs it again.
@@ -255,6 +259,10 @@ final class AppModel {
     }
 
     /// The notification settings changed: tell every reachable host.
+    func setNetworkPreference(_ preference: NetworkPreference) {
+        core?.setNetworkMode(mode: preference.mode)
+    }
+
     func pushSettingsChanged() {
         for host in hosts where host.isOnline {
             registerPush(host.id)

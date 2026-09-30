@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use nmt_platform::runtime;
+use nmt_remote::client::PathPolicy;
 use nmt_remote::connection::{RemoteHost, Retry, Status};
 use nmt_remote::store::{PairedHost, load_hosts, load_or_create_identity, save_hosts};
 use nmt_remote::{client, notify_network_changed};
@@ -19,7 +20,7 @@ use tracing::{debug, warn};
 
 use crate::agent::{AgentHandle, AgentObserver};
 use crate::error::CoreError;
-use crate::records::{HostOffer, HostRecord, PushSettings, SessionRecord};
+use crate::records::{HostLink, HostOffer, HostRecord, NetworkMode, PushSettings, SessionRecord};
 use crate::terminal::{TerminalHandle, TerminalObserver};
 
 /// Told about hosts and their sessions. Called on the core's threads; the
@@ -49,6 +50,9 @@ pub struct MobileCore {
     /// While the app is in the foreground every host stays connected, so
     /// session lists stay live.
     foreground: AtomicBool,
+
+    /// Which paths links take; hosts paired later follow it too.
+    policy: Mutex<PathPolicy>,
 }
 
 /// A person is looking at the host list while the phone connects, so after
@@ -95,6 +99,7 @@ impl MobileCore {
             hosts: Mutex::new(Vec::new()),
             observer: Mutex::new(None),
             foreground: AtomicBool::new(false),
+            policy: Mutex::new(PathPolicy::Auto),
         });
 
         for record in records {
@@ -146,6 +151,18 @@ impl MobileCore {
     /// may now be the host's.
     pub fn network_changed(&self) {
         notify_network_changed();
+    }
+
+    /// Restrict every host's links to the relay or the LAN, or let them
+    /// pick. Links on a path the mode rules out reconnect on an allowed one.
+    pub fn set_network_mode(&self, mode: NetworkMode) {
+        let policy = mode.policy();
+
+        *self.policy.lock() = policy;
+
+        for paired in self.hosts.lock().iter() {
+            paired.remote.set_path_policy(policy);
+        }
     }
 
     /// Try an unreachable host again at once.
@@ -378,6 +395,8 @@ impl MobileCore {
             },
         );
 
+        remote.set_path_policy(*self.policy.lock());
+
         if self.foreground.load(Ordering::Relaxed) {
             remote.keep_connected();
         }
@@ -478,6 +497,11 @@ fn host_record(remote: &RemoteHost, status: Status) -> HostRecord {
         id: remote.id().as_str().to_owned(),
         name: remote.name(),
         status: status.into(),
+        link: remote
+            .path()
+            .filter(|_| status == Status::Connected)
+            .as_ref()
+            .map(HostLink::from),
     }
 }
 

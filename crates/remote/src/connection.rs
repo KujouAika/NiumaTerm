@@ -14,6 +14,7 @@
 //! away goes direct when it comes home, without waiting for a reconnect.
 
 use std::collections::HashMap;
+use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -42,7 +43,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 use tracing::{debug, info};
 
-use crate::client::{LinkPath, Refused, establish, establish_lan};
+use crate::client::{LinkPath, PathPolicy, Refused, establish, establish_lan};
 use crate::link::{Outbound, SendQueue, pump};
 use crate::netwatch;
 use crate::network_pty::NetworkPty;
@@ -193,6 +194,10 @@ pub struct RemoteHost {
 
     /// How the current link reaches the host, while one is up.
     path: Mutex<Option<LinkPath>>,
+
+    /// Which paths links may take. A link on a path the policy no longer
+    /// allows closes, and the next one follows the new policy.
+    policy: watch::Sender<PathPolicy>,
 }
 
 /// A LAN channel opened while the link ran through the relay, with the host
@@ -288,6 +293,7 @@ impl RemoteHost {
             next_id: AtomicU64::new(1),
             supervisor: Mutex::new(None),
             path: Mutex::new(None),
+            policy: watch::channel(PathPolicy::Auto).0,
         });
 
         let task = runtime().spawn(Arc::clone(&host).supervise());
@@ -308,6 +314,22 @@ impl RemoteHost {
     /// How the link reaches the host, while one is up.
     pub fn path(&self) -> Option<LinkPath> {
         self.path.lock().clone()
+    }
+
+    /// Restrict the paths links may take from now on. A link on a path the
+    /// policy rules out closes and reconnects on an allowed one; a host
+    /// shown as unreachable is tried again, since the new path may reach it.
+    pub fn set_path_policy(&self, policy: PathPolicy) {
+        if !self
+            .policy
+            .send_if_modified(|current| mem::replace(current, policy) != policy)
+        {
+            return;
+        }
+
+        if *self.status.borrow() == Status::Unreachable {
+            self.wake.notify_one();
+        }
     }
 
     pub fn status(&self) -> watch::Receiver<Status> {
@@ -786,7 +808,8 @@ impl RemoteHost {
                     let mut record = self.record.lock().clone();
 
                     let started = Instant::now();
-                    let attempt = establish(&mut record, &self.key, &self.app_version);
+                    let policy = *self.policy.borrow();
+                    let attempt = establish(&mut record, &self.key, &self.app_version, policy);
 
                     let result = match self.retry {
                         Retry::Forever => attempt.await,
@@ -883,6 +906,11 @@ impl RemoteHost {
 
             *self.link.lock() = Some(link.clone());
 
+            // Set before the status, so a watcher woken by `Connected`
+            // reads the path of this link. Moving to the LAN sends
+            // `Connected` again, which is how watchers learn the new path.
+            *self.path.lock() = Some(path.clone());
+
             self.status.send_replace(Status::Connected);
 
             info!(host = %self.id, "connected to the remote host");
@@ -916,8 +944,6 @@ impl RemoteHost {
 
             network.mark_unchanged();
 
-            *self.path.lock() = Some(path.clone());
-
             let end = self
                 .dispatch(&link, inbound_rx, &mut network, &probe, &path)
                 .await;
@@ -948,9 +974,11 @@ impl RemoteHost {
     /// network change probes the link, which closes it if it no longer
     /// reaches the host.
     ///
-    /// A link through the relay also tries the LAN now and then, and a
-    /// network change tries it at once; once a LAN channel is up and no
-    /// request is waiting on this link, it ends with that channel to move to.
+    /// Under [`PathPolicy::Auto`], a link through the relay also tries the
+    /// LAN now and then, and a network change tries it at once; once a LAN
+    /// channel is up and no request is waiting on this link, it ends with
+    /// that channel to move to. A policy change that rules out the link's
+    /// path closes it.
     async fn dispatch(
         &self,
         link: &Link,
@@ -960,6 +988,18 @@ impl RemoteHost {
         path: &LinkPath,
     ) -> LinkEnd {
         let on_relay = *path == LinkPath::Relay;
+
+        // The policy may have changed while this link was connecting, before
+        // the subscription below could see it.
+        let mut policy = self.policy.subscribe();
+
+        let current = *policy.borrow_and_update();
+
+        if !current.allows(path) {
+            return LinkEnd::Closed;
+        }
+
+        let mut upgrading = on_relay && current == PathPolicy::Auto;
 
         let mut idle_since: Option<Instant> = None;
 
@@ -981,10 +1021,31 @@ impl RemoteHost {
                 }
             }
 
-            let due = on_relay && attempt.is_none() && ready.is_none();
+            let due = upgrading && attempt.is_none() && ready.is_none();
 
             let message = select! {
                 message = inbound.recv() => message,
+                Ok(()) = policy.changed() => {
+                    let current = *policy.borrow_and_update();
+
+                    if !current.allows(path) {
+                        info!(host = %self.id, ?current, "closing a link the path policy no longer allows");
+
+                        return LinkEnd::Closed;
+                    }
+
+                    // Dropping a pending attempt stops it, and a channel
+                    // already open closes unused.
+                    upgrading = on_relay && current == PathPolicy::Auto;
+
+                    if !upgrading {
+                        attempt = None;
+                        ready = None;
+                    }
+
+                    continue;
+                }
+
                 Ok(()) = network.changed() => {
                     probe.notify_one();
 

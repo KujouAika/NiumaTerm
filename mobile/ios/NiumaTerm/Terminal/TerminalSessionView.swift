@@ -16,6 +16,7 @@ struct TerminalSessionView: View {
     @AppStorage("terminalFontName") private var fontName = "JetBrains Mono"
 
     private var hostStatus: HostStatus? { app.host(model.route.hostID)?.status }
+    private var linkText: String? { app.host(model.route.hostID)?.linkText }
 
     /// The screen's chrome follows the terminal's background, which the
     /// program's theme decides, so bars and titles stay readable on it.
@@ -81,7 +82,8 @@ struct TerminalSessionView: View {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
                         Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
-                        Text(model.attached ? "\(hostName) · \(model.cols)×\(model.rows)" : hostName)
+                        Text([hostName, linkText, model.attached ? "\(model.cols)×\(model.rows)" : nil]
+                                .compactMap { $0 }.joined(separator: " · "))
                             .font(Theme.mono(11.5))
                             .foregroundStyle(.secondary)
                     }

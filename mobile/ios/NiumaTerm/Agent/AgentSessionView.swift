@@ -12,6 +12,8 @@ struct AgentSessionView: View {
     @State private var newTitle = ""
     @State private var confirmingNew = false
 
+    private var linkText: String? { app.host(model.route.hostID)?.linkText }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -94,7 +96,8 @@ struct AgentSessionView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
-                    Text("\(model.profile?.displayName ?? "Agent") · \(hostName)")
+                    Text([model.profile?.displayName ?? "Agent", hostName, linkText]
+                            .compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Theme.secondary)
                 }

@@ -95,14 +95,64 @@ struct SessionRoute: Hashable {
     let kind: SessionType
 }
 
+/// Which network links to computers may use. Stored by raw value in user
+/// defaults, so the cases' names must not change.
+enum NetworkPreference: String, CaseIterable, Identifiable {
+    case auto
+    case relay
+    case lan
+
+    static let storageKey = "networkMode"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: "Automatic"
+        case .relay: "Always Relay"
+        case .lan: "Always LAN"
+        }
+    }
+
+    var mode: NetworkMode {
+        switch self {
+        case .auto: .auto
+        case .relay: .relay
+        case .lan: .lan
+        }
+    }
+
+    static var stored: NetworkPreference {
+        UserDefaults.standard.string(forKey: storageKey).flatMap(NetworkPreference.init(rawValue:)) ?? .auto
+    }
+}
+
 struct Host: Identifiable {
     let id: String
     var name: String
     var status: HostStatus
+    /// How the host is reached, while it is connected.
+    var link: HostLink?
     var sessions: [Session] = []
+
+    init(record: HostRecord) {
+        id = record.id
+        name = record.name
+        status = record.status
+        link = record.link
+    }
 
     var isOnline: Bool { status == .connected }
     var icon: String { "desktopcomputer" }
+
+    /// The network the link runs over, as session title bars show it.
+    var linkText: String? {
+        switch link {
+        case .lan: "LAN"
+        case .relay: "Relay"
+        case nil: nil
+        }
+    }
 
     var statusText: String {
         switch status {

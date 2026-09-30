@@ -19,12 +19,13 @@ use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::client::{LinkPath, pair};
+use crate::client::{LinkPath, PathPolicy, pair};
 use crate::connection::{AgentUpdate, RemoteHost, Retry, Status};
 use crate::host::{HostConfig, HostService};
 use crate::lan::lan_addresses;
 use crate::local_view;
 use crate::netwatch::notify_changed as notify_network_changed;
+use crate::network_pty::NetworkPty;
 use crate::presence::Presence;
 use crate::sessions::{AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl};
 use crate::store::PairedHost;
@@ -594,6 +595,91 @@ fn a_link_through_the_relay_moves_to_the_lan_once_the_host_answers_there() {
         .unwrap_or_else(|_| panic!("the link stayed on {:?}", client.path()));
 
         run_marker(&mut pty, "DIRECT").await;
+    });
+}
+
+/// Needs a running relay, as the tests above. A link follows the path
+/// policy: pinned to the relay it leaves the LAN, pinned to the LAN it comes
+/// back, and its terminal view carries on across both moves.
+#[test]
+#[ignore = "needs a running relay"]
+fn a_link_moves_to_the_path_its_policy_allows() {
+    if lan_addresses().is_empty() {
+        eprintln!("skipped: this machine has no LAN address");
+
+        return;
+    }
+
+    let relay = RelayAccess {
+        url: env::var("NMT_TEST_RELAY_URL").expect("NMT_TEST_RELAY_URL"),
+        access_key: env::var("NMT_TEST_RELAY_KEY").expect("NMT_TEST_RELAY_KEY"),
+    };
+
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host_with_relay(&host_dir, SessionRegistry::new(), Some(relay.clone()));
+
+    let key = DeviceKey::generate().unwrap();
+    let code = host.start_pairing().unwrap();
+
+    runtime().block_on(async {
+        let deadline = Instant::now() + WAIT;
+
+        let paired = loop {
+            match pair(None, &code, &key, info("Client"), None, Some(relay.clone())).await {
+                Ok(paired) => break paired,
+                Err(error) if Instant::now() < deadline => {
+                    eprintln!("retrying pairing: {error:#}");
+
+                    sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => panic!("pairing through the relay failed: {error:#}"),
+            }
+        };
+
+        let client = remote(paired, Arc::new(key));
+
+        // Input sent before the view reattaches on the new link is dropped,
+        // so each move waits for the view to restart from its checkpoint.
+        let wait_moved = async |pty: &mut NetworkPty, relayed: bool| {
+            let mut buf = [0; 4096];
+
+            timeout(WAIT, async {
+                loop {
+                    poll_fn(|cx| pty.poll_read(cx, &mut buf)).await.unwrap();
+
+                    if pty.take_stream_reset() {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("the view restarts from a checkpoint on the new link");
+
+            assert_eq!(
+                client.path().map(|path| path == LinkPath::Relay),
+                Some(relayed)
+            );
+        };
+
+        client.set_path_policy(PathPolicy::Relay);
+
+        let mut pty = client.open_terminal(80, 24).await.unwrap();
+
+        run_marker(&mut pty, "PINNED_RELAY").await;
+
+        assert_eq!(client.path(), Some(LinkPath::Relay));
+
+        client.set_path_policy(PathPolicy::Lan);
+
+        wait_moved(&mut pty, false).await;
+
+        run_marker(&mut pty, "PINNED_LAN").await;
+
+        client.set_path_policy(PathPolicy::Relay);
+
+        wait_moved(&mut pty, true).await;
+
+        run_marker(&mut pty, "BACK_ON_RELAY").await;
     });
 }
 

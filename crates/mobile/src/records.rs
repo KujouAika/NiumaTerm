@@ -8,6 +8,7 @@ use nmt_agent::chat::{Item, QuestionInput, QuestionMode};
 use nmt_agent::session::input::{QuestionError, QuestionStatus};
 use nmt_agent::session::lifecycle::Status as LifecycleStatus;
 use nmt_agent::session::view::{AgentView, DraftView, ViewEntry};
+use nmt_remote::client::{LinkPath, PathPolicy};
 use nmt_remote::connection::Status;
 use nmt_remote_core::push::{PushEnvironment, PushKind, PushRegistration};
 use nmt_remote_core::rpc::{
@@ -44,11 +45,50 @@ impl From<Status> for HostStatus {
     }
 }
 
+/// How a connected host is reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum HostLink {
+    /// Directly, over the local network.
+    Lan,
+    Relay,
+}
+
+impl From<&LinkPath> for HostLink {
+    fn from(path: &LinkPath) -> Self {
+        match path {
+            LinkPath::Lan(_) => Self::Lan,
+            LinkPath::Relay => Self::Relay,
+        }
+    }
+}
+
+/// Which network links to hosts may use, as the user chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NetworkMode {
+    /// The LAN when it reaches the host, otherwise the relay.
+    Auto,
+    Relay,
+    Lan,
+}
+
+impl NetworkMode {
+    pub(crate) fn policy(self) -> PathPolicy {
+        match self {
+            Self::Auto => PathPolicy::Auto,
+            Self::Relay => PathPolicy::Relay,
+            Self::Lan => PathPolicy::Lan,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct HostRecord {
     pub id: String,
     pub name: String,
     pub status: HostStatus,
+
+    /// How the host is reached, while `status` is `Connected`.
+    pub link: Option<HostLink>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]

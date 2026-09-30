@@ -4,7 +4,8 @@
 //! A host is reached on the LAN or through its relay. LAN attempts start at
 //! once; the relay joins after a short head start for the LAN, or at once
 //! when every LAN attempt failed, and the first handshake to complete wins.
-//! Both paths run the same end-to-end channel.
+//! Both paths run the same end-to-end channel. A [`PathPolicy`] can pin a
+//! link to either path.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -50,6 +51,32 @@ const MAX_LAN_HINTS: usize = 4;
 const LAN_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const FEATURES: &[&str] = &["terminal"];
+
+/// Which paths a link may take to its host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PathPolicy {
+    /// The LAN when it answers, otherwise the relay; a link through the
+    /// relay moves to the LAN once the LAN answers.
+    #[default]
+    Auto,
+    /// The relay only, for networks where the LAN reaches the host but is
+    /// not trusted, or to exercise the relay path on purpose.
+    Relay,
+    /// The LAN only, so no traffic leaves the local network.
+    Lan,
+}
+
+impl PathPolicy {
+    /// Whether a link on `path` may stay up under this policy.
+    pub fn allows(self, path: &LinkPath) -> bool {
+        match (self, path) {
+            (Self::Auto, _) | (Self::Relay, LinkPath::Relay) | (Self::Lan, LinkPath::Lan(_)) => {
+                true
+            }
+            (Self::Relay, LinkPath::Lan(_)) | (Self::Lan, LinkPath::Relay) => false,
+        }
+    }
+}
 
 /// How a channel reaches its host.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,14 +225,15 @@ async fn pair_over(
     .map_err(|_| anyhow!("pairing timed out"))?
 }
 
-/// Open a channel to a paired host on the LAN or through its relay.
-/// `host` records the handshake time, the host's current name, and the LAN
-/// address that worked; the caller stores it afterwards. [`Refused`] means
-/// the host no longer trusts this device.
+/// Open a channel to a paired host on the LAN or through its relay, as
+/// `policy` allows. `host` records the handshake time, the host's current
+/// name, and the LAN address that worked; the caller stores it afterwards.
+/// [`Refused`] means the host no longer trusts this device.
 pub(crate) async fn establish(
     host: &mut PairedHost,
     key: &DeviceKey,
     app_version: &str,
+    policy: PathPolicy,
 ) -> Result<(RelaySocket, Channel, LinkPath)> {
     let clock = HelloClock(Mutex::new(host.last_hello_ms));
 
@@ -216,23 +244,15 @@ pub(crate) async fn establish(
             .ok()
     });
 
-    let lan = lan_path(host, key, app_version, &clock);
-
-    let result = match &relay {
-        None => lan.await,
-        Some(relay) => {
-            race(lan, || async {
-                let ws = dial_host(relay, &host.id).await?;
-                let hello = hello(app_version, &clock);
-
-                let (ws, channel, host_hello) = timeout(
-                    CONNECT_TIMEOUT,
-                    channel_handshake(ws, key, &host.public_key, &hello),
-                )
-                .await
-                .map_err(|_| anyhow!("connecting through the relay timed out"))??;
-
-                anyhow::Ok((ws, channel, host_hello, None))
+    let result = match (policy, &relay) {
+        (PathPolicy::Lan, _) | (PathPolicy::Auto, None) => {
+            lan_path(host, key, app_version, &clock).await
+        }
+        (PathPolicy::Relay, None) => Err(anyhow!("this computer was paired without a relay")),
+        (PathPolicy::Relay, Some(relay)) => relay_path(host, key, app_version, &clock, relay).await,
+        (PathPolicy::Auto, Some(relay)) => {
+            race(lan_path(host, key, app_version, &clock), || {
+                relay_path(host, key, app_version, &clock, relay)
             })
             .await
         }
@@ -261,6 +281,27 @@ pub(crate) async fn establish_lan(
     let (ws, channel, host_hello, address) = result?;
 
     Ok(finish(host, ws, channel, host_hello, address))
+}
+
+/// Open a channel through the host's relay.
+async fn relay_path(
+    host: &PairedHost,
+    key: &DeviceKey,
+    app_version: &str,
+    clock: &HelloClock,
+    relay: &RelayAccess,
+) -> Result<(RelaySocket, Channel, HostHello, Option<String>)> {
+    let ws = dial_host(relay, &host.id).await?;
+    let hello = hello(app_version, clock);
+
+    let (ws, channel, host_hello) = timeout(
+        CONNECT_TIMEOUT,
+        channel_handshake(ws, key, &host.public_key, &hello),
+    )
+    .await
+    .map_err(|_| anyhow!("connecting through the relay timed out"))??;
+
+    Ok((ws, channel, host_hello, None))
 }
 
 /// Record what a handshake taught about the host, and say how it went.

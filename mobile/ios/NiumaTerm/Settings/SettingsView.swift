@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("appearance") private var appearance = AppAppearance.system
     @AppStorage(ComposerSettings.codexSkillsInSlashKey) private var codexSkillsInSlash = true
     @AppStorage(ComposerSettings.questionsOneAtATimeKey) private var questionsOneAtATime = false
+    @AppStorage(NetworkPreference.storageKey) private var networkPreference = NetworkPreference.auto
 
     @State private var forgetting: Host?
 
@@ -82,12 +83,26 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    Picker("Connection", selection: $networkPreference) {
+                        ForEach(NetworkPreference.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                } header: {
+                    Text("Network")
+                } footer: {
+                    Text("Automatic uses the local network when it reaches the computer, and the relay otherwise. Always Relay or Always LAN keeps every connection on that path; a computer paired without a relay cannot be reached with Always Relay.")
+                }
+                Section {
                     LabeledContent("Version", value: AppModel.appVersion)
                 }
             }
             .tint(Theme.accent)
             .onChange(of: [notifyTurnFinished, notifyApproval, notifyQuestion, notifyError]) {
                 app.pushSettingsChanged()
+            }
+            .onChange(of: networkPreference) {
+                app.setNetworkPreference(networkPreference)
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
