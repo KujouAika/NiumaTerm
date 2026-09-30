@@ -60,3 +60,7 @@ mobile/ios/Config/Local.xcconfig
 
 # Xcode per-user state: window layout, breakpoints, scheme choices.
 xcuserdata/
+
+# Schemes Xcode writes when it opens the XcodeGen project. project.yml
+# declares no schemes, and xcodebuild creates the default ones on demand.
+mobile/ios/NiumaTerm.xcodeproj/xcshareddata/
