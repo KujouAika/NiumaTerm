@@ -22,6 +22,8 @@ use nmt_remote_core::channel::{Channel, HostHandshake};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted, RelayAccess};
+#[cfg(test)]
+use nmt_remote_core::pairing::CODE_LIFETIME_MS;
 use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
 use nmt_remote_core::preface::{Preface, PrefaceKind};
 use nmt_remote_core::push::{
@@ -307,6 +309,38 @@ impl HostService {
         *advertiser = started;
     }
 
+    /// Replace a code that outlived its lifetime with a fresh one, reporting
+    /// whether it did. A code that was used, cancelled, or refused after
+    /// failed attempts is already cleared and stays cleared, so only the
+    /// timeout keeps a pairing window going.
+    pub fn renew_expired_pairing(&self) -> Result<bool> {
+        let expired = |code: &Option<IssuedCode>| {
+            code.as_ref()
+                .is_some_and(|issued| !issued.is_usable(now_ms()))
+        };
+
+        if !expired(&self.shared.state.lock().code) {
+            return Ok(false);
+        }
+
+        let code = PairingCode::generate()?;
+
+        {
+            let mut state = self.shared.state.lock();
+
+            // A cancel may have landed while the code was generated.
+            if !expired(&state.code) {
+                return Ok(false);
+            }
+
+            state.code = Some(IssuedCode::new(code.clone(), now_ms()));
+        }
+
+        self.shared.advertise_slot(Some(code.slot()));
+
+        Ok(true)
+    }
+
     pub fn cancel_pairing(&self) {
         self.shared.state.lock().code = None;
 
@@ -328,6 +362,16 @@ impl HostService {
     #[cfg(test)]
     pub(crate) fn pause_lan(&self, paused: bool) {
         self.shared.lan_paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// Age the showing code past its lifetime, as five minutes would.
+    #[cfg(test)]
+    pub(crate) fn expire_pairing(&self) {
+        let mut state = self.shared.state.lock();
+
+        if let Some(code) = state.code.as_ref().map(|issued| issued.code().clone()) {
+            state.code = Some(IssuedCode::new(code, now_ms() - CODE_LIFETIME_MS));
+        }
     }
 
     /// Cut every open channel, as a network drop would.

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use app::agent_tab::execution::SessionOwner;
@@ -31,7 +32,7 @@ use nmt_remote::sessions::{
     AgentControl, AgentRequest, HostRequest, SessionRegistry, TerminalControl,
 };
 use nmt_remote::store::{
-    PairedDevice, PairedHost, load_hosts, load_or_create_identity, load_relay_access_key,
+    PairedDevice, PairedHost, load_hosts, load_or_create_identity, load_relay_access_key, now_ms,
     remote_dir, save_hosts, save_relay_access_key,
 };
 use nmt_remote::{NetworkPty, local_view};
@@ -106,6 +107,10 @@ pub(crate) struct Remote {
     pub(crate) relay_url: SharedString,
 
     pub(crate) relay_key: SharedString,
+
+    /// Whether an access key is sealed on disk. The form never reads the key
+    /// back, so this is all it can show about it.
+    relay_key_saved: bool,
 
     /// The relay the running host registered with.
     hosted_relay: Option<RelayAccess>,
@@ -203,6 +208,7 @@ pub(crate) fn initialize(cx: &mut App) {
             .clone()
             .into(),
         relay_key: SharedString::default(),
+        relay_key_saved: load_relay_access_key(&remote_dir()).is_some(),
         hosted_relay: None,
         status: None,
         busy: false,
@@ -361,6 +367,7 @@ pub(crate) fn save_relay_key(cx: &mut App) -> bool {
 
     if saved {
         remote.relay_key = SharedString::default();
+        remote.relay_key_saved = true;
     }
 
     remote.report(result.map_err(Into::into));
@@ -419,6 +426,10 @@ impl Remote {
 
     pub(crate) fn relay_configured(&self) -> bool {
         self.hosted_relay.is_some()
+    }
+
+    pub(crate) fn relay_key_saved(&self) -> bool {
+        self.relay_key_saved
     }
 
     pub(crate) fn devices(&self) -> Vec<PairedDevice> {
@@ -615,6 +626,75 @@ pub(crate) fn start_pairing(cx: &mut App) {
     };
 
     remote.report(result);
+}
+
+/// Keep the pairing code on screen scannable and its minutes-left count
+/// current until the task is dropped. It sleeps until the count next drops,
+/// refreshing the page then, and swaps an expired code for a new one; with
+/// no code showing it sleeps until the remote state changes. That is one
+/// wake a minute while a code shows and none otherwise.
+pub(crate) fn renew_pairing_until_dropped(cx: &mut App) -> Task<()> {
+    let (wake, mut changes) = mpsc::unbounded_channel();
+
+    let subscription = cx.observe_global::<Remote>(move |_| {
+        let _ = wake.send(());
+    });
+
+    cx.spawn(async move |cx| {
+        let _subscription = subscription;
+
+        loop {
+            let expires_at = cx.update(|cx| {
+                renew_expired_pairing(cx);
+
+                cx.global::<Remote>().pairing().map(|(_, at)| at)
+            });
+
+            let Some(expires_at) = expires_at else {
+                if changes.recv().await.is_none() {
+                    return;
+                }
+
+                continue;
+            };
+
+            // The count is the remaining time rounded up to whole minutes, so
+            // it drops just after the remainder crosses a minute boundary; the
+            // last boundary is the expiry itself. The extra millisecond lands
+            // past the boundary, where the count (or the code) has changed.
+            let remaining = expires_at.saturating_sub(now_ms());
+
+            let to_boundary = match remaining % 60_000 {
+                0 => 60_000,
+                partial => partial,
+            };
+
+            let delay = Duration::from_millis(to_boundary + 1);
+
+            select! {
+                () = cx.background_executor().timer(delay) => {
+                    // The page reads the clock when it builds; refreshing
+                    // the remote state rebuilds it.
+                    cx.update_global::<Remote, _>(|_, _| {});
+                }
+
+                _ = changes.recv() => {}
+            }
+        }
+    })
+}
+
+/// Swap an expired pairing code for a new one.
+fn renew_expired_pairing(cx: &mut App) {
+    let Some(host) = &cx.global::<Remote>().host else {
+        return;
+    };
+
+    match host.renew_expired_pairing() {
+        Ok(false) => {}
+        Ok(true) => cx.update_global::<Remote, _>(|_, _| {}),
+        Err(error) => cx.global_mut::<Remote>().report(Err(error)),
+    }
 }
 
 pub(crate) fn cancel_pairing(cx: &mut App) {

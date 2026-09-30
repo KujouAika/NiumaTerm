@@ -132,6 +132,9 @@ if-addrs = "0.15"
 # The macOS login Keychain, which holds the key that seals remote-session
 # secrets at rest.
 security-framework = "3.7"
+# The pairing link as a QR code a phone scans. Without default features it
+# only computes the module grid; the settings page paints it.
+qrcode = { version = "0.14", default-features = false }
 
 # GPUI fork
 collections = { path = "third_party/gpui/collections" }

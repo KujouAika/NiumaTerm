@@ -61,7 +61,7 @@ use tracing::warn;
 
 use crate::agent_updates::AgentUpdates;
 use crate::ui::composition::sidebar_surface;
-use crate::ui::remote::Remote;
+use crate::ui::remote::{self, Remote};
 use crate::ui::settings::about_page::about_page;
 use crate::ui::settings::agent_page::agent_page;
 use crate::ui::settings::appearance_page::appearance_page;
@@ -96,6 +96,10 @@ pub(super) struct SettingsSurface {
 struct OpenSettings {
     view: Entity<SettingsView>,
     _theme_watcher: Option<Task<()>>,
+
+    /// Renews the pairing code while settings is on screen; closing settings
+    /// drops it, so an unattended code still expires.
+    _pairing_renewal: Task<()>,
 }
 
 impl SettingsSurface {
@@ -109,9 +113,12 @@ impl SettingsSurface {
         let theme_watcher = watch_themes(&editing, cx);
         let view = new_settings_view(state, editing, cx);
 
+        let pairing_renewal = remote::renew_pairing_until_dropped(cx);
+
         self.open = Some(OpenSettings {
             view,
             _theme_watcher: theme_watcher,
+            _pairing_renewal: pairing_renewal,
         });
     }
 

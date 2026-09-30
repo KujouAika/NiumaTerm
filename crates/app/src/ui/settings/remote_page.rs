@@ -1,19 +1,25 @@
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, ClipboardItem, InteractiveElement as _, IntoElement as _,
-    ParentElement as _, SharedString, Styled as _, Window, div, px,
+    App, AppContext as _, Bounds, ClipboardItem, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, Styled as _, Subscription, Window, black, canvas, div, fill,
+    point, px, size, white,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, DialogAction, DialogClose, DialogFooter};
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-use gpui_component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, AxisExt as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use nmt_remote::connection::Status;
 use nmt_remote::discovery::NearbyHost;
 use nmt_remote::presence::Presence;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
 use nmt_remote_core::rpc::SessionInfo;
+use qrcode::{Color, QrCode};
 use rust_i18n::t;
 
 use crate::ui::AppSettings;
@@ -57,14 +63,8 @@ fn hosting_group(state: &Remote) -> SettingGroup {
             .description(t!("settings-remote-relay-url-description").into_owned()),
         )
         .item(
-            SettingItem::new(
-                t!("settings-remote-relay-key"),
-                SettingField::input(
-                    |cx| cx.global::<Remote>().relay_key.clone(),
-                    |value, cx| cx.global_mut::<Remote>().relay_key = value,
-                ),
-            )
-            .description(t!("settings-remote-relay-key-description").into_owned()),
+            SettingItem::new(t!("settings-remote-relay-key"), relay_key_field())
+                .description(t!("settings-remote-relay-key-description").into_owned()),
         )
         .item(relay_apply_item(state))
         .item(
@@ -107,6 +107,60 @@ fn hosting_group(state: &Remote) -> SettingGroup {
     }
 
     group
+}
+
+struct RelayKeyInput {
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
+
+/// The access key draft. The saved key is sealed and never read back into
+/// the form, so a saved key shows as a masked placeholder: typing replaces
+/// it, and leaving the field empty keeps it.
+fn relay_key_field() -> SettingField<SharedString> {
+    SettingField::render(|options, window, cx| {
+        let saved = cx.global::<Remote>().relay_key_saved();
+
+        // Keyed by the saved flag so saving the first key builds a fresh input
+        // with the placeholder; the draft is empty right after a save.
+        let key = ("remote-relay-key", usize::from(saved));
+
+        let state = window.use_keyed_state(key, cx, |window, cx| {
+            let placeholder = if saved { "********" } else { "" };
+
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+
+            let subscription = cx.subscribe(&input, |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.global_mut::<Remote>().relay_key = input.read(cx).value();
+                }
+            });
+
+            RelayKeyInput {
+                input,
+                _subscription: subscription,
+            }
+        });
+
+        let input = state.read(cx).input.clone();
+        let draft = cx.global::<Remote>().relay_key.clone();
+
+        // Applying the form clears the draft, which the input must follow.
+        if input.read(cx).value() != draft {
+            input.update(cx, |input, cx| input.set_value(draft, window, cx));
+        }
+
+        Input::new(&input)
+            .disabled(options.is_disabled())
+            .with_size(options.size())
+            .map(|this| {
+                if options.layout().is_horizontal() {
+                    this.w_64()
+                } else {
+                    this.w_full()
+                }
+            })
+    })
 }
 
 fn relay_apply_item(state: &Remote) -> SettingItem {
@@ -201,6 +255,13 @@ fn pairing_item(state: &Remote) -> SettingItem {
     let pairing = state.pairing();
     let link = state.pairing_link();
 
+    // Encoded once per page build rather than per frame; the link only
+    // changes when a pairing starts or renews, which rebuilds the page.
+    let qr = link
+        .as_deref()
+        .and_then(|link| QrCode::new(link).ok())
+        .map(|qr| (qr.width(), dark_runs(&qr)));
+
     SettingItem::render(move |options, _, cx| {
         let row = h_flex().w_full().justify_between().items_center().gap_3();
 
@@ -208,35 +269,43 @@ fn pairing_item(state: &Remote) -> SettingItem {
             Some((code, expires_at)) => {
                 let minutes = expires_at.saturating_sub(now_ms()).div_ceil(60_000);
 
-                row.child(
-                    v_flex()
-                        .flex_1()
-                        .child(Label::new(code.to_string()).text_xl())
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(
+                        row.child(
+                            v_flex()
+                                .flex_1()
+                                .child(Label::new(code.to_string()).text_xl())
+                                .child(
+                                    Label::new(t!("settings-remote-code-hint", minutes = minutes))
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                        )
                         .child(
-                            Label::new(t!("settings-remote-code-hint", minutes = minutes))
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground),
+                            h_flex()
+                                .gap_2()
+                                .children(link.clone().map(|link| {
+                                    Button::new("remote-copy-link")
+                                        .outline()
+                                        .label(t!("settings-remote-copy-link"))
+                                        .on_click(move |_, _, cx: &mut App| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                link.clone(),
+                                            ))
+                                        })
+                                }))
+                                .child(
+                                    Button::new("remote-cancel-pairing")
+                                        .outline()
+                                        .label(t!("settings-remote-cancel"))
+                                        .on_click(|_, _, cx: &mut App| remote::cancel_pairing(cx)),
+                                ),
                         ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .children(link.clone().map(|link| {
-                            Button::new("remote-copy-link")
-                                .outline()
-                                .label(t!("settings-remote-copy-link"))
-                                .on_click(move |_, _, cx: &mut App| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(link.clone()))
-                                })
-                        }))
-                        .child(
-                            Button::new("remote-cancel-pairing")
-                                .outline()
-                                .label(t!("settings-remote-cancel"))
-                                .on_click(|_, _, cx: &mut App| remote::cancel_pairing(cx)),
-                        ),
-                )
-                .into_any_element()
+                    )
+                    .children(qr.clone().map(|(width, runs)| qr_code(width, runs)))
+                    .into_any_element()
             }
             None => row
                 .child(Label::new(t!("settings-remote-pair-device")).text_sm())
@@ -250,6 +319,73 @@ fn pairing_item(state: &Remote) -> SettingItem {
                 .into_any_element(),
         }
     })
+}
+
+/// Dark modules on white with a four-module quiet zone, regardless of theme:
+/// phone scanners expect that contrast and margin. Modules are whole logical
+/// pixels so neighboring quads meet without hairline gaps between them.
+fn qr_code(width: usize, runs: Rc<[QrRun]>) -> impl IntoElement {
+    const QUIET: usize = 4;
+    const TARGET: f32 = 240.;
+
+    let span = width + 2 * QUIET;
+    let cell = (TARGET / span as f32).floor().max(2.);
+
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            window.paint_quad(fill(bounds, white()));
+
+            for run in runs.iter() {
+                let x = (run.column + QUIET) as f32 * cell;
+                let y = (run.row + QUIET) as f32 * cell;
+
+                window.paint_quad(fill(
+                    Bounds::new(
+                        bounds.origin + point(px(x), px(y)),
+                        size(px(run.len as f32 * cell), px(cell)),
+                    ),
+                    black(),
+                ));
+            }
+        },
+    )
+    .size(px(span as f32 * cell))
+}
+
+/// A horizontal stretch of dark modules, painted as one quad.
+struct QrRun {
+    row: usize,
+    column: usize,
+    len: usize,
+}
+
+/// The dark modules merged along each row, which paints the code with a few
+/// hundred quads instead of one per module on every frame that redraws it.
+fn dark_runs(qr: &QrCode) -> Rc<[QrRun]> {
+    let width = qr.width();
+    let colors = qr.to_colors();
+
+    let mut runs = Vec::new();
+
+    for (row, line) in colors.chunks(width).enumerate() {
+        let mut column = 0;
+
+        while column < width {
+            let len = line[column..]
+                .iter()
+                .take_while(|color| **color == Color::Dark)
+                .count();
+
+            if len > 0 {
+                runs.push(QrRun { row, column, len });
+            }
+
+            column += len.max(1);
+        }
+    }
+
+    runs.into()
 }
 
 fn device_item(device: PairedDevice, presence: Presence) -> SettingItem {

@@ -394,6 +394,30 @@ fn unpaired_and_revoked_devices_are_refused() {
     });
 }
 
+#[test]
+fn only_a_timed_out_pairing_code_is_renewed() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let host = start_host(&host_dir, SessionRegistry::new());
+
+    let first = host.start_pairing().unwrap();
+
+    assert!(!host.renew_expired_pairing().unwrap());
+
+    host.expire_pairing();
+
+    assert!(host.pairing().is_none());
+    assert!(host.renew_expired_pairing().unwrap());
+
+    let (renewed, _) = host.pairing().expect("a fresh code is showing");
+
+    assert_ne!(renewed, first);
+
+    host.cancel_pairing();
+
+    assert!(!host.renew_expired_pairing().unwrap());
+    assert!(host.pairing().is_none());
+}
+
 /// Needs a network interface that carries multicast, which CI runners and
 /// some VPNs lack.
 #[test]

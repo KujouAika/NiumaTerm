@@ -51,6 +51,7 @@ rust-embed.workspace = true
 image_rs.workspace = true
 
 percent-encoding.workspace = true
+qrcode.workspace = true
 tree-sitter.workspace = true
 tree-sitter-language.workspace = true
 gpui-base.workspace = true

@@ -8,8 +8,8 @@ use app::terminal_tab::settings::TerminalSettings;
 use gpui::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ListAlignment,
     ListOffset, ListState, ParentElement as _, ScrollDelta, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled as _, TestAppContext, Window, div, list, point, px,
-    size,
+    StatefulInteractiveElement as _, Styled as _, Task, TestAppContext, Window, div, list, point,
+    px, size,
 };
 use gpui_component::Root;
 use gpui_component::setting::{SelectIndex, SettingsState};
@@ -69,6 +69,7 @@ fn closed_settings_release_local_edits_while_another_window_stays_open(cx: &mut 
                         open: Some(OpenSettings {
                             view,
                             _theme_watcher: None,
+                            _pairing_renewal: Task::ready(()),
                         }),
                     })
                 })
