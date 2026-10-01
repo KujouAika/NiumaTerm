@@ -966,16 +966,19 @@ impl Platform for WindowsPlatform {
             if credentials.is_null() {
                 Ok(None)
             } else {
-                let username: String = unsafe { (*credentials).UserName.to_string()? };
-                let credential_blob = unsafe {
-                    std::slice::from_raw_parts(
-                        (*credentials).CredentialBlob,
-                        (*credentials).CredentialBlobSize as usize,
-                    )
-                };
-                let password = credential_blob.to_vec();
+                // Copy everything out before freeing so a malformed UserName
+                // cannot return early and leak the CredReadW allocation.
+                let result = unsafe { (*credentials).UserName.to_string() }.map(|username| {
+                    let credential_blob = unsafe {
+                        std::slice::from_raw_parts(
+                            (*credentials).CredentialBlob,
+                            (*credentials).CredentialBlobSize as usize,
+                        )
+                    };
+                    (username, credential_blob.to_vec())
+                });
                 unsafe { CredFree(credentials as *const _ as _) };
-                Ok(Some((username, password)))
+                Ok(Some(result?))
             }
         })
     }
