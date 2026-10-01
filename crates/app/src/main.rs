@@ -90,15 +90,58 @@ fn main() {
         previous_instance_pid: _previous_instance_pid,
     } = parse_startup_args();
 
-    // Hold the appender guard for the whole app lifetime; `main` blocks until exit.
-    let _log_guard = logging::init_logging(testing).expect("init logging");
-
     // Only a build that can replace itself has a predecessor to outlive.
     #[cfg(windows)]
-    if let Some(pid) = _previous_instance_pid
-        && !wait_for_previous_instance(pid)
-    {
+    let previous_instance_lingers =
+        _previous_instance_pid.is_some_and(|pid| !wait_for_previous_instance(pid));
+
+    // A second launch forwards its action to the existing process so one process
+    // URL (or an activate request) to the running instance and exits. A
+    // malformed URL degrades to activate — the primary just comes forward.
+    let (argv_action, argv_error) = match url.map(|url| cli::parse_nmt_url(&url)) {
+        Some(Ok(action)) => (Some(action), None),
+        Some(Err(error)) => (Some(CliAction::Activate), Some(error)),
+        None => (None, None),
+    };
+
+    // A testing instance with its own configuration home acts as a separate
+    // device, such as the second computer in a remote-session test. It
+    // neither forwards to nor serves the testing instance's command pipe.
+    let isolated = testing && env::var_os("NMT_CONFIG_HOME").is_some();
+
+    let mut pipe_error = None;
+
+    if !isolated && !platform_ipc::try_become_primary(testing) {
+        let action = argv_action.clone().unwrap_or(CliAction::Activate);
+        let url: String = (&action).into();
+
+        match platform_ipc::send(&url, time::Duration::from_secs(2), testing) {
+            Ok(()) => return,
+            Err(error) => pipe_error = Some(error),
+        }
+        // The mutex holder never answered (booting forever, or hung): serve
+        // the user with a fresh primary rather than doing nothing.
+    }
+
+    // Logging starts only once this process is known to stay. Initializing
+    // rotates app.log, so a forwarding launch that exits right away would
+    // otherwise push the running primary's log aside behind an empty file,
+    // and an updated build would do the same to the instance it replaced
+    // while that instance was still shutting down. Hold the appender guard
+    // for the whole app lifetime; `main` blocks until exit.
+    let _log_guard = logging::init_logging(testing).expect("init logging");
+
+    #[cfg(windows)]
+    if previous_instance_lingers {
         warn!("update: the previous instance is still running; starting anyway");
+    }
+
+    if let Some(error) = argv_error {
+        warn!("ignoring command line: {error}");
+    }
+
+    if let Some(error) = pipe_error {
+        warn!("primary instance pipe unreachable: {error}");
     }
 
     // Builds without performance collection accept these switches through
@@ -134,34 +177,6 @@ fn main() {
     // Translations must be ready before any view exists so the first frame
     // already renders in the configured language.
     rust_i18n::set_locale(get().appearance.language.into());
-
-    // A second launch forwards its action to the existing process so one process
-    // URL (or an activate request) to the running instance and exits. A
-    // malformed URL degrades to activate — the primary just comes forward.
-    let argv_action = url.map(|url| {
-        cli::parse_nmt_url(&url).unwrap_or_else(|err| {
-            warn!("ignoring command line: {err}");
-
-            CliAction::Activate
-        })
-    });
-
-    // A testing instance with its own configuration home acts as a separate
-    // device, such as the second computer in a remote-session test. It
-    // neither forwards to nor serves the testing instance's command pipe.
-    let isolated = testing && env::var_os("NMT_CONFIG_HOME").is_some();
-
-    if !isolated && !platform_ipc::try_become_primary(testing) {
-        let action = argv_action.clone().unwrap_or(CliAction::Activate);
-        let url: String = (&action).into();
-
-        match platform_ipc::send(&url, time::Duration::from_secs(2), testing) {
-            Ok(()) => return,
-            Err(error) => warn!("primary instance pipe unreachable: {error}"),
-        }
-        // The mutex holder never answered (booting forever, or hung): serve
-        // the user with a fresh primary rather than doing nothing.
-    }
 
     let (cli_tx, cli_rx) = unbounded::<ipc::IpcAction>();
 
