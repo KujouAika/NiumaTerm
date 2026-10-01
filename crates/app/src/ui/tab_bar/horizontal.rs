@@ -434,11 +434,12 @@ impl TabStrip {
                 // test, so the wheel is forwarded to its scroll handle here;
                 // prepaint clamps the offset to the scrollable range.
                 let scroll = self.scroll.clone();
+                let scroll_shell = shell.clone();
 
                 shell_tab(tab_shape)
                     .aria_label(drag_label.clone())
                     .map(|tab| Host::tab(tab, density))
-                    .on_scroll_wheel(move |event, window, _| {
+                    .on_scroll_wheel(move |event, window, cx| {
                         let delta = event.delta.pixel_delta(window.line_height());
 
                         let step = if delta.x.is_zero() { delta.y } else { delta.x };
@@ -453,7 +454,11 @@ impl TabStrip {
 
                         scroll.set_offset(offset);
 
-                        window.refresh();
+                        // Notifying the shell entity instead of refreshing the
+                        // window keeps cached pane views reusable: a window
+                        // refresh discards every view cache, so each wheel
+                        // tick would re-render all terminal and agent panes.
+                        scroll_shell.update(cx, |_, cx| cx.notify());
                     })
                     .w(px(tab_width))
                     .relative()
