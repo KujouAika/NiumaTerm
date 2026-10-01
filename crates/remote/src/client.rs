@@ -34,6 +34,12 @@ use crate::store::{PairedHost, StoredRelay, now_ms};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The most a whole pairing attempt may take, finding the host included.
+/// Each pairing message has its own [`CONNECT_TIMEOUT`], so a slow but live
+/// relay path completes while a dead one fails at its first silent step;
+/// this cap only bounds the sum.
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// How long a lookup browses the LAN before giving up.
 const DISCOVERY_WAIT: Duration = Duration::from_secs(3);
 
@@ -166,7 +172,7 @@ pub async fn pair(
         }
     };
 
-    let (host_key, accepted, address) = timeout(CONNECT_TIMEOUT * 2, paired)
+    let (host_key, accepted, address) = timeout(PAIRING_TIMEOUT, paired)
         .await
         .map_err(|_| anyhow!("pairing timed out"))??;
 
@@ -196,35 +202,41 @@ async fn pair_over(
     device: DeviceInfo,
     expected_host_key: Option<[u8; 32]>,
 ) -> Result<([u8; 32], PairAccepted)> {
-    timeout(CONNECT_TIMEOUT, async {
-        let (offer, answer) = negotiate(&mut ws, PrefaceKind::Pairing).await?;
+    let (offer, answer) = timeout(CONNECT_TIMEOUT, negotiate(&mut ws, PrefaceKind::Pairing))
+        .await
+        .map_err(|_| anyhow!("pairing timed out waiting for the host"))??;
 
-        let (pairing, hello) =
-            ClientPairing::start(code, &offer, &answer, device, expected_host_key)?;
+    let (pairing, hello) = ClientPairing::start(code, &offer, &answer, device, expected_host_key)?;
 
-        send_binary(&mut ws, hello).await?;
+    send_binary(&mut ws, hello).await?;
 
-        let reply = recv_binary(&mut ws).await?;
-        let (handshake, msg1) = pairing.on_reply(key, &reply)?;
+    let reply = recv_pairing_step(&mut ws).await?;
+    let (handshake, msg1) = pairing.on_reply(key, &reply)?;
 
-        send_binary(&mut ws, msg1).await?;
+    send_binary(&mut ws, msg1).await?;
 
-        let msg2 = recv_binary(&mut ws).await?;
-        let (confirm, msg3) = handshake.on_msg2(&msg2)?;
+    let msg2 = recv_pairing_step(&mut ws).await?;
+    let (confirm, msg3) = handshake.on_msg2(&msg2)?;
 
-        send_binary(&mut ws, msg3).await?;
+    send_binary(&mut ws, msg3).await?;
 
-        // A host that rejects the code closes without answering.
-        let accepted = recv_binary(&mut ws)
-            .await
-            .context("the host did not accept the pairing code")?;
+    // A host that rejects the code closes without answering.
+    let accepted = recv_pairing_step(&mut ws)
+        .await
+        .context("the host did not accept the pairing code")?;
 
-        let paired = confirm.on_accepted(&accepted)?;
+    let paired = confirm.on_accepted(&accepted)?;
 
-        Ok((paired.public_key, paired.accepted))
-    })
-    .await
-    .map_err(|_| anyhow!("pairing timed out"))?
+    Ok((paired.public_key, paired.accepted))
+}
+
+/// Wait for the host's next pairing message. Each relay round trip crosses
+/// the relay twice, so the limit applies per message rather than to the
+/// whole exchange.
+async fn recv_pairing_step(ws: &mut RelaySocket) -> Result<Vec<u8>> {
+    timeout(CONNECT_TIMEOUT, recv_binary(ws))
+        .await
+        .map_err(|_| anyhow!("pairing timed out waiting for the host"))?
 }
 
 /// Open a channel to a paired host on the LAN or through its relay, as

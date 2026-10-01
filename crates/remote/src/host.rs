@@ -66,7 +66,16 @@ pub const DEFAULT_PORT: u16 = 47470;
 /// buffer, so an unauthenticated peer on the LAN cannot hold many.
 const MAX_UNAUTHENTICATED: usize = 16;
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one handshake step may take. A relay path crosses Cloudflare
+/// twice per message, and a lossy route there spends seconds on TCP
+/// retransmits, so this leaves room beyond a LAN round trip.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a whole pairing exchange may hold its socket: three round trips
+/// at the client's per-message limit. It stays a total rather than a
+/// per-message limit so a peer that trickles messages cannot keep one of the
+/// few unauthenticated slots forever.
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 
 const FEATURES: &[&str] = &["terminal", PUSH_FEATURE];
 
@@ -1128,7 +1137,7 @@ where
         PrefaceKind::Rejected => Ok(()),
         PrefaceKind::Pairing => {
             timeout(
-                HANDSHAKE_TIMEOUT,
+                PAIRING_TIMEOUT,
                 serve_pairing(&shared, &mut ws, &offer, &answer),
             )
             .await?
