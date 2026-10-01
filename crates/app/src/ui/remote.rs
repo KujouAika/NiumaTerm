@@ -140,6 +140,10 @@ pub(crate) struct RemoteWorkspace {
     pub(crate) name: String,
     pub(crate) sessions: Vec<SessionInfo>,
     pub(crate) offers: Option<HostInfo>,
+
+    /// The session the tab on screen follows, which the window fills in:
+    /// only it knows which tab is in front.
+    pub(crate) selected: Option<String>,
 }
 
 /// Whether this computer browses the LAN for other hosts.
@@ -507,17 +511,23 @@ impl Remote {
         self.host_offers.get(id)
     }
 
-    /// The paired hosts connected now, each with its sessions, in pairing
-    /// order.
-    pub(crate) fn remote_workspaces(&self) -> Vec<RemoteWorkspace> {
+    /// The paired hosts connected now, and those `has_tabs` says a window
+    /// still shows sessions of, each with its sessions, in pairing order. A
+    /// host that drops away keeps its place while its tabs wait for it, so
+    /// the list still leads to them.
+    pub(crate) fn remote_workspaces(
+        &self,
+        has_tabs: impl Fn(&DeviceId) -> bool,
+    ) -> Vec<RemoteWorkspace> {
         self.hosts
             .iter()
-            .filter(|host| self.host_status(&host.id) == Status::Connected)
+            .filter(|host| self.host_status(&host.id) == Status::Connected || has_tabs(&host.id))
             .map(|host| RemoteWorkspace {
                 id: host.id.clone(),
                 name: host.name.clone(),
                 sessions: self.host_sessions(&host.id).unwrap_or_default().to_vec(),
                 offers: self.host_offers(&host.id).cloned(),
+                selected: None,
             })
             .collect()
     }

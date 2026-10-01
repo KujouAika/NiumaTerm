@@ -452,6 +452,10 @@ pub(crate) enum DeviceClose {
 pub(crate) struct AppWindow {
     pub(crate) workspaces: WorkspaceManager,
 
+    /// The remote workspace holding the tabs that follow each paired host's
+    /// sessions, by host id.
+    remote_workspaces: collections::HashMap<String, WorkspaceId>,
+
     /// Monotonic surface-id source shared by tabs and workspaces.
     next_id: u64,
 
@@ -594,6 +598,7 @@ impl AppWindow {
 
         let mut this = Self {
             workspaces,
+            remote_workspaces: collections::HashMap::new(),
             next_id,
             chrome: ShellChrome::new(git_model.clone(), cx),
             agent_notifications: AgentNotificationState::new(agent_monitor),
@@ -902,7 +907,11 @@ impl AppWindow {
         self.workspaces
             .summaries()
             .into_iter()
-            .map(|summary| {
+            .enumerate()
+            // Remote entries are listed under their host, after this
+            // computer's workspaces.
+            .filter(|(_, summary)| summary.kind != WorkspaceKind::Remote)
+            .map(|(index, summary)| {
                 let tabs = self.workspaces.tabs_of(summary.id);
 
                 let routes: Vec<_> = tabs
@@ -928,6 +937,7 @@ impl AppWindow {
                     .fold(summary.terminal_progress, ProgressTally::merge);
 
                 WorkspaceChrome {
+                    index,
                     summary,
                     agent,
                     terminal_activity,
@@ -1226,6 +1236,14 @@ impl AppWindow {
         // The settings entry holds one tab that terminates nothing, so its
         // close control is the same gesture as dismissing the entry.
         if is_settings {
+            self.close_workspace_now(ws_id, window, cx);
+
+            return;
+        }
+
+        // A remote entry only gathers a host's tabs, so its last tab takes
+        // it along without the warning that guards a local workspace's tabs.
+        if last_tab && self.workspaces.kind_of(ws_id) == Some(WorkspaceKind::Remote) {
             self.close_workspace_now(ws_id, window, cx);
 
             return;
@@ -1662,7 +1680,18 @@ impl AppWindow {
             .filter_map(|tab| tab.surface().restoring_agent().map(str::to_owned))
             .collect();
 
-        let settings = self.workspaces.kind_of(id) == Some(WorkspaceKind::Settings);
+        // A host terminal opened from a tab here ends with that tab, which
+        // closing its workspace must not skip.
+        let panes: Vec<_> = self
+            .workspaces
+            .tabs_of(id)
+            .into_iter()
+            .flat_map(|tabs| tabs.list().items())
+            .flat_map(|tab| tab.surface().leaves())
+            .map(|(_, pane)| pane.clone())
+            .collect();
+
+        let kind = self.workspaces.kind_of(id);
 
         let was_active = self.workspaces.list().active_id() == id;
 
@@ -1675,8 +1704,17 @@ impl AppWindow {
                 ui::remote::withdraw_restoring_agent(&shared, cx);
             }
 
-            if settings {
-                self.retire_settings_workspace();
+            for pane in panes {
+                pane.read(cx).end_remote_session();
+            }
+
+            match kind {
+                Some(WorkspaceKind::Settings) => self.retire_settings_workspace(),
+                Some(WorkspaceKind::Remote) => {
+                    self.remote_workspaces
+                        .retain(|_, workspace| *workspace != id);
+                }
+                Some(WorkspaceKind::Normal) | None => {}
             }
 
             if was_active {
@@ -1871,7 +1909,7 @@ impl AppWindow {
             return;
         }
 
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let directory = config_dir_path();
 
@@ -1953,9 +1991,9 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // `leave_settings_workspace` can change which workspace is active, so
+        // `leave_pseudo_workspace` can change which workspace is active, so
         // the primary directory is read only after the move.
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let cwd = self.workspaces.active_cwd().to_string();
 
@@ -1973,7 +2011,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let id = Self::alloc_id(&mut self.next_id);
 
@@ -2041,7 +2079,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let id = Self::alloc_id(&mut self.next_id);
 
@@ -2074,9 +2112,8 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
-
         let id = Self::alloc_id(&mut self.next_id);
+        let host = pty.host().id().as_str().to_owned();
         let host_name = pty.host().name();
 
         let pane = match spawn_remote_pane(cx, id, pty, ends_with_tab) {
@@ -2090,7 +2127,8 @@ impl AppWindow {
 
         Self::watch_pane(&pane, cx);
 
-        self.insert_tab(
+        self.insert_remote_tab(
+            host,
             TabId(id),
             TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
             host_name,
@@ -2109,19 +2147,70 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        let Some((host, _)) = pane.read(cx).remote_address() else {
+            return;
+        };
 
         let id = Self::alloc_id(&mut self.next_id);
 
         Self::watch_agent_tab(&pane, None, cx);
 
-        self.insert_tab(
+        self.insert_remote_tab(
+            host,
             TabId(id),
             TabSurface::Agent(AgentTab { owner, pane }),
             title,
             window,
             cx,
         );
+    }
+
+    /// Add a tab following one of `host`'s sessions to that host's remote
+    /// workspace, creating the workspace on the host's first tab, and show
+    /// it. The session runs on the host, so the tab never joins a local
+    /// workspace, where it would pass for a tab running on this computer.
+    fn insert_remote_tab(
+        &mut self,
+        host: String,
+        id: TabId,
+        surface: TabSurface,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = self
+            .remote_workspaces
+            .get(&host)
+            .copied()
+            .and_then(|workspace| self.workspaces.list().index_of(workspace));
+
+        match existing {
+            Some(index) => {
+                self.workspaces.list_mut().activate(index);
+
+                self.insert_tab(id, surface, title, window, cx);
+            }
+            None => {
+                let tabs = TabManager::new(surface, id, title);
+                let workspace = WorkspaceId(Self::alloc_id(&mut self.next_id));
+                let name = remote::paired_host_name(&host, cx).unwrap_or_else(|| host.clone());
+
+                self.workspaces.new_workspace_of_kind(
+                    tabs,
+                    workspace,
+                    name,
+                    // The host's directories are not this computer's, so
+                    // the entry owns none and never takes part in routing
+                    // a local path to a workspace.
+                    None,
+                    WorkspaceKind::Remote,
+                );
+
+                self.remote_workspaces.insert(host, workspace);
+
+                self.show_active_tab(window, cx);
+            }
+        }
     }
 
     /// The workspaces a paired device may start an agent in: this window's
@@ -2269,7 +2358,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let workspace = agent_workspace(self.workspaces.active_roots());
 
@@ -3042,11 +3131,12 @@ impl AppWindow {
         self.settings.retire();
     }
 
-    /// Leave the settings entry for a normal workspace. Every path that adds a
-    /// tab funnels through this, so a new tab never lands in the settings
-    /// entry and breaks its single-tab presentation.
-    pub(crate) fn leave_settings_workspace(&mut self) {
-        if self.workspaces.active_kind() == WorkspaceKind::Settings {
+    /// Leave the settings or a remote entry for a normal workspace. Every
+    /// path that adds a local tab funnels through this, so a new tab never
+    /// breaks the settings entry's single-tab presentation, and a tab running
+    /// on this computer never sits among a host's tabs.
+    pub(crate) fn leave_pseudo_workspace(&mut self) {
+        if self.workspaces.active_kind() != WorkspaceKind::Normal {
             let index = self.workspaces.first_normal_index();
 
             self.workspaces.list_mut().activate(index);
@@ -3873,15 +3963,14 @@ impl Render for AppWindow {
 
                 summaries
                     .iter()
-                    .enumerate()
-                    .map(|(index, ws)| {
+                    .map(|ws| {
                         let Some(tabs) = self.workspaces.tabs_of(ws.summary.id) else {
                             return Vec::new();
                         };
 
                         self.chrome.vertical_tabs.render(
                             WorkspaceTabs {
-                                index,
+                                index: ws.index,
                                 tabs,
                                 active: ws.summary.active,
                                 closeable: ws.summary.closeable,
@@ -3897,7 +3986,28 @@ impl Render for AppWindow {
             }
         };
 
-        let remote = cx.global::<Remote>().remote_workspaces();
+        // A remote entry in front shows one session of its host, which that
+        // host's list marks the way a tab row marks the tab on screen.
+        let in_front = (self.workspaces.active_kind() == WorkspaceKind::Remote)
+            .then(|| self.workspaces.active_tabs().active());
+
+        let remote = cx
+            .global::<Remote>()
+            .remote_workspaces(|host| self.remote_workspaces.contains_key(host.as_str()))
+            .into_iter()
+            .map(|mut host| {
+                host.selected = in_front.and_then(|surface| {
+                    host.sessions
+                        .iter()
+                        .find(|session| {
+                            surface.follows_remote(host.id.as_str(), &session.session, cx)
+                        })
+                        .map(|session| session.session.clone())
+                });
+
+                host
+            })
+            .collect();
 
         let sidebar = self.sidebar.render(
             summaries,
@@ -4076,7 +4186,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         if self.workspaces.active_tabs().active().is_git() {
             let id = self.workspaces.active_tabs().list().active_id();

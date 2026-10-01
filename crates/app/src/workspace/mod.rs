@@ -104,11 +104,15 @@ pub struct WorkspaceId(pub u64);
 /// What a workspace entry stands for. `Settings` is a pseudo workspace: it
 /// holds the settings surface instead of shells, is never persisted, and is
 /// excluded from the counts that decide whether a close request is about to
-/// take the user's last real workspace away.
+/// take the user's last real workspace away. `Remote` holds the tabs that
+/// follow one paired host's sessions: those run on the host, so they stay out
+/// of this computer's workspaces, which the sidebar lists as local, and out of
+/// the saved session, since the host lists its sessions again on connect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceKind {
     Normal,
     Settings,
+    Remote,
 }
 
 pub struct Workspace {
@@ -556,8 +560,9 @@ impl WorkspaceManager {
     /// Lightweight per-workspace summary for chrome (name/active), in order.
     /// A presentation-agnostic view of the workspaces for the shell chrome.
     pub fn summaries(&self) -> Vec<WorkspaceSummary> {
-        // The settings entry is always dismissible; a normal workspace stays
-        // closeable only while another normal one would remain.
+        // The settings and remote entries are always dismissible; a normal
+        // workspace stays closeable only while another normal one would
+        // remain.
         let closeable = self.real_len() > 1;
 
         self.workspaces
@@ -577,7 +582,7 @@ impl WorkspaceManager {
                     .map_or_else(Vec::new, |roots| roots.additional().to_vec()),
                 active: index == self.workspaces.active_index(),
                 pinned: ws.pinned,
-                closeable: (closeable || ws.kind == WorkspaceKind::Settings) && !ws.pinned,
+                closeable: (closeable || ws.kind != WorkspaceKind::Normal) && !ws.pinned,
                 temporary: ws.temporary,
                 kind: ws.kind,
                 terminal_progress: tabs_progress(&ws.tabs),

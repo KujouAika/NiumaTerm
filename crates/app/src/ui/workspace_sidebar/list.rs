@@ -123,14 +123,14 @@ impl WorkspaceList {
                         cx.notify();
                     }))
                     .map(|list| accept_row_drops(list, cx))
-                    .children(summaries.iter().enumerate().map(|(idx, ws)| {
+                    .children(summaries.iter().map(|ws| {
                         // A workspace heads its own tab rows, and the
                         // list gap is what separates one such block
                         // from the next; a rule between them would
                         // draw a second boundary inside the same gap.
                         let mut rows = Vec::new();
 
-                        rows.push(self.render_row(idx, ws, renames, width, cx));
+                        rows.push(self.render_row(ws.index, ws, renames, width, cx));
 
                         rows.extend(tab_rows.next().into_iter().flatten());
 

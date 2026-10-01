@@ -6,12 +6,12 @@ use app::agent_tab::AgentKind;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, px, transparent_black};
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
-use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
+use gpui_component::{ActiveTheme, IconName, Selectable, h_flex, v_flex};
 use nmt_remote_core::rpc::{SessionInfo, SessionKind, WorkspaceInfo};
 use rust_i18n::t;
 
 use crate::ui::composition::{
-    HoverActionLayout, HoverActionVisibility, hover_action, toolbar_button,
+    HoverActionLayout, HoverActionVisibility, hover_action, sidebar_selection, toolbar_button,
 };
 use crate::ui::remote::{self, RemoteWorkspace};
 use crate::ui::tab_bar::menu::tab_icon;
@@ -261,7 +261,9 @@ fn workspace_row(
 }
 
 /// A session on a host: opening it follows it in a tab here, or shows the
-/// tab already following it.
+/// tab already following it. The session whose tab is on screen is marked
+/// the way the vertical tab list marks its tab, since that tab sits in no
+/// list of its own.
 fn session_row(
     index: usize,
     row: usize,
@@ -280,6 +282,8 @@ fn session_row(
     let host_id = host.id.clone();
     let opened = session.clone();
     let title: SharedString = session.title.clone().into();
+    let selected = host.selected.as_deref() == Some(session.session.as_str());
+    let selection = sidebar_selection(cx);
 
     let button: Button = workspace_row_button(("remote-session", index * 1000 + row), cx)
         .custom(
@@ -288,6 +292,16 @@ fn session_row(
                 .hover(cx.theme().sidebar_foreground.opacity(0.085))
                 .active(cx.theme().sidebar_foreground.opacity(0.12)),
         )
+        .selected(selected)
+        // Button resolves selected colors after element styles, so the
+        // sidebar-accent pair must be the selected custom variant itself.
+        .when(selected, |this| {
+            this.custom(
+                ButtonCustomVariant::new(cx)
+                    .foreground(selection.active_foreground)
+                    .active(selection.active_background),
+            )
+        })
         .accessibility_label(title.clone())
         .child(
             h_flex().w_full().gap_2().items_center().child(icon).child(

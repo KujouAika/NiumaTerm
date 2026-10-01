@@ -581,10 +581,18 @@ fn restore_tabs(
     let mut restored = Vec::new();
 
     for mut tab_state in tabs {
-        // Agent tabs carry no launch command; profile resolution only
-        // applies to terminal tabs.
-        if matches!(saved_tab(&tab_state), SavedTab::Terminal) {
-            resolve_restored_launch(&mut tab_state, cx.global::<AppSettings>());
+        match saved_tab(&tab_state) {
+            // Agent tabs carry no launch command; profile resolution only
+            // applies to terminal tabs.
+            SavedTab::Terminal => {
+                resolve_restored_launch(&mut tab_state, cx.global::<AppSettings>());
+            }
+            // Earlier builds saved tabs following a paired host's session
+            // among the local ones. Such a tab runs on the host, and the
+            // host's own list reopens it, so it does not come back here as
+            // a tab that passes for a local one.
+            SavedTab::Remote(..) => continue,
+            SavedTab::Git(_) | SavedTab::Team(_) | SavedTab::Agent(_) => {}
         }
 
         let name = tab_state

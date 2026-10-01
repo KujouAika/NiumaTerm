@@ -103,8 +103,10 @@ pub(crate) fn session_state(
         }
 
         // The settings entry is a view of the configuration file, not
-        // work to come back to, so it is never restored.
-        if workspace.kind == WorkspaceKind::Settings {
+        // work to come back to, so it is never restored. A remote entry
+        // only follows a host's sessions, which the host lists again once
+        // it is back.
+        if workspace.kind != WorkspaceKind::Normal {
             continue;
         }
 

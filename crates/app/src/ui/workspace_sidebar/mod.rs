@@ -28,6 +28,10 @@ use crate::ui::{AppSettings, AppWindow, NewWorkspace, WindowRegistry, sidebar_re
 use crate::workspace::{ProgressTally, TerminalActivity, WorkspaceSummary};
 
 pub(super) struct WorkspaceChrome {
+    /// Position of the workspace in the window's whole list, which also
+    /// holds the remote entries this list leaves out.
+    pub index: usize,
+
     pub summary: WorkspaceSummary,
     pub agent: AgentProjection,
     pub terminal_activity: TerminalActivity,
