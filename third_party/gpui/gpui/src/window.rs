@@ -2938,6 +2938,11 @@ impl Window {
         self.window_profiler.begin_draw();
         let draw_started_at = frame_stats::start_timer();
 
+        // `refreshing` is cleared before the draw ends, so read it up front.
+        if self.refreshing {
+            frame_stats::record_refresh();
+        }
+
         // Set up the per-App arena for element allocation during this draw.
         // This ensures that multiple test Apps have isolated arenas.
         let arena_scope = ElementArenaScope::enter(&cx.element_arena);
