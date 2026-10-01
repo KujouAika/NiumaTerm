@@ -10,6 +10,9 @@ on:
         description: Tag to build, for example v1.1.0
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   package-windows:
     uses: ./.github/workflows/windows-package.yml

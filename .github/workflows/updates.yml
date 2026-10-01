@@ -32,6 +32,9 @@ on:
         description: Token with Workers Scripts edit rights on the account
         required: true
 
+permissions:
+  contents: read
+
 # Both updaters read what this publishes, from the niumaterm-updates Worker:
 # Sparkle takes the appcast at /appcast.xml, and the Windows updater takes the
 # release manifests under /windows. Each address is stamped into every build

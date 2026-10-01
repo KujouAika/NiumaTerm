@@ -40,6 +40,9 @@ on:
         type: string
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   package:
     # Pinned rather than macos-latest: that label moved to macos-26 in July
