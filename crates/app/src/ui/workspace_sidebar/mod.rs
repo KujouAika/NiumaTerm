@@ -157,6 +157,7 @@ impl Sidebar {
             .gap(px(SIDEBAR_GROUP_GAP))
             .child(
                 h_flex()
+                    .group("local-heading")
                     .w_full()
                     .justify_between()
                     .gap_1()
@@ -164,9 +165,15 @@ impl Sidebar {
                     // width) gives way before the controls beside it do.
                     .child(section_heading(local_title, cx).min_w_0().truncate())
                     .child(
+                        // Shown while the pointer is over the heading, like
+                        // the controls of the rows below, so the list's top
+                        // edge stays quiet. They keep their space when
+                        // hidden, so the heading does not reflow on hover.
                         h_flex()
                             .flex_none()
                             .gap_1()
+                            .invisible()
+                            .group_hover("local-heading", |this| this.visible())
                             .child(
                                 toolbar_button("new-workspace")
                                     .icon(IconName::Plus)
