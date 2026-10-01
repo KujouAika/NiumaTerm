@@ -7,6 +7,10 @@ name = "niumaterm-relay"
 main = "src/index.ts"
 compatibility_date = "2026-07-29"
 
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 # One HostRoom per host id pairs the host's sockets with its clients'.
 # One PairingDirectory per user maps short-lived pairing slots to host ids.
 # One UserQuota per user counts that user's client connections.
