@@ -3724,7 +3724,6 @@ impl AppWindow {
             side_chat: self
                 .active_agent()
                 .and_then(|pane| pane.read(cx).side_chat_shown()),
-            connected_devices: cx.global::<Remote>().connected_devices(),
         }
     }
 

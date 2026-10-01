@@ -4,7 +4,7 @@ mod tests;
 use app::design::TITLE_BAR_HEIGHT;
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Div, Entity, SharedString, div, px};
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::Button;
 use gpui_component::modern_menu::ModernMenu;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed, TitleBar, h_flex,
@@ -12,7 +12,7 @@ use gpui_component::{
 use nmt_config::appearance::TabShape;
 use rust_i18n::t;
 
-use crate::ui::composition::{TOOLBAR_BUTTON_SIZE, toolbar_button, toolbar_toggle};
+use crate::ui::composition::{toolbar_button, toolbar_toggle};
 use crate::ui::git_status::{GitStatusModel, GitStatusView};
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::shell::{ToggleBackgroundTasks, ToggleGitSidebar, ToggleWorkflows};
@@ -57,11 +57,6 @@ pub(crate) struct TitleBarInputs {
     /// Whether the active tab's Side Chat window is showing, absent until a
     /// side question opens one.
     pub(crate) side_chat: Option<bool>,
-
-    /// Names of the paired devices connected to this computer. The bar
-    /// counts them while there are any, since each can view and type into
-    /// the tabs here.
-    pub(crate) connected_devices: Vec<String>,
 }
 
 /// The middle of the bar.
@@ -126,7 +121,6 @@ impl WindowTitleBar {
             workflows,
             background_tasks,
             side_chat,
-            connected_devices,
         } = inputs;
 
         let appearance = &cx.global::<AppSettings>().config().appearance;
@@ -276,12 +270,6 @@ impl WindowTitleBar {
                             .flex_none()
                             .occlude()
                             .child(side_chat_button(shown, cx))
-                    }))
-                    .children((!connected_devices.is_empty()).then(|| {
-                        div()
-                            .flex_none()
-                            .occlude()
-                            .child(connected_devices_button(&connected_devices, cx))
                     })),
             )
     }
@@ -393,26 +381,6 @@ fn side_chat_button(shown: bool, cx: &mut Context<AppWindow>) -> impl IntoElemen
         .icon(SideChatIcon)
         .tooltip(t!("agent-side-chat"))
         .on_click(cx.listener(|this, _: &bool, _, cx| this.on_toggle_side_chat(cx)))
-}
-
-/// Upper-right count of the paired devices connected to this computer,
-/// naming them on hover. It opens the settings, where the Remote page lists
-/// and revokes them.
-fn connected_devices_button(devices: &[String], cx: &mut Context<AppWindow>) -> impl IntoElement {
-    // Sized like the panel toggles, which grow past the square icon target
-    // for their count; a square button would clip it.
-    Button::new("connected-devices")
-        .ghost()
-        .min_w(px(TOOLBAR_BUTTON_SIZE))
-        .h(px(TOOLBAR_BUTTON_SIZE))
-        .px(px(6.))
-        .gap_2()
-        .icon(IconName::Globe)
-        .label(devices.len().to_string())
-        .tooltip(t!("remote-connected-devices", devices = devices.join(", ")).into_owned())
-        .on_click(cx.listener(|this, _, window, cx| {
-            this.on_show_settings(&ShowSettings, window, cx);
-        }))
 }
 
 /// A control in the leading group, sized by the platform so the group's

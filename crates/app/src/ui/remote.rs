@@ -446,14 +446,6 @@ impl Remote {
             .map_or(Presence::Paired, |host| host.presence(id))
     }
 
-    /// Names of the paired devices connected to this host now.
-    pub(crate) fn connected_devices(&self) -> Vec<String> {
-        self.host
-            .as_ref()
-            .map(HostService::connected_devices)
-            .unwrap_or_default()
-    }
-
     /// Names of the paired devices viewing any of these host panes.
     pub(crate) fn viewers_of(&self, panes: impl IntoIterator<Item = EntityId>) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
