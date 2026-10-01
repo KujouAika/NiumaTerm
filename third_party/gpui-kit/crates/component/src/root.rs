@@ -68,20 +68,27 @@ pub(crate) struct ActiveDialog {
     /// The previous focused handle before opening the Dialog.
     previous_focused_handle: Option<WeakFocusHandle>,
     selection_scope: TextSelectionScopeId,
+    /// The builder closure's type, which identifies the call site that
+    /// opened this dialog.
+    kind: TypeId,
     builder: Rc<dyn Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static>,
 }
 
 impl ActiveDialog {
-    pub(crate) fn new(
+    pub(crate) fn new<F>(
         focus_handle: FocusHandle,
         previous_focused_handle: Option<WeakFocusHandle>,
         selection_scope: TextSelectionScopeId,
-        builder: impl Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
-    ) -> Self {
+        builder: F,
+    ) -> Self
+    where
+        F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
+    {
         Self {
             focus_handle,
             previous_focused_handle,
             selection_scope,
+            kind: TypeId::of::<F>(),
             builder: Rc::new(builder),
         }
     }
@@ -295,6 +302,16 @@ impl Root {
     where
         F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
     {
+        // Every closure has its own type, so a matching type means the same
+        // call site is already showing its dialog. Repeated triggers (a held
+        // shortcut, Alt+F4 pressed again under a close confirmation) would
+        // otherwise stack identical modals that each need dismissing.
+        let kind = TypeId::of::<F>();
+        if let Some(existing) = self.active_dialogs.iter().find(|d| d.kind == kind) {
+            existing.focus_handle.focus(window, cx);
+            return;
+        }
+
         let mut previous_focused_handle = window.focused(cx).map(|h| h.downgrade());
 
         // Use pending focus restore if available to maintain correct focus chain
@@ -694,5 +711,35 @@ mod tests {
             Root::new(view, window, cx).bordered(false).bordered(true)
         });
         assert!(root.read_with(cx, |root, _| root.bordered));
+    }
+
+    #[gpui::test]
+    fn reopening_from_the_same_call_site_keeps_one_dialog(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| TestView);
+            Root::new(view, window, cx)
+        });
+
+        fn open_confirm(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
+            root.open_dialog(|dialog, _, _| dialog.title("Close?"), window, cx);
+        }
+
+        root.update_in(cx, |root, window, cx| {
+            open_confirm(root, window, cx);
+            open_confirm(root, window, cx);
+        });
+        assert_eq!(root.read_with(cx, |root, _| root.active_dialogs.len()), 1);
+
+        root.update_in(cx, |root, window, cx| {
+            root.open_dialog(|dialog, _, _| dialog.title("Other"), window, cx);
+        });
+        assert_eq!(root.read_with(cx, |root, _| root.active_dialogs.len()), 2);
+
+        root.update_in(cx, |root, window, cx| {
+            root.close_all_dialogs(window, cx);
+            open_confirm(root, window, cx);
+        });
+        assert_eq!(root.read_with(cx, |root, _| root.active_dialogs.len()), 1);
     }
 }
