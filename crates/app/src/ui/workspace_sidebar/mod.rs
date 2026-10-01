@@ -120,6 +120,7 @@ impl Sidebar {
                     .pt(px(SIDEBAR_GROUP_GAP))
                     .into_any_element(),
                 &remote,
+                self.width,
                 cx,
             ),
         };

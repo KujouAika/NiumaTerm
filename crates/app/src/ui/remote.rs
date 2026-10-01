@@ -42,7 +42,6 @@ use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use nmt_remote_core::push::PushKind;
 use nmt_remote_core::rpc::{
     AgentOpen, AgentProfileInfo, HostInfo, SessionInfo, SessionKind, SessionRef, SessionWorkspace,
-    WorkspaceInfo,
 };
 use rust_i18n::t;
 use serde_json::Value;
@@ -54,7 +53,7 @@ use uuid::Uuid;
 use crate::last_active_window;
 use crate::ui::settings::AgentProfile;
 use crate::ui::{AppSettings, AppWindow, DeviceClose, WindowRegistry};
-use crate::workspace::WorkspaceManager;
+use crate::workspace::{WorkspaceId, WorkspaceManager};
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
 
@@ -1069,6 +1068,13 @@ fn withdraw_offer(registry: &SessionRegistry, id: &str, own: &WeakUnboundedSende
     }
 }
 
+/// The id paired devices know a workspace of `window` by, both on the
+/// sessions it holds and in the workspaces `host.info` offers. Workspace ids
+/// count up per window, so the window keeps two windows' workspaces apart.
+pub(crate) fn device_workspace_id(window: WindowId, workspace: WorkspaceId) -> String {
+    format!("{}-{}", window.as_u64(), workspace.0)
+}
+
 /// Tell paired devices which workspace of `window` each shared session's
 /// tab sits in. The window calls this on every render, which follows tabs
 /// opening, closing, and moving and workspaces being renamed or reordered,
@@ -1078,10 +1084,8 @@ pub(crate) fn sync_workspaces(window: WindowId, workspaces: &WorkspaceManager, c
     let remote = cx.global::<Remote>();
 
     for (position, (id, name, tabs)) in workspaces.normal_workspaces().enumerate() {
-        // Workspace ids count up per window, so the window keeps two
-        // windows' workspaces apart.
         let workspace = SessionWorkspace {
-            id: format!("{}-{}", window.as_u64(), id.0),
+            id: device_workspace_id(window, id),
             name,
             position: u32::try_from(position).unwrap_or(u32::MAX),
         };
@@ -1513,10 +1517,7 @@ fn host_offers(cx: &mut App) -> Result<Value, String> {
     let workspaces = last_active_window(cx)
         .and_then(|(_, view)| view.upgrade())
         .map(|view| view.read(cx).device_workspaces())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(name, path)| WorkspaceInfo { name, path })
-        .collect();
+        .unwrap_or_default();
 
     serde_json::to_value(HostInfo { agents, workspaces }).map_err(|error| error.to_string())
 }

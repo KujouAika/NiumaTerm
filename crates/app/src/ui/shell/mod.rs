@@ -65,7 +65,7 @@ use nmt_platform::window::native_active_state;
 use nmt_remote::NetworkPty;
 use nmt_remote::local_view::LocalView;
 use nmt_remote_core::identity::DeviceId;
-use nmt_remote_core::rpc::SessionInfo;
+use nmt_remote_core::rpc::{SessionInfo, WorkspaceInfo};
 use rust_i18n::t;
 use tracing::warn;
 
@@ -110,7 +110,7 @@ use crate::ui::workspace_sidebar;
 use crate::ui::workspace_sidebar::{Sidebar, SidebarUsage, WorkspaceChrome};
 use crate::workspace::{
     ProgressTally, TerminalActivity, WorkspaceId, WorkspaceKind, WorkspaceManager, WorkspaceRoots,
-    best_match, exact_match,
+    best_match, exact_match, workspace_display_label,
 };
 
 /// Open terminal windows in creation order, plus the last closed window's
@@ -2125,15 +2125,21 @@ impl AppWindow {
     }
 
     /// The workspaces a paired device may start an agent in: this window's
-    /// normal workspaces, by name and primary directory.
-    pub(crate) fn device_workspaces(&self) -> Vec<(String, String)> {
+    /// normal workspaces, by id, name and primary directory.
+    pub(crate) fn device_workspaces(&self) -> Vec<WorkspaceInfo> {
         self.workspaces
             .summaries()
             .into_iter()
             .filter(|workspace| {
                 workspace.kind == WorkspaceKind::Normal && !workspace.cwd.is_empty()
             })
-            .map(|workspace| (workspace.name, workspace.cwd))
+            // Sessions name their workspace by this label, so a device can
+            // set each one under the workspace offered with the same name.
+            .map(|workspace| WorkspaceInfo {
+                id: Some(remote::device_workspace_id(self.window_id, workspace.id)),
+                name: workspace_display_label(&workspace.name, &workspace.cwd),
+                path: workspace.cwd,
+            })
             .collect()
     }
 

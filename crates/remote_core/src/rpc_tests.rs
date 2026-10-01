@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::rpc::{Control, ErrorCode, RpcError};
+use crate::rpc::{Control, ErrorCode, HostInfo, RpcError};
 
 #[test]
 fn control_messages_decode_to_the_shape_they_were_encoded_from() {
@@ -41,4 +41,17 @@ fn control_messages_decode_to_the_shape_they_were_encoded_from() {
         }
     ));
     assert!(Control::decode(br#"{"jsonrpc":"2.0","id":4}"#).is_err());
+}
+
+#[test]
+fn host_info_from_a_host_without_workspace_ids_still_decodes() {
+    let older = json!({
+        "agents": [],
+        "workspaces": [{ "name": "app", "path": "C:/app" }],
+    });
+
+    let info: HostInfo = serde_json::from_value(older).unwrap();
+
+    assert_eq!(info.workspaces[0].id, None);
+    assert_eq!(info.workspaces[0].name, "app");
 }

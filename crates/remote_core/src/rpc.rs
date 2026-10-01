@@ -203,6 +203,12 @@ pub struct AgentProfileInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
+    /// The id a session's `SessionWorkspace` names this workspace by, so a
+    /// device can group sessions under it even when two workspaces share a
+    /// name. Hosts from before workspace ids send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+
     pub name: String,
 
     /// The workspace's primary directory on the host.

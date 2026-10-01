@@ -52,9 +52,9 @@ const WORKSPACE_LIST_GAP: f32 = 6.0;
 
 /// A workspace heading: its name, and the path that trails it on the same
 /// line. The path is set small enough to read as an annotation on the name.
-const WORKSPACE_NAME_TEXT: f32 = 13.0;
+pub(super) const WORKSPACE_NAME_TEXT: f32 = 13.0;
 
-const WORKSPACE_PATH_TEXT: f32 = 10.5;
+pub(super) const WORKSPACE_PATH_TEXT: f32 = 10.5;
 
 impl WorkspaceList {
     pub(super) fn new() -> Self {
@@ -593,7 +593,7 @@ fn workspace_dirs_description(cwd: &str, additional: &[String]) -> String {
     description
 }
 
-fn tail_preserving_path(path: &str, max_chars: usize) -> String {
+pub(super) fn tail_preserving_path(path: &str, max_chars: usize) -> String {
     let length = path.chars().count();
 
     if length <= max_chars || max_chars == 0 {
