@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::modern_menu::{MenuView, Row, metrics, snapshot};
-use crate::{ActiveTheme as _, Icon, IconName};
+use crate::{ActiveTheme as _, Icon, IconName, Sizable as _};
 
 impl Render for MenuView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -111,7 +111,7 @@ impl Render for MenuView {
                                         .justify_center()
                                         .gap(metrics::COMMAND_LABEL_GAP)
                                         .child(div().flex_none().size(metrics::ICON_SIZE).children(
-                                            icon.map(|icon| icon.size(metrics::ICON_SIZE)),
+                                            icon.map(|icon| icon.with_size(metrics::ICON_SIZE)),
                                         ))
                                         .child(
                                             div()
@@ -159,11 +159,9 @@ impl Render for MenuView {
                                     .text_color(enabled_color)
                                     .when(lit, |this| this.bg(hover_color))
                                     .hover(|this| this.bg(hover_color))
-                                    .child(
-                                        div().flex_none().size(metrics::ICON_SIZE).children(
-                                            icon.map(|icon| icon.size(metrics::ICON_SIZE)),
-                                        ),
-                                    )
+                                    .child(div().flex_none().size(metrics::ICON_SIZE).children(
+                                        icon.map(|icon| icon.with_size(metrics::ICON_SIZE)),
+                                    ))
                                     .child(label)
                                     .child(div().flex_1())
                                     .child(
@@ -201,12 +199,15 @@ impl Render for MenuView {
                     .items_center()
                     .gap(metrics::ICON_GAP)
                     // Kept even when the item has no icon, so the labels of one
-                    // menu line up with each other.
+                    // menu line up with each other. The icon is sized through
+                    // `Sizable` because a preset size the caller already set
+                    // (`.xsmall()`) outranks a style size, and would leave a
+                    // smaller glyph pinned to the top-left of this column.
                     .child(
                         div()
                             .flex_none()
                             .size(metrics::ICON_SIZE)
-                            .children(icon.map(|icon| icon.size(metrics::ICON_SIZE))),
+                            .children(icon.map(|icon| icon.with_size(metrics::ICON_SIZE))),
                     )
                     .child(label);
 
