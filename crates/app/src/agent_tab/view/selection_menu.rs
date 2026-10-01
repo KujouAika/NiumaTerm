@@ -5,6 +5,7 @@ use gpui_component::{IconName, WindowExt as _};
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
+use crate::copy_toast::show_text_copied;
 
 /// The menu over transcript text the user just selected: copy it, or quote
 /// it into the composer of `pane`. Nothing opens when the release left no
@@ -36,8 +37,10 @@ pub(crate) fn show_selected_text_menu(
         // the command row reaches them in one horizontal band instead of a
         // stack of labelled rows the pointer has to travel down.
         .commands(|menu| {
-            menu.item(t!("agent-transcript-copy"), move |_, cx| {
+            menu.item(t!("agent-transcript-copy"), move |window, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+
+                show_text_copied(window, cx);
             })
             .icon(IconName::Copy)
             .item(t!("agent-transcript-quote"), move |window, cx| {

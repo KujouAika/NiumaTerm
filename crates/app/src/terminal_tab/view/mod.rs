@@ -8,7 +8,6 @@ use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use futures::StreamExt;
 use gpui::prelude::*;
@@ -19,8 +18,6 @@ use gpui::{
     MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size, UTF16Selection,
     Window, actions, div, list, point, px, rgb, size,
 };
-use gpui_component::WindowExt as _;
-use gpui_component::notification::Notification;
 use nmt_agent::AgentRoute;
 use nmt_config::local_state::TabState;
 use nmt_config::{CursorShape, active_colors};
@@ -36,6 +33,7 @@ use nmt_terminal::session::{HostEvent, SessionChange, SurfaceMouseButton, Termin
 use rust_i18n::t;
 use tracing::warn;
 
+use crate::copy_toast::show_text_copied;
 use crate::remote_control::{CloseTab, ControlSheet, HostControl};
 use crate::terminal_tab::block_list::live::LiveItemState;
 use crate::terminal_tab::frame::TerminalFrame;
@@ -145,8 +143,6 @@ pub struct TerminalPane {
 }
 
 pub struct AgentInterrupted;
-
-struct TextCopiedNotification;
 
 struct DesktopClipboard;
 
@@ -818,17 +814,7 @@ impl TerminalPane {
         cx: &mut Context<Self>,
     ) {
         if self.model.finish_copy(text, completion) {
-            window.push_notification(
-                Notification::new()
-                    .message(t!("terminal-text-copied"))
-                    .id::<TextCopiedNotification>()
-                    .autohide_after(Duration::from_millis(1500))
-                    .show_close(false)
-                    .w_auto()
-                    .px_3()
-                    .py_2(),
-                cx,
-            );
+            show_text_copied(window, cx);
 
             self.invalidate(cx);
 

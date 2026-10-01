@@ -6,6 +6,7 @@ pub(crate) use crate::i18n::_rust_i18n_t;
 
 pub mod agent_tab;
 pub mod assets;
+pub mod copy_toast;
 pub mod design;
 pub mod platform_style;
 pub mod remote_control;
