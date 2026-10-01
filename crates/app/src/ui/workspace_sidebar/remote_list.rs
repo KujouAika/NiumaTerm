@@ -107,28 +107,13 @@ pub(super) fn remote_workspace_blocks(
     blocks
 }
 
-/// A host heading its workspaces, with the control that starts a terminal
-/// there. A remote terminal opens in the host's default directory, so it
-/// needs no workspace to start from.
+/// A host heading its workspaces. New tabs start from a workspace row, so
+/// what they open is tied to a place on the host.
 fn host_row(index: usize, host: &RemoteWorkspace, cx: &mut Context<AppWindow>) -> AnyElement {
-    let terminal_host = host.id.clone();
-
-    let new_terminal = hover_action(
-        ("remote-new-terminal", index),
-        t!("settings-remote-new-terminal"),
-        HoverActionLayout::Bare,
-        HoverActionVisibility::OnGroupHover("remote-host".into()),
-        toolbar_button(("remote-new-terminal-button", index))
-            .icon(IconName::Plus)
-            .accessibility_label(t!("settings-remote-new-terminal"))
-            .on_click(move |_, window, cx| remote::open_terminal(&terminal_host, window, cx)),
-    );
-
     let name: SharedString = host.name.clone().into();
 
     h_flex()
         .id(("remote-host", index))
-        .group("remote-host")
         .w_full()
         .min_h(px(24.))
         .pl(px(WORKSPACE_NAME_INSET))
@@ -145,7 +130,6 @@ fn host_row(index: usize, host: &RemoteWorkspace, cx: &mut Context<AppWindow>) -
                 .text_color(cx.theme().sidebar_foreground.opacity(0.7))
                 .child(name),
         )
-        .child(new_terminal)
         .into_any_element()
 }
 
