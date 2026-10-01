@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, ClickEvent, FocusHandle, SharedString, Window, div, px};
+use gpui::{AnyElement, App, ClickEvent, FocusHandle, Role, SharedString, Window, div, px};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 use tokio::sync::watch;
@@ -79,6 +79,10 @@ impl ControlSheet {
 
         div()
             .id("control-sheet")
+            // The sheet holds keyboard focus over the pane, so screen readers
+            // announce it, named by its message, instead of the whole window.
+            .role(Role::Dialog)
+            .aria_label(self.message.clone())
             .track_focus(&self.focus)
             .absolute()
             .top_0()

@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 
 use gpui::prelude::*;
 use gpui::{
-    Anchor, AnyElement, App, Context, Entity, FocusHandle, Focusable, Render, Subscription, Task,
-    Window, div, px,
+    Anchor, AnyElement, App, Context, Entity, FocusHandle, Focusable, Render, Role, Subscription,
+    Task, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Enter, Escape, InputEvent, MoveDown, MoveUp, Textarea, TextareaState};
@@ -1021,6 +1021,11 @@ impl Render for TeamPane {
 
         let surface = v_flex()
             .debug_selector(|| "team-surface".into())
+            // The surface holds keyboard focus between member panes, so it
+            // needs its own node for screen readers to announce it rather than
+            // the whole window.
+            .id("team-surface")
+            .role(Role::Pane)
             .size_full()
             .relative()
             .min_h_0()

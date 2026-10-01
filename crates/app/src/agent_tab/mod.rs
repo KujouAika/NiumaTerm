@@ -48,8 +48,8 @@ use futures::channel::oneshot;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Image, IntoElement,
-    MouseButton, MouseUpEvent, Pixels, Render, SharedString, WeakEntity, Window, div, px, relative,
-    size,
+    MouseButton, MouseUpEvent, Pixels, Render, Role, SharedString, WeakEntity, Window, div, px,
+    relative, size,
 };
 use gpui_base::TextSelection;
 use gpui_component::input::{
@@ -4820,6 +4820,8 @@ impl Render for AgentPane {
             let waiting = self.session.borrow().input().waiting();
 
             return v_flex()
+                .id("agent-pane")
+                .role(Role::Pane)
                 .size_full()
                 .min_h_0()
                 .track_focus(&self.focus)
@@ -5018,6 +5020,11 @@ impl Render for AgentPane {
         let sheet = self.control_sheet(window, cx);
 
         v_flex()
+            // The pane takes keyboard focus when the transcript is clicked, so
+            // it needs its own node for screen readers to announce it rather
+            // than the whole window.
+            .id("agent-pane")
+            .role(Role::Pane)
             .size_full()
             .relative()
             // The outer frame matches the window chrome. The Agent surface owns

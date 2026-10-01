@@ -15,8 +15,8 @@ use gpui::{
     AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, EntityInputHandler,
     EventEmitter, ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, KeyUpEvent,
     Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size, UTF16Selection,
-    Window, actions, div, list, point, px, rgb, size,
+    MouseUpEvent, Pixels, Point, Role, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    UTF16Selection, Window, actions, div, list, point, px, rgb, size,
 };
 use nmt_agent::AgentRoute;
 use nmt_config::local_state::TabState;
@@ -1336,6 +1336,9 @@ impl Render for TerminalPane {
             // Stateful id: hover-end tracking (the link-underline clear
             // below) needs element state.
             .id(("terminal-pane", self.identity.id as usize))
+            // The pane holds keyboard focus, so it needs its own node for
+            // screen readers to announce a terminal rather than the window.
+            .role(Role::Terminal)
             .size_full()
             .relative()
             // This is the terminal region's single full-bleed background;

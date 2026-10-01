@@ -12,7 +12,7 @@ use app::utils::on_runtime;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, Point, Render,
-    ScrollStrategy, UniformListScrollHandle, Window, div, px, relative,
+    Role, ScrollStrategy, UniformListScrollHandle, Window, div, px, relative,
 };
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, ElementExt, IconName, h_flex, v_flex};
@@ -553,6 +553,11 @@ impl Render for GitSidebar {
         let review = self.render_review(cx);
 
         h_flex()
+            // The sidebar takes keyboard focus for its file-list shortcuts, so
+            // it needs its own node for screen readers to announce it rather
+            // than the whole window.
+            .id("git-sidebar")
+            .role(Role::Pane)
             .size_full()
             .min_w_0()
             .overflow_hidden()
