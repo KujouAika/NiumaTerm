@@ -388,9 +388,46 @@ fn dark_runs(qr: &QrCode) -> Rc<[QrRun]> {
     runs.into()
 }
 
+/// Removing a device revokes its key and cuts its open sessions, and it can
+/// only come back with a new pairing code, so it is confirmed first.
+fn confirm_remove(device: &PairedDevice, window: &mut Window, cx: &mut App) {
+    let id = device.id.clone();
+    let title = t!("settings-remote-remove-title", name = device.name.as_str());
+
+    window.open_dialog(cx, move |dialog, _, _| {
+        let remove_id = id.clone();
+
+        dialog
+            .centered(true)
+            .title(title.clone())
+            .child(t!("settings-remote-remove-message"))
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        DialogClose::new().child(
+                            Button::new("remote-remove-cancel")
+                                .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                                .label(t!("settings-common-cancel")),
+                        ),
+                    )
+                    .child(
+                        Button::new("remote-remove-confirm")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .danger()
+                            .label(t!("settings-remote-remove"))
+                            .on_click(move |_, window, cx: &mut App| {
+                                window.close_dialog(cx);
+
+                                remote::remove_device(&remove_id, cx);
+                            }),
+                    ),
+            )
+    });
+}
+
 fn device_item(device: PairedDevice, presence: Presence) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
-        let id = device.id.clone();
+        let remove_device = device.clone();
 
         let (status, status_color) = match presence {
             Presence::Paired => (
@@ -432,7 +469,9 @@ fn device_item(device: PairedDevice, presence: Presence) -> SettingItem {
                 )))
                 .outline()
                 .label(t!("settings-remote-remove"))
-                .on_click(move |_, _, cx: &mut App| remote::remove_device(&id, cx)),
+                .on_click(move |_, window, cx: &mut App| {
+                    confirm_remove(&remove_device, window, cx)
+                }),
             )
             .into_any_element()
     })
