@@ -12,9 +12,9 @@ use app::agent_tab::settings::AgentSettings;
 use app::terminal_tab::settings::{TerminalSettings, theme_default_background};
 use gpui::{App, rgb};
 
+use crate::ui::default_font_fallbacks;
 use crate::ui::settings::opacity::main_view_background_opacity;
 use crate::ui::settings::state::AppSettings;
-use crate::ui::{UI_RADIUS, default_font_fallbacks};
 
 pub(crate) fn install_terminal_settings(cx: &mut App) {
     cx.set_global(terminal_snapshot(cx));
@@ -106,7 +106,6 @@ fn terminal_snapshot(cx: &App) -> TerminalSettings {
         font_size: settings.config().appearance.terminal_font_size as f32,
         line_height: settings.config().appearance.terminal_line_height as f32,
         background_opacity: main_view_background_opacity(cx),
-        corner_radius: UI_RADIUS,
         font_fallbacks: default_font_fallbacks(),
         improve_powershell_compatibility: settings
             .config()

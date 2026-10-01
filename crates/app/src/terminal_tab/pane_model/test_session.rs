@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use futures::task::AtomicWaker;
-use gpui::{FontFallbacks, px};
+use gpui::FontFallbacks;
 use nmt_config::CursorShape;
 use nmt_config::appearance::InputStyle;
 use nmt_config::colors::Colors;
@@ -172,7 +172,6 @@ pub(crate) fn streaming_controller(
         font_size: 14.0,
         line_height: 1.0,
         background_opacity: 1.0,
-        corner_radius: px(0.0),
         font_fallbacks: FontFallbacks::default(),
         smooth_wheel: true,
         scroll_to_bottom_when_typing: true,

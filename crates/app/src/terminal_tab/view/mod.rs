@@ -1356,11 +1356,6 @@ impl Render for TerminalPane {
             // cells with explicit background colors stay opaque on top.
             .bg(rgb(self.model.theme.background.into())
                 .opacity(cx.global::<TerminalSettings>().background_opacity))
-            // The shell frames each pane as a 1px-bordered rounded card; the
-            // fill is rounded to the card's inner radius so its corners don't
-            // paint square over the frame. The cell padding below keeps glyphs
-            // clear of the rounded corners.
-            .rounded(cx.global::<TerminalSettings>().corner_radius - px(1.))
             .text_color(rgb(self.model.theme.foreground.into()))
             .font(cx.global::<TerminalSettings>().font())
             .text_size(px(metrics::font_size_px(cx)))

@@ -90,7 +90,6 @@ fn restored_grid_reaches_the_shell_before_its_first_output(cx: &mut TestAppConte
             font_size: 14.0,
             line_height: 1.2,
             background_opacity: 1.0,
-            corner_radius: px(0.0),
             font_fallbacks: Default::default(),
         });
     });
