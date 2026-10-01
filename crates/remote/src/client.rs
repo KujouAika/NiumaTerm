@@ -118,10 +118,10 @@ impl HelloClock {
     }
 }
 
-/// Pair with the host showing `code`. With an `address` (`host:port`) only
-/// that address is tried; otherwise the LAN is searched for the code's slot
-/// and, when a relay is known (from a pairing link), the relay is tried in
-/// parallel. A key from a pairing link makes the exchange fail unless that
+/// Pair with the host showing `code`. With an `address` (`host:port`) that
+/// address is tried; otherwise the LAN is searched for the code's slot.
+/// When a relay is known (from a pairing link), the relay is tried in
+/// parallel either way. A key from a pairing link makes the exchange fail unless that
 /// exact host answers.
 pub async fn pair(
     address: Option<&str>,
@@ -147,9 +147,11 @@ pub async fn pair(
         anyhow::Ok((host_key, accepted, Some(address)))
     };
 
+    // An address from a pairing link is the host's LAN address, which a
+    // client on another network cannot reach, so the relay still races it.
     let paired = async {
-        match (&relay, address) {
-            (Some(relay), None) => {
+        match &relay {
+            Some(relay) => {
                 race(lan, || async {
                     let ws = dial_pairing(relay, code.slot()).await?;
 
@@ -160,7 +162,7 @@ pub async fn pair(
                 })
                 .await
             }
-            _ => lan.await,
+            None => lan.await,
         }
     };
 
