@@ -40,6 +40,7 @@ use gpui_windows::WindowsPlatform as Platform;
 use nmt_agent::{AgentEvent, AgentRoute, agent_process};
 use nmt_config::local_state::{self, WindowLocalState};
 use nmt_config::{Config, config_dir_path, config_file_path, get, set_testing_mode};
+use nmt_net::set_proxy;
 use nmt_platform::ipc as platform_ipc;
 use nmt_platform::window::show_error_dialog;
 #[cfg(enable_profiling)]
@@ -464,6 +465,11 @@ fn on_settings_changed(cx: &mut App) {
 
     #[cfg(any(windows, target_os = "macos"))]
     update::on_settings_changed(cx);
+
+    // Before hosting syncs, so a relay link it opens uses the new proxy.
+    let system = &cx.global::<AppSettings>().config().system;
+
+    set_proxy(system.proxy, &system.proxy_url);
 
     ui::remote::sync_hosting(cx);
     ui::remote::sync_lan_browse(cx);

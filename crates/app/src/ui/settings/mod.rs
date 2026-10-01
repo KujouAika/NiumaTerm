@@ -279,7 +279,10 @@ pub fn settings_view(editing: Entity<SettingsEditing>, cx: &App) -> Settings {
                 .appearance
                 .show_git_status_on_title_bar,
         ))
-        .page(system_page(shell_integration_mismatched))
+        .page(system_page(
+            shell_integration_mismatched,
+            cx.global::<AppSettings>().config().system.proxy,
+        ))
         .page(profiles_page(&profiles, &agent_profiles))
         .page(terminal_page())
         .page(agent_page(&agent_profiles, cx))

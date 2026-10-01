@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use nmt_net::http_client;
 use reqwest::{Client, Response};
 use sha2::{Digest as _, Sha256};
 use tokio::fs::File as AsyncFile;
@@ -146,7 +147,7 @@ fn package_assets(assets: &[Asset]) -> Option<(&Asset, &Asset)> {
 }
 
 fn client(version: &str) -> Result<Client, InstallError> {
-    Client::builder()
+    http_client()
         .timeout(TRANSFER_TIMEOUT)
         .user_agent(user_agent(version))
         .build()

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::StreamExt as _;
+use nmt_net::connect_websocket;
 use nmt_remote_core::identity::DeviceId;
 use nmt_remote_core::messages::RelayAccess;
 use tokio::net::TcpStream;
@@ -16,7 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub(crate) type RelaySocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -24,8 +25,8 @@ pub(crate) type RelaySocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Connect to `path` on the relay with the access key and optional host
-/// token. `https://` and `http://` URLs are accepted for their WebSocket
-/// equivalents.
+/// token, through the proxy in the settings. `https://` and `http://` URLs
+/// are accepted for their WebSocket equivalents.
 pub(crate) async fn open(
     relay: &RelayAccess,
     path: &str,
@@ -54,7 +55,7 @@ pub(crate) async fn open(
         headers.insert("X-Host-Token", HeaderValue::from_str(token)?);
     }
 
-    let (ws, _) = connect_async(request)
+    let (ws, _) = connect_websocket(request)
         .await
         .with_context(|| format!("reaching the relay at {}", relay.url))?;
 

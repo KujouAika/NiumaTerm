@@ -30,6 +30,7 @@ nmt_config.workspace = true
 nmt_platform.workspace = true
 nmt_remote_core.workspace = true
 nmt_terminal = { workspace = true, optional = true }
+nmt_net.workspace = true
 parking_lot.workspace = true
 reqwest = { workspace = true, optional = true, features = [
     "rustls-tls-native-roots",

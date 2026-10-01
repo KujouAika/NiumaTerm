@@ -12,9 +12,10 @@ use std::time::Duration;
 use std::{env, fmt};
 
 use futures::FutureExt as _;
+use nmt_net::http_client;
 use nmt_platform::process::launch_env_var;
 use nmt_platform::{AsyncPty, PtyOptions};
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Response, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs::File;
@@ -251,7 +252,7 @@ async fn request_oauth_usage() -> Result<UsageSnapshot, OAuthFetchError> {
         .await
         .map_err(OAuthFetchError::Fallback)?;
 
-    let client = Client::builder()
+    let client = http_client()
         .timeout(OAUTH_FETCH_TIMEOUT)
         .build()
         .map_err(|_| {

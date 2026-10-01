@@ -309,6 +309,13 @@
 "settings-system-prioritize-ui-description" = "Raise the main and render thread priority to AboveNormal."
 "settings-system-input" = "Input"
 "settings-system-newline-shortcut" = "Press to Insert New Line"
+"settings-system-network" = "Network"
+"settings-system-proxy" = "Proxy"
+"settings-system-proxy-system" = "System"
+"settings-system-proxy-description" = "Used by NiumaTerm's own requests: the relay, update checks and downloads, and usage queries. Programs started in a terminal keep their own environment. Off connects directly; System reads HTTPS_PROXY and the operating system's proxy settings."
+"settings-system-proxy-url" = "Proxy address"
+"settings-system-proxy-url-description" = "host:port, for example 127.0.0.1:7890. Add user:password@ before the host for a proxy that asks for credentials. Empty uses the system proxy. Open connections keep their route until they reconnect."
+"settings-system-proxy-apply" = "Apply"
 
 # Theme and background controls
 "settings-theme-default" = "Default"

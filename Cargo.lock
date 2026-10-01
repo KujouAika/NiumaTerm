@@ -304,6 +304,7 @@ dependencies = [
  "nmt_agent",
  "nmt_config",
  "nmt_input",
+ "nmt_net",
  "nmt_platform",
  "nmt_profiling",
  "nmt_remote",
@@ -4269,6 +4270,7 @@ dependencies = [
  "hex",
  "image",
  "indexmap",
+ "nmt_net",
  "nmt_platform",
  "nmt_profile",
  "parking_lot",
@@ -4343,6 +4345,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nmt_net"
+version = "1.6.4"
+dependencies = [
+ "anyhow",
+ "hyper-util",
+ "nmt_config",
+ "parking_lot",
+ "reqwest",
+ "tokio",
+ "tokio-socks",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "nmt_platform"
 version = "1.6.4"
 dependencies = [
@@ -4405,6 +4422,7 @@ dependencies = [
  "libc",
  "mdns-sd",
  "nmt_config",
+ "nmt_net",
  "nmt_platform",
  "nmt_remote_core",
  "nmt_terminal",
@@ -4516,6 +4534,7 @@ name = "nmt_updater"
 version = "1.6.4"
 dependencies = [
  "nmt_config",
+ "nmt_net",
  "nmt_platform",
  "nmt_version",
  "objc2 0.6.4",
@@ -7515,6 +7534,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-socks"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7e2948f60dbe26b35f2c7fb74ac2854c1fddded0fe9d7548fcc674a246f7615"
+dependencies = [
+ "either",
+ "futures-util",
+ "thiserror 1.0.69",
  "tokio",
 ]
 

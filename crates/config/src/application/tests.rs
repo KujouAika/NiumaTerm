@@ -60,6 +60,8 @@ fn sample_system() -> SystemConfig {
         newline_shortcut: system::NewlineShortcut::ShiftEnter,
         open_in_best_workspace: false,
         send_system_notifications: false,
+        proxy: system::ProxyMode::Socks,
+        proxy_url: "127.0.0.1:7890".into(),
     }
 }
 

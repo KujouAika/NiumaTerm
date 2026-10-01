@@ -42,3 +42,4 @@ tokio-util.workspace = true
 futures.workspace = true
 smallvec.workspace = true
 nmt_profile.workspace = true
+nmt_net.workspace = true

@@ -83,6 +83,8 @@ prioritize-ui-threads = false
 newline-shortcut = "ctrl-enter"
 open-in-best-workspace = true
 send-system-notifications = true
+proxy = "system"
+proxy-url = ""
 
 [update]
 check-updates = true

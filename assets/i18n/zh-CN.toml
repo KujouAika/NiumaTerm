@@ -308,6 +308,13 @@
 "settings-system-prioritize-ui-description" = "将主线程和渲染线程的优先级提升为 AboveNormal。"
 "settings-system-input" = "输入"
 "settings-system-newline-shortcut" = "按键插入换行"
+"settings-system-network" = "网络"
+"settings-system-proxy" = "代理"
+"settings-system-proxy-system" = "系统"
+"settings-system-proxy-description" = "用于 NiumaTerm 自身发起的请求：中继、检查和下载更新、用量查询。终端里启动的程序沿用各自的环境。“关闭”表示直连；“系统”会读取 HTTPS_PROXY 环境变量和操作系统的代理设置。"
+"settings-system-proxy-url" = "代理地址"
+"settings-system-proxy-url-description" = "host:port，例如 127.0.0.1:7890。需要认证的代理在主机前加 user:password@。留空则使用系统代理。已建立的连接在重连后才会改用新设置。"
+"settings-system-proxy-apply" = "应用"
 
 # Theme and background controls
 "settings-theme-default" = "默认"

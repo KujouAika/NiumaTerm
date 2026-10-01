@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
+use nmt_net::http_client;
 use reqwest::{Client, Response};
 use semver::Version;
 
@@ -30,7 +31,7 @@ pub struct HttpClaudeReleaseChannel {
 
 impl HttpClaudeReleaseChannel {
     pub fn new() -> Result<Self, UpdateError> {
-        let client = Client::builder()
+        let client = http_client()
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|_| {

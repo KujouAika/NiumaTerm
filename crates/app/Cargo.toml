@@ -23,6 +23,7 @@ nmt_platform.workspace = true
 nmt_updater.workspace = true
 nmt_remote.workspace = true
 nmt_remote_core.workspace = true
+nmt_net.workspace = true
 
 dirs.workspace = true
 dunce.workspace = true

@@ -9,6 +9,7 @@ use std::slice::from_ref;
 use std::time::Duration;
 
 use nmt_config::update::UpdateChannel;
+use nmt_net::http_client;
 use nmt_version::Version;
 use reqwest::Client;
 use serde::Deserialize;
@@ -129,7 +130,7 @@ pub struct CheckedRelease {
 }
 
 async fn latest(channel: UpdateChannel, version: &str) -> Result<Option<Release>, CheckError> {
-    let client = Client::builder()
+    let client = http_client()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|_| CheckError::Unreachable)?;

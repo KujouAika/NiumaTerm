@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use nmt_net::http_client;
 use nmt_remote_core::push::{PushEnvironment, PushRegistration};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -43,7 +44,7 @@ struct ForwardResponse {
 }
 
 pub(crate) fn client() -> reqwest::Client {
-    reqwest::Client::builder()
+    http_client()
         .timeout(SEND_TIMEOUT)
         .build()
         .unwrap_or_default()

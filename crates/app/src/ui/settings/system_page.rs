@@ -1,10 +1,13 @@
 #[cfg(any(windows, test))]
 use anyhow::Result;
-use gpui::SharedString;
-#[cfg(any(windows, test))]
-use gpui_component::setting::SettingField;
-use gpui_component::setting::{SettingGroup, SettingItem, SettingPage};
-use nmt_config::system::{NewlineShortcut, WarnBeforeTerminatingShell};
+use gpui::{
+    App, AppContext as _, Entity, ParentElement as _, SharedString, Styled as _, Subscription,
+};
+use gpui_component::button::Button;
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_component::{Disableable as _, Sizable as _, h_flex};
+use nmt_config::system::{NewlineShortcut, ProxyMode, WarnBeforeTerminatingShell};
 #[cfg(windows)]
 use nmt_platform::{
     is_shell_integration_registered, register_shell_integration, set_system_notification_enabled,
@@ -19,7 +22,6 @@ use crate::PlatformHandle;
 use crate::ui::settings::fields::{settings_choice, settings_switch};
 #[cfg(target_os = "macos")]
 use crate::ui::settings::macos_page::macos_group;
-#[cfg(any(windows, test))]
 use crate::ui::settings::state::AppSettings;
 
 /// How the `ctrl-enter` newline shortcut is pressed on this platform. macOS
@@ -31,7 +33,7 @@ const SECONDARY_ENTER_LABEL: &str = "Cmd-Enter";
 #[cfg(not(target_os = "macos"))]
 const SECONDARY_ENTER_LABEL: &str = "Ctrl-Enter";
 
-pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
+pub(super) fn system_page(shell_integration_mismatched: bool, proxy: ProxyMode) -> SettingPage {
     let page = SettingPage::new(t!("settings-system-title"))
         .default_open(true)
         .group(
@@ -188,6 +190,120 @@ pub(super) fn system_page(shell_integration_mismatched: bool) -> SettingPage {
                 .default_value(SharedString::from(<&str>::from(NewlineShortcut::CtrlEnter))),
             )),
     )
+    .group(network_group(proxy))
+}
+
+fn network_group(proxy: ProxyMode) -> SettingGroup {
+    // Only an explicit proxy reads the address. The field keeps its value
+    // while disabled, so switching back restores the last address.
+    let address_used = match proxy {
+        ProxyMode::Off | ProxyMode::System => false,
+        ProxyMode::Http | ProxyMode::Socks => true,
+    };
+
+    SettingGroup::new()
+        .title(t!("settings-system-network"))
+        .item(
+            SettingItem::new(
+                t!("settings-system-proxy"),
+                settings_choice(
+                    vec![
+                        ("off".into(), t!("settings-common-off").into()),
+                        ("system".into(), t!("settings-system-proxy-system").into()),
+                        ("http".into(), "HTTP".into()),
+                        ("socks".into(), "SOCKS5".into()),
+                    ],
+                    |config| config.system.proxy.into(),
+                    |settings, value| {
+                        settings.edit_system(|section| section.proxy = value.into());
+                    },
+                )
+                .default_value(SharedString::from(<&str>::from(ProxyMode::System))),
+            )
+            .description(t!("settings-system-proxy-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(t!("settings-system-proxy-url"), proxy_url_field())
+                .description(t!("settings-system-proxy-url-description").into_owned())
+                .disabled(!address_used),
+        )
+}
+
+struct ProxyUrlInput {
+    input: Entity<InputState>,
+
+    /// The saved address the draft was last reset to.
+    saved: String,
+
+    _subscription: Subscription,
+}
+
+/// The proxy address draft and its Apply button. Every saved setting change
+/// reconnects through the new route, so a half-typed address is kept as a
+/// draft until Apply or Enter. The button stays disabled while the draft
+/// matches the saved address, which shows that nothing is pending.
+fn proxy_url_field() -> SettingField<SharedString> {
+    SettingField::render(|options, window, cx| {
+        let saved = cx.global::<AppSettings>().config().system.proxy_url.clone();
+
+        let state = window.use_keyed_state("system-proxy-url", cx, |window, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("127.0.0.1:7890")
+                    .default_value(saved.clone())
+            });
+
+            // Notifying the state re-renders the page, which recomputes
+            // whether the button has anything to apply.
+            let subscription =
+                cx.subscribe(&input, |_, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => cx.notify(),
+                    InputEvent::PressEnter { .. } => apply_proxy_url(&input, cx),
+                    _ => {}
+                });
+
+            ProxyUrlInput {
+                input,
+                saved: saved.clone(),
+                _subscription: subscription,
+            }
+        });
+
+        let input = state.read(cx).input.clone();
+
+        // A saved address changed elsewhere, by a reset or an imported
+        // config, replaces the draft so the field never shows a stale one.
+        if state.read(cx).saved != saved {
+            input.update(cx, |input, cx| input.set_value(saved.clone(), window, cx));
+            state.update(cx, |state, _| state.saved = saved.clone());
+        }
+
+        let pending = input.read(cx).value().trim() != saved;
+
+        h_flex()
+            .gap_2()
+            .child(
+                Input::new(&input)
+                    .disabled(options.is_disabled())
+                    .with_size(options.size())
+                    .w_64(),
+            )
+            .child(
+                Button::new("system-proxy-apply")
+                    .outline()
+                    .label(t!("settings-system-proxy-apply"))
+                    .with_size(options.size())
+                    .disabled(options.is_disabled() || !pending)
+                    .on_click(move |_, _, cx: &mut App| apply_proxy_url(&input, cx)),
+            )
+    })
+}
+
+fn apply_proxy_url(input: &Entity<InputState>, cx: &mut App) {
+    let url = input.read(cx).value().trim().to_owned();
+
+    cx.global_mut::<AppSettings>()
+        .edit_system(|section| section.proxy_url = url);
 }
 
 #[cfg(any(windows, test))]

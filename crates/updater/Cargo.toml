@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 nmt_config.workspace = true
+nmt_net.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 nmt_platform.workspace = true
