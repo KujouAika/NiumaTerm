@@ -2276,6 +2276,11 @@ impl AppWindow {
             title,
         );
 
+        // Render keeps session workspaces current, but a minimized or
+        // occluded host window may not render for a long time, and until it
+        // does the device would list the new session under no workspace.
+        ui::remote::sync_workspaces(self.window_id, &self.workspaces, cx);
+
         cx.notify();
 
         shared

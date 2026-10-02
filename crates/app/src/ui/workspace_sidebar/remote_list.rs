@@ -64,6 +64,27 @@ pub(super) fn remote_workspace_blocks(
                 })
         };
 
+        // Sessions no offered workspace holds: tabs of a host without
+        // workspaces, of a workspace the host no longer offers, or not yet
+        // placed by the host. They sit right under the host row, since after
+        // the last workspace they would read as that workspace's sessions.
+        let loose = host
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| {
+                !workspaces
+                    .iter()
+                    .zip(&labels)
+                    .any(|(workspace, label)| in_workspace(session, workspace, label))
+            })
+            .map(|(row, session)| session_row(index, row, host, session, cx))
+            .collect::<Vec<_>>();
+
+        if !loose.is_empty() {
+            blocks.push(v_flex().w_full().children(loose).into_any_element());
+        }
+
         for (slot, (workspace, label)) in workspaces.iter().zip(&labels).enumerate() {
             let rows = host
                 .sessions
@@ -82,25 +103,6 @@ pub(super) fn remote_workspace_blocks(
                     .children(rows)
                     .into_any_element(),
             );
-        }
-
-        // Sessions no offered workspace holds: tabs of a host without
-        // workspaces, or of a workspace the host no longer offers.
-        let loose = host
-            .sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, session)| {
-                !workspaces
-                    .iter()
-                    .zip(&labels)
-                    .any(|(workspace, label)| in_workspace(session, workspace, label))
-            })
-            .map(|(row, session)| session_row(index, row, host, session, cx))
-            .collect::<Vec<_>>();
-
-        if !loose.is_empty() {
-            blocks.push(v_flex().w_full().children(loose).into_any_element());
         }
     }
 
