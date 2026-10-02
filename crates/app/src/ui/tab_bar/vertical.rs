@@ -519,6 +519,21 @@ pub(crate) fn fold_row(
     cx: &mut Context<AppWindow>,
     row: impl FnOnce(&mut Context<AppWindow>) -> AnyElement,
 ) -> Option<AnyElement> {
+    fold_block(id, shown, TAB_ROW_HEIGHT, window, cx, |_, cx| row(cx))
+}
+
+/// A [`fold_row`] for a row of another height. The clip caps the row at
+/// `height` rather than sizing it, so a row whose height follows its text
+/// is never stretched: `height` only has to be at least the row's own, and
+/// the closer it is, the sooner a fold starts to visibly shrink the row.
+pub(crate) fn fold_block(
+    id: impl Into<ElementId>,
+    shown: bool,
+    height: f32,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+    row: impl FnOnce(&mut Window, &mut Context<AppWindow>) -> AnyElement,
+) -> Option<AnyElement> {
     let target = match shown {
         true => 1.0,
         false => 0.0,
@@ -536,7 +551,7 @@ pub(crate) fn fold_row(
         return None;
     }
 
-    let row = row(cx);
+    let row = row(window, cx);
 
     // A settled row takes no clip, which would cut off the gap a dragged
     // row opens above it.
@@ -547,7 +562,7 @@ pub(crate) fn fold_row(
     Some(
         div()
             .w_full()
-            .h(px(TAB_ROW_HEIGHT * reveal))
+            .max_h(px(height * reveal))
             .overflow_hidden()
             .opacity(reveal)
             .child(row)

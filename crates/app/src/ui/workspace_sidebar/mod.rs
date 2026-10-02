@@ -83,6 +83,11 @@ pub(super) struct Sidebar {
     /// runtime ids, which name other workspaces once it restarts. A workspace
     /// missing here lists every session.
     remote_folds: HashMap<(String, String), TabFold>,
+
+    /// How much each connected host lists under its row, by host id. Kept
+    /// for the run only like the workspace folds, so a host shows in full
+    /// whenever this computer starts. A host missing here lists everything.
+    remote_host_folds: HashMap<String, TabFold>,
 }
 
 impl Sidebar {
@@ -93,12 +98,20 @@ impl Sidebar {
             width,
             list: WorkspaceList::new(),
             remote_folds: HashMap::default(),
+            remote_host_folds: HashMap::default(),
         }
     }
 
     /// Step a host workspace's session list on to its next fold.
     pub(super) fn cycle_remote_fold(&mut self, host: String, workspace: String) {
         let fold = self.remote_folds.entry((host, workspace)).or_default();
+
+        *fold = fold.next();
+    }
+
+    /// Step what a host lists under its row on to its next fold.
+    pub(super) fn cycle_remote_host_fold(&mut self, host: String) {
+        let fold = self.remote_host_folds.entry(host).or_default();
 
         *fold = fold.next();
     }
@@ -145,6 +158,7 @@ impl Sidebar {
                     .into_any_element(),
                 &remote,
                 &self.remote_folds,
+                &self.remote_host_folds,
                 renames,
                 self.width,
                 window,

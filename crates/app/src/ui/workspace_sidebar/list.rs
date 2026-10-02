@@ -56,7 +56,7 @@ pub(super) struct WorkspaceList {
     dragging: Option<usize>,
 }
 
-const WORKSPACE_LIST_GAP: f32 = 6.0;
+pub(super) const WORKSPACE_LIST_GAP: f32 = 6.0;
 
 /// A workspace heading: its name, and the path that trails it on the same
 /// line. The path is set small enough to read as an annotation on the name.

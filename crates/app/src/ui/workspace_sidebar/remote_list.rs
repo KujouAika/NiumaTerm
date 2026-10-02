@@ -6,8 +6,11 @@ use std::collections::HashMap;
 
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, SharedString, Window, div, px};
-use gpui_component::button::{ButtonCustomVariant, ButtonVariants as _};
+use gpui::{
+    AnyElement, Context, ElementId, FontWeight, SharedString, Window, div, px, relative,
+    transparent_black,
+};
+use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::{ActiveTheme, IconName, IconNamed, Selectable as _, h_flex, v_flex};
 use nmt_config::local_state::TabFold;
@@ -21,22 +24,25 @@ use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::remote::{self, RemoteWorkspace};
 use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle, pending_tab_icon};
 use crate::ui::tab_bar::menu::tab_icon;
-use crate::ui::tab_bar::{fold_row, tab_row, tab_row_icon};
+use crate::ui::tab_bar::{fold_block, fold_row, tab_row, tab_row_icon};
+use crate::ui::workspace_sidebar::SIDEBAR_ROW_GUTTER;
 use crate::ui::workspace_sidebar::list::{
-    Disclosure, WORKSPACE_NAME_TEXT, WORKSPACE_PATH_TEXT, selection_bar, tail_preserving_path,
-    workspace_row_button,
+    Disclosure, WORKSPACE_LIST_GAP, WORKSPACE_NAME_TEXT, WORKSPACE_PATH_TEXT, selection_bar,
+    tail_preserving_path, workspace_row_button,
 };
-use crate::ui::workspace_sidebar::{SIDEBAR_ROW_GUTTER, WORKSPACE_NAME_INSET};
 use crate::ui::{AppWindow, modern_dropdown};
 use crate::workspace::workspace_display_label;
 
-/// The heading of the remote section and each host's blocks under it, in the
-/// list's own rhythm: every block is spaced by the list gap, like the local
-/// workspaces above.
+/// The heading of the remote section and one block per host under it. Each
+/// host's block spaces its rows by the list gap, like the local workspaces
+/// above, but carries those gaps itself: a host folding its rows away folds
+/// the gaps between them too, which the list's own gap could not do.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn remote_workspace_blocks(
     heading: AnyElement,
     remote: &[RemoteWorkspace],
     folds: &HashMap<(String, String), TabFold>,
+    host_folds: &HashMap<String, TabFold>,
     renames: &InlineRenameSession,
     width: f32,
     window: &mut Window,
@@ -45,7 +51,26 @@ pub(super) fn remote_workspace_blocks(
     let mut blocks = vec![heading];
 
     for (index, host) in remote.iter().enumerate() {
-        blocks.push(host_row(index, host, cx));
+        let host_fold = host_folds
+            .get(host.id.as_str())
+            .copied()
+            .unwrap_or_default();
+
+        let host_shows = |session: &SessionInfo| match host_fold {
+            TabFold::All => true,
+            TabFold::Awake => !session.pending,
+            TabFold::Collapsed => false,
+        };
+
+        let is_selected =
+            |session: &SessionInfo| host.selected.as_deref() == Some(session.session.as_str());
+
+        // With the session on screen folded away along with the whole host,
+        // the host row takes over the selection it would show.
+        let host_highlight =
+            host_fold == TabFold::Collapsed && host.sessions.iter().any(is_selected);
+
+        let mut rows = vec![host_row(index, host, host_fold, host_highlight, window, cx)];
 
         let workspaces: &[WorkspaceInfo] = host
             .offers
@@ -85,11 +110,25 @@ pub(super) fn remote_workspace_blocks(
                     .zip(&labels)
                     .any(|(workspace, label)| in_workspace(session, workspace, label))
             })
-            .map(|(row, session)| session_row(index, row, host, session, renames, cx))
             .collect::<Vec<_>>();
 
         if !loose.is_empty() {
-            blocks.push(v_flex().w_full().children(loose).into_any_element());
+            rows.extend(list_gap(
+                ElementId::Name(format!("remote-loose-gap:{}", host.id.as_str()).into()),
+                loose.iter().any(|(_, session)| host_shows(session)),
+                window,
+                cx,
+            ));
+
+            rows.extend(loose.into_iter().filter_map(|(row, session)| {
+                fold_row(
+                    session_fold_id(host, session),
+                    host_shows(session),
+                    window,
+                    cx,
+                    |cx| session_row(index, row, host, session, renames, cx),
+                )
+            }));
         }
 
         for (slot, (workspace, label)) in workspaces.iter().zip(&labels).enumerate() {
@@ -100,45 +139,38 @@ pub(super) fn remote_workspace_blocks(
 
             let fold = folds.get(&fold_key).copied().unwrap_or_default();
 
-            let is_selected =
-                |session: &SessionInfo| host.selected.as_deref() == Some(session.session.as_str());
-
-            let rows = host
+            let sessions = host
                 .sessions
                 .iter()
                 .enumerate()
                 .filter(|(_, session)| in_workspace(session, workspace, label))
                 .filter_map(|(row, session)| {
-                    let shown = match fold {
-                        TabFold::All => true,
-                        TabFold::Awake => !session.pending,
-                        TabFold::Collapsed => false,
-                    };
+                    let shown = host_shows(session)
+                        && match fold {
+                            TabFold::All => true,
+                            TabFold::Awake => !session.pending,
+                            TabFold::Collapsed => false,
+                        };
 
-                    fold_row(
-                        ElementId::Name(
-                            format!(
-                                "remote-session-fold:{}:{}",
-                                host.id.as_str(),
-                                session.session
-                            )
-                            .into(),
-                        ),
-                        shown,
-                        window,
-                        cx,
-                        |cx| session_row(index, row, host, session, renames, cx),
-                    )
+                    fold_row(session_fold_id(host, session), shown, window, cx, |cx| {
+                        session_row(index, row, host, session, renames, cx)
+                    })
                 })
                 .collect::<Vec<_>>();
 
             // With the session on screen folded away, its workspace row takes
-            // over the selection it would show.
-            let highlight = fold == TabFold::Collapsed
+            // over the selection it would show, unless the host row already
+            // has because the whole host is folded.
+            let highlight = host_fold != TabFold::Collapsed
+                && fold == TabFold::Collapsed
                 && host
                     .sessions
                     .iter()
                     .any(|session| in_workspace(session, workspace, label) && is_selected(session));
+
+            let fold_id = ElementId::Name(
+                format!("remote-workspace-fold:{}:{}", fold_key.0, fold_key.1).into(),
+            );
 
             let row = WorkspaceRow {
                 index,
@@ -148,44 +180,149 @@ pub(super) fn remote_workspace_blocks(
                 highlight,
             };
 
-            blocks.push(
-                v_flex()
-                    .w_full()
-                    .child(workspace_row(
-                        row, host, workspace, label, width, window, cx,
-                    ))
-                    .children(rows)
-                    .into_any_element(),
-            );
+            // Every host fold but the collapsed one keeps the workspaces
+            // listed, since new tabs start from their rows.
+            rows.extend(fold_block(
+                fold_id,
+                host_fold != TabFold::Collapsed,
+                WORKSPACE_LIST_GAP + WORKSPACE_ROW_HEIGHT,
+                window,
+                cx,
+                |window, cx| {
+                    v_flex()
+                        .w_full()
+                        .pt(px(WORKSPACE_LIST_GAP))
+                        .child(workspace_row(
+                            row, host, workspace, label, width, window, cx,
+                        ))
+                        .into_any_element()
+                },
+            ));
+
+            rows.extend(sessions);
         }
+
+        blocks.push(v_flex().w_full().children(rows).into_any_element());
     }
 
     blocks
 }
 
-/// A host heading its workspaces. New tabs start from a workspace row, so
-/// what they open is tied to a place on the host.
-fn host_row(index: usize, host: &RemoteWorkspace, cx: &mut Context<AppWindow>) -> AnyElement {
-    let name: SharedString = host.name.clone().into();
+/// At least the height of a host workspace row, whose height follows its
+/// text, and close to it so folding the host shrinks the row at once.
+const WORKSPACE_ROW_HEIGHT: f32 = 28.0;
 
-    h_flex()
-        .id(("remote-host", index))
-        .w_full()
-        .min_h(px(24.))
-        .pl(px(WORKSPACE_NAME_INSET))
-        .pr(px(SIDEBAR_ROW_GUTTER))
-        .gap_1p5()
-        .items_center()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(px(WORKSPACE_NAME_TEXT))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(cx.theme().sidebar_foreground.opacity(0.7))
-                .child(name),
+/// The gap the list puts between two of its blocks, kept inside a host's
+/// block so it folds away with the rows it separates.
+fn list_gap(
+    id: ElementId,
+    shown: bool,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) -> Option<AnyElement> {
+    fold_block(id, shown, WORKSPACE_LIST_GAP, window, cx, |_, _| {
+        div().h(px(WORKSPACE_LIST_GAP)).into_any_element()
+    })
+}
+
+/// Names a session's fold motion by host and session rather than list
+/// position, so a session moving between the host's loose rows and one of
+/// its workspaces keeps the motion it is in.
+fn session_fold_id(host: &RemoteWorkspace, session: &SessionInfo) -> ElementId {
+    ElementId::Name(
+        format!(
+            "remote-session-fold:{}:{}",
+            host.id.as_str(),
+            session.session
         )
+        .into(),
+    )
+}
+
+/// A host heading its workspaces. New tabs start from a workspace row, so
+/// what they open is tied to a place on the host. The row folds what the
+/// host lists the way a workspace row folds its sessions, and still reads
+/// as a heading at rest: it takes no fill until the pointer is on it.
+fn host_row(
+    index: usize,
+    host: &RemoteWorkspace,
+    fold: TabFold,
+    highlight: bool,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) -> AnyElement {
+    let name: SharedString = host.name.clone().into();
+    let selection = sidebar_selection(cx);
+    let host_id = host.id.as_str().to_owned();
+
+    // Keyed by host rather than list position, so a host connecting above
+    // this one does not hand this row another's reveal.
+    let disclosure = Disclosure::new(
+        ElementId::Name(format!("remote-host-disclosure:{host_id}").into()),
+        fold,
+        window,
+        cx,
+    );
+
+    let item = Button::new(("remote-host", index))
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent_black())
+                .hover(cx.theme().sidebar_foreground.opacity(0.085))
+                .active(selection.active_background),
+        )
+        .w_full()
+        .h_auto()
+        .min_h(px(24.))
+        .line_height(relative(1.5))
+        // The name starts on the session rows' icon column until the
+        // disclosure mark makes it slide over, as on a workspace row.
+        .pl(px(SIDEBAR_ROW_GUTTER))
+        .pr(px(SIDEBAR_ROW_GUTTER))
+        .py_0p5()
+        .accessibility_label(name.clone())
+        .selected(highlight)
+        // Button resolves selected colors after element styles, so the
+        // sidebar-accent pair must be the selected custom variant itself.
+        .when(highlight, |this| {
+            this.custom(
+                ButtonCustomVariant::new(cx)
+                    .foreground(selection.active_foreground)
+                    .active(selection.active_background),
+            )
+        })
+        .child(
+            h_flex()
+                .relative()
+                .w_full()
+                .items_center()
+                .child(disclosure.mark(cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .ml(disclosure.name_offset())
+                        .truncate()
+                        .text_left()
+                        .text_size(px(WORKSPACE_NAME_TEXT))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(cx.theme().sidebar_foreground.opacity(0.7))
+                        .child(name),
+                ),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.sidebar.cycle_remote_host_fold(host_id.clone());
+
+            cx.notify();
+        }));
+
+    div()
+        .w_full()
+        .relative()
+        .child(disclosure.hover_area(("remote-host-hover", index), item))
+        // After the row itself, because the row's selected fill would
+        // otherwise paint over the bar's lane.
+        .children((highlight && Host::SIDEBAR_SELECTION_MARK).then(|| selection_bar(cx)))
         .into_any_element()
 }
 
