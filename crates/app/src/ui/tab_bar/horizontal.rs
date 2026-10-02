@@ -310,9 +310,12 @@ impl TabStrip {
                         .items_center()
                         .map(|title| Host::tab_title(title, density))
                         .overflow_hidden()
-                        .modern_context_menu(move |menu, _, _| {
+                        .modern_context_menu(move |menu, _, cx| {
                             let rename_shell = menu_shell.clone();
                             let close_shell = menu_shell.clone();
+                            let hibernate_shell = menu_shell.clone();
+
+                            let hibernatable = menu_shell.read(cx).can_hibernate_tab(TabId(id), cx);
 
                             menu.item(t!("tabbar-menu-rename"), move |window, cx| {
                                 rename_shell.update(cx, |this, cx| {
@@ -320,6 +323,16 @@ impl TabStrip {
                                 });
                             })
                             .icon(IconName::PenLine)
+                            .item_disabled(
+                                t!("tabbar-menu-hibernate"),
+                                !hibernatable,
+                                move |window, cx| {
+                                    hibernate_shell.update(cx, |this, cx| {
+                                        this.request_hibernate_tab(TabId(id), window, cx)
+                                    });
+                                },
+                            )
+                            .icon(IconName::Moon)
                             .item_disabled(
                                 t!("tabbar-menu-close"),
                                 !closeable,

@@ -8,6 +8,7 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 
+use std::mem;
 use std::time::SystemTime;
 
 use app::agent_tab::execution::AgentSession;
@@ -30,6 +31,7 @@ use crate::tabs::{TabId, TabManager};
 use crate::ui::AppWindow;
 use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::pane_tree::{PaneId, PaneNode, PaneTree};
+use crate::ui::persistence::snapshot::surface_snapshot;
 use crate::ui::remote::{
     new_shared_agent_id, offer_pending_terminal, offer_restoring_agent, paired_host_name,
     restore_agent, restore_view, start_listed_terminal,
@@ -308,23 +310,81 @@ fn offer_restoring_agents(
         })
         .collect();
 
+    for (id, title, harness) in offers {
+        offer_pending_agent(id, title, harness, window, cx);
+    }
+}
+
+/// Offer paired devices one pending agent tab of this window under `id`;
+/// the first device request starts it in place.
+fn offer_pending_agent(
+    id: String,
+    title: String,
+    harness: String,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) {
     let this = cx.entity().downgrade();
     let handle = window.window_handle();
+    let restored = id.clone();
 
-    for (id, title, harness) in offers {
-        let this = this.clone();
-        let restored = id.clone();
+    let restore = move |cx: &mut App| {
+        handle
+            .update(cx, |_, window, cx| {
+                this.update(cx, |this, cx| this.start_pending_tab(&restored, window, cx))
+            })
+            .is_ok_and(|restored| restored.unwrap_or(false))
+    };
 
-        let restore = move |cx: &mut App| {
-            handle
-                .update(cx, |_, window, cx| {
-                    this.update(cx, |this, cx| this.start_pending_tab(&restored, window, cx))
-                })
-                .is_ok_and(|restored| restored.unwrap_or(false))
-        };
+    offer_restoring_agent(id, title, harness, restore, cx);
+}
 
-        offer_restoring_agent(id, title, harness, restore, cx);
+/// Put the tab `id` to sleep the way a restored tab starts: its surface
+/// becomes the pending snapshot a session save would record, and paired
+/// devices keep listing it as a tab waiting to start. Returns the surface it
+/// replaced, whose panes and agent session end once the caller drops it, or
+/// `None` when the tab runs nothing a snapshot could restart.
+pub(super) fn hibernate_tab(
+    workspaces: &mut WorkspaceManager,
+    id: TabId,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) -> Option<TabSurface> {
+    let tab = workspaces
+        .workspace_of_tab(id)
+        .and_then(|workspace| workspaces.tabs_of(workspace))
+        .and_then(|tabs| tabs.list().find(id))
+        .filter(|tab| tab.surface().can_hibernate(cx))?;
+
+    let title = tab.title().to_owned();
+    let default_profile = cx.global::<AppSettings>().default_profile_command();
+
+    let mut state = surface_snapshot(tab.surface(), &default_profile, cx);
+
+    // The live surface still holds its device listing until it is dropped,
+    // and dropping it withdraws that id later in this update, so the sleeping
+    // tab takes a fresh id rather than one about to be withdrawn.
+    match saved_tab(&state) {
+        SavedTab::Agent(kind) => {
+            let shared = new_shared_agent_id();
+            let harness: &str = kind.into();
+
+            offer_pending_agent(shared.clone(), title, harness.to_owned(), window, cx);
+
+            state.shared_agent = Some(shared);
+        }
+        SavedTab::Terminal => state.shared_terminal = offer_pending_terminal(title, cx),
+        SavedTab::Git(_) | SavedTab::Team(_) | SavedTab::Remote(..) => {}
     }
+
+    let tab = workspaces
+        .tabs_for_tab_mut(id)
+        .and_then(|tabs| tabs.list_mut().find_mut(id))?;
+
+    Some(mem::replace(
+        tab.surface_mut(),
+        TabSurface::Pending(Box::new(state)),
+    ))
 }
 
 /// Spawn the shells of a still-pending active tab and swap its surface to

@@ -204,6 +204,28 @@ impl TabSurface {
         terminal || agent
     }
 
+    /// Whether hibernating can end what this surface runs and its snapshot
+    /// restart it later: shells started on this computer, or an agent
+    /// running here. A pane following a paired host's session, or viewing a
+    /// terminal a device started here, does not own its process, and a fresh
+    /// local shell would not bring that session back.
+    pub(crate) fn can_hibernate(&self, cx: &App) -> bool {
+        match self {
+            Self::Live(tree) => tree.tree().leaves().iter().all(|(_, pane)| {
+                let pane = pane.read(cx);
+
+                !pane.is_remote() && pane.remote_created_session().is_none()
+            }),
+            Self::Agent(tab) => tab.pane.read(cx).remote_address().is_none(),
+            Self::Pending(_)
+            | Self::Git(_)
+            | Self::Settings
+            | Self::Team(_)
+            | Self::TeamUnavailable { .. }
+            | Self::TeamDisabled(_) => false,
+        }
+    }
+
     /// The id paired devices know a still-pending agent or terminal tab by.
     pub(crate) fn pending_session(&self) -> Option<&str> {
         match self {

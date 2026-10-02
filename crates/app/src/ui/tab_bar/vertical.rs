@@ -414,14 +414,26 @@ impl VerticalTabList {
 
                 cx.notify();
             }))
-            .modern_context_menu(move |menu, _, _| {
+            .modern_context_menu(move |menu, _, cx| {
                 let rename_shell = menu_shell.clone();
                 let close_shell = menu_shell.clone();
+                let hibernate_shell = menu_shell.clone();
+                let hibernatable = menu_shell.read(cx).can_hibernate_tab(tab_id, cx);
 
                 menu.item(t!("tabbar-menu-rename"), move |window, cx| {
                     rename_shell.update(cx, |this, cx| this.start_tab_rename(tab_id, window, cx));
                 })
                 .icon(IconName::PenLine)
+                .item_disabled(
+                    t!("tabbar-menu-hibernate"),
+                    !hibernatable,
+                    move |window, cx| {
+                        hibernate_shell.update(cx, |this, cx| {
+                            this.request_hibernate_tab(tab_id, window, cx)
+                        });
+                    },
+                )
+                .icon(IconName::Moon)
                 .item_disabled(t!("tabbar-menu-close"), !closeable, move |window, cx| {
                     close_shell.update(cx, |this, cx| this.request_close_tab(tab_id, window, cx));
                 })

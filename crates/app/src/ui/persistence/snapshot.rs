@@ -137,71 +137,7 @@ pub(crate) fn session_state(
                 .items()
                 .iter()
                 .map(|tab| {
-                    let mut state = match tab.surface() {
-                        // A tab that never went live re-saves its restored
-                        // snapshot unchanged — its shells never ran, so the
-                        // saved launch state is still the truth.
-                        TabSurface::Pending(state) => (**state).clone(),
-                        // Flat fields always mirror the focused pane, so a
-                        // snapshot without splits stays in the old format
-                        // and an old build restores something sensible
-                        // from a split one.
-                        TabSurface::Live(tree) => {
-                            let mut state = tree.tree().focused_pane().read(cx).tab_state();
-
-                            state.panes = (!tree.tree().is_single_leaf())
-                                .then(|| pane_node_state(tree.tree().root(), &default_profile, cx));
-
-                            state
-                        }
-                        // The agent process dies with the app, but its
-                        // harness keeps the conversation on disk: the saved
-                        // id lets the restored tab continue it, running on
-                        // the thread controls this one was left set to.
-                        TabSurface::Agent(tab) => {
-                            let session = tab.owner.session().read(cx);
-                            let profile = session.profile();
-                            let agent: &str = profile.kind.into();
-
-                            // A tab following a paired host's session
-                            // reattaches to it; the conversation stays there.
-                            if let Some((host, session)) = tab.pane.read(cx).remote_address() {
-                                return TabState {
-                                    agent: Some(agent.into()),
-                                    remote_host: Some(host),
-                                    remote_session: Some(session),
-                                    ..TabState::default()
-                                };
-                            }
-
-                            TabState {
-                                agent: Some(agent.into()),
-                                agent_profile: Some(profile.name.clone()),
-                                agent_settings: session
-                                    .remembered_settings()
-                                    .map(saved_settings_from_thread),
-                                agent_conversation: session.saved_conversation(),
-                                shared_agent: shared_agent_id(&tab.pane, cx),
-                                ..TabState::default()
-                            }
-                        }
-                        // Only the settings workspace holds this surface,
-                        // and that workspace is skipped above; the arm
-                        // exists so the match stays exhaustive.
-                        TabSurface::Settings => TabState::default(),
-                        TabSurface::Git(tab) => TabState {
-                            git_cwd: Some(tab.view.read(cx).cwd().to_string()),
-                            ..TabState::default()
-                        },
-                        TabSurface::Team(pane) => TabState {
-                            team_room: Some(pane.read(cx).room_id(cx).to_string()),
-                            ..TabState::default()
-                        },
-                        TabSurface::TeamUnavailable { saved, .. }
-                        | TabSurface::TeamDisabled(saved) => (**saved).clone(),
-                    };
-
-                    normalize_saved_launch(&mut state, &default_profile);
+                    let mut state = surface_snapshot(tab.surface(), &default_profile, cx);
 
                     state.name = tab.user_title().map(str::to_owned);
                     state.user_named = state.name.is_some();
@@ -217,4 +153,80 @@ pub(crate) fn session_state(
         active_workspace,
         workspaces: saved,
     }
+}
+
+/// What a tab's surface saves: the launch state its shells, agent, or view
+/// restart from, without the tab's titles. Session saves and hibernation
+/// share it, so a hibernated tab wakes exactly as a restored one would.
+pub(crate) fn surface_snapshot(
+    surface: &TabSurface,
+    default_profile: &(Option<String>, Vec<String>),
+    cx: &App,
+) -> TabState {
+    let mut state = match surface {
+        // A tab that never went live re-saves its restored snapshot
+        // unchanged — its shells never ran, so the saved launch state is
+        // still the truth.
+        TabSurface::Pending(state) => (**state).clone(),
+        // Flat fields always mirror the focused pane, so a snapshot
+        // without splits stays in the old format and an old build restores
+        // something sensible from a split one.
+        TabSurface::Live(tree) => {
+            let mut state = tree.tree().focused_pane().read(cx).tab_state();
+
+            state.panes = (!tree.tree().is_single_leaf())
+                .then(|| pane_node_state(tree.tree().root(), default_profile, cx));
+
+            state
+        }
+        // The agent process dies with the app, but its harness keeps the
+        // conversation on disk: the saved id lets the restored tab continue
+        // it, running on the thread controls this one was left set to.
+        TabSurface::Agent(tab) => {
+            let session = tab.owner.session().read(cx);
+            let profile = session.profile();
+            let agent: &str = profile.kind.into();
+
+            // A tab following a paired host's session reattaches to it;
+            // the conversation stays there.
+            if let Some((host, session)) = tab.pane.read(cx).remote_address() {
+                return TabState {
+                    agent: Some(agent.into()),
+                    remote_host: Some(host),
+                    remote_session: Some(session),
+                    ..TabState::default()
+                };
+            }
+
+            TabState {
+                agent: Some(agent.into()),
+                agent_profile: Some(profile.name.clone()),
+                agent_settings: session
+                    .remembered_settings()
+                    .map(saved_settings_from_thread),
+                agent_conversation: session.saved_conversation(),
+                shared_agent: shared_agent_id(&tab.pane, cx),
+                ..TabState::default()
+            }
+        }
+        // Only the settings workspace holds this surface, and neither
+        // saving nor hibernation takes a snapshot of it; the arm exists so
+        // the match stays exhaustive.
+        TabSurface::Settings => TabState::default(),
+        TabSurface::Git(tab) => TabState {
+            git_cwd: Some(tab.view.read(cx).cwd().to_string()),
+            ..TabState::default()
+        },
+        TabSurface::Team(pane) => TabState {
+            team_room: Some(pane.read(cx).room_id(cx).to_string()),
+            ..TabState::default()
+        },
+        TabSurface::TeamUnavailable { saved, .. } | TabSurface::TeamDisabled(saved) => {
+            (**saved).clone()
+        }
+    };
+
+    normalize_saved_launch(&mut state, default_profile);
+
+    state
 }

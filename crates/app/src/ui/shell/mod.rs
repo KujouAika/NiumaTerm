@@ -77,7 +77,8 @@ use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::git_status::GitStatusModel;
 use crate::ui::pane_tree::{PaneId, SplitDirection};
 use crate::ui::persistence::{
-    default_session, materialize_active_tab, materialize_tab, restore_session, session_state,
+    default_session, hibernate_tab, materialize_active_tab, materialize_tab, restore_session,
+    session_state,
 };
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::remote::{self, Remote};
@@ -1375,6 +1376,111 @@ impl AppWindow {
         }
 
         self.focus_active(window, cx);
+
+        cx.notify();
+    }
+
+    /// Whether the tab `id` can hibernate: it runs work a snapshot can
+    /// restart, and it is not the lone tab of the workspace on screen, which
+    /// always shows a live tab and would have nothing to switch to.
+    pub(crate) fn can_hibernate_tab(&self, id: TabId, cx: &App) -> bool {
+        let Some(tabs) = self
+            .workspaces
+            .workspace_of_tab(id)
+            .and_then(|workspace| self.workspaces.tabs_of(workspace))
+        else {
+            return false;
+        };
+
+        let lone_on_screen =
+            tabs.list().len() == 1 && self.workspaces.active_tabs().list().active_id() == id;
+
+        !lone_on_screen
+            && tabs
+                .list()
+                .find(id)
+                .is_some_and(|tab| tab.surface().can_hibernate(cx))
+    }
+
+    /// Ask before hibernating the tab `id`: its shells or agent process end,
+    /// which loses whatever they were running, so this always confirms.
+    pub(crate) fn request_hibernate_tab(
+        &mut self,
+        id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_hibernate_tab(id, cx) {
+            return;
+        }
+
+        let Some(surface) = self
+            .workspaces
+            .workspace_of_tab(id)
+            .and_then(|workspace| self.workspaces.tabs_of(workspace))
+            .and_then(|tabs| tabs.list().find(id))
+            .map(Tab::surface)
+        else {
+            return;
+        };
+
+        let description = if surface.is_agent() {
+            t!("shell-hibernate-tab-agent-description").into_owned()
+        } else {
+            close_description(
+                self.close_process_count(surface, cx),
+                "shell-hibernate-tab-description",
+                "shell-hibernate-tab-processes-description",
+            )
+        };
+
+        open_close_confirm(
+            window,
+            cx,
+            t!("shell-hibernate-tab-title"),
+            description,
+            None,
+            move |this, window, cx| this.hibernate_tab_now(id, window, cx),
+        );
+    }
+
+    /// Turn the tab `id` back into a pending tab that starts again when it
+    /// is next opened. The tab on screen hands the screen to a neighbour
+    /// first, since the active tab of the visible workspace is always live.
+    fn hibernate_tab_now(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        // The tab may have changed while the dialog was open.
+        if !self.can_hibernate_tab(id, cx) {
+            return;
+        }
+
+        let list = self.workspaces.active_tabs().list();
+        let was_active = list.active_id() == id;
+
+        if was_active {
+            let index = list.active_index();
+
+            let neighbour = if index > 0 { index - 1 } else { index + 1 };
+
+            self.workspaces
+                .active_tabs_mut()
+                .list_mut()
+                .activate(neighbour);
+        }
+
+        let Some(surface) = hibernate_tab(&mut self.workspaces, id, window, cx) else {
+            return;
+        };
+
+        for route in surface.agent_routes(cx) {
+            self.agent_notifications.remove_route(&route, cx);
+        }
+
+        // Dropping the surface ends its shells and agent session.
+        drop(surface);
+
+        if was_active {
+            self.show_active_tab(window, cx);
+        }
 
         cx.notify();
     }
