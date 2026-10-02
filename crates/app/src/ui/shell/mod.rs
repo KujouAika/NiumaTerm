@@ -2304,6 +2304,56 @@ impl AppWindow {
         shared
     }
 
+    /// Start a terminal tab running `profile` for a paired device in the
+    /// workspace whose primary directory is `path`, without switching to it:
+    /// the person at the host keeps what they are looking at. Returns the id
+    /// devices know the tab by; the error tells the device why none opened.
+    pub(crate) fn open_terminal_tab_for_device(
+        &mut self,
+        profile: (Option<String>, Vec<String>),
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let workspace_id = self
+            .workspaces
+            .summaries()
+            .into_iter()
+            .find(|workspace| workspace.kind == WorkspaceKind::Normal && workspace.cwd == path)
+            .ok_or_else(|| format!("{path} is not a workspace on this computer"))?
+            .id;
+
+        let cwd = self
+            .workspaces
+            .roots_of(workspace_id)
+            .and_then(|roots| explicit_cwd(roots.primary()));
+
+        let id = Self::alloc_id(&mut self.next_id);
+        let pane = spawn_default_pane(cx, id, profile, cwd);
+
+        self.register_agent_pane(&pane, cx);
+
+        let title = pane.read(cx).profile_name().to_string();
+        let shared = remote::shared_tab_id(&pane, cx);
+
+        self.workspaces
+            .tabs_of_mut(workspace_id)
+            .ok_or("the workspace closed")?
+            .append_tab(
+                TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
+                TabId(id),
+                title,
+            );
+
+        // Render keeps session workspaces current, but a minimized or
+        // occluded host window may not render for a long time, and until it
+        // does the device would list the new session under no workspace.
+        remote::sync_workspaces(self.window_id, &self.workspaces, cx);
+
+        cx.notify();
+
+        shared.ok_or_else(|| "the terminal was not shared".to_owned())
+    }
+
     /// Close what shows a session a paired device asked to end: `pane`, the
     /// pane the session is shared from, or the still-pending agent tab
     /// devices know by `session`. The device already confirmed, so no dialog

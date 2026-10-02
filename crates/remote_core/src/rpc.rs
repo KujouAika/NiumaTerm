@@ -55,6 +55,12 @@ pub const SESSION_CLOSE: &str = "session.close";
 /// lists the session under the new name.
 pub const SESSION_RENAME: &str = "session.rename";
 
+/// Start a terminal tab on the host in a workspace that `host.info` lists,
+/// on the host's default profile. Unlike `terminal.open`, whose shell runs
+/// headless and belongs to no workspace, the tab sits in that workspace for
+/// the person at the host and every device. The reply names the new session.
+pub const TERMINAL_OPEN_TAB: &str = "terminal.open_tab";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {
@@ -196,6 +202,12 @@ pub enum EndReason {
 pub struct HostInfo {
     pub agents: Vec<AgentProfileInfo>,
     pub workspaces: Vec<WorkspaceInfo>,
+
+    /// The names of the host's terminal profiles, the one new terminal
+    /// tabs use by default first. Hosts from before `terminal.open_tab`
+    /// send none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminals: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +239,18 @@ pub struct AgentOpen {
     /// A workspace path from `host.info`. The host refuses any other, so a
     /// device can start agents only where the host user already works.
     pub workspace: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOpenTab {
+    /// A workspace path from `host.info`. The host refuses any other, so a
+    /// device can start shells only where the host user already works.
+    pub workspace: String,
+
+    /// A terminal profile name from `host.info`; none starts the host's
+    /// default profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

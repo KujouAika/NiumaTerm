@@ -50,7 +50,7 @@ pub(crate) struct ProfileRootChoice {
 
 /// The launch command of a terminal Profile, or `None` when the Profile names
 /// no executable and therefore has nothing to start.
-fn launch_command(profile: &Profile) -> Option<LaunchCommand> {
+pub(crate) fn launch_command(profile: &Profile) -> Option<LaunchCommand> {
     let shell = profile.shell.trim().to_string();
 
     if shell.is_empty() {

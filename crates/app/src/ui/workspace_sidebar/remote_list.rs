@@ -350,10 +350,10 @@ fn workspace_row(
     let menu_host = host.id.clone();
     let path = workspace.path.clone();
 
-    let agents = host
+    let (agents, terminals) = host
         .offers
         .as_ref()
-        .map(|offers| offers.agents.clone())
+        .map(|offers| (offers.agents.clone(), offers.terminals.clone()))
         .unwrap_or_default();
 
     let new_tab = hover_action(
@@ -366,13 +366,33 @@ fn workspace_row(
                 .icon(IconName::Plus)
                 .accessibility_label(t!("sidebar-tab-new")),
             move |mut menu, _, _| {
-                let terminal_host = menu_host.clone();
+                // With no profile listed to choose from, one entry starts
+                // whatever the host's default shell is.
+                let choices: Vec<(SharedString, Option<String>)> = if terminals.is_empty() {
+                    vec![(t!("settings-remote-new-terminal").into(), None)]
+                } else {
+                    terminals
+                        .iter()
+                        .map(|name| (name.clone().into(), Some(name.clone())))
+                        .collect()
+                };
 
-                menu = menu
-                    .item(t!("settings-remote-new-terminal"), move |window, cx| {
-                        remote::open_terminal(&terminal_host, window, cx)
-                    })
-                    .icon(tab_icon(None, false));
+                for (label, profile) in choices {
+                    let terminal_host = menu_host.clone();
+                    let path = path.clone();
+
+                    menu = menu
+                        .item(label, move |window, cx| {
+                            remote::open_terminal_tab(
+                                &terminal_host,
+                                path.clone(),
+                                profile.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                        .icon(tab_icon(None, false));
+                }
 
                 if !agents.is_empty() {
                     menu = menu.separator();

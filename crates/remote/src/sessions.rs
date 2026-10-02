@@ -65,6 +65,11 @@ pub enum HostRequest {
         params: Value,
         reply: oneshot::Sender<Result<Value, String>>,
     },
+    /// Start a terminal tab in the workspace `params` names.
+    OpenTerminalTab {
+        params: Value,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
     /// Close the host tab pane that shows `session`. The error explains a
     /// refusal to the device.
     CloseSession {

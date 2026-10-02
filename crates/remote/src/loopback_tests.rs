@@ -945,7 +945,7 @@ fn a_host_view_of_a_remote_created_terminal_shares_it_with_the_device() {
 }
 
 #[test]
-fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
+fn a_device_lists_what_it_may_start_and_opens_tabs_on_the_host() {
     let host_dir = tempfile::tempdir().unwrap();
     let registry = SessionRegistry::new();
     let host = start_host(&host_dir, Arc::clone(&registry));
@@ -984,6 +984,13 @@ fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
 
                         let _ = reply.send(Ok(json!({ "session": session })));
                     }
+                    HostRequest::OpenTerminalTab { params, reply } => {
+                        let _ = reply.send(if params["workspace"] == "C:/work" {
+                            Ok(json!({ "session": format!("work-{}", params["profile"]) }))
+                        } else {
+                            Err("not a host workspace".into())
+                        });
+                    }
                     HostRequest::CloseSession { reply, .. } => {
                         let _ = reply.send(Err("not closed in this test".into()));
                     }
@@ -1008,6 +1015,32 @@ fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
                 .open_agent("Codex".into(), "C:/elsewhere".into())
                 .await
                 .is_err()
+        );
+
+        // A terminal tab goes through the application too, and only into a
+        // listed workspace; the profile reaches it, and an omitted one
+        // arrives as absent.
+        assert!(
+            remote
+                .open_terminal_tab("C:/elsewhere".into(), None)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(
+            remote
+                .open_terminal_tab("C:/work".into(), Some("pwsh".into()))
+                .await
+                .unwrap(),
+            "work-\"pwsh\""
+        );
+
+        assert_eq!(
+            remote
+                .open_terminal_tab("C:/work".into(), None)
+                .await
+                .unwrap(),
+            "work-null"
         );
 
         let session = remote

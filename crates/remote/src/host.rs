@@ -570,6 +570,7 @@ impl Connection {
                             | rpc::AGENT_CALL
                             | rpc::HOST_INFO
                             | rpc::AGENT_OPEN
+                            | rpc::TERMINAL_OPEN_TAB
                             | rpc::SESSION_CLOSE
                             | rpc::SESSION_RENAME
                     ) =>
@@ -822,7 +823,7 @@ impl Connection {
         };
 
         match method {
-            rpc::HOST_INFO | rpc::AGENT_OPEN => {
+            rpc::HOST_INFO | rpc::AGENT_OPEN | rpc::TERMINAL_OPEN_TAB => {
                 let Some(host) = registry.host_requests() else {
                     return respond(
                         &queue,
@@ -835,7 +836,8 @@ impl Connection {
 
                 let request = match method {
                     rpc::HOST_INFO => HostRequest::Info { reply },
-                    _ => HostRequest::OpenAgent { params, reply },
+                    rpc::AGENT_OPEN => HostRequest::OpenAgent { params, reply },
+                    _ => HostRequest::OpenTerminalTab { params, reply },
                 };
 
                 if host.send(request).is_err() {

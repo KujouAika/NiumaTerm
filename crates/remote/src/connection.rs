@@ -30,7 +30,7 @@ use nmt_remote_core::push::{PUSH_REGISTER, PUSH_UNREGISTER, PushRegistration};
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOpen, AgentOps, Control, EndReason, ErrorCode, HostInfo,
     RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, SessionRename, StreamRef,
-    TerminalOpen, TerminalResize,
+    TerminalOpen, TerminalOpenTab, TerminalResize,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
@@ -524,6 +524,23 @@ impl RemoteHost {
     pub async fn open_agent(&self, profile: String, workspace: String) -> Result<String> {
         let SessionRef { session } = self
             .call(rpc::AGENT_OPEN, &AgentOpen { profile, workspace })
+            .await?;
+
+        Ok(session)
+    }
+
+    /// Start a terminal tab in a host workspace, on the named terminal
+    /// profile or the host's default, and return its session id.
+    pub async fn open_terminal_tab(
+        &self,
+        workspace: String,
+        profile: Option<String>,
+    ) -> Result<String> {
+        let SessionRef { session } = self
+            .call(
+                rpc::TERMINAL_OPEN_TAB,
+                &TerminalOpenTab { workspace, profile },
+            )
             .await?;
 
         Ok(session)

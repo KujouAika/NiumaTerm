@@ -43,6 +43,7 @@ use nmt_remote_core::pairing::{PairingCode, PairingLink};
 use nmt_remote_core::push::PushKind;
 use nmt_remote_core::rpc::{
     AgentOpen, AgentProfileInfo, HostInfo, SessionInfo, SessionKind, SessionRef, SessionWorkspace,
+    TerminalOpenTab,
 };
 use rust_i18n::t;
 use serde_json::Value;
@@ -53,13 +54,11 @@ use uuid::Uuid;
 
 use crate::last_active_window;
 use crate::ui::settings::AgentProfile;
+use crate::ui::tab_bar::menu::launch_command;
 use crate::ui::{AppSettings, AppWindow, DeviceClose, WindowRegistry};
 use crate::workspace::{WorkspaceId, WorkspaceManager};
 
 const APP_VERSION: &str = env!("NIUMATERM_VERSION");
-
-/// Grid a new remote terminal starts with; the tab's layout resizes it.
-const INITIAL_GRID: (u16, u16) = (100, 30);
 
 pub(crate) struct Remote {
     key: Option<Arc<DeviceKey>>,
@@ -1002,6 +1001,14 @@ pub(crate) fn new_shared_agent_id() -> String {
     format!("a-{}", Uuid::new_v4().simple())
 }
 
+/// The id paired devices know a shared terminal tab by.
+pub(crate) fn shared_tab_id(pane: &Entity<TerminalPane>, cx: &App) -> Option<String> {
+    cx.global::<Remote>()
+        .shared_tabs
+        .get(&pane.entity_id())
+        .cloned()
+}
+
 /// The id paired devices know a shared agent tab by, saved with the tab.
 pub(crate) fn shared_agent_id(pane: &Entity<AgentPane>, cx: &App) -> Option<String> {
     cx.global::<Remote>()
@@ -1524,6 +1531,9 @@ fn answer_host(request: HostRequest, cx: &mut App) {
         HostRequest::OpenAgent { params, reply } => {
             let _ = reply.send(open_agent_for_device(params, cx));
         }
+        HostRequest::OpenTerminalTab { params, reply } => {
+            let _ = reply.send(open_terminal_tab_for_device(params, cx));
+        }
         HostRequest::CloseSession { session, reply } => {
             let _ = reply.send(close_for_device(&session, cx));
         }
@@ -1683,7 +1693,27 @@ fn host_offers(cx: &mut App) -> Result<Value, String> {
         .map(|view| view.read(cx).device_workspaces())
         .unwrap_or_default();
 
-    serde_json::to_value(HostInfo { agents, workspaces }).map_err(|error| error.to_string())
+    let profiles = &cx.global::<AppSettings>().config().profiles;
+
+    // Only profiles that name a shell can start one; the default leads so a
+    // device's menu shows it first, as the host's own new-tab button uses it.
+    let mut terminals: Vec<String> = profiles
+        .list
+        .iter()
+        .filter(|profile| launch_command(profile).is_some())
+        .map(|profile| profile.name.clone())
+        .collect();
+
+    if let Some(index) = terminals.iter().position(|name| *name == profiles.default) {
+        terminals[..=index].rotate_right(1);
+    }
+
+    serde_json::to_value(HostInfo {
+        agents,
+        workspaces,
+        terminals,
+    })
+    .map_err(|error| error.to_string())
 }
 
 fn open_agent_for_device(params: Value, cx: &mut App) -> Result<Value, String> {
@@ -1712,6 +1742,39 @@ fn open_agent_for_device(params: Value, cx: &mut App) -> Result<Value, String> {
         .and_then(Result::ok)
         .flatten()
         .ok_or_else(|| format!("{workspace} is not a workspace on this computer"))?;
+
+    serde_json::to_value(SessionRef { session }).map_err(|error| error.to_string())
+}
+
+fn open_terminal_tab_for_device(params: Value, cx: &mut App) -> Result<Value, String> {
+    let TerminalOpenTab { workspace, profile } =
+        serde_json::from_value(params).map_err(|error| error.to_string())?;
+
+    let settings = cx.global::<AppSettings>();
+
+    let launch = match profile {
+        None => settings.default_profile_command(),
+        Some(name) => settings
+            .config()
+            .profiles
+            .list
+            .iter()
+            .find(|candidate| candidate.name == name)
+            .and_then(launch_command)
+            .ok_or_else(|| format!("no terminal profile named {name}"))?,
+    };
+
+    let (handle, view) = last_active_window(cx).ok_or("no window is open")?;
+
+    let session = handle
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                app.open_terminal_tab_for_device(launch, &workspace, cx)
+            })
+        })
+        .ok()
+        .and_then(Result::ok)
+        .ok_or("the window closed")??;
 
     serde_json::to_value(SessionRef { session }).map_err(|error| error.to_string())
 }
@@ -1788,9 +1851,17 @@ fn notify_failure(error: &Error, window: &mut Window, cx: &mut App) {
     );
 }
 
-/// Open a new terminal on a paired host in a tab of `window`. The tab owns
-/// the session: closing it ends the terminal on the host.
-pub(crate) fn open_terminal(id: &DeviceId, window: &mut Window, cx: &mut App) {
+/// Start a terminal tab on `profile`, or the host's default profile, in the
+/// workspace of a paired host whose directory is `workspace`, and open a tab
+/// following it in `window`. The terminal runs in a host tab listed under
+/// that workspace, so closing this view leaves it running there.
+pub(crate) fn open_terminal_tab(
+    id: &DeviceId,
+    workspace: String,
+    profile: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(app) = app_window(window, cx) else {
         return;
     };
@@ -1804,35 +1875,27 @@ pub(crate) fn open_terminal(id: &DeviceId, window: &mut Window, cx: &mut App) {
         }
     };
 
-    let remote = cx.global_mut::<Remote>();
+    cx.global_mut::<Remote>().busy = true;
 
-    remote.busy = true;
+    let opened = Arc::clone(&connection);
 
-    remote.status = Some(
-        t!("remote-connecting-to", name = connection.name())
-            .into_owned()
-            .into(),
-    );
-
-    let task = runtime().spawn(async move {
-        connection
-            .open_terminal(INITIAL_GRID.0, INITIAL_GRID.1)
-            .await
-    });
+    let task = runtime().spawn(async move { opened.open_terminal_tab(workspace, profile).await });
 
     window
         .spawn(cx, async move |cx| {
             let result = task
                 .await
-                .context("connecting stopped")
+                .context("starting stopped")
                 .and_then(|opened| opened);
 
             let _ = cx.update(|window, cx| match result {
-                Ok(pty) => {
+                Ok(session) => {
                     cx.global_mut::<Remote>().report(Ok(()));
 
+                    let pty = connection.view(session);
+
                     app.update(cx, |app, cx| {
-                        app.open_remote_terminal(pty, true, window, cx)
+                        app.open_remote_terminal(pty, false, window, cx)
                     });
                 }
                 Err(error) => cx.global_mut::<Remote>().report(Err(error)),
