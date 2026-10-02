@@ -15,8 +15,8 @@ final class CoreEvents: CoreObserver, @unchecked Sendable {
         Task { @MainActor [weak app] in app?.hostChanged(host) }
     }
 
-    func sessionsChanged(host: String, sessions: [SessionRecord]) {
-        Task { @MainActor [weak app] in app?.sessionsChanged(host: host, sessions: sessions) }
+    func sessionsChanged(host: String, sessions: [SessionRecord], offer: HostOffer?) {
+        Task { @MainActor [weak app] in app?.sessionsChanged(host: host, sessions: sessions, offer: offer) }
     }
 }
 

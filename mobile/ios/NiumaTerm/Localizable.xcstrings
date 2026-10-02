@@ -131,6 +131,16 @@
         }
       }
     },
+    "%@ · Asleep": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · 休眠中"
+          }
+        }
+      }
+    },
     "%lld images": {
       "localizations": {
         "en": {
@@ -575,6 +585,26 @@
         }
       }
     },
+    "Could not rename the session": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法重命名会话"
+          }
+        }
+      }
+    },
+    "Could not start the session": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动会话"
+          }
+        }
+      }
+    },
     "Dark": {
       "localizations": {
         "zh-Hans": {
@@ -681,6 +711,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "错误"
+          }
+        }
+      }
+    },
+    "Fold": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "折叠"
           }
         }
       }
@@ -874,6 +914,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "新对话"
+          }
+        }
+      }
+    },
+    "New session in %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 中新建会话"
           }
         }
       }
@@ -1427,6 +1477,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 后自动跳过"
+          }
+        }
+      }
+    },
+    "Sleeping sessions hidden": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已隐藏休眠的会话"
           }
         }
       }

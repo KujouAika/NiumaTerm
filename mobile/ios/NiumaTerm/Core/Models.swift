@@ -40,6 +40,8 @@ struct Session: Identifiable, Hashable {
     var kind: SessionType
     var profile: AgentProfile?
     var workspace: SessionWorkspace?
+    /// A host tab still asleep; opening it starts its shell or agent.
+    var pending: Bool
 
     init(record: SessionRecord, hostID: String) {
         id = record.id
@@ -50,6 +52,7 @@ struct Session: Identifiable, Hashable {
         workspace = record.workspace.map {
             SessionWorkspace(id: $0.id, name: $0.name, position: Int($0.position))
         }
+        pending = record.pending
     }
 
     var glyph: String {
@@ -61,11 +64,12 @@ struct Session: Identifiable, Hashable {
     }
 
     var subtitle: String {
-        switch kind {
+        let kindName = switch kind {
         case .terminal: tr("Terminal")
         case .agent: profile?.displayName ?? tr("Agent")
         case .other: tr("Session")
         }
+        return pending ? tr("\(kindName) · Asleep") : kindName
     }
 }
 
@@ -76,14 +80,44 @@ struct SessionWorkspace: Hashable {
     let position: Int
 }
 
-/// A host's sessions from one of its workspaces. `workspace` is nil for
-/// sessions no workspace claims, and for every session of a host that does
-/// not report workspaces.
+/// A workspace the host offers with the sessions its tabs hold, listed
+/// even while it holds none, since new sessions start from it. `workspace`
+/// is nil for the sessions no offered workspace holds.
 struct SessionGroup: Identifiable {
-    let workspace: SessionWorkspace?
+    let id: String
+    let workspace: WorkspaceRecord?
     let sessions: [Session]
+}
 
-    var id: String { workspace?.id ?? "" }
+/// How much of a host or workspace the list shows. Folds last for the app
+/// run only: a host's workspace ids are runtime ids, which name other
+/// workspaces once the host restarts.
+enum SessionFold {
+    case all
+    case collapsed
+    /// Only the sessions that are running. A restored host starts just the
+    /// tab in front and keeps the rest asleep, so the sleeping ones are what
+    /// makes a long list long.
+    case awake
+
+    /// The fold a tap moves to: every session, none, then the awake ones.
+    /// The awake step is skipped while nothing is asleep, where it would
+    /// list the same rows as `all`.
+    func next(anyAsleep: Bool) -> SessionFold {
+        switch self {
+        case .all: .collapsed
+        case .collapsed: anyAsleep ? .awake : .all
+        case .awake: .all
+        }
+    }
+
+    func shows(_ session: Session) -> Bool {
+        switch self {
+        case .all: true
+        case .collapsed: false
+        case .awake: !session.pending
+        }
+    }
 }
 
 /// A route on the navigation stack: one session on one host. It carries
@@ -134,6 +168,9 @@ struct Host: Identifiable {
     /// How the host is reached, while it is connected.
     var link: HostLink?
     var sessions: [Session] = []
+    /// The agents and workspaces the host offers, from the same moment as
+    /// `sessions`; nil when the host did not say.
+    var offer: HostOffer?
 
     init(record: HostRecord) {
         id = record.id
@@ -174,23 +211,31 @@ struct Host: Identifiable {
         }
     }
 
-    /// Sessions grouped by workspace in the host's workspace order, with
-    /// unclaimed sessions last; within a group terminals come first, then
-    /// agents, as the design lists them.
+    /// The sessions no offered workspace holds first, right under the host,
+    /// since after the last workspace they would read as its sessions; then
+    /// every offered workspace in the host's order. Within a group terminals
+    /// come first, then agents, as the design lists them.
     var sessionGroups: [SessionGroup] {
-        let grouped = Dictionary(grouping: sessions) { $0.workspace?.id }
-        return grouped.values
-            .map { sessions in
-                SessionGroup(workspace: sessions.first?.workspace,
-                             sessions: sessions.filter { $0.kind == .terminal } + sessions.filter { $0.kind != .terminal })
-            }
-            .sorted { a, b in
-                switch (a.workspace, b.workspace) {
-                case let (a?, b?): (a.position, a.id) < (b.position, b.id)
-                case (_?, nil): true
-                case (nil, _): false
-                }
-            }
+        let workspaces = offer?.workspaces ?? []
+        let ordered = sessions.filter { $0.kind == .terminal } + sessions.filter { $0.kind != .terminal }
+
+        // Hosts that send workspace ids are matched by them, so workspaces
+        // sharing a name keep their own sessions; older hosts send none,
+        // and their sessions fall back to the workspace's name.
+        func holds(_ workspace: WorkspaceRecord, _ session: Session) -> Bool {
+            guard let held = session.workspace else { return false }
+            if let id = workspace.id { return held.id == id }
+            return held.name == workspace.name
+        }
+
+        let loose = ordered.filter { session in !workspaces.contains { holds($0, session) } }
+        var groups = loose.isEmpty ? [] : [SessionGroup(id: "", workspace: nil, sessions: loose)]
+        for (index, workspace) in workspaces.enumerated() {
+            groups.append(SessionGroup(id: workspace.id ?? "\(index):\(workspace.name)",
+                                       workspace: workspace,
+                                       sessions: ordered.filter { holds(workspace, $0) }))
+        }
+        return groups
     }
 }
 

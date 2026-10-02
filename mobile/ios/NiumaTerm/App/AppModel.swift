@@ -88,6 +88,7 @@ final class AppModel {
             // once the link is back.
             if record.status != .connected {
                 hosts[index].sessions = []
+                hosts[index].offer = nil
             }
         } else if core?.hosts().contains(where: { $0.id == record.id }) == true {
             // Events reach the main actor asynchronously, so one sent just
@@ -102,9 +103,10 @@ final class AppModel {
         }
     }
 
-    func sessionsChanged(host: String, sessions: [SessionRecord]) {
+    func sessionsChanged(host: String, sessions: [SessionRecord], offer: HostOffer?) {
         guard let index = hosts.firstIndex(where: { $0.id == host }) else { return }
         hosts[index].sessions = sessions.map { Session(record: $0, hostID: host) }
+        hosts[index].offer = offer
     }
 
     // MARK: Lookups
@@ -217,6 +219,14 @@ final class AppModel {
     func closeSession(_ route: SessionRoute) async throws {
         guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
         try await core.closeSession(host: route.hostID, session: route.sessionID)
+    }
+
+    /// Rename a session on the host, host tabs included. The host lists its
+    /// sessions again under the new name, which updates the row; a refusal
+    /// throws the host's reason.
+    func renameSession(_ route: SessionRoute, title: String) async throws {
+        guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
+        try await core.renameSession(host: route.hostID, session: route.sessionID, title: title)
     }
 
     // MARK: Push notifications

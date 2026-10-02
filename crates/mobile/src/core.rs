@@ -29,8 +29,16 @@ use crate::terminal::{TerminalHandle, TerminalObserver};
 pub trait CoreObserver: Send + Sync {
     fn host_changed(&self, host: HostRecord);
 
-    /// The host's whole session list, after it changed.
-    fn sessions_changed(&self, host: String, sessions: Vec<SessionRecord>);
+    /// The host's whole session list, after it changed, with the
+    /// workspaces and agents it offers then. The two travel together so the
+    /// app groups sessions under workspaces from the same moment; `offer`
+    /// is none when the host did not answer `host.info`.
+    fn sessions_changed(
+        &self,
+        host: String,
+        sessions: Vec<SessionRecord>,
+        offer: Option<HostOffer>,
+    );
 }
 
 /// The paired hosts of this device and a lasting connection to each.
@@ -361,6 +369,24 @@ impl MobileCore {
 
         Ok(())
     }
+
+    /// Rename a session on the host, whether a device or the person at the
+    /// host started it. The host renames its tab as its user would, so
+    /// every device lists the new name; its refusal comes back as the error.
+    pub async fn rename_session(
+        &self,
+        host: String,
+        session: String,
+        title: String,
+    ) -> Result<(), CoreError> {
+        let remote = self.remote(&host)?;
+
+        runtime()
+            .spawn(async move { remote.rename_session(session, title).await })
+            .await??;
+
+        Ok(())
+    }
 }
 
 impl MobileCore {
@@ -526,10 +552,25 @@ async fn watch(remote: Arc<RemoteHost>, observer: Arc<dyn CoreObserver>) {
 
         if current == Status::Connected {
             match remote.list_sessions().await {
-                Ok(list) => observer.sessions_changed(
-                    remote.id().as_str().to_owned(),
-                    list.into_iter().map(SessionRecord::from).collect(),
-                ),
+                Ok(list) => {
+                    // Opening and closing workspaces on the host changes
+                    // what it lists sessions under, so the offer is asked
+                    // for again with every list.
+                    let offer = match remote.host_info().await {
+                        Ok(info) => Some(HostOffer::from(info)),
+                        Err(error) => {
+                            debug!(%error, "asking the host what it offers failed");
+
+                            None
+                        }
+                    };
+
+                    observer.sessions_changed(
+                        remote.id().as_str().to_owned(),
+                        list.into_iter().map(SessionRecord::from).collect(),
+                        offer,
+                    );
+                }
                 Err(error) => debug!(%error, "listing the host's sessions failed"),
             }
         }

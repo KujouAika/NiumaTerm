@@ -114,6 +114,10 @@ pub struct SessionRecord {
     /// The host workspace whose tab shows the session; none from hosts
     /// that do not say, and for sessions no tab shows.
     pub workspace: Option<SessionWorkspaceRecord>,
+
+    /// A host tab still asleep: its shell or agent starts once someone
+    /// opens it. Hosts from before the flag report every session running.
+    pub pending: bool,
 }
 
 /// A host workspace, as the app groups a host's sessions by it.
@@ -151,6 +155,7 @@ impl From<SessionInfo> for SessionRecord {
             harness: info.harness,
             remote_origin: info.origin == Origin::Remote,
             workspace: info.workspace.map(SessionWorkspaceRecord::from),
+            pending: info.pending,
         }
     }
 }
@@ -163,6 +168,11 @@ pub struct AgentProfileRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct WorkspaceRecord {
+    /// The id sessions name this workspace by in their
+    /// `SessionWorkspaceRecord`; none from hosts that send no ids, whose
+    /// sessions match the workspace by name instead.
+    pub id: Option<String>,
+
     pub name: String,
     pub path: String,
 }
@@ -189,6 +199,7 @@ impl From<HostInfo> for HostOffer {
                 .workspaces
                 .into_iter()
                 .map(|workspace| WorkspaceRecord {
+                    id: workspace.id,
                     name: workspace.name,
                     path: workspace.path,
                 })
