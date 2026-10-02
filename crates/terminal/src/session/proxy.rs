@@ -103,7 +103,7 @@ impl EventListener for TerminalEventProxy {
         }
 
         let host = match event {
-            TerminalEvent::Title(t) | TerminalEvent::TitleWithSubtitle(t, _) => HostEvent::Title(t),
+            TerminalEvent::Title(t) => HostEvent::Title(t),
             TerminalEvent::ResetTitle => HostEvent::Title(String::new()),
             TerminalEvent::Bell => HostEvent::Bell,
             TerminalEvent::Cwd(cwd) => HostEvent::Cwd(cwd),
@@ -127,7 +127,6 @@ impl EventListener for TerminalEventProxy {
             TerminalEvent::DesktopNotification { title, body } => {
                 HostEvent::Notification { title, body }
             }
-            TerminalEvent::InteractiveState(on) => HostEvent::InteractiveState(on),
             TerminalEvent::AltScreen(on) => {
                 self.shared.alt_screen.store(on, Ordering::Release);
 

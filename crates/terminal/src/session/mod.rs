@@ -75,10 +75,8 @@ pub enum HostEvent {
     Cwd(String),
     /// Desktop notification (OSC 9 / OSC 777).
     Notification { title: String, body: String },
-    /// Entered (`true`) or left (`false`) an interactive full-screen program.
-    InteractiveState(bool),
-    /// A full-screen program entered (`true`) or left (`false`) the alt-screen — a
-    /// subset of [`Self::InteractiveState`] that gates command-block chrome.
+    /// A full-screen program entered (`true`) or left (`false`) the alt-screen,
+    /// which gates command-block chrome.
     AltScreen(bool),
     /// The integrated shell boundary lifecycle is trusted for fixed-bottom
     /// prompt ownership.

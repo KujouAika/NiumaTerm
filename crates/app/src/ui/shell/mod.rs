@@ -3564,7 +3564,7 @@ impl AppWindow {
                 }
                 // A command starting flips the workspace indicator, which lives
                 // in the chrome rather than in the pane's own grid.
-                HostEvent::InteractiveState(_)
+                HostEvent::AltScreen(_)
                 | HostEvent::PromptBoundaryTrusted(_)
                 | HostEvent::PromptStarted
                 | HostEvent::CommandStarted => chrome_changed = true,

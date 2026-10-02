@@ -325,9 +325,6 @@ where
         if on != self.prev_alt_screen_sent {
             self.prev_alt_screen_sent = on;
 
-            self.event_proxy
-                .send_event(TerminalEvent::InteractiveState(on));
-
             self.event_proxy.send_event(TerminalEvent::AltScreen(on));
         }
     }

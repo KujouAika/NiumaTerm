@@ -123,14 +123,9 @@ pub enum TerminalEvent {
     },
     /// Window title change.
     Title(String),
-    /// Window title change.
-    TitleWithSubtitle(String, String),
-    /// The surface entered (`true`) or left (`false`) an interactive state:
-    /// a full-screen program (alt-screen). Edge-triggered.
-    InteractiveState(bool),
-    /// A full-screen program entered (`true`) or left (`false`) the alt-screen — a
-    /// mirror of [`Self::InteractiveState`]. Edge-triggered. Lets the app suppress
-    /// command-block chrome only when a TUI repaints the whole grid.
+    /// A full-screen program entered (`true`) or left (`false`) the alt-screen.
+    /// Edge-triggered. Lets the app suppress command-block chrome only when a
+    /// TUI repaints the whole grid.
     AltScreen(bool),
     /// The OSC 133 prompt/command/output lifecycle is currently trusted for
     /// command/prompt block ownership. Edge-triggered by the PTY prompt sniffer.
@@ -164,8 +159,6 @@ pub enum TerminalEvent {
         title: String,
         body: String,
     },
-    /// Shutdown request.
-    Exit,
     /// Leave current terminal.
     CloseTerminal(usize),
 }
@@ -177,10 +170,6 @@ impl Debug for TerminalEvent {
                 write!(f, "ClipboardStore({ty:?}, {text})")
             }
             TerminalEvent::Title(title) => write!(f, "Title({title})"),
-            TerminalEvent::TitleWithSubtitle(title, subtitle) => {
-                write!(f, "TitleWithSubtitle({title}, {subtitle})")
-            }
-            TerminalEvent::InteractiveState(on) => write!(f, "InteractiveState({on})"),
             TerminalEvent::AltScreen(on) => write!(f, "AltScreen({on})"),
             TerminalEvent::PromptBoundaryTrusted(on) => write!(f, "PromptBoundaryTrusted({on})"),
             TerminalEvent::PromptStarted => write!(f, "PromptStarted"),
@@ -211,7 +200,6 @@ impl Debug for TerminalEvent {
             TerminalEvent::DesktopNotification { title, body } => {
                 write!(f, "DesktopNotification({title}, {body})")
             }
-            TerminalEvent::Exit => write!(f, "Exit"),
             TerminalEvent::CloseTerminal(route) => write!(f, "CloseTerminal {route}"),
             TerminalEvent::UpdateGraphics { route_id, .. } => {
                 write!(f, "UpdateGraphics({route_id})")
