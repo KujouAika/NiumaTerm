@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Div, DragMoveEvent, ElementId, Entity, FontWeight,
-    Pixels, ScrollHandle, SharedString, Window, div, px, radians, relative,
+    Pixels, ScrollHandle, SharedString, Stateful, Window, div, px, radians, relative,
 };
 use gpui_base::animation::ease_out_cubic;
 use gpui_base::motion::{Transition, transition};
@@ -451,10 +451,6 @@ impl WorkspaceList {
             // The name starts on the tab rows' icon column until the
             // disclosure mark makes it slide over.
             .when(vertical_tabs, |this| this.pl(px(SIDEBAR_ROW_GUTTER)))
-            .when_some(
-                disclosure.as_ref().map(Disclosure::on_hover),
-                |this, handler| this.on_hover(handler),
-            )
             .child(
                 h_flex()
                     .relative()
@@ -613,7 +609,12 @@ impl WorkspaceList {
                     })
                 })
             })
-            .child(item)
+            .child(match &disclosure {
+                Some(disclosure) => disclosure
+                    .hover_area(("workspace-hover", idx), item)
+                    .into_any_element(),
+                None => item.into_any_element(),
+            })
             .when(!settings_entry, |row| {
                 row.managed_tooltip_right(dirs_description)
             })
@@ -716,20 +717,34 @@ impl Disclosure {
         }
     }
 
-    /// The row's hover handler. The pointer moves outside a frame, and
-    /// notifying the state is what wakes the window to start the reveal.
-    pub(super) fn on_hover(&self) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+    /// Wrap `row` in the area whose hover drives the reveal. GPUI reports an
+    /// element unhovered on every pointer move while a press on that same
+    /// element is pending, and the row's own click and the trigger on it
+    /// keep one pending for the whole click, so the slight pointer movement
+    /// of a real click would ease the reveal out and back in. The wrapper
+    /// takes no presses of its own, so its hover follows only where the
+    /// pointer is. The pointer moves outside a frame, and notifying the
+    /// state is what wakes the window to start the reveal.
+    pub(super) fn hover_area(
+        &self,
+        id: impl Into<ElementId>,
+        row: impl IntoElement,
+    ) -> Stateful<Div> {
         let hovered = self.hovered.clone();
 
-        move |inside, _, cx| {
-            hovered.update(cx, |hovered, cx| {
-                if *hovered != *inside {
-                    *hovered = *inside;
+        div()
+            .id(id)
+            .w_full()
+            .child(row)
+            .on_hover(move |inside, _, cx| {
+                hovered.update(cx, |hovered, cx| {
+                    if *hovered != *inside {
+                        *hovered = *inside;
 
-                    cx.notify();
-                }
-            });
-        }
+                        cx.notify();
+                    }
+                });
+            })
     }
 
     /// How far the name stands right of the icon column.

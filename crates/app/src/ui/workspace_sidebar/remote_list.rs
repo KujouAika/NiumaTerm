@@ -322,7 +322,6 @@ fn workspace_row(
         // The name starts on the session rows' icon column until the
         // disclosure mark makes it slide over.
         .pl(px(SIDEBAR_ROW_GUTTER))
-        .on_hover(disclosure.on_hover())
         .child(
             h_flex()
                 .relative()
@@ -353,7 +352,7 @@ fn workspace_row(
     div()
         .w_full()
         .relative()
-        .child(item)
+        .child(disclosure.hover_area(("remote-workspace-hover", id), item))
         // After the row itself, because the row's selected fill would
         // otherwise paint over the bar's lane.
         .children((highlight && Host::SIDEBAR_SELECTION_MARK).then(|| selection_bar(cx)))
