@@ -1,9 +1,11 @@
 //! Repaint scheduling for the response-age label.
 
+use std::time::Duration;
+
 use gpui::{Context, Task};
 
 use crate::agent_tab::AgentPane;
-use crate::agent_tab::session::turn::response_age_tick;
+use crate::agent_tab::transcript::LAST_RESPONSE_LIMIT;
 
 #[derive(Default)]
 pub(super) struct TurnPresentation {
@@ -42,5 +44,18 @@ impl TurnPresentation {
         }));
 
         cx.notify();
+    }
+}
+
+/// How long the response-age label can go without a repaint: it counts
+/// seconds for the first minute and minutes after that, and stops changing
+/// once the age passes the label's limit.
+fn response_age_tick(age: Duration) -> Option<Duration> {
+    const MINUTE: u64 = 60;
+
+    match age.as_secs() {
+        ..MINUTE => Some(Duration::from_secs(1)),
+        seconds if seconds < LAST_RESPONSE_LIMIT.as_secs() => Some(Duration::from_secs(MINUTE)),
+        _ => None,
     }
 }

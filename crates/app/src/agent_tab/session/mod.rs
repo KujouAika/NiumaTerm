@@ -9,7 +9,6 @@ pub(super) use nmt_agent::session::test_support::TestBackend;
 
 pub(super) mod errors;
 pub(super) mod history;
-pub(super) mod turn;
 
 #[cfg(test)]
 mod tests;

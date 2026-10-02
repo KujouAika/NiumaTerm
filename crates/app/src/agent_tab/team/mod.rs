@@ -3,7 +3,6 @@ pub use crate::agent_tab::team::view::TeamPane;
 
 mod controls;
 mod dispatch;
-mod events;
 mod member_host;
 mod operations;
 mod view;
