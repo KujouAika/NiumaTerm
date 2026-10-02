@@ -44,6 +44,9 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstallAction {
     None,
+    /// The package is staged; call [`Updater::resume_install`] once no tab
+    /// is running work and no agent CLI is updating.
+    AwaitIdle,
     InspectFileUsers,
     Prompt(FileUsePrompt),
     RecoveryWarning(Vec<String>),
@@ -161,15 +164,28 @@ impl Updater {
             Err(error) => return self.fail_install(error),
         };
 
-        let inspect = installation.changes_shell_extension();
-
+        self.status = Status::WaitingForIdle(installation.release().clone());
         self.pending = Some(installation);
 
-        if inspect {
+        InstallAction::AwaitIdle
+    }
+
+    /// Start replacing files for a download that was held back by running
+    /// work. Returns `None` when the wait already ended, so a stale waiter
+    /// cannot restart an installation the user cancelled or another waiter
+    /// already resumed.
+    pub fn resume_install(&mut self) -> Option<InstallAction> {
+        if !matches!(self.status, Status::WaitingForIdle(_)) {
+            return None;
+        }
+
+        let inspect = self.pending.as_ref()?.changes_shell_extension();
+
+        Some(if inspect {
             InstallAction::InspectFileUsers
         } else {
             self.continue_install()
-        }
+        })
     }
 
     pub fn inspect_file_users(&mut self) -> Option<FileUsers> {

@@ -1,15 +1,25 @@
 //! Schedules updater jobs and presents their outcomes in application windows.
 
+use std::time::Duration;
+
 use gpui::{AnyWindowHandle, App, Global, Window};
+use nmt_agent::update::UpdatePhase;
 use nmt_platform::windows::window::show_error_dialog;
 use nmt_updater::windows::{
     CHECK_INTERVAL, FIRST_CHECK_DELAY, FileUsePrompt, InstallAction, Status, Updater,
 };
 use rust_i18n::t;
 
+use crate::agent_updates::AgentUpdates;
 use crate::ui::{AppSettings, WindowRegistry};
 use crate::update::file_users;
 use crate::utils::{get_exe_dir, on_runtime};
+
+/// Running work is only observable by polling: terminal activity, agent turns
+/// and agent CLI updates each finish on their own schedules without a shared
+/// completion event. One second keeps the restart prompt after the last task
+/// ends while costing a scan of the open tabs.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 struct AppUpdate {
     updater: Updater,
@@ -175,6 +185,14 @@ pub(crate) fn cancel_install(cx: &mut App) {
     }
 }
 
+/// Install a download held back by running work: the idle waiter calls this
+/// once the work ends, and the update card when the user restarts anyway.
+pub(crate) fn resume_install(cx: &mut App) {
+    if let Some(action) = cx.global_mut::<AppUpdate>().updater.resume_install() {
+        handle_install_action(action, cx);
+    }
+}
+
 pub(crate) fn complete_relaunch(cx: &mut App) {
     let update = cx.global_mut::<AppUpdate>();
 
@@ -194,6 +212,7 @@ fn handle_install_action(action: InstallAction, cx: &mut App) {
 
             cx.refresh_windows();
         }
+        InstallAction::AwaitIdle => await_idle(cx),
         InstallAction::InspectFileUsers => inspect_file_users(cx),
         InstallAction::Prompt(prompt) => show_file_use_prompt(prompt, cx),
         InstallAction::RecoveryWarning(applications) => show_recovery_warning(applications, cx),
@@ -201,6 +220,69 @@ fn handle_install_action(action: InstallAction, cx: &mut App) {
         // this callback before other work can rebuild state from that path.
         InstallAction::Relaunch => complete_relaunch(cx),
     }
+}
+
+/// Replacing files ends with a restart that kills every child process, so the
+/// installation waits while a terminal command or agent turn is running, or
+/// while an agent CLI is replacing its own files, which a killed vendor
+/// updater can leave half-installed.
+fn await_idle(cx: &mut App) {
+    if !work_in_progress(cx) {
+        resume_install(cx);
+
+        return;
+    }
+
+    cx.refresh_windows();
+
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(IDLE_POLL_INTERVAL).await;
+
+            let finished = cx.update(|cx| {
+                // Cancelling, or restarting anyway, ends the wait elsewhere.
+                if !matches!(
+                    cx.global::<AppUpdate>().updater.status(),
+                    Status::WaitingForIdle(_)
+                ) {
+                    return true;
+                }
+
+                if work_in_progress(cx) {
+                    return false;
+                }
+
+                resume_install(cx);
+
+                true
+            });
+
+            if finished {
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
+fn work_in_progress(cx: &App) -> bool {
+    // A version probe only reads the installation; interrupting it loses
+    // nothing, unlike the vendor update that follows an accepted upgrade.
+    let updating_cli = cx.try_global::<AgentUpdates>().is_some_and(|updates| {
+        updates
+            .coordinator
+            .snapshots()
+            .iter()
+            .any(|snapshot| snapshot.busy && snapshot.state.phase != UpdatePhase::Checking)
+    });
+
+    updating_cli
+        || cx
+            .global::<WindowRegistry>()
+            .windows()
+            .iter()
+            .filter_map(|entry| entry.view.upgrade())
+            .any(|view| view.read(cx).next_busy_tab(cx).is_some())
 }
 
 fn pending_windows(cx: &App) -> Vec<AnyWindowHandle> {

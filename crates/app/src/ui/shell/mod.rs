@@ -2741,7 +2741,7 @@ impl AppWindow {
     /// watching a tab does not finish its work — so the jump keeps cycling
     /// while the same tabs stay busy, which is what following several parallel
     /// runs needs.
-    pub(super) fn next_busy_tab(&self, cx: &App) -> Option<(usize, usize)> {
+    pub(crate) fn next_busy_tab(&self, cx: &App) -> Option<(usize, usize)> {
         self.next_marked_tab(|tab| {
             if Self::tab_terminal_activity(tab, cx) == TerminalActivity::Running {
                 return true;

@@ -16,6 +16,11 @@ pub enum Status {
     /// The package is being fetched and unpacked, or its captured plan is being
     /// applied without needing a user decision.
     Installing(Release),
+    /// The package is staged, but replacing files restarts the application,
+    /// which would kill running commands and interrupt an agent CLI update
+    /// halfway through its own file replacement. Installation resumes once
+    /// the host reports no such work, or the user explicitly overrides.
+    WaitingForIdle(Release),
     InspectingFileUse(Release),
     AwaitingFileUse(Release),
     ClosingFileUsers(Release),
@@ -36,6 +41,7 @@ impl Status {
         matches!(
             self,
             Self::Installing(_)
+                | Self::WaitingForIdle(_)
                 | Self::InspectingFileUse(_)
                 | Self::AwaitingFileUse(_)
                 | Self::ClosingFileUsers(_)
@@ -47,6 +53,7 @@ impl Status {
         match self {
             Self::Available(release)
             | Self::Installing(release)
+            | Self::WaitingForIdle(release)
             | Self::InspectingFileUse(release)
             | Self::AwaitingFileUse(release)
             | Self::ClosingFileUsers(release) => Some(release),

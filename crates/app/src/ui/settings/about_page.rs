@@ -136,6 +136,16 @@ fn update_check_item() -> SettingItem {
                 .on_click(|_, window, cx: &mut App| update::install_now(window, cx))
         });
 
+        // Running work holds the restart back; this button is the override
+        // for work that never ends on its own, such as a development server.
+        let restart = matches!(status, Status::WaitingForIdle(_)).then(|| {
+            Button::new("app-update-restart-now")
+                .primary()
+                .label(t!("settings-about-restart-now"))
+                .disabled(options.is_disabled())
+                .on_click(|_, _, cx: &mut App| update::resume_install(cx))
+        });
+
         // The status line reports the result of a check the user just ran and
         // changes while it runs, so it sits under the label instead of behind
         // the hover hint the static row descriptions use: watching a check
@@ -160,6 +170,7 @@ fn update_check_item() -> SettingItem {
                     .gap_2()
                     .children(open)
                     .children(install)
+                    .children(restart)
                     .child(check),
             )
             .into_any_element()
@@ -178,6 +189,9 @@ fn status_text(status: &Status) -> String {
         }
         Status::Installing(release) => {
             t!("settings-about-installing", version = &release.label).into_owned()
+        }
+        Status::WaitingForIdle(release) => {
+            t!("settings-about-waiting-for-idle", version = &release.label).into_owned()
         }
         Status::InspectingFileUse(release) => {
             t!("settings-about-file-use-checking", version = &release.label).into_owned()

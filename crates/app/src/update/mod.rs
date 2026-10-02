@@ -7,7 +7,8 @@ pub(crate) use crate::update::notification::{UpdateNotification, install_error_t
 #[cfg(windows)]
 pub(crate) use crate::update::windows::{
     cancel_install, check, close_file_users, complete_relaunch, continue_install, initialize,
-    inspect_file_users, install_now, on_settings_changed, schedule_automatic_checks, status,
+    inspect_file_users, install_now, on_settings_changed, resume_install,
+    schedule_automatic_checks, status,
 };
 
 #[cfg(windows)]

@@ -16,7 +16,7 @@ fn release() -> Release {
     }
 }
 
-fn staged_update() -> (Updater, TempDir, TempDir) {
+fn downloaded_update() -> (Updater, TempDir, TempDir) {
     let staging = tempdir().unwrap();
     let install = tempdir().unwrap();
 
@@ -44,10 +44,35 @@ fn staged_update() -> (Updater, TempDir, TempDir) {
             install.path().to_path_buf(),
             true,
         ))),
-        InstallAction::InspectFileUsers
+        InstallAction::AwaitIdle
+    );
+    assert_eq!(updater.status(), &Status::WaitingForIdle(release()));
+
+    (updater, staging, install)
+}
+
+fn staged_update() -> (Updater, TempDir, TempDir) {
+    let (mut updater, staging, install) = downloaded_update();
+
+    assert_eq!(
+        updater.resume_install(),
+        Some(InstallAction::InspectFileUsers)
     );
 
     (updater, staging, install)
+}
+
+#[test]
+fn waiting_for_idle_replaces_nothing_and_a_cancelled_wait_cannot_resume() {
+    let (mut updater, _staging, install) = downloaded_update();
+
+    assert!(fs::read_dir(install.path()).unwrap().next().is_none());
+    assert!(updater.begin_check().is_none());
+
+    assert!(updater.cancel_install());
+    assert_eq!(updater.resume_install(), None);
+    assert_eq!(updater.status(), &Status::Available(release()));
+    assert!(fs::read_dir(install.path()).unwrap().next().is_none());
 }
 
 #[test]

@@ -30,6 +30,7 @@ struct UpdateCard {
 enum UpdateNotice {
     Available { version: String, url: String },
     Installing(String),
+    WaitingForIdle(String),
     Failed(InstallError),
 }
 
@@ -45,6 +46,7 @@ impl UpdateNotification {
                 version: release.label,
                 url: release.page_url,
             }),
+            Status::WaitingForIdle(release) => Some(UpdateNotice::WaitingForIdle(release.label)),
             Status::Installing(release)
             | Status::InspectingFileUse(release)
             | Status::AwaitingFileUse(release)
@@ -65,7 +67,11 @@ impl UpdateNotification {
         // available version stays hidden through later checks of that version.
         if matches!(
             dismissed,
-            Some(UpdateNotice::Installing(_) | UpdateNotice::Failed(_))
+            Some(
+                UpdateNotice::Installing(_)
+                    | UpdateNotice::WaitingForIdle(_)
+                    | UpdateNotice::Failed(_)
+            )
         ) && dismissed != view.as_ref()
         {
             cx.global_mut::<DismissedUpdate>().0 = None;
@@ -135,6 +141,20 @@ impl UpdateNotice {
                 title: t!("app-update-notice-installing-title").into(),
                 message: t!("settings-about-installing", version = version).into(),
                 progress: NotificationProgress::Indeterminate,
+                ..NotificationCard::default()
+            },
+            Self::WaitingForIdle(version) => NotificationCard {
+                title: t!("app-update-notice-waiting-title").into(),
+                message: t!("settings-about-waiting-for-idle", version = version).into(),
+                icon: Some(IconName::ArrowDown.into()),
+                primary: Some(NotificationAction::new(
+                    t!("settings-about-restart-now"),
+                    |_, cx| update::resume_install(cx),
+                )),
+                secondary: Some(NotificationAction::new(
+                    t!("settings-about-install-cancel"),
+                    |_, cx| update::cancel_install(cx),
+                )),
                 ..NotificationCard::default()
             },
             Self::Failed(error) => NotificationCard {
