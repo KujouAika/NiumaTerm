@@ -3,12 +3,15 @@
 mod tests;
 
 use std::f32::consts::FRAC_PI_2;
+use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Div, DragMoveEvent, ElementId, FontWeight,
-    ScrollHandle, SharedString, div, px, radians, relative,
+    AnyElement, App, ClipboardItem, Context, Div, DragMoveEvent, ElementId, Entity, FontWeight,
+    Pixels, ScrollHandle, SharedString, Window, div, px, radians, relative,
 };
+use gpui_base::animation::ease_out_cubic;
+use gpui_base::motion::{Transition, transition};
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::scroll::Scrollbar;
@@ -19,13 +22,15 @@ use nmt_config::local_state::TabFold;
 use rust_i18n::t;
 
 use crate::ui::composition::{
-    HoverActionLayout, HoverActionVisibility, hover_action, progress_edge, sidebar_selection,
-    toolbar_button,
+    HoverActionLayout, HoverActionVisibility, hover_action, motion_duration, progress_edge,
+    sidebar_selection, toolbar_button,
 };
 use crate::ui::fluent::{SELECTION_BAR_HEIGHT, SELECTION_BAR_RADIUS, SELECTION_BAR_WIDTH};
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle};
-use crate::ui::tab_bar::{accept_row_drops, new_tab_menu, tab_row_glyph, tab_row_icon};
+use crate::ui::tab_bar::{
+    TAB_ROW_GAP, TAB_ROW_ICON, accept_row_drops, new_tab_menu, tab_row_glyph, tab_row_icon,
+};
 use crate::ui::workspace_sidebar::drag::{WorkspaceDrag, WorkspaceDragPreview};
 use crate::ui::workspace_sidebar::status::WorkspaceStatus;
 use crate::ui::workspace_sidebar::{
@@ -83,6 +88,7 @@ impl WorkspaceList {
     /// workspace in the vertical tab-bar style and is empty in the horizontal
     /// one, where the title bar owns the tabs. `width` is the sidebar width,
     /// which sets how much of each path fits.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render(
         &self,
         summaries: &[WorkspaceChrome],
@@ -91,6 +97,7 @@ impl WorkspaceList {
         remote_blocks: Vec<AnyElement>,
         renames: &InlineRenameSession,
         width: f32,
+        window: &mut Window,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let mut tab_rows = tab_rows.into_iter();
@@ -127,13 +134,15 @@ impl WorkspaceList {
                     }))
                     .map(|list| accept_row_drops(list, cx))
                     .children(summaries.iter().map(|ws| {
+                        let header = self.render_row(ws.index, ws, renames, width, window, cx);
+
                         // A workspace heads its own tab rows, and the
                         // list gap is what separates one such block
                         // from the next; a rule between them would
                         // draw a second boundary inside the same gap.
                         let mut rows = Vec::new();
 
-                        rows.push(self.render_row(ws.index, ws, renames, width, cx));
+                        rows.push(header);
 
                         rows.extend(tab_rows.next().into_iter().flatten());
 
@@ -155,6 +164,7 @@ impl WorkspaceList {
         chrome: &WorkspaceChrome,
         renames: &InlineRenameSession,
         width: f32,
+        window: &mut Window,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let ws = &chrome.summary;
@@ -393,7 +403,14 @@ impl WorkspaceList {
         };
 
         // In the vertical style the row folds its tab list.
-        let disclosure = vertical_tabs.then(|| disclosure_mark(ws.tab_fold, "ws-item", cx));
+        let disclosure = vertical_tabs.then(|| {
+            Disclosure::new(
+                ("workspace-disclosure", ws_id.0 as usize),
+                ws.tab_fold,
+                window,
+                cx,
+            )
+        });
 
         let drag_name = display_label.clone();
         let drag_cwd = display_path.clone();
@@ -431,15 +448,30 @@ impl WorkspaceList {
                 )
             })
             .group("ws-item")
-            // The disclosure slot leads the row, on the tab rows' inset.
+            // The name starts on the tab rows' icon column until the
+            // disclosure mark makes it slide over.
             .when(vertical_tabs, |this| this.pl(px(SIDEBAR_ROW_GUTTER)))
+            .when_some(
+                disclosure.as_ref().map(Disclosure::on_hover),
+                |this, handler| this.on_hover(handler),
+            )
             .child(
                 h_flex()
+                    .relative()
                     .w_full()
                     .gap_1p5()
                     .items_center()
-                    .children(disclosure)
-                    .child(div().flex_1().min_w_0().overflow_hidden().child(name))
+                    .children(disclosure.as_ref().map(|disclosure| disclosure.mark(cx)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .when_some(disclosure.as_ref(), |this, disclosure| {
+                                this.ml(disclosure.name_offset())
+                            })
+                            .child(name),
+                    )
                     .child(suffix),
             )
             // In the vertical style the tab rows switch workspaces, so the
@@ -633,28 +665,109 @@ pub(super) fn tail_preserving_path(path: &str, max_chars: usize) -> String {
     format!("…{component_tail}")
 }
 
-/// The mark leading a workspace row whose click folds its tab list. A filled
-/// triangle says how the way a tree's disclosure mark does: right while the
-/// tabs are folded away, down while any are listed. It sits in the tab rows'
-/// glyph slot so it stands on their icon column and the name lines up with
-/// their labels, which takes the row starting on the tab rows' inset. The
-/// fold already shows in the rows listed below, so the mark appears only
-/// while the pointer is on the row (`group`), keeping its slot so the name
-/// does not shift.
-pub(super) fn disclosure_mark(fold: TabFold, group: &'static str, cx: &App) -> Div {
-    let icon = Icon::new(DisclosureIcon)
-        .with_size(px(DISCLOSURE_SIZE))
-        .text_color(cx.theme().sidebar_foreground.opacity(0.5));
+/// The mark leading a workspace row whose click folds its tab list, and the
+/// hover that reveals it. The fold already shows in the rows listed below,
+/// so at rest the row carries no mark and its name stands on the tab rows'
+/// icon column, which takes the row starting on the tab rows' inset. While
+/// the pointer is on the row the mark fades in on that column and the name
+/// slides right onto the tab labels' column to make room; both ease back
+/// once the pointer leaves.
+pub(super) struct Disclosure {
+    fold: TabFold,
 
-    let icon = match fold {
-        TabFold::Collapsed => icon,
-        TabFold::Awake | TabFold::All => icon.rotate(radians(FRAC_PI_2)),
-    };
+    /// Whether the pointer is on the row. Kept as element state, whose
+    /// notification re-renders the window, so the hover handler retargets
+    /// the reveal without the sidebar tracking every row.
+    hovered: Entity<bool>,
 
-    tab_row_icon(tab_row_glyph(icon))
-        .invisible()
-        .group_hover(group, |this| this.visible())
+    /// How far the reveal has eased, from 0 at rest to 1 under the pointer.
+    reveal: f32,
 }
+
+impl Disclosure {
+    /// `id` names the row across renders; the reveal keeps its progress
+    /// under it, so a pointer leaving mid-way eases back from where it was.
+    pub(super) fn new(
+        id: impl Into<ElementId>,
+        fold: TabFold,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let id = id.into();
+        let hovered = window.use_keyed_state(id.clone(), cx, |_, _| false);
+
+        let target = match *hovered.read(cx) {
+            true => 1.0,
+            false => 0.0,
+        };
+
+        let reveal = transition(
+            (id, "reveal"),
+            target,
+            Transition::new(motion_duration(DISCLOSURE_REVEAL, cx)).ease(ease_out_cubic),
+            window,
+            cx,
+        );
+
+        Self {
+            fold,
+            hovered,
+            reveal,
+        }
+    }
+
+    /// The row's hover handler. The pointer moves outside a frame, and
+    /// notifying the state is what wakes the window to start the reveal.
+    pub(super) fn on_hover(&self) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        let hovered = self.hovered.clone();
+
+        move |inside, _, cx| {
+            hovered.update(cx, |hovered, cx| {
+                if *hovered != *inside {
+                    *hovered = *inside;
+
+                    cx.notify();
+                }
+            });
+        }
+    }
+
+    /// How far the name stands right of the icon column.
+    pub(super) fn name_offset(&self) -> Pixels {
+        px(self.reveal * (TAB_ROW_ICON + TAB_ROW_GAP))
+    }
+
+    /// The mark, drawn over the start of the row's content so it takes no
+    /// room of its own: the name's offset makes that room. A filled triangle
+    /// says how the way a tree's disclosure mark does: right while the tabs
+    /// are folded away, down while any are listed. It sits in the tab rows'
+    /// glyph slot so it stands on their icon column.
+    pub(super) fn mark(&self, cx: &App) -> Div {
+        let icon = Icon::new(DisclosureIcon)
+            .with_size(px(DISCLOSURE_SIZE))
+            .text_color(cx.theme().sidebar_foreground.opacity(0.5));
+
+        let icon = match self.fold {
+            TabFold::Collapsed => icon,
+            TabFold::Awake | TabFold::All => icon.rotate(radians(FRAC_PI_2)),
+        };
+
+        div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .flex()
+            .items_center()
+            .opacity(self.reveal)
+            .child(tab_row_icon(tab_row_glyph(icon)))
+    }
+}
+
+/// Long enough to read as the name making way for the mark rather than
+/// jumping, short enough that sweeping the pointer down the list leaves no
+/// trail of rows still settling.
+const DISCLOSURE_REVEAL: Duration = Duration::from_millis(150);
 
 /// Edge of the disclosure triangle, small enough to read as a mark on the
 /// name rather than as a control of its own.

@@ -15,7 +15,19 @@ use gpui_component::button::{Button, ButtonVariants as _, Toggle, ToggleVariants
 use gpui_component::progress::ProgressCircle;
 use gpui_component::{ActiveTheme, Sizable as _, v_flex};
 
-use crate::ui::UI_RADIUS;
+use crate::ui::{AppSettings, UI_RADIUS};
+
+/// `duration` for a transition of the window chrome, or none while the user
+/// has asked for reduced motion. The app's own setting governs, not GPUI's
+/// flag, which nothing sets. A zero duration still runs through the
+/// transition, so its state follows the target and turning the setting off
+/// later does not replay a stale move.
+pub(crate) fn motion_duration(duration: Duration, cx: &App) -> Duration {
+    match cx.global::<AppSettings>().config().appearance.reduce_motion {
+        true => Duration::ZERO,
+        false => duration,
+    }
+}
 
 /// Bottom gutter for the workspace sidebar, which floats clear of the window
 /// edge; the main pane runs into that edge instead.

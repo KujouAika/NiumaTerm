@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, DragMoveEvent, Entity, FontWeight, SharedString, div, px,
+    AnyElement, App, Context, Div, DragMoveEvent, Entity, FontWeight, SharedString, Window, div, px,
 };
 use gpui_component::{ActiveTheme, Disableable, IconName, IconNamed, h_flex, v_flex};
 use nmt_agent::AgentProjection;
@@ -113,6 +113,7 @@ impl Sidebar {
     /// The workspace sidebar: one themed button per workspace (active = selected),
     /// plus a new-workspace button and bottom status bar. Toggled by
     /// `ToggleSidebar` (Ctrl+Shift+B).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render(
         &mut self,
         summaries: Vec<WorkspaceChrome>,
@@ -125,6 +126,7 @@ impl Sidebar {
         // computer's workspaces; with some, it names them as local and
         // lists each host's sessions after them.
         remote: Vec<RemoteWorkspace>,
+        window: &mut Window,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         self.list.end_cancelled_drag(cx);
@@ -145,6 +147,7 @@ impl Sidebar {
                 &self.remote_folds,
                 renames,
                 self.width,
+                window,
                 cx,
             ),
         };
@@ -215,10 +218,15 @@ impl Sidebar {
                             ),
                     ),
             )
-            .child(
-                self.list
-                    .render(&summaries, tab_rows, remote_blocks, renames, width, cx),
-            )
+            .child(self.list.render(
+                &summaries,
+                tab_rows,
+                remote_blocks,
+                renames,
+                width,
+                window,
+                cx,
+            ))
             .children((show_daily_token_usage || show_agent_usage).then(|| {
                 v_flex()
                     .id("workspace-sidebar-status")

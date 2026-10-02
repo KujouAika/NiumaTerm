@@ -5,7 +5,8 @@
 pub(super) use crate::ui::tab_bar::horizontal::{TabStrip, tab_shape_preview};
 pub(super) use crate::ui::tab_bar::menu::new_tab_menu;
 pub(super) use crate::ui::tab_bar::vertical::{
-    VerticalTabList, WorkspaceTabs, accept_row_drops, tab_row, tab_row_glyph, tab_row_icon,
+    TAB_ROW_GAP, TAB_ROW_ICON, VerticalTabList, WorkspaceTabs, accept_row_drops, fold_row, tab_row,
+    tab_row_glyph, tab_row_icon,
 };
 
 pub(super) mod menu;

@@ -4216,6 +4216,7 @@ impl Render for AppWindow {
                             &busy_agent_tabs,
                             &self.renames,
                             row_width,
+                            window,
                             cx,
                         )
                     })
@@ -4268,6 +4269,7 @@ impl Render for AppWindow {
                 quotas: self.chrome.agent_usage.clone(),
             },
             remote,
+            window,
             cx,
         );
 

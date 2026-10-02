@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, FontWeight, SharedString, div, px};
+use gpui::{AnyElement, Context, ElementId, FontWeight, SharedString, Window, div, px};
 use gpui_component::button::{ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::{ActiveTheme, IconName, IconNamed, Selectable as _, h_flex, v_flex};
@@ -21,9 +21,9 @@ use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::remote::{self, RemoteWorkspace};
 use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle};
 use crate::ui::tab_bar::menu::tab_icon;
-use crate::ui::tab_bar::{tab_row, tab_row_icon};
+use crate::ui::tab_bar::{fold_row, tab_row, tab_row_icon};
 use crate::ui::workspace_sidebar::list::{
-    WORKSPACE_NAME_TEXT, WORKSPACE_PATH_TEXT, disclosure_mark, selection_bar, tail_preserving_path,
+    Disclosure, WORKSPACE_NAME_TEXT, WORKSPACE_PATH_TEXT, selection_bar, tail_preserving_path,
     workspace_row_button,
 };
 use crate::ui::workspace_sidebar::{SIDEBAR_ROW_GUTTER, WORKSPACE_NAME_INSET};
@@ -39,6 +39,7 @@ pub(super) fn remote_workspace_blocks(
     folds: &HashMap<(String, String), TabFold>,
     renames: &InlineRenameSession,
     width: f32,
+    window: &mut Window,
     cx: &mut Context<AppWindow>,
 ) -> Vec<AnyElement> {
     let mut blocks = vec![heading];
@@ -107,12 +108,28 @@ pub(super) fn remote_workspace_blocks(
                 .iter()
                 .enumerate()
                 .filter(|(_, session)| in_workspace(session, workspace, label))
-                .filter(|(_, session)| match fold {
-                    TabFold::All => true,
-                    TabFold::Awake => !session.pending,
-                    TabFold::Collapsed => false,
+                .filter_map(|(row, session)| {
+                    let shown = match fold {
+                        TabFold::All => true,
+                        TabFold::Awake => !session.pending,
+                        TabFold::Collapsed => false,
+                    };
+
+                    fold_row(
+                        ElementId::Name(
+                            format!(
+                                "remote-session-fold:{}:{}",
+                                host.id.as_str(),
+                                session.session
+                            )
+                            .into(),
+                        ),
+                        shown,
+                        window,
+                        cx,
+                        |cx| session_row(index, row, host, session, renames, cx),
+                    )
                 })
-                .map(|(row, session)| session_row(index, row, host, session, renames, cx))
                 .collect::<Vec<_>>();
 
             // With the session on screen folded away, its workspace row takes
@@ -134,7 +151,9 @@ pub(super) fn remote_workspace_blocks(
             blocks.push(
                 v_flex()
                     .w_full()
-                    .child(workspace_row(row, host, workspace, label, width, cx))
+                    .child(workspace_row(
+                        row, host, workspace, label, width, window, cx,
+                    ))
                     .children(rows)
                     .into_any_element(),
             );
@@ -179,6 +198,7 @@ fn workspace_row(
     workspace: &WorkspaceInfo,
     label: &str,
     width: f32,
+    window: &mut Window,
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
     let WorkspaceRow {
@@ -277,6 +297,15 @@ fn workspace_row(
 
     let selection = sidebar_selection(cx);
 
+    // Keyed by host and workspace rather than list position, so a host
+    // connecting above this one does not hand this row another's reveal.
+    let disclosure = Disclosure::new(
+        ElementId::Name(format!("remote-disclosure:{}:{}", fold_key.0, fold_key.1).into()),
+        fold,
+        window,
+        cx,
+    );
+
     let item = workspace_row_button(("remote-workspace", id), cx)
         .accessibility_label(label)
         .selected(highlight)
@@ -290,15 +319,25 @@ fn workspace_row(
             )
         })
         .group("remote-ws-item")
-        // The disclosure slot leads the row, on the session rows' inset.
+        // The name starts on the session rows' icon column until the
+        // disclosure mark makes it slide over.
         .pl(px(SIDEBAR_ROW_GUTTER))
+        .on_hover(disclosure.on_hover())
         .child(
             h_flex()
+                .relative()
                 .w_full()
                 .gap_1p5()
                 .items_center()
-                .child(disclosure_mark(fold, "remote-ws-item", cx))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(name))
+                .child(disclosure.mark(cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .ml(disclosure.name_offset())
+                        .child(name),
+                )
                 .child(new_tab),
         )
         // Opening a session is done from its own row, so the workspace row

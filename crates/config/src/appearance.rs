@@ -399,7 +399,8 @@ pub struct AppearanceConfig {
     pub agent_transcript_font_size: f64,
 
     /// Put disclosed content on screen at once, skipping the entrance the
-    /// transcript otherwise plays for it.
+    /// transcript otherwise plays for it, and the slide a workspace row's
+    /// name makes for its fold mark.
     #[serde(default, rename = "reduce-motion")]
     pub reduce_motion: bool,
 

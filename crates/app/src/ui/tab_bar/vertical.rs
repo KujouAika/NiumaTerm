@@ -1,10 +1,14 @@
 use std::collections;
+use std::time::Duration;
 
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, DragMoveEvent, ElementId, Role, SharedString, Stateful, div, px,
+    AnyElement, App, Context, Div, DragMoveEvent, ElementId, Role, SharedString, Stateful, Window,
+    div, px,
 };
+use gpui_base::animation::ease_out_cubic;
+use gpui_base::motion::{Transition, transition};
 use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::{ActiveTheme as _, Icon, IconName, h_flex};
 use nmt_config::local_state::TabFold;
@@ -15,7 +19,7 @@ use rust_i18n::t;
 use crate::tabs::{TabId, TabManager};
 use crate::ui::composition::{
     HoverActionLayout, HoverActionVisibility, StatusMark, StatusMarkTone, hover_action,
-    progress_edge, sidebar_selection,
+    motion_duration, progress_edge, sidebar_selection,
 };
 use crate::ui::remote::Remote;
 use crate::ui::shell::{
@@ -98,10 +102,10 @@ struct TabRow {
 const TAB_ROW_DOT: f32 = 7.0;
 
 /// Spacing inside a tab row, between its glyph and its label.
-const TAB_ROW_GAP: f32 = 6.0;
+pub(crate) const TAB_ROW_GAP: f32 = 6.0;
 
 /// Edge of a tab row's type icon, and the size its label is set at.
-const TAB_ROW_ICON: f32 = 14.0;
+pub(crate) const TAB_ROW_ICON: f32 = 14.0;
 
 /// Edge of the glyph an `xsmall` icon draws inside the slot above. Every
 /// icon centers its ink in this box, so a status dot centered in the same box
@@ -133,6 +137,7 @@ impl VerticalTabList {
 
     /// The rows of one workspace's tabs, in tab order. `row_width` is the
     /// width of the list column the rows fill, which the drag preview copies.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &self,
         workspace: WorkspaceTabs<'_>,
@@ -140,6 +145,7 @@ impl VerticalTabList {
         busy_agent_tabs: &collections::HashSet<TabId>,
         renames: &InlineRenameSession,
         row_width: f32,
+        window: &mut Window,
         cx: &mut Context<AppWindow>,
     ) -> Vec<AnyElement> {
         let list = workspace.tabs.list();
@@ -181,19 +187,28 @@ impl VerticalTabList {
         // position, which reordering and jumping to the tab work from.
         rows.iter()
             .enumerate()
-            .filter(|(_, row)| match workspace.fold {
-                TabFold::All => true,
-                TabFold::Awake => !row.pending,
-                TabFold::Collapsed => false,
-            })
-            .map(|(index, row)| {
-                self.render_row(
-                    (workspace.index, index),
-                    row,
-                    closeable,
-                    row_width,
-                    renames,
+            .filter_map(|(index, row)| {
+                let shown = match workspace.fold {
+                    TabFold::All => true,
+                    TabFold::Awake => !row.pending,
+                    TabFold::Collapsed => false,
+                };
+
+                fold_row(
+                    ("sidebar-tab-fold", row.id.0 as usize),
+                    shown,
+                    window,
                     cx,
+                    |cx| {
+                        self.render_row(
+                            (workspace.index, index),
+                            row,
+                            closeable,
+                            row_width,
+                            renames,
+                            cx,
+                        )
+                    },
                 )
             })
             .collect()
@@ -489,6 +504,60 @@ pub(crate) fn tab_row_glyph(mark: impl IntoElement) -> Div {
         .justify_center()
         .child(mark)
 }
+
+/// A row of a list its workspace folds. `shown` is whether the fold lists
+/// it; a row the fold adds or removes grows or shrinks to its height while
+/// fading, so the rows below slide instead of jumping. A row the fold keeps
+/// out is not drawn once it has shrunk away, though its id still names its
+/// motion so a later fold grows it from where it is. Rows appear at once
+/// the first time they are drawn, so a new tab or a restored window does not
+/// play the fold's motion.
+pub(crate) fn fold_row(
+    id: impl Into<ElementId>,
+    shown: bool,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+    row: impl FnOnce(&mut Context<AppWindow>) -> AnyElement,
+) -> Option<AnyElement> {
+    let target = match shown {
+        true => 1.0,
+        false => 0.0,
+    };
+
+    let reveal: f32 = transition(
+        (id.into(), "fold"),
+        target,
+        Transition::new(motion_duration(TAB_FOLD, cx)).ease(ease_out_cubic),
+        window,
+        cx,
+    );
+
+    if reveal <= 0.0 {
+        return None;
+    }
+
+    let row = row(cx);
+
+    // A settled row takes no clip, which would cut off the gap a dragged
+    // row opens above it.
+    if reveal >= 1.0 {
+        return Some(row);
+    }
+
+    Some(
+        div()
+            .w_full()
+            .h(px(TAB_ROW_HEIGHT * reveal))
+            .overflow_hidden()
+            .opacity(reveal)
+            .child(row)
+            .into_any_element(),
+    )
+}
+
+/// Long enough to follow where the rows went, short enough that clicking
+/// through the folds is not held up by the list settling.
+const TAB_FOLD: Duration = Duration::from_millis(180);
 
 /// Fallback drop target for a list holding tab rows: a drop released over
 /// the make-way gap (a margin, outside every row's hitbox) still lands on the
