@@ -9,7 +9,9 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result, anyhow};
+#[cfg(feature = "host")]
+use anyhow::anyhow;
+use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use nmt_config::config_dir_path;
@@ -25,9 +27,15 @@ use crate::secret;
 
 const SCHEMA: u32 = 1;
 const IDENTITY_FILE: &str = "identity.key";
+
+#[cfg(feature = "host")]
 const DEVICES_FILE: &str = "devices.json";
+
 const HOSTS_FILE: &str = "hosts.json";
+
+#[cfg(feature = "host")]
 const RELAY_TOKEN_FILE: &str = "relay-token.key";
+
 const RELAY_ACCESS_FILE: &str = "relay-access.key";
 
 /// The remote-session state directory. Testing instances resolve their own
@@ -190,6 +198,7 @@ pub fn load_or_create_identity(dir: &Path) -> Result<DeviceKey> {
     }
 }
 
+#[cfg(feature = "host")]
 /// The secret proving this host owns its id on a relay: generated on first
 /// use and kept sealed beside the device key.
 pub(crate) fn load_or_create_relay_token(dir: &Path) -> Result<String> {
@@ -239,10 +248,12 @@ pub fn save_relay_access_key(dir: &Path, key: &str) -> io::Result<()> {
     durable_file::write(&path, &secret::protect(key.as_bytes())?)
 }
 
+#[cfg(feature = "host")]
 pub(crate) fn load_devices(dir: &Path) -> Vec<PairedDevice> {
     load_list(&dir.join(DEVICES_FILE))
 }
 
+#[cfg(feature = "host")]
 pub(crate) fn save_devices(dir: &Path, devices: &[PairedDevice]) -> io::Result<()> {
     save_list(dir, DEVICES_FILE, devices)
 }
