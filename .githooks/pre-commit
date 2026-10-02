@@ -115,15 +115,28 @@ check_no_ai_slop_marker() {
                 license_file = tolower(file) ~ /(^|\/)license([.](md|txt|rst))?$/
                 # The files that define the banned list have to spell it out.
                 word_list = file ~ /^(\.githooks\/pre-commit|AGENTS[.]md)$/
+                print "@@"
                 next
             }
+            # A hunk break ends the run of lines a wrapped phrase may span.
+            /^@@/ { print "@@"; next }
             !vendored && !license_file && !word_list && /^\+/ {
                 print file ": " $0
             }
         ')
     # Identifiers are split at underscores and lower-to-upper case changes, so
     # `carries_id` and `LandingZone` match the same words as plain prose.
+    # Multi-word phrases are also matched across two consecutive added lines,
+    # because comment wrapping often breaks "rather than" between lines.
     slop=$(printf '%s\n' "$added" | awk -v markers="$slop_markers" '
+        BEGIN {
+            n = split(markers, list, "|")
+            phrases = ""
+            for (i = 1; i <= n; i++) {
+                if (list[i] ~ / /) phrases = phrases (phrases == "" ? "" : "|") list[i]
+            }
+        }
+        $0 == "@@" { tail = ""; next }
         {
             # A plain loop instead of gensub keeps this portable to BSD awk.
             text = ""
@@ -136,7 +149,21 @@ check_no_ai_slop_marker() {
             }
             text = tolower(text)
             gsub(/_/, " ", text)
-            if (text ~ ("(^|[^a-z0-9])(" markers ")([^a-z0-9]|$)")) print
+            # Drop the "file: +" prefix and comment leaders, then keep the
+            # first and last two words for the cross-line check.
+            body = substr(text, index(text, ": +") + 3)
+            gsub(/[^a-z0-9-]+/, " ", body)
+            w = split(body, words, " ")
+            head = words[1] (w > 1 ? " " words[2] : "")
+            if (text ~ ("(^|[^a-z0-9])(" markers ")([^a-z0-9]|$)")) {
+                print
+            } else if (tail != "" && phrases != "" && \
+                (tail " " head) ~ ("(^| )(" phrases ")( |$)")) {
+                print tail_line
+                print
+            }
+            tail = (w > 1 ? words[w - 1] " " : "") words[w]
+            tail_line = $0
         }
     ' || true)
     # Em dashes are only rejected in Rust comments: Markdown docs and skill
