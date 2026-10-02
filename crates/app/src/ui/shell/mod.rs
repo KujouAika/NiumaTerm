@@ -3000,29 +3000,234 @@ impl AppWindow {
             let name = input.read(cx).value().trim().to_string();
 
             if !name.is_empty() {
-                let mut renamed_agent = None;
-
-                if let Some(tabs) = self.workspaces.tabs_for_tab_mut(id) {
-                    tabs.rename(id, name.clone());
-
-                    renamed_agent = tabs
-                        .list()
-                        .find(id)
-                        .and_then(|tab| tab.surface().agent().cloned());
-                }
-
-                // An agent tab's name is the conversation's name, so it goes
-                // to the harness too: its session listing is what this
-                // application's own recent-sessions list reads.
-                if let Some(agent) = renamed_agent {
-                    agent.update(cx, |agent, _| agent.rename_session(&name));
-                }
+                self.rename_tab(id, name, cx);
             }
         }
 
         self.focus_active(window, cx);
 
         cx.notify();
+    }
+
+    fn rename_tab(&mut self, id: TabId, name: String, cx: &mut Context<Self>) {
+        let mut renamed_agent = None;
+
+        if let Some(tabs) = self.workspaces.tabs_for_tab_mut(id) {
+            tabs.rename(id, name.clone());
+
+            renamed_agent = tabs
+                .list()
+                .find(id)
+                .and_then(|tab| tab.surface().agent().cloned());
+        }
+
+        // An agent tab's name is the conversation's name, so it goes to the
+        // harness too: its session listing is what this application's own
+        // recent-sessions list reads.
+        if let Some(agent) = renamed_agent {
+            agent.update(cx, |agent, _| agent.rename_session(&name));
+        }
+    }
+
+    /// Rename the tab showing a session a paired device renamed: the one
+    /// holding `pane`, the pane the session is shared from, or the pending
+    /// tab devices know by `session`. Returns whether this window holds it.
+    pub(crate) fn rename_for_device(
+        &mut self,
+        pane: Option<EntityId>,
+        session: &str,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.workspaces.find_tab_id(|surface| {
+            surface.pending_session() == Some(session)
+                || pane.is_some_and(|pane| surface.pane_ids().contains(&pane))
+        }) else {
+            return false;
+        };
+
+        self.rename_tab(tab, title, cx);
+
+        // Devices hear the new name when the window next renders, which a
+        // minimized or occluded window may not do for a long time.
+        ui::remote::sync_workspaces(self.window_id, &self.workspaces, cx);
+
+        cx.notify();
+
+        true
+    }
+
+    /// Begin renaming `session` on the paired host `host` in its sidebar row.
+    pub(crate) fn start_remote_rename(
+        &mut self,
+        host: DeviceId,
+        session: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.renames.begin_remote(host, session, window, cx);
+
+        cx.notify();
+    }
+
+    /// End the in-flight rename of a paired host's session, with the same
+    /// semantics as a tab rename. The host renames its tab, and the new name
+    /// shows once it lists the session again.
+    pub(crate) fn finish_remote_rename(
+        &mut self,
+        commit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((host, session, input)) = self.renames.take_remote() else {
+            return;
+        };
+
+        let name = input.read(cx).value().trim().to_string();
+
+        if commit && !name.is_empty() && name != session.title {
+            ui::remote::rename_session(&host, session.session, name, window, cx);
+        }
+
+        self.focus_active(window, cx);
+
+        cx.notify();
+    }
+
+    /// Ask before closing the tabs here that follow `session` on `host`,
+    /// leaving the session running on the host.
+    pub(crate) fn request_disconnect_session(
+        &mut self,
+        host: DeviceId,
+        host_name: String,
+        session: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_close_confirm(
+            window,
+            cx,
+            t!("remote-session-disconnect-title"),
+            t!("remote-session-disconnect-description", host = &host_name).into_owned(),
+            None,
+            move |this, window, cx| this.close_following(&host, &session, window, cx),
+        );
+    }
+
+    /// Ask before ending `session` on `host` for every device viewing it.
+    /// Once the host ended it, the tabs here following it close too.
+    pub(crate) fn request_close_remote_session(
+        &mut self,
+        host: DeviceId,
+        host_name: String,
+        session: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_close_confirm(
+            window,
+            cx,
+            t!("remote-session-close-title"),
+            t!(
+                "remote-session-close-description",
+                title = &session.title,
+                host = &host_name
+            )
+            .into_owned(),
+            None,
+            move |_, window, cx| {
+                let shell = cx.entity();
+                let closed_host = host.clone();
+                let closed = session.session.clone();
+
+                ui::remote::close_session(
+                    &host,
+                    session.session.clone(),
+                    window,
+                    cx,
+                    move |window, cx| {
+                        shell.update(cx, |this, cx| {
+                            this.close_following(&closed_host, &closed, window, cx)
+                        });
+                    },
+                );
+            },
+        );
+    }
+
+    /// Close what here follows `session` on `host`, leaving the session to
+    /// the host: a split tab loses only the panes following it, and a remote
+    /// entry's last tab takes the entry along, as closing it would.
+    fn close_following(
+        &mut self,
+        host: &DeviceId,
+        session: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tabs: Vec<TabId> = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .filter(|tab| tab.surface().follows_remote(host.as_str(), session, cx))
+            .map(|tab| tab.id())
+            .collect();
+
+        for tab in tabs {
+            let Some(surface) = self
+                .workspaces
+                .tabs_for_tab(tab)
+                .and_then(|tabs| tabs.list().find(tab))
+                .map(|tab| tab.surface())
+            else {
+                continue;
+            };
+
+            let following: Vec<_> = surface
+                .leaves()
+                .into_iter()
+                .filter(|(_, pane)| {
+                    pane.read(cx).remote_tab().is_some_and(|remote| {
+                        remote.host.id().as_str() == host.as_str() && remote.session == session
+                    })
+                })
+                .map(|(leaf, pane)| (leaf, pane.clone()))
+                .collect();
+
+            // A terminal this computer started on the host ends with its
+            // tab; closing what follows it here only detaches from it.
+            for (_, pane) in &following {
+                pane.update(cx, |pane, _| pane.keep_remote_session());
+            }
+
+            let split = surface
+                .tree()
+                .is_some_and(|tree| !tree.tree().is_single_leaf());
+
+            let workspace = self.workspaces.workspace_of_tab(tab);
+
+            let last_tab = workspace
+                .and_then(|workspace| self.workspaces.tabs_of(workspace))
+                .is_some_and(|tabs| tabs.list().len() == 1);
+
+            match (split, workspace) {
+                (true, _) if !following.is_empty() => {
+                    for (leaf, _) in following {
+                        self.close_pane_now(tab, leaf, window, cx);
+                    }
+                }
+                (_, Some(workspace))
+                    if last_tab
+                        && self.workspaces.kind_of(workspace) == Some(WorkspaceKind::Remote) =>
+                {
+                    self.close_workspace_now(workspace, window, cx);
+                }
+                (_, Some(_)) if !last_tab => self.close_tab_now(tab, window, cx),
+                // A local workspace's last tab stays, as it would after the
+                // session ended on its own.
+                _ => {}
+            }
+        }
     }
 
     /// Follow the active terminal's OSC7 directory or the active Agent's
@@ -4028,6 +4233,19 @@ impl Render for AppWindow {
                         })
                         .map(|session| session.session.clone())
                 });
+
+                host.followed = host
+                    .sessions
+                    .iter()
+                    .filter(|session| {
+                        self.workspaces
+                            .find_tab_id(|surface| {
+                                surface.follows_remote(host.id.as_str(), &session.session, cx)
+                            })
+                            .is_some()
+                    })
+                    .map(|session| session.session.clone())
+                    .collect();
 
                 host
             })

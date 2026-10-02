@@ -463,6 +463,14 @@ impl TerminalPane {
 
     /// The tab is closing: end its remote session if this client owns it.
     /// A session the host ended or took back is no longer this client's.
+    /// Leave the session this pane follows running on its host when the
+    /// pane closes, as when its user disconnects from it rather than ends it.
+    pub fn keep_remote_session(&mut self) {
+        if let Some(remote) = &mut self.identity.remote {
+            remote.ends_with_tab = false;
+        }
+    }
+
     pub fn end_remote_session(&self) {
         if let Some(remote) = &self.identity.remote
             && remote.ends_with_tab

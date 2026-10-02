@@ -50,6 +50,11 @@ pub const SESSION_ENDED: &str = "session.ended";
 /// window's last workspace with it.
 pub const SESSION_CLOSE: &str = "session.close";
 
+/// Rename any session the host lists: the host renames a tab as if its user
+/// had, and a headless terminal takes the name directly. Every device then
+/// lists the session under the new name.
+pub const SESSION_RENAME: &str = "session.rename";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {
@@ -227,6 +232,12 @@ pub struct AgentOpen {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRef {
     pub session: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRename {
+    pub session: String,
+    pub title: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

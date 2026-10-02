@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Error, Result, anyhow};
 use app::agent_tab::execution::SessionOwner;
 use app::agent_tab::{
     AgentAttention, AgentKind, AgentPane, AgentPaneEvent, remote as agent_remote,
@@ -20,7 +20,8 @@ use gpui::{
     App, BorrowAppContext as _, Context, Entity, EntityId, Global, SharedString, Subscription,
     Task, Window, WindowId,
 };
-use gpui_component::Root;
+use gpui_component::notification::{Notification, NotificationType};
+use gpui_component::{Root, WindowExt as _};
 use nmt_platform::runtime;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Retry, Status};
@@ -149,6 +150,10 @@ pub(crate) struct RemoteWorkspace {
     /// The session the tab on screen follows, which the window fills in:
     /// only it knows which tab is in front.
     pub(crate) selected: Option<String>,
+
+    /// The sessions some tab of the window follows, which the window fills
+    /// in too: only those can be disconnected from.
+    pub(crate) followed: Vec<String>,
 }
 
 /// Whether this computer browses the LAN for other hosts.
@@ -534,6 +539,7 @@ impl Remote {
                 sessions: self.host_sessions(&host.id).unwrap_or_default().to_vec(),
                 offers: self.host_offers(&host.id).cloned(),
                 selected: None,
+                followed: Vec::new(),
             })
             .collect()
     }
@@ -1155,15 +1161,29 @@ pub(crate) fn sync_workspaces(window: WindowId, workspaces: &WorkspaceManager, c
 
             let panes = surface.pane_ids();
 
-            let sessions = panes
+            let sessions: Vec<&str> = panes
                 .iter()
                 .filter_map(|pane| remote.session_of(*pane))
-                .chain(surface.pending_session());
+                .chain(surface.pending_session())
+                .collect();
+
+            // Devices list a session by the name its tab shows here, the
+            // user's own name included. A split tab's panes each report
+            // their own title, so only a name the user gave the whole tab
+            // replaces theirs.
+            let title = match sessions.len() {
+                1 => Some(tab.title()),
+                _ => tab.user_title(),
+            };
 
             for session in sessions {
                 remote
                     .registry
                     .set_workspace(session, Some(workspace.clone()));
+
+                if let Some(title) = title {
+                    remote.registry.set_title(session, title.to_owned());
+                }
             }
         }
     }
@@ -1510,7 +1530,63 @@ fn answer_host(request: HostRequest, cx: &mut App) {
         HostRequest::StartTab { session, reply } => {
             let _ = reply.send(start_for_device(&session, cx));
         }
+        HostRequest::RenameSession {
+            session,
+            title,
+            reply,
+        } => {
+            let _ = reply.send(rename_for_device(&session, title, cx));
+        }
     }
+}
+
+/// The pane a running host tab shares `session` from.
+fn shared_pane(session: &str, cx: &App) -> Option<EntityId> {
+    let remote = cx.global::<Remote>();
+
+    remote
+        .shared_tabs
+        .iter()
+        .find(|(_, shared)| *shared == session)
+        .map(|(pane, _)| *pane)
+        .or_else(|| {
+            remote
+                .shared_agents
+                .iter()
+                .find(|(_, shared)| shared.id == session)
+                .map(|(pane, _)| *pane)
+        })
+}
+
+/// Rename the host tab showing `session` for a paired device, in whichever
+/// window holds it, as if its user had renamed it here.
+fn rename_for_device(session: &str, title: String, cx: &mut App) -> Result<(), String> {
+    let pane = shared_pane(session, cx);
+
+    let windows: Vec<_> = cx
+        .global::<WindowRegistry>()
+        .windows()
+        .iter()
+        .map(|entry| (entry.handle, entry.view.clone()))
+        .collect();
+
+    for (handle, view) in windows {
+        let renamed = handle
+            .update(cx, |_, _, cx| {
+                view.update(cx, |app, cx| {
+                    app.rename_for_device(pane, session, title.clone(), cx)
+                })
+            })
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+
+        if renamed {
+            return Ok(());
+        }
+    }
+
+    Err(format!("no tab here shows {session}"))
 }
 
 /// Start the pending tab listed as `session` for a paired device that is
@@ -1554,20 +1630,7 @@ fn start_for_device(session: &str, cx: &mut App) -> Result<(), String> {
 /// Close the tab pane showing a host session a paired device asked to end,
 /// in whichever window holds it.
 fn close_for_device(session: &str, cx: &mut App) -> Result<(), String> {
-    let remote = cx.global::<Remote>();
-
-    let pane = remote
-        .shared_tabs
-        .iter()
-        .find(|(_, shared)| *shared == session)
-        .map(|(pane, _)| *pane)
-        .or_else(|| {
-            remote
-                .shared_agents
-                .iter()
-                .find(|(_, shared)| shared.id == session)
-                .map(|(pane, _)| *pane)
-        });
+    let pane = shared_pane(session, cx);
 
     let windows: Vec<_> = cx
         .global::<WindowRegistry>()
@@ -1651,6 +1714,78 @@ fn open_agent_for_device(params: Value, cx: &mut App) -> Result<Value, String> {
         .ok_or_else(|| format!("{workspace} is not a workspace on this computer"))?;
 
     serde_json::to_value(SessionRef { session }).map_err(|error| error.to_string())
+}
+
+/// Rename `session` on the paired host `id`. The host lists it under the new
+/// name once it renamed its tab; a refusal shows in `window`.
+pub(crate) fn rename_session(
+    id: &DeviceId,
+    session: String,
+    title: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
+        Err(error) => return notify_failure(&error, window, cx),
+    };
+
+    let task = runtime().spawn(async move { connection.rename_session(session, title).await });
+
+    window
+        .spawn(cx, async move |cx| {
+            let result = task
+                .await
+                .context("renaming stopped")
+                .and_then(|renamed| renamed);
+
+            if let Err(error) = result {
+                let _ = cx.update(|window, cx| notify_failure(&error, window, cx));
+            }
+        })
+        .detach();
+}
+
+/// End `session` on the paired host `id`, for every device viewing it.
+/// `closed` runs once the host ended it; a refusal shows in `window`.
+pub(crate) fn close_session(
+    id: &DeviceId,
+    session: String,
+    window: &mut Window,
+    cx: &mut App,
+    closed: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
+        Err(error) => return notify_failure(&error, window, cx),
+    };
+
+    let task = runtime().spawn(async move { connection.close_session(session).await });
+
+    window
+        .spawn(cx, async move |cx| {
+            let result = task
+                .await
+                .context("closing stopped")
+                .and_then(|closed| closed);
+
+            let _ = cx.update(|window, cx| match result {
+                Ok(()) => closed(window, cx),
+                Err(error) => notify_failure(&error, window, cx),
+            });
+        })
+        .detach();
+}
+
+/// Show why a request to a paired host failed. The request came from a
+/// menu that is gone by the time the host answers, so the window says it.
+fn notify_failure(error: &Error, window: &mut Window, cx: &mut App) {
+    window.push_notification(
+        Notification::new()
+            .with_type(NotificationType::Error)
+            .message(format!("{error:#}")),
+        cx,
+    );
 }
 
 /// Open a new terminal on a paired host in a tab of `window`. The tab owns

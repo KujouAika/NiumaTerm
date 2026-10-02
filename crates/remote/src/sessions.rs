@@ -71,6 +71,13 @@ pub enum HostRequest {
         session: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Rename the host tab that shows `session`. The error explains a
+    /// refusal to the device.
+    RenameSession {
+        session: String,
+        title: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Start the host tab still waiting to be started under `session`, so a
     /// device can attach to its terminal. The error explains a refusal.
     StartTab {

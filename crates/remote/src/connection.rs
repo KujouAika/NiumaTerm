@@ -29,8 +29,8 @@ use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::push::{PUSH_REGISTER, PUSH_UNREGISTER, PushRegistration};
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOpen, AgentOps, Control, EndReason, ErrorCode, HostInfo,
-    RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, StreamRef, TerminalOpen,
-    TerminalResize,
+    RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, SessionRename, StreamRef,
+    TerminalOpen, TerminalResize,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
@@ -583,6 +583,16 @@ impl RemoteHost {
     pub async fn close_session(&self, session: String) -> Result<()> {
         let _: Value = self
             .call(rpc::SESSION_CLOSE, &SessionRef { session })
+            .await?;
+
+        Ok(())
+    }
+
+    /// Rename a session the host lists, and return once the host renamed it.
+    /// The error carries the host's reason for refusing.
+    pub async fn rename_session(&self, session: String, title: String) -> Result<()> {
+        let _: Value = self
+            .call(rpc::SESSION_RENAME, &SessionRename { session, title })
             .await?;
 
         Ok(())

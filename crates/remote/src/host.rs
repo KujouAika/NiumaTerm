@@ -31,7 +31,7 @@ use nmt_remote_core::push::{
 };
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOps, Attached, Control, ErrorCode, Origin, RpcError,
-    SessionEnded, SessionList, SessionRef, StreamRef, TerminalOpen, TerminalResize,
+    SessionEnded, SessionList, SessionRef, SessionRename, StreamRef, TerminalOpen, TerminalResize,
 };
 use nmt_remote_core::{Error as CoreError, PROTO_MINOR};
 use parking_lot::Mutex;
@@ -569,6 +569,7 @@ impl Connection {
                             | rpc::HOST_INFO
                             | rpc::AGENT_OPEN
                             | rpc::SESSION_CLOSE
+                            | rpc::SESSION_RENAME
                     ) =>
                 {
                     self.agent_request(id, &method, params);
@@ -896,6 +897,73 @@ impl Connection {
                             let outcome = match answer.await {
                                 Ok(Ok(())) => Ok(done()),
                                 Ok(Err(message)) => Err(RpcError::new(ErrorCode::Denied, message)),
+                                Err(_) => {
+                                    Err(RpcError::new(ErrorCode::Internal, "the host stopped"))
+                                }
+                            };
+
+                            respond(&queue, id, outcome);
+                        });
+                    }
+                }
+            }
+            rpc::SESSION_RENAME => {
+                let SessionRename { session, title } = match parse(params) {
+                    Ok(rename) => rename,
+                    Err(error) => return respond(&queue, id, Err(error)),
+                };
+
+                let title = title.trim().to_owned();
+
+                if title.is_empty() {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(ErrorCode::InvalidParams, "the name is empty")),
+                    );
+                }
+
+                match registry.origin(&session) {
+                    None => respond(&queue, id, Err(RpcError::new(ErrorCode::NotFound, session))),
+                    // No tab on the host shows a headless terminal, so its
+                    // listed name is the only one it has.
+                    Some(Origin::Remote) => {
+                        registry.set_title(&session, title);
+
+                        respond(&queue, id, Ok(done()));
+                    }
+                    Some(_) => {
+                        let Some(host) = registry.host_requests() else {
+                            return respond(
+                                &queue,
+                                id,
+                                Err(RpcError::new(ErrorCode::Unsupported, method)),
+                            );
+                        };
+
+                        let (reply, answer) = oneshot::channel();
+
+                        if host
+                            .send(HostRequest::RenameSession {
+                                session,
+                                title,
+                                reply,
+                            })
+                            .is_err()
+                        {
+                            return respond(
+                                &queue,
+                                id,
+                                Err(RpcError::new(ErrorCode::Unsupported, method)),
+                            );
+                        }
+
+                        tokio::spawn(async move {
+                            let outcome = match answer.await {
+                                Ok(Ok(())) => Ok(done()),
+                                Ok(Err(message)) => {
+                                    Err(RpcError::new(ErrorCode::NotFound, message))
+                                }
                                 Err(_) => {
                                     Err(RpcError::new(ErrorCode::Internal, "the host stopped"))
                                 }

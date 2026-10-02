@@ -1,4 +1,4 @@
-//! Inline renaming of a workspace entry or a tab.
+//! Inline renaming of a workspace entry, a tab, or a paired host's session.
 //!
 //! Both renames replace a label with a text input in place rather than opening
 //! a dialog, and both commit on Enter or blur and cancel on Escape. At most one
@@ -8,6 +8,8 @@
 use gpui::prelude::*;
 use gpui::{Context, Entity, Window};
 use gpui_component::input::{InputEvent, InputState};
+use nmt_remote_core::identity::DeviceId;
+use nmt_remote_core::rpc::SessionInfo;
 
 use crate::tabs::TabId;
 use crate::ui::shell::AppWindow;
@@ -19,6 +21,9 @@ use crate::workspace::WorkspaceId;
 pub(crate) struct InlineRenameSession {
     workspace: Option<(WorkspaceId, Entity<InputState>)>,
     tab: Option<(TabId, Entity<InputState>)>,
+
+    /// A session of a paired host, renamed from its row in the sidebar.
+    remote: Option<(DeviceId, SessionInfo, Entity<InputState>)>,
 }
 
 impl InlineRenameSession {
@@ -46,6 +51,27 @@ impl InlineRenameSession {
         self.tab = Some((id, input));
     }
 
+    pub(super) fn begin_remote(
+        &mut self,
+        host: DeviceId,
+        session: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<AppWindow>,
+    ) {
+        let input = rename_input(
+            session.title.clone(),
+            AppWindow::finish_remote_rename,
+            window,
+            cx,
+        );
+
+        self.remote = Some((host, session, input));
+    }
+
+    pub(super) fn take_remote(&mut self) -> Option<(DeviceId, SessionInfo, Entity<InputState>)> {
+        self.remote.take()
+    }
+
     pub(super) fn take_workspace(&mut self) -> Option<(WorkspaceId, Entity<InputState>)> {
         self.workspace.take()
     }
@@ -61,6 +87,19 @@ impl InlineRenameSession {
             .as_ref()
             .filter(|(renaming, _)| *renaming == id)
             .map(|(_, input)| input)
+    }
+
+    /// The input the row of `session` on `host` should draw in place of its
+    /// label, if it is the one being renamed.
+    pub(crate) fn remote_input(
+        &self,
+        host: &DeviceId,
+        session: &str,
+    ) -> Option<&Entity<InputState>> {
+        self.remote
+            .as_ref()
+            .filter(|(renaming, info, _)| renaming == host && info.session == session)
+            .map(|(_, _, input)| input)
     }
 
     /// The input this tab should draw in place of its label, if it is the one

@@ -5,7 +5,8 @@
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, px};
-use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
+use gpui_component::modern_menu::ModernMenuExt as _;
+use gpui_component::{ActiveTheme, IconName, IconNamed, h_flex, v_flex};
 use nmt_remote_core::rpc::{SessionInfo, SessionKind, WorkspaceInfo};
 use rust_i18n::t;
 
@@ -13,6 +14,7 @@ use crate::ui::composition::{
     HoverActionLayout, HoverActionVisibility, hover_action, toolbar_button,
 };
 use crate::ui::remote::{self, RemoteWorkspace};
+use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle};
 use crate::ui::tab_bar::menu::tab_icon;
 use crate::ui::tab_bar::{tab_row, tab_row_icon};
 use crate::ui::workspace_sidebar::list::{
@@ -28,6 +30,7 @@ use crate::workspace::workspace_display_label;
 pub(super) fn remote_workspace_blocks(
     heading: AnyElement,
     remote: &[RemoteWorkspace],
+    renames: &InlineRenameSession,
     width: f32,
     cx: &mut Context<AppWindow>,
 ) -> Vec<AnyElement> {
@@ -74,7 +77,7 @@ pub(super) fn remote_workspace_blocks(
                     .zip(&labels)
                     .any(|(workspace, label)| in_workspace(session, workspace, label))
             })
-            .map(|(row, session)| session_row(index, row, host, session, cx))
+            .map(|(row, session)| session_row(index, row, host, session, renames, cx))
             .collect::<Vec<_>>();
 
         if !loose.is_empty() {
@@ -87,7 +90,7 @@ pub(super) fn remote_workspace_blocks(
                 .iter()
                 .enumerate()
                 .filter(|(_, session)| in_workspace(session, workspace, label))
-                .map(|(row, session)| session_row(index, row, host, session, cx))
+                .map(|(row, session)| session_row(index, row, host, session, renames, cx))
                 .collect::<Vec<_>>();
 
             blocks.push(
@@ -247,11 +250,18 @@ fn workspace_row(
 /// tab here, or shows the tab already following it. The session whose tab is
 /// on screen is marked the way the local list marks its tab, since that tab
 /// sits in no list of its own.
+///
+/// A session this computer follows acts like a local tab: it is renamed and
+/// closed from its menu, closed from its hover control, and can also be
+/// disconnected from, which closes only what follows it here. A session it
+/// does not follow offers only connecting to it: renaming or ending something
+/// on another computer is left to whoever has it open.
 fn session_row(
     index: usize,
     row: usize,
     host: &RemoteWorkspace,
     session: &SessionInfo,
+    renames: &InlineRenameSession,
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
     let icon = match session.kind {
@@ -262,21 +272,158 @@ fn session_row(
         SessionKind::Terminal | SessionKind::Unknown => tab_icon(None, false),
     };
 
+    let key = index * 1000 + row;
     let host_id = host.id.clone();
     let opened = session.clone();
     let title: SharedString = session.title.clone().into();
     let selected = host.selected.as_deref() == Some(session.session.as_str());
+    let followed = host.followed.contains(&session.session);
 
-    tab_row(
-        ("remote-session", index * 1000 + row),
-        title.clone(),
-        selected,
-        cx,
-    )
-    .child(tab_row_icon(icon))
-    .child(div().flex_1().overflow_hidden().truncate().child(title))
-    .on_click(cx.listener(move |this, _, window, cx| {
-        this.open_remote_session(&host_id, &opened, window, cx)
-    }))
-    .into_any_element()
+    let label: AnyElement = match renames.remote_input(&host.id, &session.session).cloned() {
+        Some(input) => {
+            let rename_shell = cx.entity();
+
+            InlineRename::new(
+                ("remote-session-rename", key),
+                title.clone(),
+                input,
+                InlineRenameStyle::SidebarTab,
+                move |window, cx| {
+                    rename_shell
+                        .update(cx, |this, cx| this.finish_remote_rename(false, window, cx));
+                },
+            )
+            .into_any_element()
+        }
+        None => div()
+            .flex_1()
+            .overflow_hidden()
+            .truncate()
+            .child(title.clone())
+            .into_any_element(),
+    };
+
+    let close = {
+        let host_id = host.id.clone();
+        let host_name = host.name.clone();
+        let closed = session.clone();
+
+        hover_action(
+            ("remote-session-close", key),
+            t!("tabbar-menu-close"),
+            HoverActionLayout::Inline,
+            HoverActionVisibility::OnGroupHover("remote-session".into()),
+            "\u{00d7}",
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+
+            this.request_close_remote_session(
+                host_id.clone(),
+                host_name.clone(),
+                closed.clone(),
+                window,
+                cx,
+            );
+        }))
+    };
+
+    let row = tab_row(("remote-session", key), title, selected, cx)
+        .group("remote-session")
+        .child(tab_row_icon(icon))
+        .child(label)
+        .when(followed, |row| row.child(close))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_remote_session(&host_id, &opened, window, cx)
+        }));
+
+    let menu_shell = cx.entity();
+    let menu_host = host.id.clone();
+    let menu_host_name = host.name.clone();
+    let menu_session = session.clone();
+
+    div()
+        .id(("remote-session-menu", key))
+        .w_full()
+        .modern_context_menu(move |menu, _, _| {
+            if !followed {
+                let connect_shell = menu_shell.clone();
+                let connected = (menu_host.clone(), menu_session.clone());
+
+                return menu
+                    .item(t!("remote-session-connect"), move |window, cx| {
+                        let (host, session) = connected.clone();
+
+                        connect_shell.update(cx, |this, cx| {
+                            this.open_remote_session(&host, &session, window, cx)
+                        });
+                    })
+                    .icon(PlugIcon);
+            }
+
+            let rename_shell = menu_shell.clone();
+            let disconnect_shell = menu_shell.clone();
+            let close_shell = menu_shell.clone();
+
+            let renamed = (menu_host.clone(), menu_session.clone());
+
+            let disconnected = (
+                menu_host.clone(),
+                menu_host_name.clone(),
+                menu_session.session.clone(),
+            );
+
+            let closed = (
+                menu_host.clone(),
+                menu_host_name.clone(),
+                menu_session.clone(),
+            );
+
+            menu.item(t!("tabbar-menu-rename"), move |window, cx| {
+                let (host, session) = renamed.clone();
+
+                rename_shell.update(cx, |this, cx| {
+                    this.start_remote_rename(host, session, window, cx)
+                });
+            })
+            .icon(IconName::PenLine)
+            .item(t!("remote-session-disconnect"), move |window, cx| {
+                let (host, name, session) = disconnected.clone();
+
+                disconnect_shell.update(cx, |this, cx| {
+                    this.request_disconnect_session(host, name, session, window, cx)
+                });
+            })
+            .icon(UnplugIcon)
+            .item(t!("tabbar-menu-close"), move |window, cx| {
+                let (host, name, session) = closed.clone();
+
+                close_shell.update(cx, |this, cx| {
+                    this.request_close_remote_session(host, name, session, window, cx)
+                });
+            })
+            .icon(IconName::Close)
+        })
+        .child(row)
+        .into_any_element()
+}
+
+/// Plug pulled from its socket (`assets/icons/unplug.svg`), for leaving a
+/// session that keeps running on its host.
+struct UnplugIcon;
+
+impl IconNamed for UnplugIcon {
+    fn path(self) -> SharedString {
+        "icons/unplug.svg".into()
+    }
+}
+
+/// Plug ready to go in (`assets/icons/plug.svg`), for opening a session that
+/// runs on its host.
+struct PlugIcon;
+
+impl IconNamed for PlugIcon {
+    fn path(self) -> SharedString {
+        "icons/plug.svg".into()
+    }
 }

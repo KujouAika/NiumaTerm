@@ -12,7 +12,7 @@ use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{DeviceInfo, DeviceKind, RelayAccess};
 use nmt_remote_core::pairing::PairingCode;
 use nmt_remote_core::push::{PushEnvironment, PushKind, PushRegistration};
-use nmt_remote_core::rpc::{EndReason, Origin, SessionKind};
+use nmt_remote_core::rpc::{EndReason, Origin, SessionInfo, SessionKind};
 use nmt_terminal::event::VoidListener;
 use nmt_terminal::termio::{SessionHandles, SessionOptions, start_session};
 use serde_json::json;
@@ -987,6 +987,9 @@ fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
                     HostRequest::StartTab { reply, .. } => {
                         let _ = reply.send(Err("not started in this test".into()));
                     }
+                    HostRequest::RenameSession { reply, .. } => {
+                        let _ = reply.send(Err("not renamed in this test".into()));
+                    }
                 }
             }
         });
@@ -1082,6 +1085,94 @@ fn a_device_closes_host_tabs_through_the_application_and_its_own_terminals_direc
 
         assert!(asked_rx.try_recv().is_err());
         assert_eq!(host.terminal_count(), 0);
+    });
+}
+
+#[test]
+fn a_device_renames_host_tabs_through_the_application_and_its_own_terminals_directly() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    runtime().block_on(async {
+        let (paired, key) = paired_client(&host).await;
+        let remote = remote(paired, key);
+
+        let agent = fake_agent(&registry);
+
+        let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+        registry.serve_host_requests(requests);
+
+        // The application renames the tab, which lists it under the new name.
+        let renaming = Arc::clone(&registry);
+
+        let (asked, mut asked_rx) = mpsc::unbounded_channel();
+
+        runtime().spawn(async move {
+            while let Some(request) = requests_rx.recv().await {
+                if let HostRequest::RenameSession {
+                    session,
+                    title,
+                    reply,
+                } = request
+                {
+                    let _ = asked.send(session.clone());
+
+                    renaming.set_title(&session, title);
+
+                    let _ = reply.send(Ok(()));
+                }
+            }
+        });
+
+        remote
+            .rename_session(agent.clone(), "  Review  ".into())
+            .await
+            .unwrap();
+
+        assert_eq!(asked_rx.recv().await.as_deref(), Some(agent.as_str()));
+
+        let listed = |sessions: &[SessionInfo], id: &str| {
+            sessions
+                .iter()
+                .find(|info| info.session == id)
+                .map(|info| info.title.clone())
+        };
+
+        let sessions = remote.list_sessions().await.unwrap();
+
+        // The host trims the name before anything takes it.
+        assert_eq!(listed(&sessions, &agent).as_deref(), Some("Review"));
+
+        // An empty name and a session the host does not list are refused
+        // without asking the application.
+        assert!(
+            remote
+                .rename_session(agent.clone(), " ".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            remote
+                .rename_session("t-missing".into(), "Name".into())
+                .await
+                .is_err()
+        );
+
+        // A terminal a device started takes the name on the host directly.
+        let pty = remote.open_terminal(80, 24).await.unwrap();
+        let terminal = pty.session().to_owned();
+
+        remote
+            .rename_session(terminal.clone(), "Build".into())
+            .await
+            .unwrap();
+
+        let sessions = remote.list_sessions().await.unwrap();
+
+        assert_eq!(listed(&sessions, &terminal).as_deref(), Some("Build"));
+        assert!(asked_rx.try_recv().is_err());
     });
 }
 
