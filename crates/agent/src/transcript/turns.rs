@@ -1,7 +1,87 @@
 //! Retained turn timing, usage and observed completion outcomes.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use crate::chat::GenerationSample;
+use crate::session::view::{LiveView, Since};
+
+/// Completed response totals for both the current turn and the observed session.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GenerationStats {
+    responses: HashSet<String>,
+    output_tokens: u64,
+    elapsed: Duration,
+    estimated: bool,
+    session_output_tokens: u64,
+    session_elapsed: Duration,
+    session_estimated: bool,
+}
+
+/// Weighted speed over completed responses with matching usage and timing.
+#[derive(Clone, Copy, Debug)]
+pub struct GenerationSpeed {
+    pub tokens_per_second: f64,
+    pub estimated: bool,
+}
+
+impl GenerationSpeed {
+    pub(crate) fn from_totals(
+        output_tokens: u64,
+        elapsed: Duration,
+        estimated: bool,
+    ) -> Option<Self> {
+        (!elapsed.is_zero()).then(|| Self {
+            tokens_per_second: output_tokens as f64 / elapsed.as_secs_f64(),
+            estimated,
+        })
+    }
+}
+
+impl GenerationStats {
+    pub(crate) fn record(&mut self, sample: GenerationSample) -> bool {
+        if (sample.estimated && sample.elapsed.is_zero())
+            || !self.responses.insert(sample.response_id)
+        {
+            return false;
+        }
+
+        self.output_tokens = self.output_tokens.saturating_add(sample.output_tokens);
+        self.elapsed = self.elapsed.saturating_add(sample.elapsed);
+        self.estimated |= sample.estimated;
+
+        self.session_output_tokens = self
+            .session_output_tokens
+            .saturating_add(sample.output_tokens);
+
+        self.session_elapsed = self.session_elapsed.saturating_add(sample.elapsed);
+        self.session_estimated |= sample.estimated;
+
+        true
+    }
+
+    pub fn speed(&self) -> Option<GenerationSpeed> {
+        GenerationSpeed::from_totals(self.output_tokens, self.elapsed, self.estimated)
+    }
+
+    pub(crate) fn session_speed(&self) -> Option<GenerationSpeed> {
+        GenerationSpeed::from_totals(
+            self.session_output_tokens,
+            self.session_elapsed,
+            self.session_estimated,
+        )
+    }
+
+    pub(crate) fn begin_turn(&mut self) {
+        self.responses.clear();
+
+        self.output_tokens = 0;
+        self.elapsed = Duration::ZERO;
+        self.estimated = false;
+    }
+}
 
 /// The running turn: when it started, what it has produced, and what it is
 /// doing right now.
@@ -92,6 +172,22 @@ impl LiveTurn {
         self.started.take().map(|started| (started, output_tokens))
     }
 
+    pub fn view(&self) -> LiveView {
+        LiveView {
+            started: Since::of(self.started),
+            output_tokens: self.output_tokens,
+            detail: self.detail.clone(),
+            compacting: self.compacting,
+        }
+    }
+
+    pub fn replace(&mut self, view: LiveView) {
+        self.started = view.started.instant();
+        self.output_tokens = view.output_tokens;
+        self.detail = view.detail;
+        self.compacting = view.compacting;
+    }
+
     /// Drop the running turn without settling it.
     pub fn discard(&mut self) {
         self.started = None;
@@ -103,14 +199,17 @@ impl LiveTurn {
 
 /// One entry per finished turn: whether it settled, how long it took, what it
 /// produced, and whether the user stopped it.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TurnLedger {
     /// Turns that have finished, whether in this process or in a session this
     /// view replayed. Folding keys off this rather than off a known duration,
     /// because a replayed turn has no duration to record.
     settled: HashSet<u64>,
 
+    #[serde(with = "turn_pairs")]
     seconds: HashMap<u64, u64>,
+
+    #[serde(with = "turn_pairs")]
     output_tokens: HashMap<u64, u64>,
 
     /// Turns the user stopped. An interrupted turn reports no elapsed time,
@@ -195,5 +294,33 @@ impl TurnLedger {
         self.output_tokens.clear();
 
         self.interrupted.clear();
+    }
+}
+
+/// Turn-keyed counts as `[turn, value]` pairs. JSON object keys are strings,
+/// which a reader decoding from an already parsed value cannot turn back
+/// into numbers.
+mod turn_pairs {
+    use std::collections::HashMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        map: &HashMap<u64, u64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut pairs: Vec<(u64, u64)> = map.iter().map(|(turn, value)| (*turn, *value)).collect();
+
+        pairs.sort_unstable();
+
+        pairs.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<u64, u64>, D::Error> {
+        Ok(Vec::<(u64, u64)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
     }
 }

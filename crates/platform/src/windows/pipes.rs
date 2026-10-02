@@ -1,393 +1,447 @@
+//! Overlapped ConPTY pipes.
+//!
+//! `CreatePipe` cannot open an end for overlapped I/O, which forces a blocked
+//! thread per direction. Each pair here is a single-instance named pipe
+//! instead: the end this process keeps is overlapped, and the end handed to
+//! the console host stays synchronous, which is what the host expects.
+//!
+//! Output reads use Tokio's named pipe, so completions arrive directly at the
+//! runtime's IOCP. Input writes complete against an auto-reset event; its wait
+//! callback wakes the waiting task. Writes can also settle on demand without
+//! a runtime.
+
 #[cfg(test)]
 #[path = "pipes_tests.rs"]
 mod pipes_tests;
 
-use std::io;
-use std::os::windows::io::AsRawHandle;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::thread::{JoinHandle, sleep, spawn};
-use std::time::Duration;
+use std::ffi::c_void;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::task::{Context, Poll as TaskPoll, ready};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{io, mem, process, ptr};
 
-use miow::pipe::{AnonRead, AnonWrite};
-use parking_lot::{Condvar, Mutex};
-use windows_sys::Win32::System::IO::CancelSynchronousIo;
+use futures::task::AtomicWaker;
+use tokio::net::windows::named_pipe::NamedPipeServer;
+use windows_sys::Win32::Foundation::{
+    ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+    PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, WriteFile,
+};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::Pipes::{
+    CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PeekNamedPipe,
+};
+use windows_sys::Win32::System::Threading::{CreateEventW, WT_EXECUTEINWAITTHREAD};
 
-use crate::windows::readiness::SoftReady;
-use crate::windows::spsc::*;
+use crate::windows::registered_wait::RegisteredWait;
+use crate::windows::win32_string;
 
-struct PipeState {
-    soft: SoftReady,
-    done: AtomicBool,
-    buffer_changed: Condvar,
-    wait_tag: Mutex<()>,
+/// Kernel buffer of each pipe. The console host
+/// writes in 4 KiB pieces; room for several lets it keep producing while the
+/// event loop parses, and lets one read collect whatever accumulated meanwhile.
+const PIPE_BUFFER: usize = 64 * 1024;
+
+/// Upper bound of one native write. The bytes are copied because an overlapped
+/// write needs memory that outlives the call, so a large paste is submitted in
+/// pieces rather than duplicated whole.
+const WRITE_CHUNK: usize = 64 * 1024;
+
+static NEXT_PIPE: AtomicU32 = AtomicU32::new(0);
+
+/// Which way bytes flow through a pipe, seen from this process.
+#[derive(Clone, Copy)]
+pub(crate) enum Direction {
+    /// The peer writes and this process reads.
+    Inbound,
+    /// This process writes and the peer reads.
+    Outbound,
 }
 
-struct PipeWorker {
-    thread: Option<JoinHandle<()>>,
-    state: Arc<PipeState>,
-    errors: Receiver<String>,
+/// Create the pipe carrying console output: the overlapped end read here, and
+/// the synchronous write end for the console host. The reader is registered
+/// with the shared runtime's IOCP here, so creation can stay synchronous while
+/// the first read needs no runtime context of its own.
+pub(crate) fn conout_pair() -> io::Result<(ConoutPipe, OwnedHandle)> {
+    let (ours, theirs) = pipe_pair(Direction::Inbound)?;
+
+    let _runtime = crate::runtime().enter();
+
+    // SAFETY: The connected handle has no pending I/O, and ownership moves
+    // exclusively to Tokio.
+    let pipe = unsafe { NamedPipeServer::from_raw_handle(ours.into_raw_handle()) }?;
+
+    Ok((ConoutPipe { pipe }, theirs))
 }
 
-impl PipeWorker {
-    fn new(pump: impl FnOnce(Arc<PipeState>, Sender<String>) + Send + 'static) -> Self {
-        let state = Arc::new(PipeState {
-            soft: SoftReady::new(),
-            done: AtomicBool::new(false),
-            buffer_changed: Condvar::new(),
-            wait_tag: Mutex::new(()),
-        });
+/// Create the pipe carrying console input: the synchronous read end for the
+/// console host, and the overlapped end written here.
+pub(crate) fn conin_pair() -> io::Result<(OwnedHandle, ConinPipe)> {
+    let (ours, theirs) = pipe_pair(Direction::Outbound)?;
 
-        let (sender, errors) = channel();
-        let worker_state = state.clone();
-
-        let thread = spawn(move || {
-            pump(worker_state.clone(), sender);
-
-            // A failed native call must wake a loop waiting for write completion,
-            // even when no more pipe data or child-exit event will arrive.
-            worker_state.soft.set_ready();
-        });
-
-        Self {
-            thread: Some(thread),
-            state,
-            errors,
-        }
-    }
-
-    fn check_error(&mut self) -> io::Result<()> {
-        if self.thread.is_none() {
-            return Err(io::ErrorKind::BrokenPipe.into());
-        }
-
-        match self.errors.try_recv() {
-            Ok(error) => {
-                if let Some(thread) = self.thread.take() {
-                    let _ = thread.join();
-                }
-
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, error))
-            }
-            Err(TryRecvError::Disconnected) => Err(io::ErrorKind::BrokenPipe.into()),
-            Err(TryRecvError::Empty) => Ok(()),
-        }
-    }
+    Ok((theirs, ConinPipe::new(ours)?))
 }
 
-impl Drop for PipeWorker {
-    fn drop(&mut self) {
-        self.state.done.store(true, Ordering::SeqCst);
+/// Pipes for one of a child's standard streams. Anonymous pipes cannot be
+/// overlapped, so Tokio's own child stdio parks a blocking-pool thread on
+/// every pending read. Here the parent end is registered with the runtime's
+/// IOCP instead, and the child's end stays synchronous as ordinary console
+/// programs expect. Call inside a runtime context.
+pub(crate) fn child_stdio_pair(direction: Direction) -> io::Result<(NamedPipeServer, OwnedHandle)> {
+    let (ours, theirs) = pipe_pair(direction)?;
 
-        // Pair with the worker's predicate check so the stop notification
-        // cannot be lost between checking the flag and parking.
-        drop(self.state.wait_tag.lock());
+    // SAFETY: The connected handle has no pending I/O, and ownership moves
+    // exclusively to Tokio.
+    let ours = unsafe { NamedPipeServer::from_raw_handle(ours.into_raw_handle()) }?;
 
-        self.state.buffer_changed.notify_one();
-
-        if let Some(thread) = self.thread.take() {
-            while !thread.is_finished() {
-                // A worker may enter native I/O after checking `done` but after
-                // our first cancellation too. Retry until it observes the stop
-                // flag or the pending synchronous call is cancelled.
-                unsafe { CancelSynchronousIo(thread.as_raw_handle()) };
-
-                sleep(Duration::from_millis(1));
-            }
-
-            let _ = thread.join();
-        }
-    }
+    Ok((ours, theirs))
 }
 
-/// Wraps an AnonRead pipe so that it can be read asynchronously using mio.
+/// One connected pipe: the overlapped end kept here, then the synchronous end
+/// opened for the peer.
 ///
-/// This is achieved by spawning a worker thread which continuously attempts
-/// to read from the pipe into a buffer, which reads from the EventedAnonRead
-/// object will be directed to.
-///
-/// This should only be considered if your application architecture requires
-/// a synchronous anonymous pipe; an asynchronous NamedPipe will likely be
-/// more performant.
-pub struct EventedAnonRead {
-    worker: PipeWorker,
-    consumer: SpscBufferReader,
-}
-
-// Helper to send an error string from the worker threads
-macro_rules! try_or_send {
-    ($e:expr, $sender:ident) => {
-        match $e {
-            Ok(value) => value,
-            Err(e) => {
-                let _ = $sender.send(e.to_string());
-                return;
-            }
-        }
+/// The name only has to be unique on this machine. `FIRST_PIPE_INSTANCE` makes
+/// creation fail if another process already owns the name, and the single
+/// instance is taken by the open below, so the pipe can never gain a second
+/// peer: if another process connects first, the open fails and no terminal
+/// data is ever written to it.
+fn pipe_pair(direction: Direction) -> io::Result<(OwnedHandle, OwnedHandle)> {
+    let (access, peer_access) = match direction {
+        Direction::Inbound => (PIPE_ACCESS_INBOUND, GENERIC_WRITE),
+        Direction::Outbound => (PIPE_ACCESS_OUTBOUND, GENERIC_READ),
     };
-}
 
-impl EventedAnonRead {
-    pub fn new(pipe: AnonRead) -> Self {
-        let (producer, consumer) = spsc_buffer(65536);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
 
-        let worker = PipeWorker::new(move |state, errors| {
-            pump_pipe_to_buffer(pipe, producer, state, errors)
-        });
+    let name = win32_string(&format!(
+        r"\\.\pipe\nmt-conpty.{}.{}.{nanos}",
+        process::id(),
+        NEXT_PIPE.fetch_add(1, Ordering::Relaxed),
+    ));
 
-        Self { worker, consumer }
+    let ours = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            access | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            PIPE_BUFFER as u32,
+            PIPE_BUFFER as u32,
+            0,
+            ptr::null(),
+        )
+    };
+
+    if ours == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
     }
 
-    /// The soft-ready handle, so the `Pty` can inject the loop `Waker` at
-    /// `register()` time and query readiness in `drain_ready()`.
-    pub fn soft(&self) -> &SoftReady {
-        &self.worker.state.soft
+    let ours = unsafe { OwnedHandle::from_raw_handle(ours) };
+
+    let theirs = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            peer_access,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    };
+
+    if theirs == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
     }
+
+    Ok((ours, unsafe { OwnedHandle::from_raw_handle(theirs) }))
 }
 
-fn pump_pipe_to_buffer(
-    mut pipe: AnonRead,
-    mut producer: SpscBufferWriter,
-    inner: Arc<PipeState>,
-    error_sender: Sender<String>,
-) {
-    use std::io::Read;
+/// Runs on the operating system's wait thread when an operation completes.
+/// Waking consumes the registered waker, so a burst of completions before the
+/// task re-registers posts one wakeup.
+unsafe extern "system" fn operation_completed(ctx: *mut c_void, _timed_out: bool) {
+    // Borrow only: the registration owns the waker and frees it after a
+    // blocking unregister has excluded any callback still running.
+    let waker = unsafe { &*(ctx as *const AtomicWaker) };
 
-    let mut tmp_buf = [0u8; 65535];
+    waker.wake();
+}
 
-    loop {
-        if inner.done.load(Ordering::SeqCst) {
-            return;
+/// The overlapped input end and the single write it runs at a time.
+struct PipeEnd {
+    handle: OwnedHandle,
+
+    /// Boxed so the address the kernel holds stays valid when this moves.
+    overlapped: Box<OVERLAPPED>,
+
+    /// Auto-reset, so the registered wait fires once per completion. Held so
+    /// the handle inside `overlapped` stays open for as long as it is used.
+    _event: OwnedHandle,
+
+    wait: RegisteredWait<AtomicWaker>,
+
+    in_flight: bool,
+}
+
+// The raw pointer inside `overlapped` refers to an event this value owns.
+unsafe impl Send for PipeEnd {}
+
+impl PipeEnd {
+    fn new(handle: OwnedHandle) -> io::Result<Self> {
+        let event = unsafe { CreateEventW(ptr::null(), 0, 0, ptr::null()) };
+
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
         }
 
-        // Read into temp buffer
-        let nbytes = try_or_send!(pipe.read(&mut tmp_buf[..]), error_sender);
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
 
-        // Write from the temp buffer into the producer
-        let mut written = 0usize;
+        let mut overlapped: Box<OVERLAPPED> = Box::new(unsafe { mem::zeroed() });
 
-        while written < nbytes {
-            // Wait for buffer to clear if need be. The predicate is
-            // re-checked under the lock and notifiers acquire this
-            // lock after changing buffer state, so a drain+notify
-            // cannot slip between the check and the wait (a lost
-            // wakeup here strands bytes until the next notify).
-            if producer.is_full() {
-                let mut wait_tag = inner.wait_tag.lock();
+        overlapped.hEvent = event.as_raw_handle();
 
-                while producer.is_full() && !inner.done.load(Ordering::SeqCst) {
-                    inner.buffer_changed.wait(&mut wait_tag);
-                }
+        let wait = RegisteredWait::new(
+            event.as_raw_handle(),
+            AtomicWaker::new(),
+            operation_completed,
+            WT_EXECUTEINWAITTHREAD,
+        )?;
 
-                if inner.done.load(Ordering::SeqCst) {
-                    return;
-                }
-            }
-
-            written += producer.write_from_slice(&tmp_buf[written..nbytes]);
-
-            if !inner.soft.is_ready() {
-                inner.soft.set_ready();
-            }
-        }
-    }
-}
-
-impl io::Read for EventedAnonRead {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.worker.check_error()?;
-
-        let nbytes = self.consumer.read_to_slice(buf);
-
-        if self.consumer.is_empty() {
-            // Level-like: clear only when the buffer is fully drained.
-            self.worker.state.soft.clear();
-
-            // Possible race: the consumer may think the queue is empty but by the time
-            // the flag is cleared the producer thread may have written data. We avoid
-            // the race by re-checking and re-arming if necessary.
-            if !self.consumer.is_empty() {
-                self.worker.state.soft.set_ready();
-            }
-        }
-
-        // Pairs with the worker's under-lock predicate check: taking (and
-        // releasing) the wait lock after draining guarantees the worker is
-        // either before its check (and will see the space) or already parked
-        // (and will get this notify).
-        drop(self.worker.state.wait_tag.lock());
-
-        self.worker.state.buffer_changed.notify_one();
-
-        Ok(nbytes)
-    }
-}
-
-/// Wraps an AnonWrite pipe so that it can be written asynchronously using mio.
-///
-/// This is achieved by spawning a worker thread which continuously attempts
-/// to write to the pipe from a buffer, which writes to the EventedAnonWrite
-/// object will be directed to.
-///
-/// This should only be considered if your application architecture requires
-/// a synchronous anonymous pipe; an asynchronous NamedPipe will likely be
-/// more performant.
-pub struct EventedAnonWrite {
-    worker: PipeWorker,
-    producer: SpscBufferWriter,
-    progress: Arc<WriteProgress>,
-    submitted: u64,
-}
-
-#[derive(Default)]
-struct WriteProgress {
-    completed: AtomicU64,
-    flush_waiting: AtomicBool,
-}
-
-impl EventedAnonWrite {
-    pub fn new(pipe: AnonWrite) -> Self {
-        let (producer, consumer) = spsc_buffer(65536);
-        let progress = Arc::new(WriteProgress::default());
-        let worker_progress = progress.clone();
-
-        let worker = PipeWorker::new(move |state, errors| {
-            pump_buffer_to_pipe(pipe, consumer, state, errors, worker_progress)
-        });
-
-        Self {
-            worker,
-            producer,
-            progress,
-            submitted: 0,
-        }
+        Ok(Self {
+            handle,
+            overlapped,
+            _event: event,
+            wait,
+            in_flight: false,
+        })
     }
 
-    /// The soft-ready handle, so the `Pty` can inject the loop `Waker` at
-    /// `register()` time and query writability in `drain_ready()`.
-    pub fn soft(&self) -> &SoftReady {
-        &self.worker.state.soft
+    /// Install before checking completion so a concurrent callback cannot be
+    /// lost between the check and the task suspending.
+    fn register_task_waker(&self, cx: &Context<'_>) {
+        self.wait.context().register(cx.waker());
     }
-}
 
-fn pump_buffer_to_pipe(
-    mut pipe: AnonWrite,
-    mut consumer: SpscBufferReader,
-    inner: Arc<PipeState>,
-    error_sender: Sender<String>,
-    progress: Arc<WriteProgress>,
-) {
-    use std::io::Write;
-
-    let mut tmp_buf = [0u8; 65535];
-
-    // The buffer starts empty, so the loop may write immediately.
-    inner.soft.set_ready();
-
-    loop {
-        if inner.done.load(Ordering::SeqCst) {
-            return;
-        }
-
-        // Read into temp buffer while holding the lock
-        let nbytes = {
-            // Wait for buffer to have contents. The predicate is
-            // re-checked under the lock and notifiers acquire this
-            // lock after changing buffer state, so a write+notify
-            // from the app thread cannot slip between the check and
-            // the wait — a lost wakeup here would leave the written
-            // bytes sitting in the ring until the next write call.
-            if consumer.is_empty() {
-                let mut wait_tag = inner.wait_tag.lock();
-
-                while consumer.is_empty() && !inner.done.load(Ordering::SeqCst) {
-                    inner.buffer_changed.wait(&mut wait_tag);
-                }
-
-                if inner.done.load(Ordering::SeqCst) {
-                    return;
-                }
-            }
-
-            let nbytes = consumer.read_to_slice(&mut tmp_buf);
-
-            // Buffer has space again → the loop may write more.
-            if !inner.soft.is_ready() {
-                inner.soft.set_ready();
-            }
-
-            nbytes
+    /// Start one native write of `bytes`. A write that finished inside the
+    /// call still reports its byte count through `result`.
+    fn submit(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let succeeded = unsafe {
+            WriteFile(
+                self.handle.as_raw_handle(),
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                ptr::null_mut(),
+                &mut *self.overlapped,
+            )
         };
 
-        let mut written = 0usize;
+        if succeeded == 0 {
+            let error = io::Error::last_os_error();
 
-        while written < nbytes {
-            let count = try_or_send!(pipe.write(&tmp_buf[written..nbytes]), error_sender);
-
-            if count == 0 {
-                let _ = error_sender.send("native pipe write returned zero bytes".into());
-
-                return;
+            if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(error);
             }
+        }
 
-            written += count;
+        self.in_flight = true;
 
-            progress.completed.fetch_add(count as u64, Ordering::SeqCst);
+        Ok(())
+    }
 
-            if progress.flush_waiting.swap(false, Ordering::SeqCst) {
-                inner.soft.set_ready();
+    /// The byte count of the running operation, or `Pending` while it runs.
+    fn result(&mut self) -> TaskPoll<io::Result<usize>> {
+        let mut transferred = 0;
+
+        let done = unsafe {
+            GetOverlappedResult(
+                self.handle.as_raw_handle(),
+                &*self.overlapped,
+                &mut transferred,
+                0,
+            )
+        };
+
+        if done != 0 {
+            self.in_flight = false;
+
+            return TaskPoll::Ready(Ok(transferred as usize));
+        }
+
+        let error = io::Error::last_os_error();
+
+        if error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) {
+            return TaskPoll::Pending;
+        }
+
+        self.in_flight = false;
+
+        TaskPoll::Ready(Err(error))
+    }
+}
+
+impl Drop for PipeEnd {
+    fn drop(&mut self) {
+        // The callback and the wait below would both consume the auto-reset
+        // event, and only one of them wakes. Stopping the callback first
+        // leaves a later completion's signal to the wait alone.
+        self.wait.unregister();
+
+        if !self.in_flight {
+            return;
+        }
+
+        unsafe {
+            // The kernel still references `overlapped` and the owner's buffer.
+            // Both are freed after this returns, so the cancelled operation has
+            // to be seen through to its completion first.
+            CancelIoEx(self.handle.as_raw_handle(), &*self.overlapped);
+
+            let mut transferred = 0;
+
+            GetOverlappedResult(
+                self.handle.as_raw_handle(),
+                &*self.overlapped,
+                &mut transferred,
+                1,
+            );
+        }
+    }
+}
+
+/// The console output stream, driven by the shared runtime's IOCP. Reads
+/// report `BrokenPipe` after hangup.
+pub struct ConoutPipe {
+    // Mio 1.2.3, which backs Tokio's named pipes, uses a 4 KiB internal read
+    // buffer with no public size setting. PIPE_BUFFER only sizes the kernel
+    // buffer; larger caller read slices do not enlarge mio's buffer. Direct
+    // IOCP removes the wait-thread hop, but the smaller reads increase
+    // completion and poll frequency during sustained output and can reduce
+    // throughput. Using 64 KiB internal reads requires a mio dependency patch;
+    // its effect on throughput and short-message latency needs measurement.
+    pipe: NamedPipeServer,
+}
+
+impl ConoutPipe {
+    pub(super) fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> TaskPoll<io::Result<usize>> {
+        loop {
+            ready!(self.pipe.poll_read_ready(cx))?;
+
+            match self.pipe.try_read(buf) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Ok(0) if !buf.is_empty() => {
+                    // An empty peer write also produces a zero-byte completion.
+                    // Keep waiting while connected, instead of closing the tab.
+                    // SAFETY: The pipe owns the handle, and optional output
+                    // pointers are null because only connection status is used.
+                    let connected = unsafe {
+                        PeekNamedPipe(
+                            self.pipe.as_raw_handle(),
+                            ptr::null_mut(),
+                            0,
+                            ptr::null_mut(),
+                            ptr::null_mut(),
+                            ptr::null_mut(),
+                        )
+                    };
+
+                    if connected == 0 {
+                        return TaskPoll::Ready(Err(io::Error::last_os_error()));
+                    }
+                }
+                result => return TaskPoll::Ready(result),
             }
         }
     }
 }
 
-impl io::Write for EventedAnonWrite {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.worker.check_error()?;
+/// The console input stream. `poll_write` accepts bytes only while no native
+/// write is running and stays pending otherwise.
+pub struct ConinPipe {
+    // Declared before `buf`: dropping it completes the write that reads `buf`.
+    end: PipeEnd,
 
-        let nbytes = self.producer.write_from_slice(buf);
+    /// The bytes of the accepted write, kept until all of them are sent.
+    buf: Vec<u8>,
 
-        self.submitted = self.submitted.wrapping_add(nbytes as u64);
+    sent: usize,
+}
 
-        if self.producer.is_full() {
-            // Backpressure: buffer full → not writable until the worker drains it.
-            self.worker.state.soft.clear();
+impl ConinPipe {
+    fn new(handle: OwnedHandle) -> io::Result<Self> {
+        Ok(Self {
+            end: PipeEnd::new(handle)?,
+            buf: Vec::new(),
+            sent: 0,
+        })
+    }
 
-            // Possible race: the producer may think the buffer is full but by the time
-            // the flag is cleared the consumer thread may have read data. Re-check and
-            // re-arm to work around this.
-            if !self.producer.is_full() {
-                self.worker.state.soft.set_ready();
+    pub(super) fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> TaskPoll<io::Result<usize>> {
+        self.end.register_task_waker(cx);
+
+        ready!(self.settle())?;
+
+        // A zero-length write on a byte pipe completes the peer's read with no
+        // data, which a reader can take for the end of the stream.
+        if buf.is_empty() {
+            return TaskPoll::Ready(Ok(0));
+        }
+
+        let accepted = buf.len().min(WRITE_CHUNK);
+
+        self.buf.clear();
+
+        self.buf.extend_from_slice(&buf[..accepted]);
+
+        self.sent = 0;
+
+        self.end.submit(&self.buf)?;
+
+        // A write that fit the pipe buffer is already complete; settling now
+        // lets a flush that follows succeed without waiting for a wakeup.
+        if let TaskPoll::Ready(Err(error)) = self.settle() {
+            return TaskPoll::Ready(Err(error));
+        }
+
+        TaskPoll::Ready(Ok(accepted))
+    }
+
+    /// Complete once every accepted byte reached the pipe.
+    pub(super) fn poll_flush(&mut self, cx: &mut Context<'_>) -> TaskPoll<io::Result<()>> {
+        self.end.register_task_waker(cx);
+
+        self.settle()
+    }
+
+    /// Account for finished native writes, sending whatever they left over.
+    /// `Pending` while a write is still running.
+    fn settle(&mut self) -> TaskPoll<io::Result<()>> {
+        while self.end.in_flight {
+            let transferred = ready!(self.end.result())?;
+
+            self.sent += transferred;
+
+            if self.sent < self.buf.len() {
+                if transferred == 0 {
+                    return TaskPoll::Ready(Err(io::ErrorKind::WriteZero.into()));
+                }
+
+                self.end.submit(&self.buf[self.sent..])?;
             }
         }
 
-        // Pairs with the worker's under-lock predicate check: taking (and
-        // releasing) the wait lock after publishing the bytes guarantees the
-        // worker is either before its check (and will see the data) or already
-        // parked (and will get this notify).
-        drop(self.worker.state.wait_tag.lock());
-
-        self.worker.state.buffer_changed.notify_one();
-
-        Ok(nbytes)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.worker.check_error()?;
-
-        // Emptying the ring only transfers bytes to the worker's temporary
-        // buffer. A resize must wait until its native writes have completed.
-        // Register before checking completion so the last write cannot lose
-        // the wakeup. The bounded buffer keeps wrapped counters unambiguous.
-        self.progress.flush_waiting.store(true, Ordering::SeqCst);
-
-        if self.progress.completed.load(Ordering::SeqCst) == self.submitted {
-            self.progress.flush_waiting.store(false, Ordering::SeqCst);
-
-            Ok(())
-        } else {
-            Err(io::ErrorKind::WouldBlock.into())
-        }
+        TaskPoll::Ready(Ok(()))
     }
 }

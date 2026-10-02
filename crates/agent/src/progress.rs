@@ -8,6 +8,26 @@ pub struct TaskList {
 }
 
 impl TaskList {
+    /// Whether every task is done. An empty list has nothing to finish, so
+    /// it is never complete.
+    pub fn all_completed(&self) -> bool {
+        self.tally().is_some_and(|(done, total)| done == total)
+    }
+
+    /// Whether `self` completes a task that `previous` did not: a task the
+    /// earlier list held in another state, or one it did not hold at all.
+    pub fn completes_beyond(&self, previous: &TaskList) -> bool {
+        self.items
+            .iter()
+            .filter(|task| task.status == TaskStatus::Completed)
+            .any(|task| {
+                !previous
+                    .items
+                    .iter()
+                    .any(|earlier| earlier.id == task.id && earlier.status == TaskStatus::Completed)
+            })
+    }
+
     pub fn tally(&self) -> Option<(u32, u32)> {
         if self.items.is_empty() {
             return None;
@@ -30,6 +50,22 @@ pub struct Task {
     pub status: TaskStatus,
     pub owner: Option<String>,
     pub blocked_by: Vec<String>,
+}
+
+impl Task {
+    /// A checklist entry identified by its position. Providers publish their
+    /// plans and todo lists as whole arrays without stable ids, so the index
+    /// is the only identity a row has between snapshots.
+    pub(crate) fn indexed(index: usize, title: &str, status: TaskStatus) -> Self {
+        Self {
+            id: index.to_string(),
+            title: title.to_owned(),
+            description: None,
+            status,
+            owner: None,
+            blocked_by: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

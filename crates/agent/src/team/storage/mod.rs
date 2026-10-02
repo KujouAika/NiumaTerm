@@ -1,39 +1,46 @@
-pub use crate::team::session::DispatchError;
-
-pub(super) use crate::team::storage::records::digest;
-
-mod records;
-mod replay;
+pub mod history;
 
 mod validation;
 
 #[cfg(test)]
 mod tests;
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use std::{io, thread};
 
-use nmt_platform::filesystem::replace_file_durable;
-use tempfile::NamedTempFile;
+use nmt_platform::durable_file;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
-use crate::team::identity::RoomId;
+use crate::team::model::RoomId;
 use crate::team::room::Room;
-use crate::team::storage::records::{Checkpoint, JournalRecord, RoomDelta, decode, encode};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 3;
+
+/// How long opening a room waits out a lock that may only be held by a child
+/// process between fork and exec.
+const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(250);
+
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(5);
+
+/// The directory under the data directory that holds one directory per room.
+const ROOMS_DIRECTORY: &str = "agent-teams";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("room storage is unavailable: {0}")]
     Io(#[from] io::Error),
-    #[error("room records cannot be decoded: {0}")]
+    #[error("room snapshot cannot be decoded: {0}")]
     Json(#[from] serde_json::Error),
     #[error("unsupported Team data version {0}")]
     UnsupportedVersion(u64),
-    #[error("room records failed validation: {0}")]
+    #[error("room snapshot failed validation: {0}")]
     Invalid(&'static str),
+    #[error("legacy Team room format is not supported; saved files were left unchanged")]
+    LegacyFormat,
     #[error("reopen this room to reconcile a failed storage operation")]
     ReopenRequired,
 }
@@ -41,22 +48,24 @@ pub enum StorageError {
 pub struct RoomStore {
     directory: PathBuf,
     _lock: File,
-    journal: File,
     room: Room,
-    sequence: u64,
-    digest: String,
+    revision: u64,
     failed: bool,
 }
 
-impl RoomStore {
-    pub(super) fn directory(&self) -> &Path {
-        &self.directory
-    }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Snapshot {
+    version: u32,
+    revision: u64,
+    room: Room,
+}
 
+impl RoomStore {
     pub fn create(data_directory: &Path, room: Room) -> Result<Self, StorageError> {
         validation::validate(&room)?;
 
-        let parent = data_directory.join("agent-teams");
+        let parent = data_directory.join(ROOMS_DIRECTORY);
 
         fs::create_dir_all(&parent)?;
 
@@ -66,89 +75,105 @@ impl RoomStore {
 
         let lock = lock_room(&directory)?;
 
-        let checkpoint = Checkpoint {
-            version: VERSION,
-            sequence: 0,
-            digest: String::new(),
-            room: room.clone(),
-        };
-
-        atomic_write(&directory.join("checkpoint.json"), &encode(&checkpoint)?)?;
-
-        let journal = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(directory.join("journal.jsonl"))?;
-
-        journal.sync_all()?;
+        write_snapshot(&directory, &room, 0)?;
 
         Ok(Self {
             directory,
             _lock: lock,
-            journal,
             room,
-            sequence: 0,
-            digest: String::new(),
+            revision: 0,
             failed: false,
         })
     }
 
-    pub fn open(data_directory: &Path, id: RoomId) -> Result<(Self, bool), StorageError> {
-        let directory = data_directory.join("agent-teams").join(id.to_string());
-        let lock = lock_room(&directory)?;
-        let checkpoint: Checkpoint = decode(&fs::read(directory.join("checkpoint.json"))?)?;
+    /// The rooms saved under `data_directory`, in id order.
+    pub fn saved_rooms(data_directory: &Path) -> Result<Vec<RoomId>, StorageError> {
+        let directory = data_directory.join(ROOMS_DIRECTORY);
 
-        if checkpoint.room.id() != id {
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut rooms = Vec::new();
+
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+
+            if entry.file_type()?.is_dir()
+                && let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.parse().ok())
+            {
+                rooms.push(id);
+            }
+        }
+
+        rooms.sort();
+
+        Ok(rooms)
+    }
+
+    pub fn open(data_directory: &Path, id: RoomId) -> Result<Self, StorageError> {
+        let directory = data_directory.join(ROOMS_DIRECTORY).join(id.to_string());
+        let lock = lock_room(&directory)?;
+
+        let bytes = match fs::read(directory.join("room.json")) {
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && (directory.join("checkpoint.json").exists()
+                        || directory.join("journal.jsonl").exists()) =>
+            {
+                return Err(StorageError::LegacyFormat);
+            }
+            result => result?,
+        };
+
+        let raw: Value = serde_json::from_slice(&bytes)?;
+
+        let version = raw
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or(StorageError::Invalid("missing room version"))?;
+
+        if version != u64::from(VERSION) {
+            return Err(StorageError::UnsupportedVersion(version));
+        }
+
+        let snapshot: Snapshot = serde_json::from_value(raw)?;
+
+        if snapshot.room.id() != id {
             return Err(StorageError::Invalid("room identity changed"));
         }
 
-        validation::validate(&checkpoint.room)?;
+        validation::validate(&snapshot.room)?;
 
-        let mut journal = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(directory.join("journal.jsonl"))?;
-
-        let replay = replay::replay(&mut journal, checkpoint)?;
-
-        let truncated = if let Some(valid_bytes) = replay.truncated_at {
-            journal.set_len(valid_bytes)?;
-
-            journal.sync_all()?;
-
-            true
-        } else {
-            false
-        };
-
-        journal.seek(SeekFrom::End(0))?;
-
-        Ok((
-            Self {
-                directory,
-                _lock: lock,
-                journal,
-                room: replay.room,
-                sequence: replay.sequence,
-                digest: replay.digest,
-                failed: false,
-            },
-            truncated,
-        ))
+        Ok(Self {
+            directory,
+            _lock: lock,
+            room: snapshot.room,
+            revision: snapshot.revision,
+            failed: false,
+        })
     }
 
     pub fn room(&self) -> &Room {
         &self.room
     }
 
-    pub fn revision(&self) -> u64 {
-        self.sequence
+    pub fn data_directory(&self) -> &Path {
+        self.directory
+            .parent()
+            .and_then(Path::parent)
+            .expect("room directories are nested beneath the data directory")
     }
 
-    /// Publish in-memory state only after the ordered record reaches durable
-    /// storage. A failed append closes this writer until recovery determines
-    /// whether any complete record survived.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Publish memory only after the complete snapshot reaches durable storage.
+    /// A failed replacement can have reached disk, so reopen before another write.
     pub fn commit(&mut self, next: Room) -> Result<(), StorageError> {
         if self.failed {
             return Err(StorageError::ReopenRequired);
@@ -159,79 +184,39 @@ impl RoomStore {
         }
 
         validation::validate(&next)?;
+        validation::validate_update(&self.room, &next)?;
 
-        let changes = RoomDelta::between(&self.room, &next)?;
-
-        let sequence = self
-            .sequence
+        let revision = self
+            .revision
             .checked_add(1)
-            .ok_or(StorageError::Invalid("record sequence exhausted"))?;
+            .ok_or(StorageError::Invalid("room revision exhausted"))?;
 
-        let record = JournalRecord {
-            version: VERSION,
-            sequence,
-            previous: self.digest.clone(),
-            changes,
-        };
-
-        let mut encoded = encode(&record)?;
-
-        let digest = records::digest(&encoded);
-
-        encoded.push(b'\n');
-
-        if let Err(error) = self.append(&encoded) {
+        if let Err(error) = write_snapshot(&self.directory, &next, revision) {
             self.failed = true;
 
-            return Err(error.into());
+            return Err(error);
         }
 
         self.room = next;
-        self.sequence = sequence;
-        self.digest = digest;
+        self.revision = revision;
 
         Ok(())
     }
+}
 
-    fn append(&mut self, encoded: &[u8]) -> io::Result<()> {
-        self.journal.seek(SeekFrom::End(0))?;
+fn write_snapshot(directory: &Path, room: &Room, revision: u64) -> Result<(), StorageError> {
+    let snapshot = Snapshot {
+        version: VERSION,
+        revision,
+        room: room.clone(),
+    };
 
-        self.journal.write_all(encoded)?;
+    durable_file::write(
+        &directory.join("room.json"),
+        &serde_json::to_vec(&snapshot)?,
+    )?;
 
-        self.journal.sync_all()
-    }
-
-    pub fn checkpoint(&mut self) -> Result<(), StorageError> {
-        if self.failed {
-            return Err(StorageError::ReopenRequired);
-        }
-
-        let checkpoint = Checkpoint {
-            version: VERSION,
-            sequence: self.sequence,
-            digest: self.digest.clone(),
-            room: self.room.clone(),
-        };
-
-        atomic_write(
-            &self.directory.join("checkpoint.json"),
-            &encode(&checkpoint)?,
-        )?;
-
-        // The old journal remains valid if the process stops before truncation;
-        // replay verifies its saved prefix against the checkpoint digest.
-        if let Err(error) = self
-            .journal
-            .set_len(0)
-            .and_then(|()| self.journal.sync_all())
-        {
-            self.failed = true;
-
-            return Err(error.into());
-        }
-
-        Ok(())
-    }
+    Ok(())
 }
 
 fn lock_room(directory: &Path) -> Result<File, StorageError> {
@@ -242,21 +227,21 @@ fn lock_room(directory: &Path) -> Result<File, StorageError> {
         .write(true)
         .open(directory.join("owner.lock"))?;
 
-    lock.try_lock().map_err(io::Error::other)?;
+    // The lock belongs to the open file rather than to this descriptor, and a
+    // child forked by another thread holds a copy of every open file until it
+    // execs, the close-on-exec flag notwithstanding. A PTY child runs its
+    // setup between the two, so a room just released here can read as locked
+    // for a few milliseconds. Retrying briefly waits that out, while a room
+    // another instance really holds still fails within a moment.
+    let deadline = Instant::now() + LOCK_RETRY_WINDOW;
 
-    Ok(lock)
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| io::Error::other("missing parent directory"))?;
-
-    let mut temporary = NamedTempFile::new_in(directory)?;
-
-    temporary.write_all(bytes)?;
-
-    temporary.as_file().sync_all()?;
-
-    replace_file_durable(temporary.path(), path)
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(LOCK_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(io::Error::other(error).into()),
+        }
+    }
 }

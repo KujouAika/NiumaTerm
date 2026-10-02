@@ -1,7 +1,7 @@
-use nmt_agent::catalog::ParsedSlashCommand;
+use nmt_agent::catalog::{ParsedSlashCommand, resolve_choice};
 
 use crate::agent_tab::commands::*;
-use crate::agent_tab::{CachedCatalog, RecentSessionsMode, SlashPalette};
+use crate::agent_tab::{CachedCatalog, SlashPalette};
 
 fn info(name: &str, source: SlashCommandSource) -> SlashCommandInfo {
     SlashCommandInfo {
@@ -28,158 +28,6 @@ fn parser_only_claims_a_leading_slash_and_preserves_argument_text() {
 }
 
 #[test]
-fn merge_normalizes_names_and_honors_layer_precedence() {
-    let merged = merge_catalog(
-        vec![info("status", SlashCommandSource::Local)],
-        vec![info("/Status", SlashCommandSource::Adapter)],
-        vec![
-            info(" status ", SlashCommandSource::Provider),
-            info("review", SlashCommandSource::Provider),
-            info("not valid", SlashCommandSource::Provider),
-        ],
-    );
-
-    assert_eq!(merged.len(), 2);
-    assert_eq!(merged[0].source, SlashCommandSource::Local);
-    assert_eq!(merged[1].name, "review");
-}
-
-#[test]
-fn local_resume_replaces_the_provider_catalog_entry() {
-    let merged = merge_catalog(
-        local_commands(),
-        Vec::new(),
-        vec![info("resume", SlashCommandSource::Provider)],
-    );
-
-    let resume = merged
-        .iter()
-        .find(|command| command.name == "resume")
-        .unwrap();
-
-    assert_eq!(resume.source, SlashCommandSource::Local);
-    assert_eq!(resume.run_policy, SlashCommandRunPolicy::IdleOnly);
-}
-
-#[test]
-fn recent_sessions_open_explicitly_after_a_conversation_starts() {
-    assert!(RecentSessionsMode::Automatic.is_visible(true, true, 1));
-    assert!(!RecentSessionsMode::Automatic.is_visible(false, true, 1));
-    assert!(RecentSessionsMode::Open.is_visible(false, true, 1));
-    assert!(!RecentSessionsMode::Hidden.is_visible(true, true, 1));
-    assert!(!RecentSessionsMode::Loading.is_visible(true, true, 1));
-    assert!(!RecentSessionsMode::Open.is_visible(false, true, 0));
-}
-
-/// Typed text and a pasted image's placeholder both fill the composer, so
-/// either takes the automatic list off a blank tab; an explicit `/resume`
-/// list stays up so the text can narrow it.
-#[test]
-fn recent_sessions_step_aside_while_the_composer_holds_anything() {
-    assert!(!RecentSessionsMode::Automatic.is_visible(true, false, 1));
-    assert!(RecentSessionsMode::Open.is_visible(true, false, 1));
-}
-
-#[test]
-fn blank_tab_history_stays_open_on_outside_click() {
-    assert!(!RecentSessionsMode::Automatic.dismisses_on_outside_click());
-    assert!(RecentSessionsMode::Open.dismisses_on_outside_click());
-}
-
-#[test]
-fn filter_orders_exact_prefix_then_substring_stably() {
-    let catalog = vec![
-        info("preview", SlashCommandSource::Provider),
-        info("review", SlashCommandSource::Provider),
-        info("review-file", SlashCommandSource::Provider),
-    ];
-
-    let names: Vec<String> = filter_palette_catalog(&catalog, &[], "review")
-        .into_iter()
-        .filter_map(|entry| match entry {
-            PaletteCatalogEntry::Command(command) => Some(command.name.clone()),
-            PaletteCatalogEntry::Skill(_) => None,
-        })
-        .collect();
-
-    assert_eq!(names, vec!["review", "review-file", "preview"]);
-    assert!(filter_palette_catalog(&catalog, &[], "missing").is_empty());
-}
-
-/// Ranking compares raw bytes with ASCII case folding rather than lowercasing
-/// both sides into fresh strings, so an uppercase query must still reach every
-/// rank. Getting this wrong would leave a typed `/Review` matching nothing.
-#[test]
-fn filter_ranks_ignore_case_on_both_sides() {
-    let catalog = vec![
-        info("preview", SlashCommandSource::Provider),
-        info("review", SlashCommandSource::Provider),
-        info("review-file", SlashCommandSource::Provider),
-    ];
-
-    let mut mixed = skill("Browser:Control", "C:\\p\\SKILL.md", "system", true);
-
-    mixed.description = "Drives a REVIEW browser".into();
-
-    let names: Vec<String> = filter_palette_catalog(&catalog, &[mixed], "ReViEw")
-        .into_iter()
-        .map(|entry| match entry {
-            PaletteCatalogEntry::Command(command) => command.name.clone(),
-            PaletteCatalogEntry::Skill(skill) => skill.name.clone(),
-        })
-        .collect();
-
-    assert_eq!(
-        names,
-        vec!["review", "review-file", "preview", "Browser:Control"]
-    );
-}
-
-#[test]
-fn combined_palette_ranks_skill_exact_matches_before_command_substrings() {
-    let commands = vec![
-        info("preview", SlashCommandSource::Provider),
-        info("status", SlashCommandSource::Local),
-    ];
-
-    let skills = vec![
-        skill("review", "C:\\user\\review\\SKILL.md", "user", true),
-        skill("review", "C:\\repo\\review\\SKILL.md", "repo", true),
-        skill(
-            "browser:control",
-            "C:\\plugins\\browser\\SKILL.md",
-            "system",
-            true,
-        ),
-    ];
-
-    let results = filter_palette_catalog(&commands, &skills, "review");
-
-    assert!(matches!(
-        &results[0],
-        PaletteCatalogEntry::Skill(skill) if skill.path == "C:\\user\\review\\SKILL.md"
-    ));
-    assert!(matches!(
-        &results[1],
-        PaletteCatalogEntry::Skill(skill) if skill.path == "C:\\repo\\review\\SKILL.md"
-    ));
-    assert!(matches!(
-        &results[2],
-        PaletteCatalogEntry::Command(command) if command.name == "preview"
-    ));
-    assert!(matches!(
-        &results[3],
-        PaletteCatalogEntry::Skill(skill) if skill.name == "browser:control"
-    ));
-
-    let all = filter_palette_catalog(&commands, &skills, "");
-
-    assert_eq!(all.len(), commands.len() + skills.len());
-    assert!(matches!(all[0], PaletteCatalogEntry::Command(_)));
-    assert!(matches!(all[2], PaletteCatalogEntry::Skill(_)));
-}
-
-#[test]
 fn enum_choice_requires_an_exact_or_unique_prefix_match() {
     let choices = vec![
         ("default".into(), "Default".into()),
@@ -197,27 +45,8 @@ fn enum_choice_requires_an_exact_or_unique_prefix_match() {
 }
 
 #[test]
-fn palette_direction_navigation_wraps_and_handles_catalog_changes() {
-    assert_eq!(
-        move_palette_selection(0, 5, PaletteDirection::Previous),
-        Some(4)
-    );
-    assert_eq!(
-        move_palette_selection(4, 5, PaletteDirection::Next),
-        Some(0)
-    );
-    assert_eq!(
-        move_palette_selection(8, 3, PaletteDirection::Previous),
-        Some(1)
-    );
-    assert_eq!(move_palette_selection(0, 0, PaletteDirection::Next), None);
-}
-
-#[test]
 fn clear_resets_discovery_state() {
     let mut palette = SlashPalette {
-        provider_commands: vec![info("review", SlashCommandSource::Provider)],
-        provider_commands_ready: true,
         selected: 3,
         dismissed: true,
         ..SlashPalette::default()
@@ -225,14 +54,13 @@ fn clear_resets_discovery_state() {
 
     palette.catalog = Some(CachedCatalog {
         language: "en".into(),
-        commands: palette.provider_commands.clone().into(),
+        epoch: 1,
+        commands: vec![info("review", SlashCommandSource::Provider)].into(),
     });
 
-    palette.reset_discovery(false);
+    palette.reset_discovery();
 
-    assert!(palette.provider_commands.is_empty());
     assert!(palette.catalog.is_none());
-    assert!(!palette.provider_commands_ready);
     assert_eq!(palette.selected, 0);
     assert!(!palette.dismissed);
 }
@@ -358,13 +186,4 @@ fn skill_selection_keeps_exact_path_and_rejects_disabled_rows() {
         ))
     );
     assert!(prepare_skill_selection(&disabled).is_err());
-}
-
-#[test]
-fn skill_prefix_covers_only_the_leading_token() {
-    assert_eq!(parse_skill_prefix("$"), Some(String::new()));
-    assert_eq!(parse_skill_prefix("$Review"), Some("review".to_string()));
-    assert_eq!(parse_skill_prefix("$review changes"), None);
-    assert_eq!(parse_skill_prefix("/review"), None);
-    assert_eq!(parse_skill_prefix("cost is $5"), None);
 }

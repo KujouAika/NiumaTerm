@@ -1,6 +1,8 @@
 //! How transcript prose and code are styled, from the configured font down to
 //! the markdown view every text row is built on.
 
+mod file_icons;
+
 #[cfg(test)]
 mod link_tests;
 
@@ -8,12 +10,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{App, ElementId, Font, Hsla, SharedString, StyleRefinement, px};
+use gpui::{App, ElementId, Font, SharedString, StyleRefinement, px};
 use gpui_component::highlighter::HighlightTheme;
 use gpui_component::text::TextViewStyle;
 use gpui_component::{ActiveTheme as _, text};
 
 use crate::agent_tab::settings::AgentSettings;
+use crate::agent_tab::transcript::render::text_style::file_icons::file_link_icon;
 
 /// Assistant reply: bare markdown — no bubble, no border; alignment and
 /// surface carry the distinction.
@@ -59,7 +62,8 @@ pub(crate) fn transcript_highlight_theme(cx: &App) -> Arc<HighlightTheme> {
 
     let surface = cx.global::<AgentSettings>().terminal_background;
 
-    highlight_theme_for_surface(themed, is_dark_surface(surface))
+    // A surface darker than mid-gray takes the dark highlight theme.
+    highlight_theme_for_surface(themed, surface.l < 0.5)
 }
 
 pub(crate) fn highlight_theme_for_surface(
@@ -73,13 +77,6 @@ pub(crate) fn highlight_theme_for_surface(
     } else {
         HighlightTheme::default_light()
     }
-}
-
-/// Mid-gray in HSL lightness splits dark surfaces from light ones. A theme
-/// file's mode is checked against its palette with the same measure, so a
-/// palette and the surface it lands on agree on which side they are on.
-pub(crate) fn is_dark_surface(color: Hsla) -> bool {
-    color.l < 0.5
 }
 
 pub(crate) fn transcript_text_style(cx: &App) -> TextViewStyle {
@@ -97,9 +94,11 @@ pub(crate) fn markdown_view(
     markdown: impl Into<SharedString>,
     cwd: Option<String>,
 ) -> text::TextView {
-    text::TextView::markdown(id, markdown).on_link_click(move |target, _, _, cx| {
-        open_link(target, cwd.as_deref().map(Path::new), cx);
-    })
+    text::TextView::markdown(id, markdown)
+        .link_icon(file_link_icon)
+        .on_link_click(move |target, _, _, cx| {
+            open_link(target, cwd.as_deref().map(Path::new), cx);
+        })
 }
 
 fn open_link(target: &str, cwd: Option<&Path>, cx: &mut App) {

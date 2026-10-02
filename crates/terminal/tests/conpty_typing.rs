@@ -8,14 +8,19 @@ use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
 use nmt_platform::windows::powershell::encode_command;
 use nmt_platform::{PtyOptions, WinsizeBuilder, create_managed_pty_with_env};
-use nmt_terminal::event::{Msg, VoidListener};
+use nmt_terminal::event::{CheckpointRequest, Msg, VoidListener};
 use nmt_terminal::ghostty::GhosttyTerminal;
-use nmt_terminal::pty_pipe::{SessionHandles, SessionOptions, start_session};
 use nmt_terminal::render_buffer::RenderBuffer;
-use nmt_terminal::session::request::CheckpointRequest;
+use nmt_terminal::termio::{SessionHandles, SessionOptions, start_session};
 
 const PROMPT: &str = "NMT> ";
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Every scenario configures PSReadLine prediction, which arrived in
+/// PSReadLine 2.1. Windows PowerShell 5.1 ships 2.0 and rejects the option,
+/// and its error text lands on screen among the input being counted, so the
+/// scenarios run under PowerShell 7 resolved from PATH.
+const SHELL: &str = "pwsh.exe";
 
 fn powershell_session(extra_args: &[&str], setup: &str) -> SessionHandles {
     let script = format!(
@@ -38,7 +43,7 @@ function global:prompt {{ 'NMT> ' }}
     ]);
 
     let pty = create_managed_pty_with_env(PtyOptions {
-        shell: &nmt_platform::default_shell(),
+        shell: SHELL,
         args: &args,
         working_directory: None,
         columns: 80,
@@ -61,7 +66,6 @@ function global:prompt {{ 'NMT> ' }}
             scrollback_lines: 1000,
             engine_blocks: false,
             terminal_responses: true,
-            output_sink: None,
         },
     )
     .expect("start terminal session")

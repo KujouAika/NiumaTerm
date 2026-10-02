@@ -4,137 +4,71 @@ mod child_tests;
 
 use std::ffi::c_void;
 use std::io::Error;
-use std::ptr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::task::{Context, Poll};
 
-use mio::Waker;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::System::Threading::{
-    INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEINWAITTHREAD,
-    WT_EXECUTEONLYONCE,
-};
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::Threading::{WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
 
 use crate::windows::readiness::SoftReady;
-
-/// Context handed to the WinAPI wait callback. The exit event is delivered over a
-/// `std::sync::mpsc` channel (mio 1.2 has no pollable channel); the soft-ready handle
-/// wakes the event loop's `Poll` so it re-checks the receiver.
-struct CallbackCtx {
-    event_tx: Sender<()>,
-    soft: SoftReady,
-}
+use crate::windows::registered_wait::RegisteredWait;
 
 /// WinAPI callback to run when child process exits.
-extern "system" fn child_exit_callback(ctx: *mut c_void, timed_out: bool) {
+unsafe extern "system" fn child_exit_callback(ctx: *mut c_void, timed_out: bool) {
     if timed_out {
         return;
     }
 
-    // Borrow only: the watcher owns the context and frees it in Drop, after a
-    // blocking UnregisterWaitEx has excluded any in-flight callback. Taking
-    // ownership here would leak the box whenever the child outlives the
-    // watcher (the callback never fires, nobody frees the allocation).
-    let ctx = unsafe { &*(ctx as *const CallbackCtx) };
+    // Borrow only: the registration owns the context and frees it after a
+    // blocking unregister has excluded any in-flight callback.
+    let soft = unsafe { &*(ctx as *const SoftReady) };
 
-    let _ = ctx.event_tx.send(());
-
-    ctx.soft.set_ready();
+    // The flag records the exit before any task registers, and waking the
+    // registered task lets it observe the flag.
+    soft.set_ready();
 }
 
 /// Owns `child_handle`: the process handle is closed on drop, so callers must
 /// hand over a handle (or a duplicate) they will not close themselves.
 pub struct ChildExitWatcher {
-    wait_handle: AtomicPtr<c_void>,
-    event_rx: Receiver<()>,
-    soft: SoftReady,
-    child_handle: HANDLE,
-    ctx: *mut CallbackCtx,
+    // Declared first: the wait is unregistered before the process handle it
+    // watches is closed.
+    wait: RegisteredWait<SoftReady>,
+    _child_handle: OwnedHandle,
 }
-
-// HANDLE is not Send, so Send is not derived automatically for ChildExitWatcher, but raw pointers
-// are generally safe to send between threads as long as the type they deference to is Send, which
-// c_void is. (see https://doc.rust-lang.org/nomicon/send-and-sync.html).
-unsafe impl Send for ChildExitWatcher {}
 
 impl ChildExitWatcher {
     pub fn new(child_handle: HANDLE) -> Result<ChildExitWatcher, Error> {
-        let (event_tx, event_rx) = channel::<()>();
-        let soft = SoftReady::new();
+        // Taken first so a failed registration still closes the handle.
+        let child_handle = unsafe { OwnedHandle::from_raw_handle(child_handle) };
 
-        let mut wait_handle: HANDLE = ptr::null_mut();
+        let wait = RegisteredWait::new(
+            child_handle.as_raw_handle(),
+            SoftReady::new(),
+            child_exit_callback,
+            WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE,
+        )?;
 
-        let ctx = Box::into_raw(Box::new(CallbackCtx {
-            event_tx,
-            soft: soft.clone(),
-        }));
+        Ok(ChildExitWatcher {
+            wait,
+            _child_handle: child_handle,
+        })
+    }
 
-        let success = unsafe {
-            RegisterWaitForSingleObject(
-                &mut wait_handle,
-                child_handle,
-                Some(child_exit_callback),
-                ctx.cast(),
-                INFINITE,
-                WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE,
-            )
-        };
+    /// Reports whether the child has exited without waiting.
+    pub fn exited(&self) -> bool {
+        self.wait.context().is_ready()
+    }
 
-        if success == 0 {
-            let err = Error::last_os_error();
+    /// Complete once the child exits. The waker is installed before the check
+    /// so an exit reported between the two still wakes the task.
+    pub fn poll_exit(&self, cx: &mut Context<'_>) -> Poll<()> {
+        self.wait.context().register_task_waker(cx.waker());
 
-            // No wait was registered, so the context box and the process
-            // handle we own are reclaimed here or never.
-            unsafe {
-                drop(Box::from_raw(ctx));
-
-                CloseHandle(child_handle);
-            }
-
-            Err(err)
+        if self.exited() {
+            Poll::Ready(())
         } else {
-            Ok(ChildExitWatcher {
-                wait_handle: wait_handle.into(),
-                event_rx,
-                soft,
-                child_handle,
-                ctx,
-            })
-        }
-    }
-
-    pub fn event_rx(&self) -> &Receiver<()> {
-        &self.event_rx
-    }
-
-    /// The soft-ready handle, so the `Pty` can inject the loop `Waker` at
-    /// `register()` time and surface child-exit through `drain_ready()`.
-    pub fn soft(&self) -> &SoftReady {
-        &self.soft
-    }
-
-    /// Install the event loop's waker so child exit wakes the `Poll`.
-    pub fn set_waker(&self, waker: Arc<Waker>) {
-        self.soft.set_waker(waker);
-    }
-}
-
-impl Drop for ChildExitWatcher {
-    fn drop(&mut self) {
-        unsafe {
-            // Blocking unregister (INVALID_HANDLE_VALUE): waits for any
-            // in-flight callback to finish, which is what makes freeing the
-            // context box and closing the process handle below safe. Never
-            // runs on the wait-callback thread, so it cannot self-deadlock.
-            UnregisterWaitEx(
-                self.wait_handle.load(Ordering::Relaxed) as HANDLE,
-                INVALID_HANDLE_VALUE,
-            );
-
-            drop(Box::from_raw(self.ctx));
-
-            CloseHandle(self.child_handle);
+            Poll::Pending
         }
     }
 }

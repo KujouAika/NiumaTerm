@@ -14,14 +14,16 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use indexmap::IndexMap;
 use serde_json::{Value, json};
 
 use crate::background_task::{
-    BackgroundTaskDiscoveryState, BackgroundTaskKey, BackgroundTaskRefs, BackgroundTaskRegistry,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskRefs, BackgroundTaskRegistry,
     BackgroundTaskSnapshot, BackgroundTaskState, BackgroundTaskUpdate,
 };
 use crate::chat::Item;
 use crate::codex::app_server::background_tasks::launch_messages::LaunchMessages;
+use crate::codex::app_server::protocol::turn_interrupt_request;
 use crate::json::{condense, text_field};
 
 /// Page size for descendant discovery. Threads are cheap metadata rows and the
@@ -62,10 +64,8 @@ pub(super) struct CodexTasks {
     /// Only the newest candidate per thread is kept: a child update can arrive
     /// before its spawn item, but unrelated thread content must never reach the
     /// parent conversation.
-    pending: HashMap<String, BackgroundTaskUpdate>,
-
-    /// Insertion order of `pending`, so the oldest candidate can be evicted.
-    pending_order: Vec<String>,
+    /// Kept in arrival order, so the oldest candidate is evicted first.
+    pending: IndexMap<String, BackgroundTaskUpdate>,
 
     launch_messages: LaunchMessages,
 
@@ -78,7 +78,7 @@ pub(super) struct CodexTasks {
     /// active one, so stopping a child is only possible while this is known.
     active_turns: HashMap<String, String>,
 
-    /// Pagination cursors already requested for the current root.
+    /// Pagination cursors already requested in the current discovery pass.
     seen_cursors: HashSet<String>,
 
     /// In-flight `thread/read` requests, by the descendant they will deliver.
@@ -106,8 +106,6 @@ impl CodexTasks {
 
         self.pending.clear();
 
-        self.pending_order.clear();
-
         self.launch_messages.clear();
 
         self.queries.clear();
@@ -119,12 +117,6 @@ impl CodexTasks {
         self.reads.clear();
 
         true
-    }
-
-    /// Whether a returned cursor is worth following. A cursor already used for
-    /// this root means the server is repeating a page.
-    pub(super) fn accept_cursor(&mut self, cursor: &str) -> bool {
-        self.seen_cursors.insert(cursor.to_owned())
     }
 
     pub(super) fn root(&self) -> Option<&str> {
@@ -228,31 +220,6 @@ impl CodexTasks {
         }
     }
 
-    /// Depth of a confirmed descendant below the selected root; direct children
-    /// are depth 1. `None` when the chain is not fully known yet.
-    fn depth_of(&self, thread_id: &str) -> Option<u32> {
-        let root = self.root()?;
-
-        let mut seen = HashSet::new();
-        let mut current = thread_id.to_owned();
-        let mut depth = 1;
-
-        loop {
-            let parent = self.parents.get(&current)?;
-
-            if parent == root {
-                return Some(depth);
-            }
-
-            if !seen.insert(current.clone()) {
-                return None;
-            }
-
-            current = parent.clone();
-            depth += 1;
-        }
-    }
-
     /// Apply an update for a thread whose relationship to the root is known, or
     /// hold it as the newest candidate when it is not.
     fn record(
@@ -267,29 +234,16 @@ impl CodexTasks {
             return false;
         }
 
-        let depth = self.depth_of(thread_id);
-
         let Some(registry) = self.registry.as_mut() else {
             return false;
-        };
-
-        let update = BackgroundTaskUpdate {
-            depth: update.depth.or(depth),
-            ..update
         };
 
         registry.apply(BackgroundTaskKey::codex(thread_id), update)
     }
 
     fn hold_pending(&mut self, thread_id: &str, update: BackgroundTaskUpdate) {
-        if !self.pending.contains_key(thread_id) {
-            if self.pending_order.len() >= MAX_PENDING_THREADS {
-                let oldest = self.pending_order.remove(0);
-
-                self.pending.remove(&oldest);
-            }
-
-            self.pending_order.push(thread_id.to_owned());
+        if !self.pending.contains_key(thread_id) && self.pending.len() >= MAX_PENDING_THREADS {
+            self.pending.shift_remove_index(0);
         }
 
         self.pending.insert(thread_id.to_owned(), update);
@@ -297,11 +251,9 @@ impl CodexTasks {
 
     /// Move a held candidate into the registry once its relationship is proven.
     fn drain_pending(&mut self, thread_id: &str) -> bool {
-        let Some(update) = self.pending.remove(thread_id) else {
+        let Some(update) = self.pending.shift_remove(thread_id) else {
             return false;
         };
-
-        self.pending_order.retain(|held| held != thread_id);
 
         self.record(thread_id, update, true)
     }
@@ -331,7 +283,6 @@ impl CodexTasks {
 
         let is_spawn = item["tool"].as_str() == Some("spawnAgent");
         let prompt = text_field(item, &["prompt"]);
-        let model = text_field(item, &["model"]);
         let states = &item["agentsStates"];
 
         let mut receivers: Vec<String> = item["receiverThreadIds"]
@@ -368,14 +319,11 @@ impl CodexTasks {
             let mut update = BackgroundTaskUpdate {
                 refs: Some(BackgroundTaskRefs::Codex {
                     thread_id: thread_id.clone(),
-                    parent_thread_id: sender.clone(),
                 }),
                 state: collab_agent_state(state),
                 // `message` carries the child's completion summary or its error
                 // text, which is the most useful one-line status available.
                 status: text_field(state, &["message"]),
-                model: model.clone(),
-                updated_at: Some(SystemTime::now()),
                 ..BackgroundTaskUpdate::default()
             };
 
@@ -427,14 +375,12 @@ impl CodexTasks {
         let update = BackgroundTaskUpdate {
             refs: Some(BackgroundTaskRefs::Codex {
                 thread_id: thread_id.clone(),
-                parent_thread_id: self.root().map(str::to_owned),
             }),
             state,
             started_at: (state == Some(BackgroundTaskState::Working)).then(SystemTime::now),
             completed_at: state
                 .is_some_and(BackgroundTaskState::is_terminal)
                 .then(SystemTime::now),
-            updated_at: Some(SystemTime::now()),
             ..BackgroundTaskUpdate::default()
         };
 
@@ -461,7 +407,6 @@ impl CodexTasks {
             "turn/started" => BackgroundTaskUpdate {
                 state: Some(BackgroundTaskState::Working),
                 started_at: Some(SystemTime::now()),
-                updated_at: Some(SystemTime::now()),
                 ..BackgroundTaskUpdate::default()
             },
             "turn/completed" => {
@@ -474,7 +419,6 @@ impl CodexTasks {
                 BackgroundTaskUpdate {
                     state: Some(state),
                     completed_at: Some(SystemTime::now()),
-                    updated_at: Some(SystemTime::now()),
                     status: params["turn"]["error"]["message"]
                         .as_str()
                         .map(str::to_owned),
@@ -490,7 +434,6 @@ impl CodexTasks {
 
                 BackgroundTaskUpdate {
                     state: Some(state),
-                    updated_at: Some(SystemTime::now()),
                     completed_at: state.is_terminal().then(SystemTime::now),
                     ..BackgroundTaskUpdate::default()
                 }
@@ -502,7 +445,6 @@ impl CodexTasks {
 
                 BackgroundTaskUpdate {
                     last_preview: item_preview(item),
-                    updated_at: Some(SystemTime::now()),
                     ..BackgroundTaskUpdate::default()
                 }
             }
@@ -513,7 +455,6 @@ impl CodexTasks {
                     .or_else(|| params["message"].as_str())
                     .map(str::to_owned),
                 completed_at: Some(SystemTime::now()),
-                updated_at: Some(SystemTime::now()),
                 ..BackgroundTaskUpdate::default()
             },
             _ => return turn_changed,
@@ -575,7 +516,6 @@ impl CodexTasks {
             thread_id,
             BackgroundTaskUpdate {
                 state: Some(state),
-                updated_at: Some(SystemTime::now()),
                 completed_at: state.is_terminal().then(SystemTime::now),
                 ..BackgroundTaskUpdate::default()
             },
@@ -600,10 +540,16 @@ impl CodexTasks {
         let root = self.root()?.to_owned();
         let starting_sequence = self.registry.as_ref()?.sequence();
 
+        // A first page starts a new pass over the same pages, so the cursors
+        // of an earlier pass must be followed again.
+        if cursor.is_none() {
+            self.seen_cursors.clear();
+        }
+
         self.queries.insert(rpc_id, starting_sequence);
 
         if let Some(registry) = self.registry.as_mut() {
-            registry.set_discovery(BackgroundTaskDiscoveryState::Loading);
+            registry.set_discovery(BackgroundTaskLoadState::Loading);
         }
 
         // `ancestorThreadId` returns spawned descendants at any depth and
@@ -630,7 +576,10 @@ impl CodexTasks {
         }))
     }
 
-    /// Fold one descendant page. Returns the cursor of the next page, if any.
+    /// Fold one descendant page. Returns the cursor of the next page when it
+    /// is worth following, and marks discovery ready once paging stops. A
+    /// cursor already followed in this pass means the server is repeating a
+    /// page, which would otherwise page forever.
     pub(super) fn apply_descendants(
         &mut self,
         rpc_id: u64,
@@ -681,13 +630,10 @@ impl CodexTasks {
             let update = BackgroundTaskUpdate {
                 refs: Some(BackgroundTaskRefs::Codex {
                     thread_id: id.clone(),
-                    parent_thread_id: parent,
                 }),
                 state,
                 display_name: text_field(thread, &["name", "agentNickname"]),
-                agent_type: text_field(thread, &["agentRole"]),
                 objective: text_field(thread, &["preview"]),
-                depth: self.depth_of(&id),
                 started_at: unix_seconds(thread, &["createdAt"]),
                 // The listing has no completion timestamp, so a terminal row
                 // borrows the thread's last activity as its end time.
@@ -695,7 +641,6 @@ impl CodexTasks {
                     .is_some_and(BackgroundTaskState::is_terminal)
                     .then_some(last_active)
                     .flatten(),
-                updated_at: last_active,
                 ..BackgroundTaskUpdate::default()
             };
 
@@ -704,13 +649,16 @@ impl CodexTasks {
             }
         }
 
-        let next_cursor = result["nextCursor"].as_str().map(str::to_owned);
+        let next_cursor = result["nextCursor"]
+            .as_str()
+            .filter(|cursor| self.seen_cursors.insert((*cursor).to_owned()))
+            .map(str::to_owned);
 
         if next_cursor.is_none()
             && !self.query_in_flight()
             && let Some(registry) = self.registry.as_mut()
         {
-            changed |= registry.set_discovery(BackgroundTaskDiscoveryState::Ready);
+            changed |= registry.set_discovery(BackgroundTaskLoadState::Ready);
         }
 
         (changed, next_cursor)
@@ -723,12 +671,7 @@ impl CodexTasks {
     pub(super) fn interrupt_request(&self, rpc_id: u64, thread_id: &str) -> Option<Value> {
         let turn_id = self.active_turns.get(thread_id)?;
 
-        Some(json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "method": "turn/interrupt",
-            "params": {"threadId": thread_id, "turnId": turn_id},
-        }))
+        Some(turn_interrupt_request(rpc_id, thread_id, turn_id))
     }
 
     /// Build a request for one descendant's stored conversation. `thread/read`
@@ -793,12 +736,12 @@ impl CodexTasks {
         };
 
         if registry.is_empty() {
-            return registry.set_discovery(BackgroundTaskDiscoveryState::Unavailable {
+            return registry.set_discovery(BackgroundTaskLoadState::Unavailable {
                 message: message.to_owned(),
             });
         }
 
-        registry.set_discovery(BackgroundTaskDiscoveryState::Ready)
+        registry.set_discovery(BackgroundTaskLoadState::Ready)
     }
 }
 

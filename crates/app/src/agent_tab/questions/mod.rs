@@ -2,12 +2,19 @@
 
 pub(super) use nmt_agent::session::input::QuestionStatus;
 
+pub(super) mod panel;
+
 #[cfg(test)]
 mod tests;
 
-use gpui::{AnyElement, App, Entity, IntoElement as _, Subscription, Window};
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui::prelude::*;
+use gpui::{AnyElement, App, Context, Entity, Subscription, Window, div};
+use gpui_component::input::{Enter, Input, InputState, Textarea, TextareaState};
 use nmt_agent::session::input::QuestionDraft;
+
+use crate::agent_tab::AgentPane;
+use crate::agent_tab::settings::AgentSettings;
+use crate::agent_tab::view::composer_layout::{ComposerEnterBehavior, composer_enter_behavior};
 
 pub(super) struct QuestionEditor {
     state: QuestionEditorState,
@@ -38,6 +45,10 @@ impl QuestionEditorState {
 pub(super) struct QuestionPresentation {
     pub(super) editors: Vec<Option<QuestionEditor>>,
     pub(super) focus: (usize, usize),
+
+    /// The one question shown when a batch is answered a question at a
+    /// time; `None` shows them all.
+    pub(super) page: Option<usize>,
 }
 
 impl QuestionPresentation {
@@ -45,6 +56,7 @@ impl QuestionPresentation {
         Self {
             editors: (0..draft.questions().len()).map(|_| None).collect(),
             focus: (0, 0),
+            page: None,
         }
     }
 
@@ -61,6 +73,9 @@ impl QuestionPresentation {
             .questions()
             .iter()
             .enumerate()
+            // Keys walk only the options on screen, so a question stepped
+            // past cannot take the highlight.
+            .filter(|(question, _)| self.page.is_none_or(|page| page == *question))
             .flat_map(|(question, entry)| {
                 (0..entry.options.len()).map(move |option| (question, option))
             })
@@ -102,7 +117,33 @@ impl QuestionEditor {
         self.state.focus(window, cx);
     }
 
-    pub(super) fn render(&self, disabled: bool) -> AnyElement {
-        self.state.render(disabled)
+    pub(super) fn render(&self, disabled: bool, cx: &mut Context<AgentPane>) -> AnyElement {
+        let text = match &self.state {
+            QuestionEditorState::Text(state) => Some(state.clone()),
+            QuestionEditorState::Secret(_) => None,
+        };
+
+        div()
+            .capture_action(cx.listener(move |this, action: &Enter, window, cx| {
+                if !disabled {
+                    match composer_enter_behavior(
+                        cx.global::<AgentSettings>().newline_shortcut,
+                        action,
+                    ) {
+                        ComposerEnterBehavior::InsertNewline => {
+                            if let Some(text) = &text {
+                                text.update(cx, |input, cx| input.replace("\n", window, cx));
+                            }
+                        }
+                        ComposerEnterBehavior::Submit | ComposerEnterBehavior::ActivateOrSubmit => {
+                            this.advance_or_submit_questions(cx);
+                        }
+                    }
+                }
+
+                cx.stop_propagation();
+            }))
+            .child(self.state.render(disabled))
+            .into_any_element()
     }
 }

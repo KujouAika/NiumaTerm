@@ -1,79 +1,184 @@
-# NiumaTerm Relay
+# NiumaTerm relay
 
-Cloudflare Worker + Durable Object that forwards end-to-end-encrypted bytes
-between a NiumaTerm host and its clients. The relay is untrusted: it only ever
-sees ciphertext plus routing metadata (host id, connection id, IP, timing,
-sizes). Host↔client confidentiality and device authentication are enforced by
-the Noise channel in the app, not here.
+A Cloudflare Worker that lets paired devices reach a NiumaTerm host from
+outside its local network. Each user deploys their own copy to their own
+Cloudflare account. The project does not run a shared relay.
 
-One Durable Object instance per `host_id` (`idFromName`), so every socket for a
-host lands on the same instance regardless of which edge accepted the
-connection. Sockets use the hibernation API, so an idle host costs nothing.
-
-The worker's `package.json`, `package-lock.json`, `tsconfig.json`,
-`wrangler.toml`, and `.dev.vars` live in the repository root, so every command
-below runs from there rather than from this directory. Only the source stays
-here, and `wrangler.toml` points at it.
+The relay only forwards bytes. Every connection through it carries the same
+end-to-end encrypted Noise channel as a LAN connection, and the relay never
+holds a key that can read it. A compromised relay can drop or delay traffic,
+but it cannot read terminals or impersonate a paired device.
 
 ## Deploy
 
-```bash
-npm install
+Requires a Cloudflare account. The free plan is enough, because Durable
+Objects on SQLite storage are available there.
+
+```sh
+cd relay
+npx wrangler login
 npx wrangler deploy
 ```
 
-Set the access token that hosts must present to register (any high-entropy
-string; clients never send it):
+Then give each user an access key. Every socket must present one, so a
+stranger who learns the relay URL cannot use your quota. The relay stores
+only the SHA-256 of each key, in the `ACCESS_KEYS` secret:
 
-```bash
-npx wrangler secret put ACCESS_TOKEN
+```sh
+key=$(openssl rand -hex 32)
+echo "$key"                                # give this to the user
+printf %s "$key" | shasum -a 256           # the hash for ACCESS_KEYS
 ```
 
-Bind a custom domain so hosts and clients use a stable `wss://` URL (Cloudflare
-provides the TLS certificate automatically):
+Write the users and their hashes to a JSON file. User names are 1 to 32
+characters of lowercase letters, digits, `_` and `-`:
 
-1. Cloudflare dashboard → your Worker → **Settings → Domains & Routes → Add
-   custom domain**, e.g. `relay.example.com`.
-2. Hosts connect to `wss://relay.example.com/ws`; that URL goes into each
-   pairing code the host generates.
+```json
+{ "alice": "<64 hex digits>", "bob": "<64 hex digits>" }
+```
+
+```sh
+npx wrangler secret put ACCESS_KEYS < access_keys.json
+```
+
+To add or remove a user, edit the file and run the same command again. A
+malformed file locks every user out until it is fixed, so a mistake shows
+at once. Updating a secret deploys a new version, which drops every open
+socket; each reconnect is checked against the new list.
+
+## Users
+
+Users share the relay but not their hosts. A host belongs to the user whose
+key first registered its id: another user's key cannot reach that host,
+cannot take over its id, and does not see its pairing codes. A client of
+another user's host is refused as if the host were offline.
+
+A user holds at most 8 client connections at once, counted over all of
+their hosts. The next one is closed with code 4429.
+
+A host stays with the user name that registered it, not with the key. To
+rotate a user's key, replace the hash under the same name: their hosts keep
+working once they are given the new key, and their devices pair again to
+learn it. A host registered under one name is refused under any other.
+
+`wrangler deploy` prints the Worker URL, for example
+`https://niumaterm-relay.<account>.workers.dev`.
+
+## Configure the host
+
+On the computer that hosts sessions, open Settings > Remote and fill in:
+
+- **Relay URL**: the Worker URL
+- **Relay access key**: that user's access key
+
+Then click **Apply relay**. The host registers with the relay and stays
+registered while hosting is on.
+
+Devices paired after this receive the relay URL and key inside the encrypted
+pairing exchange, so they need no setup. Devices paired earlier learn the
+relay the next time they pair. To pair from outside the local network,
+click **Copy link** next to the pairing code and paste the link into the
+other computer's code field. The link carries the relay and the host's
+key.
+
+## How connections are chosen
+
+A client tries the host's LAN addresses at once, all of them together, and
+the relay after 300 ms, or as soon as every LAN attempt has failed. The
+first handshake to complete wins. On the same network the LAN usually wins.
+
+The host tells a device its current LAN addresses when they pair and on
+every connection, the relay included. So a device paired through the relay
+goes direct as soon as it is on the host's network, and learns the host's
+new address after DHCP moved it: the stale one costs at most a three-second
+attempt running alongside the others.
 
 ## Local development
 
-```bash
-npm run dev   # wrangler dev on 127.0.0.1:8787
+```sh
+cd relay
+hash=$(printf %s local-test-key-0123456789 | shasum -a 256 | cut -d' ' -f1)
+echo "ACCESS_KEYS={\"dev\":\"$hash\"}" > .dev.vars
+npx wrangler dev --local --port 8787 --ip 127.0.0.1
 ```
 
-`.dev.vars` in the repository root already holds the `ACCESS_TOKEN` the local
-instance uses. It is committed on purpose: the value is a fixed local-dev
-string that the ignored Rust integration tests hardcode, so the two sides
-cannot drift. Production tokens are set with `wrangler secret put ACCESS_TOKEN`
-and never enter the repository.
+The Rust integration test pairs, then runs a shell, through a running relay
+with the host's LAN listener closed:
 
-The Rust integration tests connect to this local instance:
-
-```bash
-cargo test -p nmt_remote_net --test relay_integration -- --ignored
-cargo test -p nmt_remote_net  --test host_e2e          -- --ignored --test-threads=1
+```sh
+NMT_TEST_RELAY_URL=http://127.0.0.1:8787 \
+NMT_TEST_RELAY_KEY=local-test-key-0123456789 \
+cargo test -p nmt_remote --lib through_the_relay -- --ignored
 ```
 
-## Protocol
+## Push notifications
 
-WebSocket upgrades at `/ws` with query parameters:
+The phone app can hear from a host while it is away: an agent finished,
+needs approval, or asks a question. The host seals the text for the phone
+and posts it to `/v1/push`; the relay signs an APNs request and forwards
+the ciphertext, which only the phone can open.
 
-| Param           | Values             | Meaning                                             |
-| --------------- | ------------------ | --------------------------------------------------- |
-| `host_id`       | 16 hex chars       | Routing key = `sha256(host_public_key)[..8]`.       |
-| `role`          | `host` \| `client` | Which side is connecting.                           |
-| `connection_id` | `conn_<uuid>`      | Host data sockets only; pairs with a client socket. |
+APNs pushes can only be signed with a key from the Apple developer account
+that signs the app, so only the relay of whoever builds the app forwards
+them. That relay serves every host the app pairs with, including hosts on
+other relays, which is why `/v1/push` takes no access key. It only reaches
+the app named by `APNS_TOPIC`, carries ciphertext, and limits each device
+token to 60 pushes a minute.
 
-- **Host control socket** (`role=host`, no `connection_id`): one per host,
-  requires `Authorization: Bearer <ACCESS_TOKEN>`. Receives JSON notifications
-  `{type: connected|disconnected|sync, ...}`.
-- **Host data socket** (`role=host&connection_id=<cid>`): one per client,
-  opened by the host in response to a `connected` notification.
-- **Client socket** (`role=client`): the relay assigns `conn_<uuid>` and
-  notifies the host. No token required — pairing and the Noise handshake are
-  the client's gate.
+To enable it on the relay that belongs to the app's developer account:
 
-Close codes: `4400` bad request, `4401` unauthorized, `4404` host offline,
-`4429` client buffer overflow, `1012` retryable (host gone / socket replaced).
+1. In the developer account, Certificates, Identifiers & Profiles > Keys,
+   create a key with Apple Push Notifications service, environment
+   "Sandbox & Production", and download the `.p8` file (it downloads once).
+2. Set the secrets; the file goes in through standard input:
+
+   ```sh
+   npx wrangler secret put APNS_KEY < AuthKey_XXXXXXXXXX.p8
+   npx wrangler secret put APNS_KEY_ID     # the 10 characters after AuthKey_
+   npx wrangler secret put APNS_TEAM_ID    # the account's team id
+   npx wrangler secret put APNS_TOPIC      # the app's bundle identifier
+   ```
+
+3. Build the app with `NMT_PUSH_ENDPOINT` pointing at
+   `https://<worker>/v1/push` (see mobile/ios/README.md).
+
+`/v1/push` is open, and every request to it counts against the Worker's
+daily quota, even one it rejects. Rate-limiting rules, which stop requests
+before they reach the Worker, only apply to a domain in your own zone, not
+to `*.workers.dev`. To put pushes behind one:
+
+1. Add a Custom Domain to the Worker, for example `push.example.com`
+   (Workers & Pages > the Worker > Settings > Domains & Routes).
+2. Serve pushes only there, so the `workers.dev` address cannot bypass the
+   rule; it then answers `/v1/push` with 404:
+
+   ```sh
+   echo push.example.com | npx wrangler secret put PUSH_HOST
+   ```
+
+3. In the zone, add a rate-limiting rule matching that hostname and the
+   path `/v1/push` (Security > WAF > Rate limiting rules).
+4. Build the app with `NMT_PUSH_ENDPOINT` on that domain.
+
+Without the secrets the endpoint answers 501 and hosts send nothing. A
+push with a made-up 64-digit hex token must come back `400 BadDeviceToken`
+from both environments; `BadEnvironmentKeyInToken` means the key lacks an
+environment. `wrangler dev` cannot reach APNs, so try pushes on a deployed
+relay.
+
+## Endpoints
+
+All endpoints but `/v1/push` are WebSocket upgrades with
+`Authorization: Bearer <access key>`.
+
+| Path | Who | Purpose |
+| --- | --- | --- |
+| `/v1/host/{id}` | host | Control socket: connection announcements and pairing slots |
+| `/v1/host/{id}/accept/{conn}` | host | Data socket for one announced client |
+| `/v1/client/{id}` | client | Join a host's room; `{"t":"open"}` once the host picks up |
+| `/v1/pair/{slot}` | client | Join the host showing a pairing code with this slot |
+| `/v1/push` | host | POST a sealed push for the phone app; no access key |
+
+Host sockets also send `X-Host-Token`. The first token a host id registers
+with is kept, so another machine that knows the id cannot take over the
+room.

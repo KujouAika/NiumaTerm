@@ -6,13 +6,28 @@
 //! the NiumaTerm hook binary are ever touched, and a file that fails to parse
 //! is never rewritten.
 
+pub use nmt_platform::{build_hook_command, hook_command_contains};
+
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use nmt_platform::environment;
+use nmt_platform::{durable_file, environment};
 use serde_json::{Value, from_str, json, to_string_pretty};
 
-use crate::{AGENT_HOOK_EXE_ENV, HookInstallStatus, hook_command_contains};
+use crate::AGENT_HOOK_EXE_ENV;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookInstallStatus {
+    /// Every event is registered with the current hook command.
+    Installed,
+    /// NiumaTerm entries exist but differ from the current command (for
+    /// example a legacy absolute-path install) or miss events; reinstalling
+    /// migrates them.
+    Stale,
+    NotInstalled,
+    /// Existing settings could not be read or decoded.
+    Unavailable,
+}
 
 pub(crate) struct HookRegistration {
     pub(crate) events: &'static [&'static str],
@@ -202,9 +217,13 @@ pub(crate) fn read(path: &Path, file_label: &str) -> io::Result<Value> {
     }
 }
 
-/// Write-then-rename so a crash mid-write cannot truncate the user's file.
+/// Replace the user's settings file whole, so a crash or power loss can never
+/// leave the agent's own configuration truncated.
 pub(crate) fn write(path: &Path, settings: &Value) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
 
@@ -212,11 +231,7 @@ pub(crate) fn write(path: &Path, settings: &Value) -> io::Result<()> {
 
     text.push('\n');
 
-    let temp = path.with_extension("json.niumaterm-tmp");
-
-    fs::write(&temp, text)?;
-
-    fs::rename(&temp, path)
+    durable_file::write(path, text.as_bytes())
 }
 
 pub(crate) fn invalid(message: &str) -> io::Error {

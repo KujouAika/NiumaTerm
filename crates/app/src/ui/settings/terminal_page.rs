@@ -1,6 +1,8 @@
+use gpui_component::setting::{SettingGroup, SettingItem, SettingPage};
 use rust_i18n::t;
 
-use crate::ui::settings::*;
+use crate::ui::settings::fields::{settings_choice, settings_switch};
+use crate::ui::settings::state::{InputStyle, input_style_label};
 
 pub(super) fn terminal_page() -> SettingPage {
     let waterfall_key: &str = InputStyle::Waterfall.into();
@@ -13,7 +15,7 @@ pub(super) fn terminal_page() -> SettingPage {
                 .title(t!("settings-terminal-input"))
                 .item(SettingItem::new(
                     t!("settings-terminal-input-style"),
-                    SettingField::dropdown(
+                    settings_choice(
                         vec![
                             (
                                 waterfall_key.into(),
@@ -24,27 +26,16 @@ pub(super) fn terminal_page() -> SettingPage {
                                 input_style_label(InputStyle::FixedBottom).into(),
                             ),
                         ],
-                        |cx| {
-                            let key: &str = cx
-                                .global::<AppSettings>()
-                                .config()
-                                .appearance
-                                .input_style
-                                .into();
-
-                            key.into()
-                        },
-                        |value, cx| {
-                            cx.global_mut::<AppSettings>().edit_appearance(|section| {
-                                section.input_style = value.as_str().into()
-                            });
+                        |config| config.appearance.input_style.into(),
+                        |settings, value| {
+                            settings.edit_appearance(|section| section.input_style = value.into());
                         },
                     )
                     .default_value(waterfall_key),
                 ))
                 .item(SettingItem::new(
                     t!("settings-terminal-cursor-shape"),
-                    SettingField::dropdown(
+                    settings_choice(
                         vec![
                             ("block".into(), t!("settings-terminal-cursor-block").into()),
                             ("line".into(), t!("settings-terminal-cursor-line").into()),
@@ -53,44 +44,28 @@ pub(super) fn terminal_page() -> SettingPage {
                                 t!("settings-terminal-cursor-underline").into(),
                             ),
                         ],
-                        |cx| {
-                            let key: &str = cx.global::<AppSettings>().config().cursor.shape.into();
-
-                            key.into()
-                        },
-                        |value, cx| {
-                            cx.global_mut::<AppSettings>()
-                                .set_cursor_shape(value.as_str().into());
+                        |config| config.cursor.shape.into(),
+                        |settings, value| {
+                            settings.set_cursor_shape(value.into());
                         },
                     )
                     .default_value("block"),
                 ))
                 .item(SettingItem::new(
                     t!("settings-terminal-command-blocks"),
-                    SettingField::switch(
-                        |cx| {
-                            cx.global::<AppSettings>()
-                                .config()
-                                .appearance
-                                .command_blocks
-                        },
-                        |value, cx| {
-                            cx.global_mut::<AppSettings>()
-                                .edit_appearance(|section| section.command_blocks = value);
+                    settings_switch(
+                        |config| config.appearance.command_blocks,
+                        |settings, value| {
+                            settings.edit_appearance(|section| section.command_blocks = value);
                         },
                     ),
                 ))
                 .item(SettingItem::new(
                     t!("settings-terminal-scroll-on-typing"),
-                    SettingField::switch(
-                        |cx| {
-                            cx.global::<AppSettings>()
-                                .config()
-                                .appearance
-                                .scroll_to_bottom_when_typing
-                        },
-                        |value, cx| {
-                            cx.global_mut::<AppSettings>().edit_appearance(|section| {
+                    settings_switch(
+                        |config| config.appearance.scroll_to_bottom_when_typing,
+                        |settings, value| {
+                            settings.edit_appearance(|section| {
                                 section.scroll_to_bottom_when_typing = value
                             });
                         },
@@ -103,15 +78,10 @@ pub(super) fn terminal_page() -> SettingPage {
                 .item(
                     SettingItem::new(
                         t!("settings-terminal-powershell-compatibility"),
-                        SettingField::switch(
-                            |cx| {
-                                cx.global::<AppSettings>()
-                                    .config()
-                                    .terminal
-                                    .improve_powershell_compatibility
-                            },
-                            |value, cx| {
-                                cx.global_mut::<AppSettings>().edit_terminal(|section| {
+                        settings_switch(
+                            |config| config.terminal.improve_powershell_compatibility,
+                            |settings, value| {
+                                settings.edit_terminal(|section| {
                                     section.improve_powershell_compatibility = value;
                                 });
                             },

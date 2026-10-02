@@ -4,20 +4,24 @@ mod update_tests;
 
 use std::time::Duration;
 
-use reqwest::blocking::{Client, Response};
+use futures::FutureExt as _;
+use futures::future::BoxFuture;
+use nmt_net::http_client;
+use reqwest::{Client, Response};
 use semver::Version;
 
+use crate::json::collapse;
 use crate::launcher::{AgentCli, run_bounded};
 use crate::update::{
     DiscoverySupport, MAX_LABEL_CHARS, PROBE_LIMITS, ProviderKind, ProviderMaintenance,
-    UpdateError, UpdateErrorKind, VersionStatus, bounded_label, current_version_fallback,
-    parse_strict_version, vendor_update,
+    UpdateError, UpdateErrorKind, VersionStatus, current_version_fallback, parse_strict_version,
+    vendor_update,
 };
 
 const RELEASE_BASE_URL: &str = "https://downloads.claude.ai/claude-code-releases";
 
 pub trait ClaudeReleaseChannel: Send + Sync {
-    fn latest(&self, channel: &str) -> Result<Version, UpdateError>;
+    fn latest<'a>(&'a self, channel: &'a str) -> BoxFuture<'a, Result<Version, UpdateError>>;
 }
 
 pub struct HttpClaudeReleaseChannel {
@@ -27,7 +31,7 @@ pub struct HttpClaudeReleaseChannel {
 
 impl HttpClaudeReleaseChannel {
     pub fn new() -> Result<Self, UpdateError> {
-        let client = Client::builder()
+        let client = http_client()
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|_| {
@@ -54,7 +58,13 @@ impl HttpClaudeReleaseChannel {
 }
 
 impl ClaudeReleaseChannel for HttpClaudeReleaseChannel {
-    fn latest(&self, channel: &str) -> Result<Version, UpdateError> {
+    fn latest<'a>(&'a self, channel: &'a str) -> BoxFuture<'a, Result<Version, UpdateError>> {
+        self.fetch_latest(channel).boxed()
+    }
+}
+
+impl HttpClaudeReleaseChannel {
+    async fn fetch_latest(&self, channel: &str) -> Result<Version, UpdateError> {
         if !matches!(channel, "latest" | "stable") {
             return Err(UpdateError::new(
                 UpdateErrorKind::Unsupported,
@@ -66,6 +76,7 @@ impl ClaudeReleaseChannel for HttpClaudeReleaseChannel {
             .client
             .get(format!("{}/{channel}", self.base_url.trim_end_matches('/')))
             .send()
+            .await
             .and_then(Response::error_for_status)
             .map_err(|_| {
                 UpdateError::new(
@@ -83,7 +94,7 @@ impl ClaudeReleaseChannel for HttpClaudeReleaseChannel {
             ));
         }
 
-        let body = response.text().map_err(|_| {
+        let body = response.text().await.map_err(|_| {
             UpdateError::new(
                 UpdateErrorKind::InvalidResponse,
                 "could not read Claude release response",
@@ -109,8 +120,21 @@ impl ProviderMaintenance for ClaudeMaintenance {
         ProviderKind::Claude
     }
 
-    fn probe(&self, launcher: &AgentCli) -> Result<VersionStatus, UpdateError> {
-        let doctor = run_bounded(launcher, ["doctor"], PROBE_LIMITS);
+    fn probe<'a>(
+        &'a self,
+        launcher: &'a AgentCli,
+    ) -> BoxFuture<'a, Result<VersionStatus, UpdateError>> {
+        self.probe_installation(launcher).boxed()
+    }
+
+    fn update<'a>(&'a self, launcher: &'a AgentCli) -> BoxFuture<'a, Result<String, UpdateError>> {
+        vendor_update(launcher, ProviderKind::Claude).boxed()
+    }
+}
+
+impl ClaudeMaintenance {
+    async fn probe_installation(&self, launcher: &AgentCli) -> Result<VersionStatus, UpdateError> {
+        let doctor = run_bounded(launcher, ["doctor"], PROBE_LIMITS).await;
 
         let mut status = match doctor {
             Ok(output) => {
@@ -124,7 +148,7 @@ impl ProviderMaintenance for ClaudeMaintenance {
         };
 
         if status.current.is_none() {
-            status.current = current_version_fallback(launcher);
+            status.current = current_version_fallback(launcher).await;
         }
 
         let Some(channel) = status.channel.as_deref() else {
@@ -141,7 +165,7 @@ impl ProviderMaintenance for ClaudeMaintenance {
             return Ok(status);
         }
 
-        match self.releases.latest(channel) {
+        match self.releases.latest(channel).await {
             Ok(version) => {
                 status.available = Some(version);
                 status.support = DiscoverySupport::Supported;
@@ -156,10 +180,6 @@ impl ProviderMaintenance for ClaudeMaintenance {
                 Ok(status)
             }
         }
-    }
-
-    fn update(&self, launcher: &AgentCli) -> Result<String, UpdateError> {
-        vendor_update(launcher, ProviderKind::Claude)
     }
 }
 
@@ -227,7 +247,7 @@ fn parse_claude_doctor(output: &str) -> Result<VersionStatus, UpdateError> {
 }
 
 fn nonempty_label(value: &str) -> Option<String> {
-    let value = bounded_label(value, MAX_LABEL_CHARS);
+    let value = collapse(value, MAX_LABEL_CHARS);
 
     (!value.is_empty()).then_some(value)
 }

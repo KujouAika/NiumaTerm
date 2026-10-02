@@ -4,6 +4,7 @@ pub use libghostty_vt_sys::BlockHandle;
 
 pub use crate::ghostty::block::{AcquiredBlock, BlockRef};
 pub use crate::ghostty::error::{Error, Result};
+pub use crate::ghostty::mouse::{MouseAction, MouseButton, MouseReporter};
 pub use crate::ghostty::types::{
     CellText, CellWide, Color, Palette, PlacementScreenPos, RowCell, ScreenRowMeta, ScreenRowRead,
     ScrollbarInfo, SnapshotColors, SnapshotCursor, SnapshotPlacement, SnapshotStyle, Underline,
@@ -13,7 +14,37 @@ pub use crate::ghostty::types::{
 ///
 /// Values mirror Ghostty's `ModeTag` (packed `u16`): a DEC private mode uses its
 /// raw number; an ANSI mode sets bit 15. See Ghostty `src/terminal/modes.zig`.
-pub mod mode;
+pub mod mode {
+    /// DECCKM — application cursor keys.
+    pub const CURSOR_KEYS: u16 = 1;
+
+    /// IRM — insert/replace (ANSI mode 4).
+    pub const INSERT: u16 = 4 | 0x8000;
+
+    /// DECAWM — autowrap / line wrap.
+    pub const WRAPAROUND: u16 = 7;
+
+    /// DECTCEM — cursor visible.
+    pub const CURSOR_VISIBLE: u16 = 25;
+
+    /// DECKPAM — application keypad.
+    pub const KEYPAD_KEYS: u16 = 66;
+
+    pub const MOUSE_NORMAL: u16 = 1000;
+    pub const MOUSE_BUTTON: u16 = 1002;
+    pub const MOUSE_ANY: u16 = 1003;
+    pub const FOCUS_EVENT: u16 = 1004;
+    pub const MOUSE_UTF8: u16 = 1005;
+    pub const MOUSE_SGR: u16 = 1006;
+    pub const MOUSE_ALTERNATE_SCROLL: u16 = 1007;
+    pub const MOUSE_URXVT: u16 = 1015;
+    pub const MOUSE_SGR_PIXELS: u16 = 1016;
+    pub const ALT_SCREEN: u16 = 1049;
+    pub const BRACKETED_PASTE: u16 = 2004;
+
+    /// DEC synchronized output keeps a TUI frame private until its matching reset.
+    pub const SYNC_OUTPUT: u16 = 2026;
+}
 
 mod block;
 mod callbacks;
@@ -21,8 +52,8 @@ mod error;
 mod format;
 mod grid_read;
 mod kitty;
+mod mouse;
 mod render_state;
-
 mod types;
 
 #[cfg(test)]
@@ -30,81 +61,47 @@ mod tests;
 
 #[cfg(test)]
 use std::sync;
-use std::{array, mem, os, path, ptr, slice};
+use std::{array, mem, path, ptr, slice};
 
 #[cfg(test)]
 use libghostty_vt_sys::RowSemanticPrompt as VtRowSemanticPrompt;
 use libghostty_vt_sys::{
     BlockRef as VtBlockRef, ColorRgb as VtColorRgb, FormatterFormat as VtFormatterFormat,
-    GridRef as VtGridRef, KITTY_KEY_DISAMBIGUATE, KITTY_KEY_REPORT_ALL,
-    KITTY_KEY_REPORT_ALTERNATES, KITTY_KEY_REPORT_ASSOCIATED, KITTY_KEY_REPORT_EVENTS,
-    KittyGraphics as VtKittyGraphics, KittyGraphicsImageData as VtKittyGraphicsImageData,
-    Point as VtPoint, PointCoordinate as VtPointCoordinate, PointTag as VtPointTag,
-    PointValue as VtPointValue, Result as VtResult, Selection as VtSelection, String as VtString,
-    Terminal as VtTerminal, TerminalCursorStyle as VtTerminalCursorStyle,
-    TerminalData as VtTerminalData, TerminalModeConfig as VtTerminalModeConfig,
-    TerminalOption as VtTerminalOption, TerminalScrollViewport as VtTerminalScrollViewport,
+    FormatterTerminalExtra as VtFormatterTerminalExtra, GridRef as VtGridRef,
+    KITTY_KEY_DISAMBIGUATE, KITTY_KEY_REPORT_ALL, KITTY_KEY_REPORT_ALTERNATES,
+    KITTY_KEY_REPORT_ASSOCIATED, KITTY_KEY_REPORT_EVENTS, KittyGraphics as VtKittyGraphics,
+    KittyGraphicsImageData as VtKittyGraphicsImageData, Point as VtPoint,
+    PointCoordinate as VtPointCoordinate, PointTag as VtPointTag, PointValue as VtPointValue,
+    Result as VtResult, Selection as VtSelection, String as VtString, Terminal as VtTerminal,
+    TerminalCursorStyle as VtTerminalCursorStyle, TerminalData as VtTerminalData,
+    TerminalModeConfig as VtTerminalModeConfig, TerminalOption as VtTerminalOption,
+    TerminalScrollViewport as VtTerminalScrollViewport,
     TerminalScrollViewportTag as VtTerminalScrollViewportTag,
     TerminalScrollViewportValue as VtTerminalScrollViewportValue,
     TerminalScrollbar as VtTerminalScrollbar, ghostty_block_ref_cols, ghostty_kitty_graphics_image,
     ghostty_kitty_graphics_image_get, ghostty_terminal_block_acquire, ghostty_terminal_block_at,
-    ghostty_terminal_block_cols, ghostty_terminal_block_count, ghostty_terminal_block_grid_ref,
-    ghostty_terminal_block_row_count, ghostty_terminal_blocks_bytes, ghostty_terminal_clear_blocks,
-    ghostty_terminal_finish_block, ghostty_terminal_free, ghostty_terminal_get,
-    ghostty_terminal_grid_ref, ghostty_terminal_new, ghostty_terminal_point_from_grid_ref,
-    ghostty_terminal_remove_block, ghostty_terminal_resize, ghostty_terminal_scroll_viewport,
-    ghostty_terminal_set, ghostty_terminal_vt_write, sized as vt_sized,
+    ghostty_terminal_block_count, ghostty_terminal_block_row_count, ghostty_terminal_blocks_bytes,
+    ghostty_terminal_clear_blocks, ghostty_terminal_finish_block, ghostty_terminal_free,
+    ghostty_terminal_get, ghostty_terminal_grid_ref, ghostty_terminal_new,
+    ghostty_terminal_point_from_grid_ref, ghostty_terminal_remove_block, ghostty_terminal_resize,
+    ghostty_terminal_scroll_viewport, ghostty_terminal_set, ghostty_terminal_vt_write,
+    sized as vt_sized,
 };
+use nmt_config::CursorShape;
 #[cfg(test)]
 use nmt_config::colors::ColorRgb;
 use nmt_config::colors::Colors;
 
+use crate::event::ProgressReport;
 use crate::ghostty::callbacks::{
-    Callbacks, KITTY_IMAGE_STORAGE_LIMIT_BYTES, bell_cb, clipboard_write_cb, register_png_decoder,
-    write_pty_cb,
+    Callbacks, KITTY_IMAGE_STORAGE_LIMIT_BYTES, install_callbacks, register_png_decoder,
 };
-use crate::ghostty::format::format_terminal;
+use crate::ghostty::format::{format_terminal, full_state_extra};
 use crate::ghostty::grid_read::visit_row_cells;
-use crate::ghostty::kitty::{KittyState, kitty_image_graphic_data};
+use crate::ghostty::kitty::{KittyState, kitty_image_graphic_data, set_kitty_storage_limit};
 use crate::ghostty::render_state::RenderStateReader;
-use crate::pwd::pwd_to_path;
 use crate::render_buffer::RenderBuffer;
-use crate::{ansi, clipboard, graphics, terminal};
-
-/// What the engine last reported for the title and the working directory.
-///
-/// Both are read fresh from the engine on every poll, so the only thing kept
-/// here is the previous answer: it is what turns an unconditional read into a
-/// change report, and neither value is used for anything else.
-#[derive(Default)]
-struct TitleMirror {
-    title: String,
-    pwd: String,
-}
-
-impl TitleMirror {
-    /// Report `latest` only when it differs from the last reported title.
-    fn note_title(&mut self, latest: String) -> Option<String> {
-        if latest == self.title {
-            return None;
-        }
-
-        self.title = latest.clone();
-
-        Some(latest)
-    }
-
-    /// Report `latest` only when it differs from the last reported directory.
-    fn note_pwd(&mut self, latest: String) -> Option<String> {
-        if latest == self.pwd {
-            return None;
-        }
-
-        self.pwd = latest.clone();
-
-        Some(latest)
-    }
-}
+use crate::{clipboard, graphics, vt_modes};
 
 pub struct GhosttyTerminal {
     terminal: VtTerminal,
@@ -117,18 +114,26 @@ pub struct GhosttyTerminal {
     /// registered with the engine as the callback userdata pointer.
     callbacks: Box<Callbacks>,
 
-    titles: TitleMirror,
+    /// Set after a resize leaves only blank rows in the history: the viewport
+    /// stays pinned to the top and the scrollbar reports just the screen,
+    /// until output scrolls real content into the history.
     scrollbar_override: Option<ScrollbarInfo>,
+
+    /// Output arrived since the override was last decided. Deciding it
+    /// formats the whole screen and history, so it is redone once per frame
+    /// capture rather than for every PTY chunk.
+    override_stale: bool,
 }
 
 // The Ghostty `Terminal` and its render-state handles are raw FFI pointers
-// (`!Send`). A `GhosttyTerminal` owns them exclusively and is only ever touched
-// from the single thread that holds it (the PTY reader thread), so moving the
-// whole value across threads is sound. It is not `Sync` — no shared access.
+// (`!Send`). A `GhosttyTerminal` owns them exclusively, including callback
+// storage. Operations are synchronous and have no thread-local dependencies,
+// so its owner task may move between workers between calls. It is not `Sync`;
+// the engine and render-state handles must never be used concurrently.
 unsafe impl Send for GhosttyTerminal {}
 
 impl GhosttyTerminal {
-    pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self> {
+    pub fn new(cols: u16, rows: u16, scrollback_lines: usize) -> Result<Self> {
         if cols == 0 || rows == 0 {
             return Err(Error::InvalidValue);
         }
@@ -138,15 +143,25 @@ impl GhosttyTerminal {
         Error::from_code(unsafe { ghostty_terminal_new(ptr::null(), &mut terminal, cols, rows) })?;
 
         // A new terminal starts on the engine's own scrollback default, so the
-        // caller's budget has to be applied before any output reaches it. A
-        // rejected budget is the caller's error, as it was when the budget was
-        // a construction parameter, so the half-built terminal is released.
+        // caller's limit has to be applied before any output reaches it. The
+        // engine counts lines itself, to page granularity; a limit of zero
+        // goes through the byte limit, which is what disables scrollback and
+        // erases retained history. A rejected limit is the caller's error, so
+        // the half-built terminal is released.
         let scrollback = unsafe {
-            ghostty_terminal_set(
-                terminal,
-                VtTerminalOption::SCROLLBACK_MAX_BYTES,
-                (&max_scrollback as *const usize).cast(),
-            )
+            if scrollback_lines == 0 {
+                ghostty_terminal_set(
+                    terminal,
+                    VtTerminalOption::SCROLLBACK_MAX_BYTES,
+                    (&0usize as *const usize).cast(),
+                )
+            } else {
+                ghostty_terminal_set(
+                    terminal,
+                    VtTerminalOption::SCROLLBACK_MAX_LINES,
+                    (&scrollback_lines as *const usize).cast(),
+                )
+            }
         };
 
         if let Err(err) = Error::from_code(scrollback) {
@@ -180,43 +195,11 @@ impl GhosttyTerminal {
 
         // Raise the kitty image storage limit from the conservative 10 MB `.lib`
         // default; a non-zero limit also enables the protocol.
-        let limit = KITTY_IMAGE_STORAGE_LIMIT_BYTES;
+        set_kitty_storage_limit(terminal, KITTY_IMAGE_STORAGE_LIMIT_BYTES);
 
-        unsafe {
-            ghostty_terminal_set(
-                terminal,
-                VtTerminalOption::KITTY_IMAGE_STORAGE_LIMIT,
-                (&limit as *const u64).cast(),
-            );
-        }
-
-        // Register synchronous callbacks. Userdata points at the boxed
-        // `Callbacks`; its heap address is stable across moves of `Self`.
-        let mut callbacks = Box::new(Callbacks::default());
-
-        let userdata = &mut *callbacks as *mut Callbacks as *mut os::raw::c_void;
-
-        unsafe {
-            ghostty_terminal_set(terminal, VtTerminalOption::USERDATA, userdata);
-
-            ghostty_terminal_set(
-                terminal,
-                VtTerminalOption::WRITE_PTY,
-                write_pty_cb as *const os::raw::c_void,
-            );
-
-            ghostty_terminal_set(
-                terminal,
-                VtTerminalOption::BELL,
-                bell_cb as *const os::raw::c_void,
-            );
-
-            ghostty_terminal_set(
-                terminal,
-                VtTerminalOption::CLIPBOARD_WRITE,
-                clipboard_write_cb as *const os::raw::c_void,
-            );
-        }
+        // The callbacks write through a pointer to this box, which `Self` owns
+        // and drops only after the terminal is freed.
+        let callbacks = unsafe { install_callbacks(terminal) };
 
         // Match conhost/ConPTY, which defaults to grapheme clustering (mode 2027,
         // permanently on). Without this ghostty measures ZWJ/multi-emoji clusters
@@ -239,8 +222,8 @@ impl GhosttyTerminal {
             cols,
             rows,
             callbacks,
-            titles: TitleMirror::default(),
             scrollbar_override: None,
+            override_stale: false,
         })
     }
 
@@ -260,31 +243,38 @@ impl GhosttyTerminal {
         mem::take(&mut self.callbacks.clipboard_writes)
     }
 
-    /// Poll the terminal title; returns `Some(title)` only when it changed
-    /// since the last poll.
-    pub fn poll_title(&mut self) -> Option<String> {
-        let title = self.read_string(VtTerminalData::TITLE);
-
-        self.titles.note_title(title)
+    /// Drain OSC 9 / OSC 777 desktop notifications as `(title, body)`.
+    pub fn take_notifications(&mut self) -> Vec<(String, String)> {
+        mem::take(&mut self.callbacks.notifications)
     }
 
-    /// Poll the working directory (OSC 7); returns `Some(pwd)` only when it
-    /// changed since the last poll.
-    pub fn poll_pwd(&mut self) -> Option<String> {
-        let pwd = self.read_string(VtTerminalData::PWD);
-
-        self.titles.note_pwd(pwd)
+    /// Drain the latest OSC 9;4 progress report since the last call.
+    pub fn take_progress_report(&mut self) -> Option<ProgressReport> {
+        self.callbacks.progress.take()
     }
 
-    /// The current OSC window title (peek — reads the engine's live value, no
-    /// change-detection). `poll_title` is the producer's change-detecting variant;
-    /// this is for on-demand frontend reads (title template), replacing the mirror.
+    /// Whether the running program currently shows a progress indicator.
+    pub fn progress_active(&self) -> bool {
+        self.callbacks.progress_active
+    }
+
+    /// The title, when the engine reported a change since the last call.
+    pub fn take_title_change(&mut self) -> Option<String> {
+        mem::take(&mut self.callbacks.title_changed).then(|| self.title())
+    }
+
+    /// The raw working directory string (OSC 7/9/1337), when the engine
+    /// reported a change since the last call. Empty when the shell cleared it.
+    pub fn take_pwd_change(&mut self) -> Option<String> {
+        mem::take(&mut self.callbacks.pwd_changed).then(|| self.read_string(VtTerminalData::PWD))
+    }
+
+    /// The current OSC window title as the engine holds it.
     pub fn title(&self) -> String {
         self.read_string(VtTerminalData::TITLE)
     }
 
-    /// The current OSC 7 working directory (peek) as a path, or `None` when unset.
-    /// Replaces the mirror's `current_directory` for the title template.
+    /// The current OSC 7 working directory as a path, or `None` when unset.
     pub fn current_directory(&self) -> Option<path::PathBuf> {
         let pwd = self.read_string(VtTerminalData::PWD);
 
@@ -378,20 +368,14 @@ impl GhosttyTerminal {
         unsafe { ghostty_terminal_vt_write(self.terminal, data.as_ptr(), data.len()) };
 
         if self.scrollbar_override.is_some() {
-            self.update_scrollbar_override();
+            self.override_stale = true;
         }
     }
 
     /// Set the Kitty-image storage limit in bytes; `new()` applies the default. A non-zero limit
     /// also enables the protocol; 0 disables it. Exposed for tests/eviction.
     pub fn set_kitty_storage_limit(&mut self, bytes: u64) {
-        unsafe {
-            ghostty_terminal_set(
-                self.terminal,
-                VtTerminalOption::KITTY_IMAGE_STORAGE_LIMIT,
-                (&bytes as *const u64).cast(),
-            );
-        }
+        set_kitty_storage_limit(self.terminal, bytes);
     }
 
     /// Whether the engine currently holds a kitty image with this id —
@@ -437,8 +421,8 @@ impl GhosttyTerminal {
     /// `mode()` can't read them — the vt_modes facade folds these in separately so
     /// `session_key_flags` / the input path see kitty press+release encoding
     /// for key press and release encoding. Empty when the protocol is inactive.
-    pub fn kitty_keyboard_modes(&self) -> terminal::Mode {
-        use crate::terminal::Mode;
+    pub fn kitty_keyboard_modes(&self) -> vt_modes::Mode {
+        use crate::vt_modes::Mode;
 
         let mut flags: u8 = 0;
 
@@ -535,6 +519,7 @@ impl GhosttyTerminal {
 
     fn update_scrollbar_override(&mut self) {
         self.scrollbar_override = None;
+        self.override_stale = false;
 
         let raw = self.raw_scrollbar();
 
@@ -561,11 +546,11 @@ impl GhosttyTerminal {
 
     /// Set the shape used until a program overrides it with DECSCUSR and again
     /// after that program resets the cursor style with `CSI 0 SP q`.
-    pub fn set_default_cursor_shape(&mut self, shape: ansi::CursorShape) -> Result<()> {
+    pub fn set_default_cursor_shape(&mut self, shape: CursorShape) -> Result<()> {
         let style: VtTerminalCursorStyle::Type = match shape {
-            ansi::CursorShape::Beam => VtTerminalCursorStyle::BAR,
-            ansi::CursorShape::Underline => VtTerminalCursorStyle::UNDERLINE,
-            ansi::CursorShape::Block | ansi::CursorShape::Hidden => VtTerminalCursorStyle::BLOCK,
+            CursorShape::Beam => VtTerminalCursorStyle::BAR,
+            CursorShape::Underline => VtTerminalCursorStyle::UNDERLINE,
+            CursorShape::Block | CursorShape::Hidden => VtTerminalCursorStyle::BLOCK,
         };
 
         Error::from_code(unsafe {
@@ -677,50 +662,46 @@ impl GhosttyTerminal {
     ) -> Result<Option<(u16, u32)>> {
         let mut out = VtPointCoordinate::default();
 
-        match unsafe {
+        let found = Error::optional(unsafe {
             ghostty_terminal_point_from_grid_ref(self.terminal, grid_ref, tag, &mut out)
-        } {
-            VtResult::SUCCESS => Ok(Some((out.x, out.y))),
-            VtResult::NO_VALUE => Ok(None),
-            other => {
-                Error::from_code(other)?;
+        })?;
 
-                Ok(None)
-            }
-        }
+        Ok(found.then_some((out.x, out.y)))
     }
 
     /// Scroll the viewport by `delta` rows (negative = up into scrollback).
     /// Mutating: invalidates any outstanding `GridRef`.
     pub fn scroll_viewport_delta(&mut self, delta: isize) {
+        if self.override_stale {
+            self.update_scrollbar_override();
+        }
+
         if self.scrollbar_override.is_some() {
             return;
         }
 
-        let behavior = VtTerminalScrollViewport {
-            tag: VtTerminalScrollViewportTag::DELTA,
-            value: VtTerminalScrollViewportValue { delta },
-        };
-
-        unsafe { ghostty_terminal_scroll_viewport(self.terminal, behavior) };
+        self.scroll_viewport(VtTerminalScrollViewportTag::DELTA, delta);
     }
 
     /// Scroll the viewport to the bottom (active area).
     pub fn scroll_viewport_bottom(&mut self) {
+        if self.override_stale {
+            self.update_scrollbar_override();
+        }
+
         if self.scrollbar_override.is_some() {
             return;
         }
 
-        let behavior = VtTerminalScrollViewport {
-            tag: VtTerminalScrollViewportTag::BOTTOM,
-            value: VtTerminalScrollViewportValue { delta: 0 },
-        };
-
-        unsafe { ghostty_terminal_scroll_viewport(self.terminal, behavior) };
+        self.scroll_viewport(VtTerminalScrollViewportTag::BOTTOM, 0);
     }
 
     /// Scroll the viewport to the top of the scrollback.
     pub fn scroll_viewport_top(&mut self) {
+        if self.override_stale {
+            self.update_scrollbar_override();
+        }
+
         if self.scrollbar_override.is_some() {
             return;
         }
@@ -729,9 +710,14 @@ impl GhosttyTerminal {
     }
 
     fn scroll_viewport_top_raw(&mut self) {
+        self.scroll_viewport(VtTerminalScrollViewportTag::TOP, 0);
+    }
+
+    /// Move the viewport as `tag` says, by `delta` rows for a relative move.
+    fn scroll_viewport(&mut self, tag: VtTerminalScrollViewportTag::Type, delta: isize) {
         let behavior = VtTerminalScrollViewport {
-            tag: VtTerminalScrollViewportTag::TOP,
-            value: VtTerminalScrollViewportValue { delta: 0 },
+            tag,
+            value: VtTerminalScrollViewportValue { delta },
         };
 
         unsafe { ghostty_terminal_scroll_viewport(self.terminal, behavior) };
@@ -746,15 +732,10 @@ impl GhosttyTerminal {
     pub fn finish_block(&mut self) -> Result<Option<BlockHandle>> {
         let mut handle = BlockHandle::default();
 
-        match unsafe { ghostty_terminal_finish_block(self.terminal, &mut handle) } {
-            VtResult::SUCCESS => Ok(Some(handle)),
-            VtResult::NO_VALUE => Ok(None),
-            other => {
-                Error::from_code(other)?;
+        let finished =
+            Error::optional(unsafe { ghostty_terminal_finish_block(self.terminal, &mut handle) })?;
 
-                Ok(None)
-            }
-        }
+        Ok(finished.then_some(handle))
     }
 
     /// Remove and destroy all finished blocks (user clear; `;K` path).
@@ -789,16 +770,6 @@ impl GhosttyTerminal {
         (unsafe { ghostty_terminal_block_row_count(self.terminal, handle, &mut rows) }
             == VtResult::SUCCESS)
             .then_some(rows)
-    }
-
-    /// The column count the block was frozen at (can differ from the live
-    /// terminal width after a resize). `None` for a stale handle.
-    pub fn block_cols(&self, handle: BlockHandle) -> Option<u16> {
-        let mut cols: u16 = 0;
-
-        (unsafe { ghostty_terminal_block_cols(self.terminal, handle, &mut cols) }
-            == VtResult::SUCCESS)
-            .then_some(cols)
     }
 
     /// Total page-storage bytes of all finished blocks — the value the
@@ -863,55 +834,6 @@ impl GhosttyTerminal {
         })
     }
 
-    /// Walk one row of a finished block with styles — the frozen-block
-    /// counterpart of [`Self::read_screen_row_visit`]. Returns `None` for a
-    /// stale handle or a row at/beyond the block's logical row count.
-    /// Unlike active-screen refs, block refs stay valid until the block is
-    /// removed, but this still reads within one call (same visitor shape).
-    pub fn read_block_row_visit(
-        &self,
-        handle: BlockHandle,
-        row: usize,
-        palette: &[VtColorRgb; 256],
-        on_cell: impl FnMut(u16, CellText, CellWide, SnapshotStyle),
-    ) -> Result<Option<ScreenRowMeta>> {
-        let mut grid_ref = VtGridRef::default();
-
-        match unsafe { ghostty_terminal_block_grid_ref(self.terminal, handle, row, &mut grid_ref) }
-        {
-            VtResult::SUCCESS => {}
-            VtResult::NO_VALUE | VtResult::INVALID_VALUE => return Ok(None),
-            other => {
-                Error::from_code(other)?;
-
-                return Ok(None);
-            }
-        }
-
-        let cols = self.block_cols(handle).unwrap_or(self.cols);
-
-        Ok(Some(visit_row_cells(grid_ref, cols, palette, on_cell)?))
-    }
-
-    /// Materializing convenience over [`Self::read_block_row_visit`] — test-only.
-    pub fn read_block_row(&self, handle: BlockHandle, row: usize) -> Result<Option<ScreenRowRead>> {
-        let palette = self.color_palette();
-        let cols = self.block_cols(handle).unwrap_or(self.cols) as usize;
-
-        let mut cells = Vec::with_capacity(cols);
-
-        let meta = self.read_block_row_visit(handle, row, &palette, |x, text, wide, style| {
-            cells.push(RowCell {
-                x,
-                text,
-                wide,
-                style,
-            })
-        })?;
-
-        Ok(meta.map(|meta| ScreenRowRead { cells, meta }))
-    }
-
     /// Export terminal text via the engine formatter. `selection = None`
     /// formats the whole screen + scrollback; otherwise only the selection range.
     /// `unwrap` rejoins soft-wrapped lines (no inserted newline at a wrap point);
@@ -926,6 +848,7 @@ impl GhosttyTerminal {
         format_terminal(
             self.terminal,
             VtFormatterFormat::PLAIN,
+            vt_sized!(VtFormatterTerminalExtra),
             selection,
             unwrap,
             trim,
@@ -936,8 +859,56 @@ impl GhosttyTerminal {
     /// Export the complete terminal state as a VT stream. Replaying the returned
     /// bytes reconstructs the current screen, styles, modes, palette, and cursor,
     /// which lets a newly attached client start from a consistent checkpoint.
+    ///
+    /// The stream starts with a reset so it also applies over a used engine.
+    /// Finished blocks live outside the screen the formatter reads, so they are
+    /// written first and scrolled into history: without them a checkpoint in
+    /// block mode carries only the output since the last finished command.
+    /// A replica receives that history as plain scrollback, not as blocks.
     pub fn format_vt_state(&mut self) -> Result<Vec<u8>> {
-        format_terminal(self.terminal, VtFormatterFormat::VT, None, false, false)
+        let mut out = b"\x1bc\x1b[3J".to_vec();
+
+        let mut history = Vec::new();
+
+        for index in 0..self.block_count() {
+            let Some(block) = self.block_at(index).and_then(|h| self.block_acquire(h)) else {
+                continue;
+            };
+
+            let vt = block.format_vt()?;
+            let end = vt.trim_ascii_end().len();
+
+            if !history.is_empty() {
+                history.extend_from_slice(b"\r\n");
+            }
+
+            history.extend_from_slice(&vt[..end]);
+            history.extend_from_slice(b"\x1b[0m");
+        }
+
+        if !history.is_empty() {
+            out.extend_from_slice(&history);
+
+            // One line feed per screen row moves the last history row just
+            // above the viewport, leaving a blank screen with no blank line
+            // between history and the screen content formatted next.
+            for _ in 0..self.rows() {
+                out.extend_from_slice(b"\r\n");
+            }
+
+            out.extend_from_slice(b"\x1b[H");
+        }
+
+        out.extend(format_terminal(
+            self.terminal,
+            VtFormatterFormat::VT,
+            full_state_extra(),
+            None,
+            false,
+            false,
+        )?);
+
+        Ok(out)
     }
 
     /// Selection-to-string for a SCREEN-coordinate range (inclusive endpoints).
@@ -998,20 +969,19 @@ impl GhosttyTerminal {
             .map(|(_, y)| y)
     }
 
-    /// Read one absolute `SCREEN` row into a materialized `Vec` — test-only
-    /// convenience over [`Self::read_screen_row_visit`].
-    pub fn read_screen_row(&self, row: u32) -> Result<Option<ScreenRowRead>> {
+    /// Read one absolute `SCREEN` row into a materialized `Vec`. The palette
+    /// is the caller's, so a page of rows copies it out of the engine once.
+    pub fn read_screen_row(&self, row: u32, palette: &Palette) -> Result<Option<ScreenRowRead>> {
         let mut cells = Vec::with_capacity(self.cols as usize);
 
-        let meta =
-            self.read_screen_row_visit(row, &self.color_palette(), |x, text, wide, style| {
-                cells.push(RowCell {
-                    x,
-                    text,
-                    wide,
-                    style,
-                })
-            })?;
+        let meta = self.read_screen_row_visit(row, palette, |x, text, wide, style| {
+            cells.push(RowCell {
+                x,
+                text,
+                wide,
+                style,
+            })
+        })?;
 
         Ok(meta.map(|meta| ScreenRowRead { cells, meta }))
     }
@@ -1123,6 +1093,10 @@ impl GhosttyTerminal {
         revision: u64,
         theme_revision: u64,
     ) -> Result<()> {
+        if self.override_stale {
+            self.update_scrollbar_override();
+        }
+
         self.render.update(self.terminal)?;
 
         self.render.consume_damage(self.rows)?;
@@ -1183,4 +1157,25 @@ impl Drop for GhosttyTerminal {
     fn drop(&mut self) {
         unsafe { ghostty_terminal_free(self.terminal) };
     }
+}
+
+/// OSC 7 reports the directory as a `file://host/path` URI.
+fn pwd_to_path(pwd: &str) -> path::PathBuf {
+    if let Some(rest) = pwd.strip_prefix("file://") {
+        // rest = "host/path"; the path starts at the first '/'.
+        if let Some(slash) = rest.find('/') {
+            let path = &rest[slash..];
+
+            // A drive-qualified Windows path is absolute without the URI slash.
+            let path = if path.as_bytes().get(2) == Some(&b':') {
+                &path[1..]
+            } else {
+                path
+            };
+
+            return path.into();
+        }
+    }
+
+    pwd.into()
 }

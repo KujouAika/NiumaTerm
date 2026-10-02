@@ -8,14 +8,22 @@
 use std::{collections, fs, path};
 
 use gpui::prelude::*;
-use gpui::{Context, Div, PathPromptOptions, Render, SharedString, Window, div};
-use gpui_component::button::Button;
+use gpui::{
+    App, Context, Div, Entity, PathPromptOptions, Render, SharedString, Window, div, relative,
+};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::dialog::{
+    DIALOG_BUTTON_MIN_WIDTH, Dialog, DialogAction, DialogButtonProps, DialogClose, DialogFooter,
+};
+use gpui_component::input::{Input, InputState};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use rust_i18n::t;
 
-use crate::ui::Shell;
-use crate::workspace::{RootChange, WorkspaceRoots, root_identity};
+use crate::ui::AppWindow;
+use crate::workspace::{RootChange, WorkspaceId, WorkspaceRoots, root_identity};
 
 /// A user-selected path resolved to something a workspace can own, or the
 /// reason it cannot be attached.
@@ -38,20 +46,12 @@ fn resolve_directory(path: path::PathBuf) -> Resolved {
         return Resolved::Unusable(display);
     }
 
-    Resolved::Directory(strip_verbatim_prefix(&resolved.to_string_lossy()))
-}
-
-/// Drop the `\\?\` extended-length prefix `canonicalize` adds on Windows.
-/// The prefix is correct for the API but is rejected by many shells and
-/// command-line tools, and it would also make the same directory look
-/// different from the plain path a saved snapshot holds.
-fn strip_verbatim_prefix(path: &str) -> String {
-    path.strip_prefix(r"\\?\")
-        .map(|stripped| match stripped.strip_prefix("UNC\\") {
-            Some(unc) => format!(r"\\{unc}"),
-            None => stripped.to_string(),
-        })
-        .unwrap_or_else(|| path.to_string())
+    // The extended-length prefix `canonicalize` adds on Windows is correct
+    // for the API but rejected by many shells and command-line tools, and it
+    // would make the same directory look different from the plain path a
+    // saved snapshot holds. `dunce` drops it wherever the plain form is
+    // equivalent, including for UNC shares.
+    Resolved::Directory(dunce::simplified(&resolved).to_string_lossy().into_owned())
 }
 
 /// Draft directory list behind the workspace-directory dialog. Owning the
@@ -111,7 +111,7 @@ impl WorkspaceDirsEditor {
             let _ = editor.update(cx, |editor, cx| {
                 // An older check must not replace results for a different directory list.
                 if editor.ordered() == expected {
-                    editor.available = available;
+                    editor.available.unavailable = available;
 
                     cx.notify();
                 }
@@ -360,33 +360,43 @@ impl Render for WorkspaceDirsEditor {
 #[derive(Default)]
 pub(super) struct RootAvailability {
     unavailable: collections::HashSet<String>,
+
+    /// Number of the latest check started. Checks can finish out of order,
+    /// for example when an earlier one waits on a sleeping share, and only
+    /// the latest describes the directories on screen now.
+    generation: u64,
 }
 
 impl RootAvailability {
-    fn check(paths: Vec<String>) -> Self {
-        Self {
-            unavailable: paths
-                .into_iter()
-                .filter(|path| !path::Path::new(path).is_dir())
-                .filter_map(|path| root_key(&path))
-                .collect(),
-        }
+    fn check(paths: Vec<String>) -> collections::HashSet<String> {
+        paths
+            .into_iter()
+            .filter(|path| !path::Path::new(path).is_dir())
+            .filter_map(|path| root_key(&path))
+            .collect()
     }
 
     /// Re-check the given directories off the UI thread and remember which
     /// ones the filesystem could not reach. Rendering a sidebar row or opening
     /// the New Tab menu reads the remembered answer, so neither one waits on a
     /// sleeping disk or a disconnected share.
-    pub(super) fn refresh(&mut self, paths: Vec<String>, cx: &mut Context<Shell>) {
+    pub(super) fn refresh(&mut self, paths: Vec<String>, cx: &mut Context<AppWindow>) {
+        self.generation += 1;
+
+        let generation = self.generation;
+
         cx.spawn(async move |shell, cx| {
-            let available = cx
+            let unavailable = cx
                 .background_executor()
                 .spawn(async move { Self::check(paths) })
                 .await;
 
             let _ = shell.update(cx, |this, cx| {
-                if this.root_availability.unavailable != available.unavailable {
-                    this.root_availability = available;
+                let availability = &mut this.root_availability;
+
+                if availability.generation == generation && availability.unavailable != unavailable
+                {
+                    availability.unavailable = unavailable;
 
                     cx.notify();
                 }
@@ -407,6 +417,171 @@ impl RootAvailability {
 /// that names no concrete location.
 fn root_key(path: &str) -> Option<String> {
     Some(root_identity(path)?.join("/"))
+}
+
+/// Open the new-workspace dialog: a name plus the directory editor, so a
+/// workspace can be created with several directories in one step.
+pub(super) fn open_new_workspace_dialog(window: &mut Window, cx: &mut Context<AppWindow>) {
+    let name_input = cx.new(|cx| {
+        InputState::new(window, cx).default_value(t!("shell-workspace-default-name").to_string())
+    });
+
+    // A new workspace starts with no directory at all, which the editor's
+    // non-empty invariant cannot express; the picker fills the first one
+    // in and Create stays refused until it does.
+    let dirs = cx.new(|cx| WorkspaceDirsEditor::new(None, cx));
+
+    let shell = cx.entity();
+
+    window.open_dialog(cx, move |dialog, _, _| {
+        new_workspace_dialog(dialog, &name_input, &dirs, &shell)
+    });
+}
+
+/// Open the directory editor over workspace `id`'s current `roots`.
+pub(super) fn open_workspace_dirs_dialog(
+    id: WorkspaceId,
+    roots: WorkspaceRoots,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) {
+    let editor = cx.new(|cx| WorkspaceDirsEditor::new(Some(roots), cx));
+    let shell = cx.entity();
+
+    window.open_dialog(cx, move |dialog, _, cx| {
+        workspace_dirs_dialog(dialog, &editor, &shell, id, cx)
+    });
+}
+
+fn new_workspace_dialog(
+    dialog: Dialog,
+    name_input: &Entity<InputState>,
+    dirs: &Entity<WorkspaceDirsEditor>,
+    shell: &Entity<AppWindow>,
+) -> Dialog {
+    let name_input = name_input.clone();
+    let dirs = dirs.clone();
+    let content_name = name_input.clone();
+    let content_dirs = dirs.clone();
+    let shell = shell.clone();
+
+    dialog
+        .title(t!("shell-workspace-new-title"))
+        .overlay_closable(false)
+        .centered(true)
+        .button_props(
+            DialogButtonProps::default()
+                .ok_text(t!("shell-workspace-create"))
+                .cancel_text(t!("shell-workspace-cancel"))
+                .show_cancel(true),
+        )
+        // Plain `Dialog` never renders `button_props` buttons (only
+        // `AlertDialog` does), so the footer supplies them; the
+        // wrappers dispatch Confirm/CancelDialog into on_ok/on_cancel.
+        .footer(
+            DialogFooter::new()
+                .child(
+                    DialogAction::new().child(
+                        Button::new("create-ws")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .label(t!("shell-workspace-create"))
+                            .primary(),
+                    ),
+                )
+                .child(
+                    DialogClose::new().child(
+                        Button::new("cancel-ws")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .label(t!("shell-workspace-cancel")),
+                    ),
+                ),
+        )
+        .content(move |content, _, _| {
+            content.child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().child(t!("shell-workspace-name-label")))
+                    .child(Input::new(&content_name))
+                    .child(content_dirs.clone()),
+            )
+        })
+        .on_ok(move |_, window, cx| {
+            let name = name_input.read(cx).value().trim().to_string();
+
+            let Some(roots) = dirs.read(cx).roots().cloned() else {
+                return false;
+            };
+
+            shell.update(cx, |this, cx| {
+                this.create_workspace(name, roots, window, cx);
+            });
+
+            true
+        })
+}
+
+fn workspace_dirs_dialog(
+    dialog: Dialog,
+    editor: &Entity<WorkspaceDirsEditor>,
+    shell: &Entity<AppWindow>,
+    id: WorkspaceId,
+    cx: &App,
+) -> Dialog {
+    let editor = editor.clone();
+    let content_editor = editor.clone();
+    let shell = shell.clone();
+
+    dialog
+        .title(t!("shell-workspace-edit-title"))
+        .overlay_closable(false)
+        .centered(true)
+        .button_props(
+            DialogButtonProps::default()
+                .ok_text(t!("shell-workspace-save"))
+                .cancel_text(t!("shell-workspace-cancel"))
+                .show_cancel(true),
+        )
+        .footer(
+            DialogFooter::new()
+                .w_full()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .pt_4()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .line_height(relative(1.5))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("shell-workspace-dirs-applies-next")),
+                )
+                .child(
+                    DialogAction::new().child(
+                        Button::new("save-ws-dirs")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .label(t!("shell-workspace-save"))
+                            .primary(),
+                    ),
+                )
+                .child(
+                    DialogClose::new().child(
+                        Button::new("cancel-ws-dirs")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .label(t!("shell-workspace-cancel")),
+                    ),
+                ),
+        )
+        .content(move |content, _, _| content.child(content_editor.clone()))
+        .on_ok(move |_, _, cx| {
+            let Some(roots) = editor.read(cx).roots().cloned() else {
+                return false;
+            };
+
+            shell.update(cx, |this, cx| this.replace_workspace_roots(id, roots, cx));
+
+            true
+        })
 }
 
 #[cfg(test)]
@@ -435,7 +610,10 @@ mod tests {
 
         let mut editor = WorkspaceDirsEditor {
             roots: Some(WorkspaceRoots::new(present.clone(), vec![missing.clone()])),
-            available: RootAvailability::check(vec![present.clone(), missing.clone()]),
+            available: RootAvailability {
+                unavailable: RootAvailability::check(vec![present.clone(), missing.clone()]),
+                ..RootAvailability::default()
+            },
             notice: None,
         };
 

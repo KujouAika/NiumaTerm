@@ -8,7 +8,7 @@
 //! whenever the source settings change, so terminal code observes and reads
 //! this global alone.
 
-use gpui::{Font, FontFallbacks, Global, Pixels, SharedString, font};
+use gpui::{Font, FontFallbacks, Global, SharedString, font};
 use nmt_config::appearance::InputStyle;
 use nmt_config::system::NewlineShortcut;
 use nmt_config::{CursorShape, with_active_colors};
@@ -21,10 +21,6 @@ use crate::terminal_tab::frame::TerminalColor;
 pub struct TerminalSettings {
     pub input_style: InputStyle,
     pub cursor_shape: CursorShape,
-
-    /// Wrap spawned shells in a job object so closing the tab tears down the
-    /// whole process tree.
-    pub manage_subprocess_job: bool,
 
     /// Draw finished commands as separated blocks with header chrome.
     pub command_blocks: bool,
@@ -40,10 +36,6 @@ pub struct TerminalSettings {
     /// arithmetic that produces it stays with the chrome settings that own
     /// those values; the terminal only paints the result.
     pub background_opacity: f32,
-
-    /// Corner radius shared with the surrounding chrome, so the pane's clip
-    /// matches the tab content area it sits in.
-    pub corner_radius: Pixels,
 
     /// Fallback chain appended to the terminal font, matching the CJK
     /// preference the rest of the application text uses.

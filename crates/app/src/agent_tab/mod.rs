@@ -8,232 +8,152 @@
 //! coordinator drives across a backend replacement.
 
 pub use crate::agent_tab::profile::{
-    AgentKind, AgentKindExt, AgentThreadDefaults, agent_launch, thread_settings_from_defaults,
+    AgentKind, AgentKindExt, agent_launch, saved_settings_from_thread, thread_settings_from_saved,
 };
-
 pub use crate::agent_tab::session::{
     RecoveryIdentity, RecoveryReadiness, RecoverySnapshot, RestorationReadiness,
 };
 
 pub mod execution;
-
 pub mod input_history;
-
 pub mod profile;
-
+pub mod remote;
 pub mod settings;
-
 pub mod team;
-
 pub mod transcript;
 
 mod capabilities;
-
 mod commands;
-
 mod composer;
-
 mod context_usage;
-
 mod fade;
-
 mod pane_state;
-
 mod questions;
-
 mod session;
-
 mod thread_controls;
-
 mod view;
-
 mod workflows;
 
 #[cfg(test)]
 mod tests;
 
-use std::borrow::Cow;
-
 use std::cell::{Ref, RefCell};
-
 use std::ops::Range;
-
-use std::path::Path;
-
 use std::rc::Rc;
-
 use std::sync::Arc;
-
 use std::time::{Duration, Instant};
+use std::{env, mem};
 
-use std::{env, fs};
-
+use futures::channel::oneshot;
 use gpui::prelude::*;
-
 use gpui::{
-    AnyElement, App, AsyncApp, Bounds, ClipboardEntry, ClipboardItem, Context, Entity, FocusHandle,
-    FontWeight, Image, ImageFormat, IntoElement, ListSizingBehavior, MouseButton, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, ScrollStrategy, SharedString, WeakEntity, Window, div, px,
+    AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Image, IntoElement,
+    MouseButton, MouseUpEvent, Pixels, Render, Role, SharedString, WeakEntity, Window, div, px,
     relative, size,
 };
-
 use gpui_base::TextSelection;
-
-use gpui_component::button::{Button, ButtonVariants as _};
-
-use gpui_component::checkbox::Checkbox;
-
-use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, Dialog, DialogClose, DialogFooter};
-
 use gpui_component::input::{
-    Enter, Escape, IndentInline, InputEvent, InputState, MoveDown, MoveUp, Paste, Textarea,
-    TextareaState,
+    Enter, Escape, IndentInline, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
 };
-
-use gpui_component::modern_menu::ModernMenu;
-
-use gpui_component::progress::ProgressCircle;
-
-use gpui_component::radio::Radio;
-
-use gpui_component::scroll::Scrollbar;
-
-use gpui_component::skeleton::Skeleton;
-
-use gpui_component::spinner::Spinner;
-
-use gpui_component::tooltip::Tooltip;
-
-use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed, Sizable as _, WindowExt, h_flex,
-    v_flex, v_virtual_list,
-};
-
+use gpui_component::{ActiveTheme as _, ElementExt as _, WindowExt, v_flex};
 use nmt_agent::background_task::{BackgroundTaskKey, BackgroundTaskSnapshot};
-
 use nmt_agent::catalog::adapter_commands;
-
 use nmt_agent::chat::{
-    ForkCheckpoint, Item as SessionItem, Question, QuestionInput, QuestionMode, QueuedPrompt,
-    SessionScope, SessionSummary, SkillInfo, SkillReference, SlashCommandArguments,
-    SlashCommandInfo, SlashCommandOutcome, SlashCommandRunPolicy, SlashCommandSource,
+    ForkCheckpoint, Item as SessionItem, Question, SessionSummary, SkillInfo, SkillReference,
+    SlashCommandArguments, SlashCommandInfo, SlashCommandOutcome, SlashCommandRunPolicy,
+    SlashCommandSource,
 };
-
-use nmt_agent::claude_code::{sessions, stream_json};
-
+use nmt_agent::claude_code::stream_json;
 use nmt_agent::codex::app_server;
-
-use nmt_agent::session::ImageAttachment;
-
+use nmt_agent::codex::app_server::SideStart;
+use nmt_agent::session::SettingsOutcome;
 use nmt_agent::session::branch::{
-    BranchError, BranchFailure, BranchUpdate, BranchView, FailureStage, FileProgress, PromptTarget,
+    BranchCompletion, BranchError, BranchFailure, BranchStep, BranchUpdate, BranchView,
+    FileProgress, PromptTarget,
 };
-
 use nmt_agent::session::children::ChildTranscript;
-
+use nmt_agent::session::command::{
+    AdmitSlashCommand, AgentCommand, AnswerQuestion, ApplyModelSelection, Interrupt, Prompt,
+    PromptImage, RenameConversation, RespondApproval, RunSlashCommand, SelectAgentPreset,
+    SubmitPrompt, SubmitRefusal, Submitted, UpdateSettings, WithdrawQueuedPrompt,
+};
 use nmt_agent::session::commands::CommandAdmission;
-
 use nmt_agent::session::controller::{
-    QuestionSubmission, SessionBranch, SessionController, SessionEffect, SessionFailure,
-    SessionReady, SubmissionBlock,
+    SessionController, SessionEffect, SessionFailure, SessionReady, SubmissionBlock,
 };
-
-use nmt_agent::session::delivery::{RecoverablePrompt, Submission};
-
-use nmt_agent::session::history::{CountPublication, count_scoped_sessions, list_scoped_sessions};
-
+use nmt_agent::session::delivery::RecoverablePrompt;
+use nmt_agent::session::history::{HistoryStep, other_agent_sources};
 use nmt_agent::session::input::{
-    ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionError, QuestionKey,
+    ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionDraft, QuestionKey, Submission,
 };
-
 use nmt_agent::session::lifecycle::InterruptOutcome;
-
 use nmt_agent::session::restore::{ResumeStart, SettingsSeed};
-
+use nmt_agent::session::side::SideQuestionOutcome;
 use nmt_agent::session::workflows::OpenWorkflowAgent;
-
 #[cfg(test)]
 use nmt_agent::transcript::TextField;
-
-use nmt_agent::transcript::conversation::ConversationImage;
-
 use nmt_agent::workflow::WorkflowRun;
-
-use nmt_agent::{AgentEvent, AgentEventKind, AgentRoute, AgentWorkspace, MultiRootAccess, git};
-
+use nmt_agent::{AgentEvent, AgentEventKind, AgentRoute, AgentWorkspace};
 use nmt_config::profile::AgentProfile;
-
-use nmt_config::system::NewlineShortcut;
-
+use nmt_remote_core::rpc::EndReason;
 use rust_i18n::t;
-
 use tracing::info;
 
 use crate::agent_tab::capabilities::AgentCapabilities as _;
-
 use crate::agent_tab::commands::{
-    PaletteCatalogEntry, PaletteDirection, filter_palette_catalog, filter_skill_catalog,
-    local_commands, merge_catalog, move_palette_selection, parse_skill_prefix, parse_slash_command,
-    prepare_skill_selection, reconcile_skill_binding, resolve_choice, setting_value_label,
+    PaletteCatalogEntry, PaletteDirection, SlashRoute, filter_palette_catalog,
+    filter_skill_catalog, local_commands, merge_catalog, move_palette_selection,
+    parse_skill_prefix, parse_slash_command, prepare_skill_selection, reconcile_skill_binding,
+    route_slash, setting_value_label, slash_refusal_message, status_summary,
     validate_skill_binding,
 };
-
 use crate::agent_tab::composer::attachments::{
-    AttachError, ComposerAttachments, MAX_ATTACHMENTS, THUMBNAIL, scratch_dir,
+    ComposerAttachments, MAX_ATTACHMENTS, THUMBNAIL, has_image, prepare_paste, scratch_dir,
 };
-
 use crate::agent_tab::composer::{
-    BranchFlow, CachedCatalog, CommandFeedbackKind, ComposerAction, PALETTE_MAX_HEIGHT,
-    PaletteAction, PaletteModel, PaletteRow, PendingSlashCommand, RewindAction, SlashPalette,
-    prompt_with_response_annotations, restored_input_after_interruption, rewind_prompt_label,
-    rewind_timestamp, row_prompt_target, visible_prompt,
+    BranchFlow, CachedCatalog, CommandFeedbackKind, PaletteAction, PaletteModel, PaletteRow,
+    PendingSlashCommand, RewindAction, SlashPalette, branch_error_message, branch_failure_message,
+    fork_palette_model, prompt_with_response_annotations, restored_input_after_interruption,
+    rewind_palette_model, row_prompt_target,
 };
-
-use crate::agent_tab::context_usage::{ContextUsageIndicator, cache_hit_percent};
-
 use crate::agent_tab::execution::{
-    AgentSession, ChildReader, CommandBinding, PresentationEffect, SessionOwner,
+    AgentSession, ChildReader, CommandBinding, ConversationReset, PresentationEffect, SessionOwner,
 };
-
-use crate::agent_tab::fade::{Fade, FrostedLayer};
-
+use crate::agent_tab::fade::FrostedLayer;
 use crate::agent_tab::input_history::{
     InputHistoryAction, InputHistoryDirection, InputHistoryNavigation, InputHistoryScope,
 };
-
 use crate::agent_tab::pane_state::TurnPresentation;
-
-use crate::agent_tab::questions::{
-    QuestionEditor, QuestionEditorState, QuestionPresentation, QuestionStatus,
-};
-
+use crate::agent_tab::questions::panel::QuestionPanel;
+use crate::agent_tab::remote::RemoteAgent;
 use crate::agent_tab::session::errors::operation_error;
-
-use crate::agent_tab::session::history::{
-    FilesystemHistoryRequest, RecentSessionsMode, SessionHistoryUi,
-};
-
-use crate::agent_tab::session::prompts::PendingPrompts;
-
-use crate::agent_tab::session::{
-    Backend, Status, UpdateSuspension, directories_match, directory_label,
-};
-
+use crate::agent_tab::session::{Backend, Status, directories_match};
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
-
-use crate::agent_tab::thread_controls::{launch_model, remember_defaults, render_row};
-
+use crate::agent_tab::thread_controls::{
+    launch_model, profile_picker, remember_defaults, render_row,
+};
 use crate::agent_tab::transcript::{
-    LAST_RESPONSE_LIMIT, TranscriptView, last_response_label, relative_time, transcript_column,
+    TranscriptView, held_prompt, last_response_label, transcript_column,
 };
-
+use crate::agent_tab::view::approval_card::approval_card;
+use crate::agent_tab::view::blocking_overlay::{
+    BlockingOverlay, start_overlay, update_banner, update_overlay,
+};
+use crate::agent_tab::view::cache_expiry::cache_expiry_dialog;
 use crate::agent_tab::view::composer_layout::{
-    composer_card, composer_controls_row, composer_input_row,
+    ComposerEnterBehavior, composer_card, composer_controls_row, composer_enter_behavior,
+    composer_input_row, composer_notice_panel, send_button,
 };
-
+use crate::agent_tab::view::composer_notices::{
+    last_response_mark, multi_root_notice, multi_root_strip, queued_prompts,
+};
+use crate::agent_tab::view::composer_status::{ComposerStatusBar, poll_git_branch};
 use crate::agent_tab::view::progress_panel::ProgressPanel;
-
+use crate::agent_tab::view::recent_sessions::{ListControl, RecentSessionsMode, SessionHistoryUi};
+use crate::agent_tab::view::selection_menu::show_selected_text_menu;
+use crate::agent_tab::view::side_questions::{SideChatWindow, SideThread, side_chat_window};
 use crate::agent_tab::workflows::WorkflowUi;
+use crate::remote_control::{CloseTab, ControlSheet, HostControl};
 
 #[derive(Clone)]
 pub enum AgentPaneEvent {
@@ -249,9 +169,14 @@ pub enum AgentPaneEvent {
     /// A conversation this pane listed but cannot continue: it ran in another
     /// directory, and a tab is rooted in the one it was opened for. The chrome
     /// owns tabs, so opening it where it worked is left to the chrome.
+    ///
+    /// `profile` is set for a conversation another agent recorded, which only
+    /// a tab launched on that profile can continue; `cwd` is `None` where the
+    /// row names no directory, and the tab then opens in this tab's.
     ResumeElsewhere {
-        cwd: String,
-        session_id: String,
+        cwd: Option<String>,
+        summary: SessionSummary,
+        profile: Option<AgentProfile>,
     },
     /// A name for the conversation this pane is holding, derived from the
     /// message that opened it. The pane does not know which tab owns it, so
@@ -262,58 +187,46 @@ pub enum AgentPaneEvent {
     /// The tab holding this pane should close. A pane owns no tab, so the
     /// chrome that does is asked to close it.
     CloseRequested,
+    /// Text the user wrote to a Team member in the member's own view. The
+    /// member's requests come from its room, so the Team that owns the room
+    /// sends it and records the exchange where every member can see it.
+    TeamPrompt(String),
+    /// This tab's side chat appeared, went away, or was minimized or
+    /// restored. The chrome's Side Chat control follows it.
+    SideChatActivity,
+    /// Something here wants the person's attention: a turn ended, or the
+    /// agent waits for an approval or an answer. The desktop notifies from
+    /// the lifecycle; this one carries which of them it was, for paired
+    /// devices away from the computer.
+    Attention {
+        kind: AgentAttention,
+        title: String,
+        body: String,
+    },
+    /// This still-blank tab should run on another launch profile: the user
+    /// picked one, or chose a conversation another agent recorded here, which
+    /// `resume` then names. A session's agent kind is fixed for its lifetime,
+    /// so the chrome that owns the tab replaces it in place with one launched
+    /// on `profile`.
+    SwitchProfile {
+        profile: AgentProfile,
+        resume: Option<SessionSummary>,
+    },
 }
 
-/// Background-refreshed git branch of the pane's working directory.
-#[derive(Default)]
-struct GitBranchPoll {
-    branch: Option<String>,
-    ready: bool,
-    refreshing: bool,
-    generation: u64,
+/// What the user had typed into a composer, carried to the pane that
+/// replaces it so a profile switch does not discard an unsent message.
+pub struct ComposerDraft {
+    text: String,
+    attachments: ComposerAttachments,
 }
 
-impl GitBranchPoll {
-    fn invalidate(&mut self) {
-        self.generation += 1;
-        self.branch = None;
-        self.ready = false;
-        self.refreshing = false;
-    }
-
-    fn begin_refresh(&mut self) -> Option<u64> {
-        if self.refreshing {
-            return None;
-        }
-
-        self.refreshing = true;
-
-        Some(self.generation)
-    }
-
-    fn complete(&mut self, generation: u64, branch: Option<String>) {
-        if generation != self.generation {
-            return;
-        }
-
-        self.branch = branch;
-        self.ready = true;
-        self.refreshing = false;
-    }
-
-    fn presentation(&self) -> (String, f32) {
-        let label = self.branch.clone().unwrap_or_else(|| {
-            if self.ready {
-                t!("agent-git-no-branch").to_string()
-            } else {
-                t!("agent-git-detecting-branch").to_string()
-            }
-        });
-
-        let opacity = if self.branch.is_some() { 0.72 } else { 0.48 };
-
-        (label, opacity)
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAttention {
+    TurnFinished,
+    TurnFailed,
+    ApprovalRequested,
+    QuestionAsked,
 }
 
 pub struct AgentPane {
@@ -332,14 +245,39 @@ pub struct AgentPane {
     input: Entity<TextareaState>,
     history_ui: SessionHistoryUi,
     progress_panel: ProgressPanel,
+    side_chat: SideChatWindow,
 
     /// Provider state and transitions, independent of widgets and rendering.
     session: Rc<RefCell<SessionController>>,
 
     host: WeakEntity<AgentSession>,
     binding: CommandBinding,
-    presenting_session_effect: bool,
     team_member: bool,
+
+    /// This pane presents another pane's side chat. It keeps the commands
+    /// that replace or reopen a conversation, and the recent-sessions list,
+    /// out of reach, because an ephemeral fork can be neither.
+    side_chat_member: bool,
+
+    /// The question a side chat was opened with, sent once its fork is
+    /// ready.
+    pending_side_prompt: Option<String>,
+
+    /// The start epoch at which this tab waits for the user before
+    /// launching its harness: a failed start the user set aside for a blank
+    /// tab, or a tab switched to another agent from such a tab. Keyed by
+    /// epoch so any later start, and the failure it may report, is shown as
+    /// usual.
+    deferred_launch: Option<u64>,
+
+    /// The composer's content is sent once the harness launched on the
+    /// user's behalf reports ready.
+    send_on_ready: bool,
+
+    /// The message that launch is for, taken out of the composer while the
+    /// harness starts and put back just before it is sent.
+    held_draft: Option<ComposerDraft>,
+
     #[cfg(test)]
     owned_session: Option<SessionOwner>,
 
@@ -350,14 +288,14 @@ pub struct AgentPane {
     turn: TurnPresentation,
 
     /// The approval and question cards that block a turn until answered.
-    prompts: PendingPrompts,
+    prompts: QuestionPanel,
 
     palette: SlashPalette,
 
     /// Cutting the conversation at an earlier point, by rewind or by fork.
     branch: BranchFlow,
 
-    git_branch_poll: GitBranchPoll,
+    composer_status: ComposerStatusBar,
 
     /// Workflow runs of this session and the agent conversation the user has
     /// open. Workflow agents are not child agents, so they never reach the
@@ -367,20 +305,38 @@ pub struct AgentPane {
     /// Ramp of the layer that covers the pane while its backend cannot take
     /// input. Cross-fading the whole layer keeps its arrival readable as the
     /// tab being held rather than as a blur being switched on.
-    overlay_fade: Fade,
+    blocking_overlay: BlockingOverlay,
+
+    /// Set when the conversation runs on a paired host: commands go there,
+    /// and the session's controller follows it.
+    remote: Option<RemoteAgent>,
+
+    /// Who controls this host tab from another computer, and taking it
+    /// back. While anyone does, a sheet covers the pane and refuses input;
+    /// the transcript underneath keeps following so the host can watch.
+    host_control: Option<HostControl>,
+
+    close_tab: Option<CloseTab>,
+
+    /// Holds the keyboard while a control sheet covers the pane.
+    sheet_focus: FocusHandle,
+
+    /// Whether the last frame showed a control sheet. Sending is refused
+    /// while it did: the conversation belongs to the other side.
+    sheet_shown: bool,
 }
 
 impl AgentPane {
     /// Whether such a flow is past its picker and working. Until then the
     /// input still holds text worth editing, so only sending is refused.
     pub(crate) fn branch_flow_is_working(&self) -> bool {
-        self.session.borrow().branch.is_working()
+        self.session.borrow().branch().is_working()
     }
 
     /// Whether a list of branch points is on screen, which is what makes the
     /// palette's highlight something the transcript follows.
     pub(crate) fn branch_picker_is_open(&self) -> bool {
-        self.session.borrow().branch.picker_is_open()
+        self.session.borrow().branch().picker_is_open()
     }
 
     /// Hand the transcript to a picker that is about to scroll it to the
@@ -423,7 +379,14 @@ impl AgentPane {
             return false;
         }
 
-        if !self.session.borrow_mut().branch.cancel_picker() {
+        // A replica's picker is the host's; closing it is the host's step.
+        if self.remote.is_some() {
+            if !self.session.borrow().branch().picker_is_open() {
+                return false;
+            }
+
+            self.send_branch_step(BranchStep::Cancel, cx);
+        } else if !self.session.borrow_mut().cancel_branch_picker() {
             return false;
         }
 
@@ -459,7 +422,7 @@ impl AgentPane {
             return false;
         }
 
-        if self.session.borrow().runtime.status() != Status::Idle || self.is_command_busy() {
+        if self.session.borrow().runtime().status() != Status::Idle || self.is_command_busy() {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
                 SharedString::from(t!("agent-fork-idle-only")),
@@ -469,13 +432,9 @@ impl AgentPane {
             return false;
         }
 
-        if let Err(error) = {
-            let mut guard = self.session.borrow_mut();
-
-            let state = &mut *guard;
-
-            state.branch.begin_fork(&mut state.runtime, target)
-        } {
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::BeginFork(target), cx);
+        } else if let Err(error) = self.session.borrow_mut().begin_fork(target) {
             let message = match error {
                 BranchError::Busy => SharedString::from(t!("agent-fork-idle-only")),
                 _ => self.branch_error_message(error, cx).into(),
@@ -499,24 +458,6 @@ impl AgentPane {
         );
 
         true
-    }
-
-    pub(crate) fn show_fork_checkpoints(
-        &mut self,
-        checkpoints: Result<Vec<ForkCheckpoint>, String>,
-        cx: &mut Context<Self>,
-    ) {
-        let update = {
-            let mut guard = self.session.borrow_mut();
-
-            let state = &mut *guard;
-
-            state
-                .branch
-                .fork_checkpoints(&mut state.runtime, checkpoints)
-        };
-
-        self.on_fork_update(update, cx);
     }
 
     pub(crate) fn on_fork_update(&mut self, update: BranchUpdate, cx: &mut Context<Self>) {
@@ -572,36 +513,6 @@ impl AgentPane {
         self.cancel_branch_picker(cx);
     }
 
-    pub(crate) fn fork_palette_model(&self, state: BranchView<'_>) -> Option<PaletteModel> {
-        match state {
-            BranchView::LoadingFork => Some(PaletteModel {
-                rows: vec![cancel_row()],
-                note: Some(SharedString::from(t!("agent-fork-loading-checkpoints"))),
-            }),
-            BranchView::ForkCheckpoints(checkpoints) => {
-                let mut rows = checkpoints
-                    .iter()
-                    .cloned()
-                    .map(|checkpoint| PaletteRow {
-                        label: rewind_prompt_label(&checkpoint.prompt).into(),
-                        description: SharedString::from(t!("agent-fork-branch-before-prompt")),
-                        hint: rewind_timestamp(checkpoint.timestamp.as_deref()).map(Into::into),
-                        disabled_reason: None,
-                        action: PaletteAction::ForkCheckpoint(checkpoint),
-                    })
-                    .collect::<Vec<_>>();
-
-                rows.push(cancel_row());
-
-                Some(PaletteModel {
-                    rows,
-                    note: Some(SharedString::from(t!("agent-fork-choose-prompt"))),
-                })
-            }
-            _ => None,
-        }
-    }
-
     pub(crate) fn start_conversation_branch(
         &mut self,
         checkpoint: ForkCheckpoint,
@@ -611,22 +522,22 @@ impl AgentPane {
             return;
         }
 
-        let update = {
-            let mut guard = self.session.borrow_mut();
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::Fork(checkpoint), cx);
 
-            let state = &mut *guard;
+            return;
+        }
 
-            state.branch.fork(&mut state.runtime, checkpoint)
-        };
+        let update = self.session.borrow_mut().fork(checkpoint);
 
         self.on_fork_update(update, cx);
     }
 
     pub(crate) fn branch_flow_holds_composer(&self) -> bool {
-        self.session.borrow().branch.holds_composer()
+        self.session.borrow().branch().holds_composer()
     }
 
-    pub(crate) fn complete_branch(&mut self, completion: SessionBranch, cx: &mut Context<Self>) {
+    pub(crate) fn complete_branch(&mut self, completion: BranchCompletion, cx: &mut Context<Self>) {
         let message = match (completion.replayed, completion.files) {
             (_, FileProgress::Restored) => "agent-rewind-complete-with-files",
             (true, FileProgress::NotConfirmed) => "agent-rewind-complete",
@@ -671,7 +582,7 @@ impl AgentPane {
             return false;
         }
 
-        if self.session.borrow().runtime.status() != Status::Idle || self.is_command_busy() {
+        if self.session.borrow().runtime().status() != Status::Idle || self.is_command_busy() {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
                 SharedString::from(t!("agent-rewind-idle-only")),
@@ -681,15 +592,25 @@ impl AgentPane {
             return false;
         }
 
+        // The host reads the checkpoints, which live beside its transcript.
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::BeginRewind(target), cx);
+
+            self.palette.selected = 0;
+            self.palette.dismissed = false;
+
+            self.palette.set_feedback(
+                CommandFeedbackKind::Status,
+                SharedString::from(t!("agent-rewind-loading-checkpoints")),
+                cx,
+            );
+
+            return true;
+        }
+
         let cwd = self.cwd(cx);
 
-        let outcome = {
-            let mut guard = self.session.borrow_mut();
-
-            let state = &mut *guard;
-
-            state.branch.begin_rewind(&state.runtime, cwd, target)
-        };
+        let outcome = self.session.borrow_mut().begin_rewind(cwd, target);
 
         let request = match outcome {
             Ok(request) => request,
@@ -725,122 +646,6 @@ impl AgentPane {
         self.cancel_branch_picker(cx);
     }
 
-    pub(crate) fn rewind_palette_model(&self, state: BranchView<'_>) -> Option<PaletteModel> {
-        match state {
-            BranchView::LoadingRewind => Some(PaletteModel {
-                rows: vec![PaletteRow {
-                    label: SharedString::from(t!("agent-rewind-cancel")),
-                    description: SharedString::from(t!("agent-rewind-cancel-description")),
-                    hint: None,
-                    disabled_reason: None,
-                    action: PaletteAction::RewindAction(RewindAction::Cancel),
-                }],
-                note: Some(SharedString::from(t!("agent-rewind-loading-active-branch"))),
-            }),
-            BranchView::RewindCheckpoints(checkpoints) => {
-                let mut rows = checkpoints
-                    .iter()
-                    .cloned()
-                    .map(|checkpoint| PaletteRow {
-                        label: rewind_prompt_label(&checkpoint.prompt).into(),
-                        description: SharedString::from(t!("agent-rewind-return-before-prompt")),
-                        hint: rewind_timestamp(checkpoint.timestamp.as_deref()).map(Into::into),
-                        disabled_reason: None,
-                        action: PaletteAction::RewindCheckpoint(checkpoint),
-                    })
-                    .collect::<Vec<_>>();
-
-                rows.push(PaletteRow {
-                    label: SharedString::from(t!("agent-rewind-cancel")),
-                    description: SharedString::from(t!("agent-rewind-cancel-description")),
-                    hint: None,
-                    disabled_reason: None,
-                    action: PaletteAction::RewindAction(RewindAction::Cancel),
-                });
-
-                Some(PaletteModel {
-                    rows,
-                    note: Some(SharedString::from(t!("agent-rewind-choose-prompt"))),
-                })
-            }
-            BranchView::RewindAction(checkpoint, files) => {
-                let file_disabled = match checkpoint.file_restore_availability {
-                    sessions::FileRestoreAvailability::Unavailable => Some(SharedString::from(t!(
-                        "agent-rewind-file-checkpoint-unavailable"
-                    ))),
-                    _ => None,
-                };
-
-                let file_description = match checkpoint.file_restore_availability {
-                    sessions::FileRestoreAvailability::Available => {
-                        t!("agent-rewind-files-description-available")
-                    }
-                    sessions::FileRestoreAvailability::Unknown => {
-                        t!("agent-rewind-files-description-unknown")
-                    }
-                    sessions::FileRestoreAvailability::Unavailable => {
-                        t!("agent-rewind-files-description-unavailable")
-                    }
-                };
-
-                let files_only_disabled = match files {
-                    FileProgress::Restored => {
-                        Some(SharedString::from(t!("agent-rewind-files-restored")))
-                    }
-                    FileProgress::NotConfirmed => file_disabled.clone(),
-                };
-
-                Some(PaletteModel {
-                    rows: vec![
-                        PaletteRow {
-                            label: SharedString::from(t!("agent-rewind-restore-files")),
-                            description: SharedString::from(file_description),
-                            hint: Some(SharedString::from(t!("agent-rewind-files-only"))),
-                            disabled_reason: files_only_disabled,
-                            action: PaletteAction::RewindAction(RewindAction::Files),
-                        },
-                        PaletteRow {
-                            label: SharedString::from(t!("agent-rewind-restore-conversation")),
-                            description: SharedString::from(t!(
-                                "agent-rewind-conversation-description"
-                            )),
-                            hint: Some(SharedString::from(t!("agent-rewind-conversation-only"))),
-                            disabled_reason: None,
-                            action: PaletteAction::RewindAction(RewindAction::Conversation),
-                        },
-                        PaletteRow {
-                            label: SharedString::from(t!(
-                                "agent-rewind-restore-files-conversation"
-                            )),
-                            description: SharedString::from(t!(
-                                "agent-rewind-combined-description"
-                            )),
-                            hint: Some(SharedString::from(t!("agent-rewind-combined"))),
-                            disabled_reason: file_disabled,
-                            action: PaletteAction::RewindAction(RewindAction::FilesAndConversation),
-                        },
-                        PaletteRow {
-                            label: SharedString::from(t!("agent-rewind-cancel")),
-                            description: SharedString::from(t!("agent-rewind-cancel-description")),
-                            hint: None,
-                            disabled_reason: None,
-                            action: PaletteAction::RewindAction(RewindAction::Cancel),
-                        },
-                    ],
-                    note: Some(
-                        t!(
-                            "agent-rewind-selected",
-                            prompt = &rewind_prompt_label(&checkpoint.prompt)
-                        )
-                        .into_owned()
-                        .into(),
-                    ),
-                })
-            }
-            _ => None,
-        }
-    }
-
     pub(crate) fn activate_rewind_action(&mut self, action: RewindAction, cx: &mut Context<Self>) {
         if !self.binding.is_current() {
             return;
@@ -854,13 +659,13 @@ impl AgentPane {
 
         self.branch.draft = Some(self.input.read(cx).text().to_string());
 
-        let update = {
-            let mut guard = self.session.borrow_mut();
+        if self.remote.is_some() {
+            self.send_branch_step(BranchStep::Rewind(action), cx);
 
-            let state = &mut *guard;
+            return;
+        }
 
-            state.branch.rewind(&mut state.runtime, action)
-        };
+        let update = self.session.borrow_mut().rewind(action);
 
         self.on_rewind_update(update, cx);
     }
@@ -906,7 +711,7 @@ impl AgentPane {
             update @ (BranchUpdate::CreateFork(_) | BranchUpdate::StartSession(_)) => {
                 self.history_ui.mode = RecentSessionsMode::Loading;
 
-                self.palette.reset_discovery(false);
+                self.palette.reset_discovery();
 
                 if let Some(host) = self.host.upgrade() {
                     host.update(cx, |host, cx| host.on_branch_update(update, cx));
@@ -929,52 +734,18 @@ impl AgentPane {
     }
 
     pub(crate) fn branch_error_message(&self, error: BranchError, cx: &App) -> String {
-        let Some(session_host) = self.host.upgrade() else {
-            return String::new();
-        };
-
-        let session_kind = session_host.read(cx).kind;
-
-        match error {
-            BranchError::Busy => t!("agent-rewind-idle-only").to_string(),
-            BranchError::NotReady => t!(
-                "agent-session-still-starting",
-                name = session_kind.display()
-            )
-            .into_owned(),
-            BranchError::MissingSession => t!("agent-rewind-no-session-id").to_string(),
-            BranchError::FilesUnavailable => {
-                t!("agent-rewind-file-checkpoint-unavailable").to_string()
-            }
-            BranchError::InvalidFileResult(message) => {
-                message.unwrap_or_else(|| t!("agent-rewind-invalid-file-state").to_string())
-            }
-            BranchError::Operation(error) => operation_error(error),
-            BranchError::Failed(message) => message,
-        }
+        self.host
+            .upgrade()
+            .map(|host| branch_error_message(error, host.read(cx).kind))
+            .unwrap_or_default()
     }
 
     pub(crate) fn report_branch_failure(&mut self, failure: BranchFailure, cx: &mut Context<Self>) {
-        let error = self.branch_error_message(failure.error, cx);
-
-        let message = match (failure.stage, failure.files) {
-            (FailureStage::Checkpoints | FailureStage::ProtocolFork, _) => error,
-            (FailureStage::Files, _) => t!("agent-rewind-file-failed", error = &error).into_owned(),
-            (FailureStage::Conversation, FileProgress::Restored) => t!(
-                "agent-rewind-conversation-failed-after-files",
-                error = &error
-            )
-            .into_owned(),
-            (FailureStage::Conversation, FileProgress::NotConfirmed) => {
-                t!("agent-rewind-conversation-failed", error = &error).into_owned()
-            }
-            (FailureStage::Startup, FileProgress::Restored) => {
-                t!("agent-rewind-start-failed-after-files").to_string()
-            }
-            (FailureStage::Startup, FileProgress::NotConfirmed) => {
-                t!("agent-rewind-start-failed").to_string()
-            }
+        let Some(session_host) = self.host.upgrade() else {
+            return;
         };
+
+        let message = branch_failure_message(failure, session_host.read(cx).kind);
 
         self.palette.selected = 0;
 
@@ -987,66 +758,96 @@ impl AgentPane {
     /// composer's own text handling, which is what a clipboard holding text
     /// should get.
     pub(crate) fn paste_image(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(session_host) = self.host.upgrade() else {
+        let Some(host) = self.host.upgrade() else {
             return false;
         };
-
-        let session_kind = session_host.read(cx).kind;
 
         // An image reaches the clipboard two ways: as pixels, from a capture
         // tool or a browser, and as a file, from a file manager. Both are the
         // same gesture to the person doing it.
-        let Some(image) = cx
+        let entries: Vec<_> = cx
             .read_from_clipboard()
             .into_iter()
             .flat_map(|item| item.into_entries())
-            .find_map(|entry| match entry {
-                ClipboardEntry::Image(image) => Some(image),
-                ClipboardEntry::ExternalPaths(paths) => {
-                    paths.paths().iter().find_map(|path| image_file(path))
-                }
-                ClipboardEntry::String(_) => None,
-            })
-        else {
-            return false;
-        };
+            .collect();
 
-        if !session_kind.caps().image_input {
+        if !has_image(&entries) {
+            return false;
+        }
+
+        if self.attachments.images().iter().count() + self.attachments.preparing >= MAX_ATTACHMENTS
+        {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
-                t!(
-                    "agent-composer-images-unsupported",
-                    name = session_kind.display()
-                )
-                .into_owned(),
+                t!("agent-composer-images-full", count = MAX_ATTACHMENTS).into_owned(),
                 cx,
             );
 
             return true;
         }
 
-        match self
-            .attachments
-            .attach_image(&image, &self.input, window, cx)
-        {
-            Ok(()) => {
+        let host = host.read(cx);
+        let scratch = (host.kind == AgentKind::Codex).then(|| scratch_dir(host.route.as_str()));
+        let epoch = self.session.borrow().runtime().epoch();
+        let binding_generation = self.binding.generation;
+        let executor = cx.background_executor().clone();
+
+        self.attachments.preparing += 1;
+
+        let previous = self.attachments.paste_ready.take();
+        let (completed, ready) = oneshot::channel();
+
+        self.attachments.paste_ready = Some(ready);
+
+        let prepared = executor.clone().spawn(async move {
+            if let Some(previous) = previous {
+                let _ = previous.await;
+            }
+
+            prepare_paste(entries, scratch, executor)
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let prepared = prepared.await;
+
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.attachments.preparing = this.attachments.preparing.saturating_sub(1);
+
                 cx.notify();
 
-                true
-            }
-            Err(AttachError::Full) => {
-                self.palette.set_feedback(
-                    CommandFeedbackKind::Error,
-                    t!("agent-composer-images-full", count = MAX_ATTACHMENTS).into_owned(),
-                    cx,
-                );
+                if !this.binding.is_current()
+                    || this.binding.generation != binding_generation
+                    || this.session.borrow().runtime().epoch() != epoch
+                {
+                    return;
+                }
 
-                true
-            }
-            // Something on the clipboard claimed to be an image and was not.
-            // Falling through lets the composer paste whatever text is there.
-            Err(AttachError::Undecodable) => false,
-        }
+                match prepared {
+                    Ok(mut prepared) => {
+                        let path = prepared.path.clone();
+
+                        if this
+                            .attachments
+                            .attach_prepared(prepared.image.clone(), path, &this.input, window, cx)
+                            .is_ok()
+                        {
+                            prepared.path = None;
+                        }
+                    }
+                    Err(message) => {
+                        this.palette
+                            .set_feedback(CommandFeedbackKind::Error, message, cx)
+                    }
+                }
+            });
+
+            let _ = completed.send(());
+        })
+        .detach();
+
+        cx.notify();
+
+        true
     }
 
     pub(crate) fn remove_attachment(
@@ -1121,7 +922,17 @@ impl AgentPane {
     /// Send what the composer holds, warning first when the conversation has
     /// been idle long enough for the provider's prompt cache to have expired.
     pub(super) fn send_user_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         if self.team_member {
+            let text = self.input.read(cx).text().to_string();
+
+            if !text.trim().is_empty() {
+                cx.emit(AgentPaneEvent::TeamPrompt(text));
+            }
+
             return;
         }
 
@@ -1159,7 +970,7 @@ impl AgentPane {
             && self
                 .session
                 .borrow()
-                .conversation
+                .conversation()
                 .borrow()
                 .last_response_at
                 .is_some_and(|at| at.elapsed() >= Duration::from_secs(minutes * 60))
@@ -1171,7 +982,7 @@ impl AgentPane {
         let idle = self
             .session
             .borrow()
-            .conversation
+            .conversation()
             .borrow()
             .last_response_at
             .map(|at| last_response_label(at.elapsed().as_secs()))
@@ -1180,48 +991,8 @@ impl AgentPane {
         let pane = cx.entity();
 
         window.open_dialog(cx, move |dialog, _, _| {
-            Self::cache_expiry_dialog(dialog, &pane, &idle)
+            cache_expiry_dialog(dialog.centered(true), &pane, &idle)
         });
-    }
-
-    fn cache_expiry_dialog(dialog: Dialog, pane: &Entity<Self>, idle: &str) -> Dialog {
-        let pane = pane.clone();
-        let idle = idle.to_string();
-
-        dialog
-            .title(t!("agent-cache-warning-title"))
-            .overlay_closable(false)
-            .content(move |content, _, cx| {
-                content.child(
-                    v_flex()
-                        .gap_1()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(idle.clone())
-                        .child(t!("agent-cache-warning-message")),
-                )
-            })
-            .footer(
-                DialogFooter::new()
-                    .child(
-                        Button::new("agent-cache-warning-send")
-                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                            .label(t!("agent-cache-warning-send"))
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-
-                                pane.update(cx, |pane, cx| pane.send_user_message_now(window, cx));
-                            }),
-                    )
-                    .child(
-                        DialogClose::new().child(
-                            Button::new("agent-cache-warning-cancel")
-                                .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                                .primary()
-                                .label(t!("agent-cache-warning-cancel")),
-                        ),
-                    ),
-            )
     }
 
     fn send_user_message_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1247,6 +1018,10 @@ impl AgentPane {
 
         let text = self.input.read(cx).text().to_string();
 
+        if self.launch_for_input(&text, window, cx) {
+            return;
+        }
+
         if parse_slash_command(&text).is_some() {
             self.submit_current_slash(window, cx);
 
@@ -1265,7 +1040,7 @@ impl AgentPane {
             match validate_skill_binding(
                 &text,
                 self.palette.skill_binding.as_ref(),
-                self.palette.skill_catalog.as_ref(),
+                self.session.borrow().skill_catalog(),
             ) {
                 Ok(skill) => skill,
                 Err(message) => {
@@ -1294,8 +1069,9 @@ impl AgentPane {
     }
 
     pub(super) fn is_command_busy(&self) -> bool {
-        self.session.borrow().runtime.status() == Status::Running
-            || self.session.borrow().commands.awaiting_turn
+        self.attachments.preparing > 0
+            || self.session.borrow().runtime().status() == Status::Running
+            || self.session.borrow().commands().awaiting_turn
             || self.history_ui.mode == RecentSessionsMode::Loading
             || self.branch_flow_holds_composer()
     }
@@ -1311,15 +1087,20 @@ impl AgentPane {
             return false;
         }
 
-        let rows = self
-            .history_ui
-            .data
-            .pending
-            .unwrap_or(self.history_ui.data.sessions.len());
+        // The host lists its conversations; the list appears as they arrive.
+        if self.remote.is_some() {
+            self.history_ui.open_awaiting_rows();
 
-        if rows == 0 {
-            self.history_ui.mode = RecentSessionsMode::Hidden;
+            self.load_filesystem_history(cx);
 
+            self.palette.feedback = None;
+
+            cx.notify();
+
+            return true;
+        }
+
+        if !self.history_ui.open() {
             self.palette.set_feedback(
                 CommandFeedbackKind::Notice,
                 SharedString::from(t!("agent-composer-no-recent-sessions")),
@@ -1329,14 +1110,6 @@ impl AgentPane {
             return true;
         }
 
-        self.history_ui.mode = RecentSessionsMode::Open;
-        self.history_ui.selected = 0;
-
-        // A list opened from a command was opened without the pointer, and a
-        // strip that was on screen the last time the pointer crossed it has
-        // no way to report that the pointer has since left.
-        self.history_ui.pointer_inside = false;
-        self.history_ui.pointer = None;
         self.palette.feedback = None;
 
         cx.notify();
@@ -1349,12 +1122,12 @@ impl AgentPane {
 
         let session_kind = session_host.read(cx).kind;
 
-        match (&self.session.borrow().branch).into() {
+        match self.session.borrow().branch().into() {
             view @ (BranchView::LoadingRewind
             | BranchView::RewindCheckpoints(_)
-            | BranchView::RewindAction(_, _)) => return self.rewind_palette_model(view),
+            | BranchView::RewindAction(_, _)) => return rewind_palette_model(view),
             view @ (BranchView::LoadingFork | BranchView::ForkCheckpoints(_)) => {
-                return self.fork_palette_model(view);
+                return fork_palette_model(view);
             }
             BranchView::Working => return None,
             BranchView::Idle => {}
@@ -1447,10 +1220,11 @@ impl AgentPane {
             return None;
         }
 
+        let session = self.session.borrow();
+
         let skills: &[SkillInfo] = if slash_skills {
-            self.palette
-                .skill_catalog
-                .as_ref()
+            session
+                .skill_catalog()
                 .map(|catalog| catalog.skills.as_slice())
                 .unwrap_or_default()
         } else {
@@ -1468,10 +1242,12 @@ impl AgentPane {
                         && self.is_command_busy()
                     {
                         Some(SharedString::from(t!("agent-composer-available-when-idle")))
-                    } else if command.source == SlashCommandSource::Local {
+                    } else if command.source == SlashCommandSource::Local || self.launch_deferred()
+                    {
+                        // Submitting launches a deferred harness first.
                         None
                     } else {
-                        match self.session.borrow().runtime.status() {
+                        match self.session.borrow().runtime().status() {
                             Status::Starting => {
                                 Some(SharedString::from(t!("agent-composer-agent-starting")))
                             }
@@ -1505,20 +1281,17 @@ impl AgentPane {
             .collect::<Vec<_>>();
 
         let note = if rows.is_empty() {
-            if slash_skills && self.palette.skill_catalog.is_none() {
+            if slash_skills && session.skill_catalog().is_none() {
                 Some(SharedString::from(t!(
                     "agent-composer-skill-discovery-loading"
                 )))
             } else if slash_skills
-                && self
-                    .palette
-                    .skill_catalog
-                    .as_ref()
+                && session
+                    .skill_catalog()
                     .is_some_and(|catalog| !catalog.errors.is_empty())
             {
-                self.palette
-                    .skill_catalog
-                    .as_ref()
+                session
+                    .skill_catalog()
                     .and_then(|catalog| catalog.errors.first())
                     .map(SharedString::new)
             } else if slash_skills {
@@ -1530,20 +1303,18 @@ impl AgentPane {
                     "agent-composer-no-matching-commands"
                 )))
             }
-        } else if session_kind.caps().async_command_discovery
-            && !self.palette.provider_commands_ready
+        } else if session_kind.caps().async_command_discovery && session.command_catalog().is_none()
         {
             Some(SharedString::from(t!(
                 "agent-composer-claude-command-loading"
             )))
-        } else if slash_skills && self.palette.skill_catalog.is_none() {
+        } else if slash_skills && session.skill_catalog().is_none() {
             Some(SharedString::from(t!(
                 "agent-composer-skill-discovery-loading"
             )))
         } else if slash_skills {
-            self.palette
-                .skill_catalog
-                .as_ref()
+            session
+                .skill_catalog()
                 .and_then(|catalog| catalog.errors.first())
                 .map(|error| {
                     t!("agent-composer-skill-load-partial", error = error)
@@ -1567,12 +1338,45 @@ impl AgentPane {
             // The card is answered before the recent-sessions list or the input
             // history get a look, because the turn is blocked on it and neither
             // of those can lead anywhere until it is.
-            if self.handle_question_control(control, cx) {
+            if self.binding.is_current()
+                && self
+                    .prompts
+                    .handle_control(control, self.session.borrow_mut().input_mut())
+            {
+                cx.stop_propagation();
+
+                cx.notify();
+
                 return;
             }
 
-            if self.handle_recent_sessions_control(control, cx) {
-                return;
+            let composer_empty = self.input.read(cx).text().len() == 0;
+            let transcript_empty = self.transcript.read(cx).is_empty();
+
+            match self
+                .history_ui
+                .handle_control(control, transcript_empty, composer_empty)
+            {
+                ListControl::Ignored => {}
+                ListControl::Unchanged => {
+                    cx.stop_propagation();
+
+                    return;
+                }
+                ListControl::Changed => {
+                    cx.stop_propagation();
+
+                    cx.notify();
+
+                    return;
+                }
+                ListControl::Resume(index) => {
+                    cx.stop_propagation();
+
+                    self.resume_session(index, cx);
+
+                    return;
+                }
             }
 
             let direction = match control {
@@ -1633,68 +1437,6 @@ impl AgentPane {
 
             cx.notify();
         }
-    }
-
-    fn handle_recent_sessions_control(
-        &mut self,
-        control: PaletteControl,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let composer_empty = self.input.read(cx).text().len() == 0;
-
-        if matches!(control, PaletteControl::Complete) || !composer_empty {
-            return false;
-        }
-
-        let rows = self
-            .history_ui
-            .data
-            .pending
-            .unwrap_or(self.history_ui.data.sessions.len());
-
-        if !self.history_ui.mode.is_visible(
-            self.transcript.read(cx).is_empty(),
-            composer_empty,
-            rows,
-        ) {
-            return false;
-        }
-
-        cx.stop_propagation();
-
-        match control {
-            PaletteControl::Previous | PaletteControl::Next => {
-                if let Some(direction) = control.direction()
-                    && let Some(selected) = move_palette_selection(
-                        self.history_ui.selected,
-                        self.history_ui.data.sessions.len(),
-                        direction,
-                    )
-                {
-                    self.history_ui.selected = selected;
-
-                    self.history_ui
-                        .scroll
-                        .scroll_to_item(selected, ScrollStrategy::Nearest);
-
-                    cx.notify();
-                }
-            }
-            PaletteControl::Activate => {
-                self.resume_session(self.history_ui.selected, cx);
-            }
-            PaletteControl::Dismiss => {
-                self.history_ui.mode = RecentSessionsMode::Hidden;
-
-                cx.notify();
-            }
-            // Completion belongs to the command palette. The guard above hands
-            // it back before the list claims the keys, so there is nothing left
-            // for it to do here.
-            PaletteControl::Complete => {}
-        }
-
-        true
     }
 
     /// Move the highlight to the row under the pointer without acting on it.
@@ -1806,16 +1548,15 @@ impl AgentPane {
 
                 return;
             }
+            PaletteAction::RewindCheckpoint(checkpoint) if self.remote.is_some() => {
+                self.palette.selected = 0;
+
+                self.send_branch_step(BranchStep::SelectCheckpoint(checkpoint), cx);
+
+                return;
+            }
             PaletteAction::RewindCheckpoint(checkpoint) => {
-                let selected = {
-                    let mut guard = self.session.borrow_mut();
-
-                    let state = &mut *guard;
-
-                    state
-                        .branch
-                        .select_checkpoint(state.runtime.epoch(), checkpoint)
-                };
+                let selected = self.session.borrow_mut().select_checkpoint(checkpoint);
 
                 if selected {
                     self.palette.selected = 0;
@@ -1857,106 +1598,6 @@ impl AgentPane {
         }
     }
 
-    pub(crate) fn render_command_palette(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let model = self.palette_model(cx)?;
-
-        let selected = self
-            .palette
-            .selected
-            .min(model.rows.len().saturating_sub(1));
-
-        let hover_selects = self.branch_picker_is_open();
-
-        let rows = model
-            .rows
-            .into_iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let disabled = row.disabled_reason.is_some();
-                let detail = row.disabled_reason.clone().unwrap_or(row.description);
-                let background = (index == selected).then(|| cx.theme().muted.opacity(0.7));
-
-                div()
-                    .id(("agent-slash-command", index))
-                    .h(px(48.))
-                    .flex_none()
-                    .px_3()
-                    .py_1p5()
-                    .rounded(UI_RADIUS)
-                    .when_some(background, |this, color| this.bg(color))
-                    .when(disabled, |this| this.opacity(0.5))
-                    .when(!disabled, |this| {
-                        this.hover(|style| style.bg(cx.theme().muted.opacity(0.45)))
-                    })
-                    .when(hover_selects && !disabled, |this| {
-                        this.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            if *hovered {
-                                this.hover_palette_index(index, cx);
-                            }
-                        }))
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_palette_index(index, true, window, cx)
-                    }))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(cx.theme().foreground)
-                                    .child(row.label),
-                            )
-                            .children(row.hint.map(|hint| {
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground.opacity(0.75))
-                                    .child(hint)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(detail),
-                    )
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-
-        let note = model.note.map(|note| {
-            div()
-                .px_3()
-                .py_2()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground.opacity(0.75))
-                .child(note)
-        });
-
-        Some(
-            v_flex()
-                .id("agent-slash-command-palette")
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss_command_palette(cx)))
-                .w_full()
-                .max_h(PALETTE_MAX_HEIGHT)
-                .overflow_y_scroll()
-                .track_scroll(&self.palette.scroll)
-                .p_1()
-                .rounded(UI_RADIUS)
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().popover)
-                .shadow_lg()
-                .children(rows)
-                .children(note)
-                .into_any_element(),
-        )
-    }
-
     pub(crate) fn add_response_annotation(
         &mut self,
         text: String,
@@ -1983,7 +1624,11 @@ impl AgentPane {
     pub(crate) fn submit_current_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.input.read(cx).text().to_string();
 
-        if self.submit_slash_input(&input, cx) {
+        if self.launch_for_input(&input, window, cx) {
+            return;
+        }
+
+        if self.submit_slash_input(&input, window, cx) {
             self.input_history_navigation.record_input_history(
                 &self.input_history_scope,
                 &input,
@@ -2000,207 +1645,157 @@ impl AgentPane {
 
     /// Route a leading slash before ordinary message handling. Every failure
     /// returns false so the user's input stays available for correction.
-    pub(super) fn submit_slash_input(&mut self, input: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn submit_slash_input(
+        &mut self,
+        input: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(session_host) = self.host.upgrade() else {
             return false;
         };
 
         let session_kind = session_host.read(cx).kind;
-        let session_profile = session_host.read(cx).profile.clone();
 
         if !self.binding.is_current() {
             return false;
         }
 
-        let Some(parsed) = parse_slash_command(input) else {
-            return false;
-        };
-
-        if parsed.name.is_empty() {
-            self.palette.set_feedback(
-                CommandFeedbackKind::Error,
-                t!("agent-composer-choose-command").to_string(),
-                cx,
-            );
-
-            return false;
-        }
-
         let catalog = self.command_catalog(cx);
+        let busy = self.is_command_busy();
 
-        let matched = catalog
-            .iter()
-            .find(|command| command.name == parsed.name)
-            .cloned();
-
-        let Some(command) = matched else {
-            // Where a skill is invoked by writing its name into the prompt, a
-            // slash line naming one is a message the harness expands, so
-            // refusing it as an unknown command would block the only way to
-            // reach a skill at all.
-            if session_kind.caps().slash_skills_are_prompts
-                && self.palette.names_a_skill(&parsed.name)
-            {
-                return self.send_text_inner(input.to_string(), None, None, cx);
-            }
-
-            self.palette.set_feedback(
-                CommandFeedbackKind::Error,
-                t!("agent-composer-unknown-command", name = &parsed.name).into_owned(),
-                cx,
-            );
-
+        let Some(route) = route_slash(
+            input,
+            &catalog,
+            session_kind.caps(),
+            self.session.borrow().skill_catalog(),
+            |name| self.command_choices(name, cx),
+            busy,
+        ) else {
             return false;
         };
 
-        // `/skills` owns a picker stage. A selected row rewrites the
-        // composer to `$name`; the slash input itself is never a provider
-        // command or an ordinary user turn.
-        if command.arguments == SlashCommandArguments::Skills {
-            let message = match self.palette.skill_catalog.as_ref() {
-                None => t!("agent-composer-skill-discovery-loading-period").to_string(),
-                Some(catalog) if catalog.skills.is_empty() && !catalog.errors.is_empty() => {
-                    catalog.errors[0].clone()
-                }
-                Some(catalog) if catalog.skills.is_empty() => {
-                    t!("agent-composer-no-skills-period").to_string()
-                }
-                Some(_) => t!("agent-composer-choose-skill").to_string(),
-            };
-
-            self.palette
-                .set_feedback(CommandFeedbackKind::Error, message, cx);
-
-            return false;
-        }
-
-        if command.arguments == SlashCommandArguments::None && !parsed.arguments.trim().is_empty() {
+        // A side chat is one ephemeral fork: it cannot be replaced, resumed,
+        // branched, renamed, or given a side chat of its own.
+        if self.side_chat_member
+            && matches!(
+                route,
+                SlashRoute::NewConversation
+                    | SlashRoute::Resume
+                    | SlashRoute::Rewind
+                    | SlashRoute::Rename(_)
+                    | SlashRoute::Fork
+                    | SlashRoute::Find(_)
+                    | SlashRoute::Side(_)
+            )
+        {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
-                t!("agent-composer-command-no-arguments", name = &command.name).into_owned(),
+                t!("agent-side-command-unavailable").into_owned(),
                 cx,
             );
 
             return false;
         }
 
-        if command.arguments == SlashCommandArguments::Choices {
-            if parsed.arguments.trim().is_empty() {
+        // These search the history or open a second transcript, and a
+        // remote view has no path to either yet. A new conversation, rewind,
+        // fork, and resume run on the host.
+        if self.remote.is_some() && matches!(route, SlashRoute::Find(_) | SlashRoute::Side(_)) {
+            self.palette.set_feedback(
+                CommandFeedbackKind::Error,
+                t!("agent-remote-unavailable").into_owned(),
+                cx,
+            );
+
+            return false;
+        }
+
+        match route {
+            SlashRoute::Refused(refusal) => {
                 self.palette.set_feedback(
                     CommandFeedbackKind::Error,
-                    t!("agent-composer-choose-value", name = &command.name).into_owned(),
+                    slash_refusal_message(refusal),
                     cx,
                 );
 
-                return false;
+                false
             }
+            SlashRoute::Prompt => self.send_text_inner(input.to_string(), None, None, cx),
+            SlashRoute::Model(value) => {
+                self.session.borrow_mut().controls.set_model(value.clone());
 
-            let choices = self.command_choices(&command.name, cx);
+                remember_defaults(self, cx);
 
-            match resolve_choice(&parsed.arguments, &choices) {
-                Ok(value) if command.name == "model" => {
-                    self.session.borrow_mut().controls.set_model(value.clone());
+                self.palette.set_feedback(
+                    CommandFeedbackKind::Notice,
+                    t!("agent-composer-model-set", value = &value).into_owned(),
+                    cx,
+                );
 
-                    remember_defaults(
-                        &self.session.borrow().controls,
-                        session_kind,
-                        &session_profile,
-                        cx,
-                    );
-
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Notice,
-                        t!("agent-composer-model-set", value = &value).into_owned(),
-                        cx,
-                    );
-
-                    // Where the harness adopts a model through its own request,
-                    // recording the pick is not applying it. This runs after the
-                    // notice so a refusal replaces it rather than hiding under
-                    // a confirmation of something that did not happen.
-                    if session_kind.caps().model_selection_is_a_request {
-                        self.apply_model_selection(cx);
-                    }
-
-                    return true;
-                }
-                Ok(value) if command.name == "permissions" => {
-                    self.session.borrow_mut().controls.settings.approval = Some(value.clone());
-
-                    remember_defaults(
-                        &self.session.borrow().controls,
-                        session_kind,
-                        &session_profile,
-                        cx,
-                    );
-
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Notice,
-                        t!(
-                            "agent-composer-permissions-set",
-                            value = &setting_value_label(&value)
-                        )
-                        .into_owned(),
-                        cx,
-                    );
-
-                    return true;
-                }
-                Ok(_) => {}
-                Err(message) => {
-                    self.palette
-                        .set_feedback(CommandFeedbackKind::Error, message, cx);
-
-                    return false;
-                }
-            }
-        }
-
-        match command.name.as_str() {
-            "new" | "clear" => {
-                if self.is_command_busy() {
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Error,
-                        t!("agent-composer-command-idle-only", name = &command.name).into_owned(),
-                        cx,
-                    );
-
-                    false
-                } else {
-                    self.reset_conversation(cx);
-
-                    true
-                }
-            }
-            "resume" => self.open_recent_sessions(cx),
-            "status" => {
-                self.show_status(cx);
+                // Where the harness adopts a model through its own request,
+                // recording the pick is not applying it. This runs after the
+                // notice so a refusal replaces it rather than hiding under
+                // a confirmation of something that did not happen.
+                self.apply_model_selection(cx);
 
                 true
             }
-            "rewind" if session_kind.caps().file_rewind => self.open_rewind(cx),
-            "rename" if session_kind.caps().session_rename => {
-                self.rename_conversation(&parsed.arguments, cx)
+            SlashRoute::Permissions(value) => {
+                let mut settings = self.session.borrow().controls.settings.clone();
+
+                settings.approval = Some(value.clone());
+
+                self.dispatch(UpdateSettings { settings }, cx, |_, (), _| ());
+
+                remember_defaults(self, cx);
+
+                self.palette.set_feedback(
+                    CommandFeedbackKind::Notice,
+                    t!(
+                        "agent-composer-permissions-set",
+                        value = &setting_value_label(&value)
+                    )
+                    .into_owned(),
+                    cx,
+                );
+
+                true
             }
-            "fork" if session_kind.caps().session_fork => self.open_fork(cx),
-            // Where the conversation is a file this side rewrites, the rewind
-            // picker cuts the same branch and offers restoring the files that
-            // turn touched alongside it. Opening a second picker for the
-            // smaller half of what one command already does would only hide
-            // the choice behind the name it was reached by.
-            "fork" if session_kind.caps().file_rewind => self.open_rewind(cx),
-            "find" if session_kind.caps().session_search => {
-                self.search_conversations(&parsed.arguments, cx)
+            SlashRoute::NewConversation => {
+                self.reset_conversation(cx);
+
+                true
             }
-            "model" | "permissions" => false,
-            _ => self.route_backend_command(
-                PendingSlashCommand {
-                    name: command.name,
-                    arguments: parsed.arguments,
-                },
-                command.run_policy,
-                cx,
-            ),
+            SlashRoute::Resume => self.open_recent_sessions(cx),
+            SlashRoute::Status => {
+                let summary = {
+                    let session = self.session.borrow();
+
+                    status_summary(
+                        session_kind,
+                        session.runtime().status(),
+                        &session.controls.settings,
+                        session.commands().queue.len(),
+                    )
+                };
+
+                // Answering /status is information the user asked for, so it
+                // holds rather than fading out from under them.
+                self.palette
+                    .set_feedback(CommandFeedbackKind::Status, summary, cx);
+
+                true
+            }
+            SlashRoute::Rewind => self.open_rewind(cx),
+            SlashRoute::Rename(arguments) => self.rename_conversation(&arguments, cx),
+            SlashRoute::Fork => self.open_fork(cx),
+            SlashRoute::Find(arguments) => self.search_conversations(&arguments, cx),
+            SlashRoute::Side(arguments) => self.ask_side_question(&arguments, window, cx),
+            SlashRoute::Unapplied => false,
+            SlashRoute::Backend { command, policy } => {
+                self.route_backend_command(command, policy, cx)
+            }
         }
     }
 
@@ -2211,42 +1806,40 @@ impl AgentPane {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.is_command_busy() {
-            let admission = self
-                .session
-                .borrow_mut()
-                .commands
-                .while_busy(command, policy);
+            let command = AdmitSlashCommand { command, policy };
 
-            return match admission {
-                CommandAdmission::Queued { name, count } => {
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Queued,
-                        t!(
-                            if count == 1 {
-                                "agent-composer-command-queued-one"
-                            } else {
-                                "agent-composer-command-queued-many"
-                            },
-                            name = &name,
-                            count = count
-                        )
-                        .into_owned(),
-                        cx,
-                    );
+            return self
+                .dispatch(command, cx, |this, admission, cx| match admission {
+                    CommandAdmission::Queued { name, count } => {
+                        this.palette.set_feedback(
+                            CommandFeedbackKind::Queued,
+                            t!(
+                                if count == 1 {
+                                    "agent-composer-command-queued-one"
+                                } else {
+                                    "agent-composer-command-queued-many"
+                                },
+                                name = &name,
+                                count = count
+                            )
+                            .into_owned(),
+                            cx,
+                        );
 
-                    true
-                }
-                CommandAdmission::Busy { name } => {
-                    self.palette.set_feedback(
-                        CommandFeedbackKind::Error,
-                        t!("agent-composer-command-idle-only", name = &name).into_owned(),
-                        cx,
-                    );
+                        true
+                    }
+                    CommandAdmission::Busy { name } => {
+                        this.palette.set_feedback(
+                            CommandFeedbackKind::Error,
+                            t!("agent-composer-command-idle-only", name = &name).into_owned(),
+                            cx,
+                        );
 
-                    false
-                }
-                CommandAdmission::Execute(command) => self.execute_backend_command(command, cx),
-            };
+                        false
+                    }
+                    CommandAdmission::Execute(command) => this.execute_backend_command(command, cx),
+                })
+                .unwrap_or(true);
         }
 
         self.execute_backend_command(command, cx)
@@ -2267,25 +1860,45 @@ impl AgentPane {
             return false;
         }
 
-        let outcome = self.session.borrow_mut().execute_command(&command);
+        let name = command.name.clone();
 
+        self.dispatch(RunSlashCommand { command }, cx, move |this, outcome, cx| {
+            this.present_command_outcome(&name, session_kind, outcome, cx)
+        })
+        .unwrap_or(true)
+    }
+
+    fn present_command_outcome(
+        &mut self,
+        name: &str,
+        session_kind: AgentKind,
+        outcome: SlashCommandOutcome,
+        cx: &mut Context<Self>,
+    ) -> bool {
         match outcome {
             SlashCommandOutcome::Accepted => {
                 self.history_ui.mode = RecentSessionsMode::Hidden;
 
                 self.palette.set_feedback(
                     CommandFeedbackKind::Notice,
-                    t!("agent-composer-command-starting", name = &command.name).into_owned(),
+                    t!("agent-composer-command-starting", name = name).into_owned(),
                     cx,
                 );
 
                 true
             }
-            SlashCommandOutcome::Completed { message } => {
+            SlashCommandOutcome::Completed { message, approval } => {
+                // The harness pins its own default preset into every
+                // conversation it opens, so a switch it accepted is remembered
+                // for the next one, whether it was picked or typed.
+                if approval.is_some() {
+                    remember_defaults(self, cx);
+                }
+
                 self.palette.set_feedback(
                     CommandFeedbackKind::Notice,
                     message.unwrap_or_else(|| {
-                        t!("agent-session-command-completed", name = &command.name).into_owned()
+                        t!("agent-session-command-completed", name = name).into_owned()
                     }),
                     cx,
                 );
@@ -2314,98 +1927,18 @@ impl AgentPane {
         }
     }
 
-    pub(crate) fn run_next_queued_command(&mut self, cx: &mut Context<Self>) {
-        if self.presenting_session_effect {
-            return;
-        }
-
-        if let Some(host) = self.host.upgrade() {
-            host.update(cx, |host, cx| host.advance_commands(cx));
-        }
-    }
-
-    pub(super) fn show_status(&mut self, cx: &mut Context<Self>) {
-        let Some(session_host) = self.host.upgrade() else {
-            return;
-        };
-
-        let session_kind = session_host.read(cx).kind;
-
-        let status = match self.session.borrow().runtime.status() {
-            Status::Starting => t!("agent-composer-status-starting"),
-            Status::Idle => t!("agent-composer-status-idle"),
-            Status::Running => t!("agent-composer-status-running"),
-            Status::Exited => t!("agent-composer-status-exited"),
-        };
-
-        let mut fields = vec![
-            t!(
-                "agent-composer-status-field",
-                name = t!("agent-composer-status-backend"),
-                value = session_kind.display()
-            )
-            .into_owned(),
-            t!(
-                "agent-composer-status-field",
-                name = t!("agent-composer-status-label"),
-                value = status
-            )
-            .into_owned(),
-        ];
-
-        for (name, value) in [
-            (
-                t!("agent-setting-model"),
-                self.session.borrow().controls.settings.model.as_deref(),
-            ),
-            (
-                t!("agent-setting-permissions"),
-                self.session.borrow().controls.settings.approval.as_deref(),
-            ),
-            (
-                t!("agent-setting-sandbox"),
-                self.session.borrow().controls.settings.sandbox.as_deref(),
-            ),
-            (
-                t!("agent-setting-effort"),
-                self.session.borrow().controls.settings.effort.as_deref(),
-            ),
-            (
-                t!("agent-setting-tier"),
-                self.session.borrow().controls.settings.tier.as_deref(),
-            ),
-        ] {
-            if let Some(value) = value {
-                fields.push(
-                    t!("agent-composer-status-field", name = name, value = value).into_owned(),
-                );
-            }
-        }
-
-        if !self.session.borrow().commands.queue.is_empty() {
-            fields.push(
-                t!(
-                    "agent-composer-status-field",
-                    name = t!("agent-composer-status-queued"),
-                    value = self.session.borrow().commands.queue.len()
-                )
-                .into_owned(),
-            );
-        }
-
-        // Answering /status is information the user asked for, so it holds
-        // rather than fading out from under them.
-        self.palette
-            .set_feedback(CommandFeedbackKind::Status, fields.join(" · "), cx);
-    }
-
     pub(super) fn skill_disabled_reason(&self, skill: &SkillInfo) -> Option<SharedString> {
         if !skill.enabled {
             Some(SharedString::from(t!("agent-composer-disabled-by-codex")))
         } else {
             // A skill is invoked through the harness, so it needs a session
-            // that has finished starting and has not ended.
-            match self.session.borrow().runtime.status() {
+            // that has finished starting and has not ended, or one whose
+            // launch waits for this submission.
+            if self.launch_deferred() {
+                return None;
+            }
+
+            match self.session.borrow().runtime().status() {
                 Status::Starting => Some(SharedString::from(t!("agent-composer-agent-starting"))),
                 Status::Exited => Some(SharedString::from(t!("agent-composer-agent-exited"))),
                 _ => None,
@@ -2420,13 +1953,14 @@ impl AgentPane {
 
         let session_kind = session_host.read(cx).kind;
 
+        let epoch = self.session.borrow().runtime().epoch();
         let language = rust_i18n::locale();
 
         if let Some(cached) = self
             .palette
             .catalog
             .as_ref()
-            .filter(|cached| cached.language == *language)
+            .filter(|cached| cached.language == *language && cached.epoch == epoch)
         {
             return cached.commands.clone();
         }
@@ -2434,7 +1968,7 @@ impl AgentPane {
         let adapter = self
             .session
             .borrow()
-            .runtime
+            .runtime()
             .backend()
             .map(Backend::adapter_commands)
             .unwrap_or_else(|| adapter_commands(session_kind));
@@ -2442,12 +1976,17 @@ impl AgentPane {
         let commands: Rc<[SlashCommandInfo]> = merge_catalog(
             local_commands(),
             adapter,
-            self.palette.provider_commands.clone(),
+            self.session
+                .borrow()
+                .command_catalog()
+                .unwrap_or_default()
+                .to_vec(),
         )
         .into();
 
         self.palette.catalog = Some(CachedCatalog {
             language: language.to_string(),
+            epoch,
             commands: commands.clone(),
         });
 
@@ -2532,33 +2071,7 @@ impl AgentPane {
     }
 
     pub(crate) fn present_questions(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(session_host) = self.host.upgrade() else {
-            return;
-        };
-
-        let session_kind = session_host.read(cx).kind;
-
-        self.prompts.reveal(&self.session.borrow().input, index);
-
-        let shared = self.session.clone();
-        let state = shared.borrow();
-        let prompt = &state.input.batches()[index];
-        let waiting = prompt.mode() != QuestionMode::Async;
-
-        let description = prompt
-            .questions()
-            .first()
-            .map(|question| question.question.clone())
-            .unwrap_or_default();
-
-        if waiting {
-            self.emit_lifecycle(
-                AgentEventKind::PermissionRequested,
-                &t!("agent-session-needs-input", name = session_kind.display()),
-                &description,
-                cx,
-            );
-        }
+        self.prompts.reveal(self.session.borrow().input(), index);
 
         cx.notify();
     }
@@ -2570,15 +2083,9 @@ impl AgentPane {
     ) {
         if completion.started_turn {
             self.start_working(cx);
-
-            self.emit_lifecycle(AgentEventKind::PromptSubmitted, "", "", cx);
         }
 
-        self.prompts.hide_settled(&self.session.borrow().input);
-
-        if completion.waiting_finished {
-            self.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx);
-        }
+        self.prompts.hide_settled(self.session.borrow().input());
 
         self.transcript.update(cx, |_, cx| cx.notify());
 
@@ -2596,7 +2103,7 @@ impl AgentPane {
         }
 
         self.prompts
-            .open_history(&mut self.session.borrow_mut().input, item_id, questions);
+            .open_history(self.session.borrow_mut().input_mut(), item_id, questions);
 
         cx.notify();
     }
@@ -2611,84 +2118,38 @@ impl AgentPane {
             return;
         }
 
-        if let Some(prompt) = self
+        if self
             .prompts
-            .questions_mut(&mut self.session.borrow_mut().input)
+            .toggle_option(self.session.borrow_mut().input_mut(), question, option)
         {
-            prompt.toggle(question, option);
-
-            if let Some(active) = self.prompts.active
-                && let Some(presentation) = self.prompts.presentations.get_mut(&active)
-            {
-                presentation.focus = (question, option);
-            }
-
             cx.notify();
         }
     }
 
-    fn handle_question_control(&mut self, control: PaletteControl, cx: &mut Context<Self>) -> bool {
-        if !self.binding.is_current() {
-            return false;
-        }
-
-        if self.prompts.collapsed {
-            return false;
-        }
-
-        let Some(key) = self.prompts.active else {
-            return false;
-        };
-
-        let mut state = self.session.borrow_mut();
-
-        let Some(prompt) = state.input.draft_mut(key) else {
-            return false;
-        };
-
-        if prompt.mode() == QuestionMode::Async || prompt.status() != QuestionStatus::Pending {
-            return false;
-        }
-
-        let Some(presentation) = self.prompts.presentations.get_mut(&key) else {
-            return false;
-        };
-
-        let handled = match control {
-            PaletteControl::Previous => presentation.move_focus(prompt, false),
-            PaletteControl::Next => presentation.move_focus(prompt, true),
-            PaletteControl::Activate => {
-                let (question, option) = presentation.focus;
-
-                if prompt
-                    .questions()
-                    .get(question)
-                    .and_then(|question| question.options.get(option))
-                    .is_none()
-                {
-                    return false;
-                }
-
-                prompt.toggle(question, option);
-
-                true
-            }
-            PaletteControl::Complete | PaletteControl::Dismiss => false,
-        };
-
-        if handled {
-            cx.stop_propagation();
-
+    /// Show the next or previous question of a batch answered one question
+    /// at a time.
+    pub(crate) fn step_questions(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.prompts.step(self.session.borrow().input(), forward) {
             cx.notify();
         }
+    }
 
-        handled
+    /// Enter in an answer: move on to the next question while stepping
+    /// through a batch, submit the batch otherwise.
+    pub(crate) fn advance_or_submit_questions(&mut self, cx: &mut Context<Self>) {
+        if self.prompts.step(self.session.borrow().input(), true) {
+            cx.notify();
+
+            return;
+        }
+
+        self.submit_current_questions(cx);
     }
 
     pub(crate) fn submit_current_questions(&mut self, cx: &mut Context<Self>) {
         let key = self
             .prompts
-            .questions(&self.session.borrow().input)
+            .questions(self.session.borrow().input())
             .map(|prompt| prompt.key());
 
         if let Some(key) = key {
@@ -2699,7 +2160,7 @@ impl AgentPane {
     pub(crate) fn skip_current_questions(&mut self, cx: &mut Context<Self>) {
         let key = self
             .prompts
-            .questions(&self.session.borrow().input)
+            .questions(self.session.borrow().input())
             .map(|prompt| prompt.key());
 
         if let Some(key) = key {
@@ -2717,487 +2178,49 @@ impl AgentPane {
             return;
         }
 
-        let outcome = self
-            .session
-            .borrow_mut()
-            .submit_question(key, action, Instant::now());
-
-        match outcome {
-            QuestionSubmission::Ignored => return,
-            QuestionSubmission::Settled { waiting_finished } => {
-                if waiting_finished {
-                    self.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx);
-                }
-            }
-            QuestionSubmission::Waiting | QuestionSubmission::Failed => {}
-        }
-
-        self.prompts.hide_settled(&self.session.borrow().input);
-
-        cx.notify();
-    }
-
-    pub(crate) fn prepare_question_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.prompts.collapsed {
-            return;
-        }
-
-        let Some(batch) = self.prompts.active else {
-            return;
-        };
-
-        let shared = self.session.clone();
-        let state = shared.borrow();
-
-        let Some(prompt) = state.input.draft(batch) else {
-            return;
-        };
-
-        let count = prompt.questions().len();
-
-        self.prompts
-            .presentations
-            .entry(batch)
-            .or_insert_with(|| QuestionPresentation::new(prompt));
-
-        drop(state);
-
-        for index in 0..count {
-            let shared = self.session.clone();
-            let state = shared.borrow();
-
-            let Some(prompt) = state.input.draft(batch) else {
-                return;
-            };
-
-            let input = prompt.questions()[index].input;
-
-            if input == QuestionInput::SelectionOnly
-                || self.prompts.presentations[&batch].editors[index].is_some()
-                || !prompt.pending()
-            {
-                continue;
-            }
-
-            let text = prompt.text(index).to_string();
-            let key = prompt.key();
-            let epoch = self.session.borrow().runtime.epoch();
-
-            let on_change = move |this: &mut Self, value: String, cx: &mut Context<Self>| {
-                if !this.binding.is_current() || !this.session.borrow().runtime.is_current(epoch) {
-                    return;
-                }
-
-                let mut state = this.session.borrow_mut();
-
-                let Some(prompt) = state.input.draft_mut(key) else {
-                    return;
-                };
-
-                if !prompt.set_text(index, value) {
-                    return;
-                }
-
-                cx.notify();
-            };
-
-            let (state, subscription) = if input == QuestionInput::Secret {
-                let state = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .masked(true)
-                        .placeholder(t!("agent-question-free-text"))
-                        .default_value(text)
-                });
-
-                let subscription = cx.subscribe(&state, move |this, input, event, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        on_change(this, input.read(cx).value().to_string(), cx);
-                    }
-                });
-
-                (QuestionEditorState::Secret(state), subscription)
-            } else {
-                let state = cx.new(|cx| {
-                    TextareaState::new(window, cx)
-                        .auto_grow(1, 4)
-                        .placeholder(t!("agent-question-free-text"))
-                        .default_value(text)
-                });
-
-                let subscription = cx.subscribe(&state, move |this, input, event, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        on_change(this, input.read(cx).value().to_string(), cx);
-                    }
-                });
-
-                (QuestionEditorState::Text(state), subscription)
-            };
-
-            if let Some(presentation) = self.prompts.presentations.get_mut(&batch) {
-                presentation.editors[index] = Some(QuestionEditor::new(state, subscription));
-            }
-        }
-    }
-
-    pub(crate) fn render_question_panel(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let count = self.session.borrow().input.pending_count();
-
-        if self.prompts.collapsed && count == 0 {
-            return None;
-        }
-
-        self.prepare_question_editors(window, cx);
-
-        let active = self.prompts.active?;
-        let shared = self.session.clone();
-        let state = shared.borrow();
-        let prompt = self.prompts.questions(&state.input)?;
-        let collapsed = self.prompts.collapsed;
-        let pending = prompt.pending();
-
-        let enabled = self
+        let answers = self
             .session
             .borrow()
-            .input
-            .can_submit(&self.session.borrow().runtime, prompt.key())
-            && !self.branch_flow_holds_composer()
-            && !self.session.borrow().commands.awaiting_turn;
+            .input()
+            .draft(key)
+            .map(QuestionDraft::draft_answers);
 
-        let presentation = self.prompts.presentations.get(&active)?;
-
-        let status = match prompt.status() {
-            QuestionStatus::Pending => {
-                if prompt.mode() == QuestionMode::Async {
-                    "agent-question-async"
-                } else {
-                    "agent-question-pending"
-                }
-            }
-            QuestionStatus::Submitting => "agent-question-submitting",
-            QuestionStatus::Submitted => "agent-question-submitted",
-            QuestionStatus::Skipped => "agent-question-skipped",
-            QuestionStatus::Expired => "agent-question-expired",
-            QuestionStatus::History => "agent-question-history",
+        let Some(answers) = answers else {
+            return;
         };
 
-        let count_label = t!("agent-question-count", count = count).into_owned();
+        let command = AnswerQuestion {
+            key,
+            action,
+            answers,
+        };
 
-        let mut heading = h_flex().w_full().items_center().gap_2().child(
-            div()
-                .flex_1()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(cx.theme().muted_foreground)
-                .child(if count > 0 {
-                    count_label
-                } else {
-                    t!(status).to_string()
-                }),
-        );
-
-        let candidates: Vec<QuestionKey> = self
-            .session
-            .borrow()
-            .input
-            .batches()
-            .iter()
-            .filter_map(|prompt| {
-                (prompt.pending() || prompt.key() == active).then_some(prompt.key())
-            })
-            .collect();
-
-        if candidates.len() > 1 {
-            let position = candidates
-                .iter()
-                .position(|index| *index == active)
-                .unwrap_or(0);
-
-            let previous = candidates[(position + candidates.len() - 1) % candidates.len()];
-            let next = candidates[(position + 1) % candidates.len()];
-
-            heading = heading
-                .child(
-                    Button::new("question-previous-batch")
-                        .ghost()
-                        .small()
-                        .label("<")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.prompts.active = Some(previous);
-                            this.prompts.collapsed = false;
-
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .child(format!("{} / {}", position + 1, candidates.len())),
-                )
-                .child(
-                    Button::new("question-next-batch")
-                        .ghost()
-                        .small()
-                        .label(">")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.prompts.active = Some(next);
-                            this.prompts.collapsed = false;
-
-                            cx.notify();
-                        })),
-                );
-        }
-
-        heading = heading.child(
-            Button::new("question-collapse")
-                .ghost()
-                .small()
-                .label(t!(if collapsed {
-                    "agent-question-open"
-                } else {
-                    "agent-question-collapse"
-                }))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.prompts.collapsed = !this.prompts.collapsed;
-
-                    cx.notify();
-                })),
-        );
-
-        let mut panel = v_flex()
-            .w_full()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border.opacity(0.65))
-            .bg(cx.theme().muted.opacity(0.2))
-            .child(heading)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if let Some(prompt) = this
-                        .prompts
-                        .questions_mut(&mut this.session.borrow_mut().input)
-                    {
-                        prompt.touch();
+        self.dispatch(command, cx, |this, outcome, cx| {
+            match outcome {
+                Submission::Ignored => return,
+                Submission::Settled { waiting_finished } => {
+                    if waiting_finished {
+                        this.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx);
                     }
-
-                    cx.notify();
-                }),
-            )
-            .capture_key_down(cx.listener(|this, _, _, cx| {
-                if let Some(prompt) = this
-                    .prompts
-                    .questions_mut(&mut this.session.borrow_mut().input)
-                {
-                    prompt.touch();
                 }
-
-                cx.notify();
-            }));
-
-        if collapsed {
-            return Some(panel.into_any_element());
-        }
-
-        let mut rows = Vec::new();
-
-        for (index, question) in prompt.questions().iter().enumerate() {
-            let group: SharedString = format!("question-{active:?}-{index}").into();
-
-            let mut row = v_flex()
-                .w_full()
-                .gap_1p5()
-                .children(
-                    question
-                        .header
-                        .as_ref()
-                        .filter(|header| !header.is_empty())
-                        .map(|header| {
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(header.clone())
-                        }),
-                )
-                .child(div().text_sm().child(question.question.clone()));
-
-            for (option_index, option) in question.options.iter().enumerate() {
-                let label = option
-                    .description
-                    .as_ref()
-                    .filter(|description| !description.is_empty())
-                    .map_or_else(
-                        || option.label.clone(),
-                        |description| format!("{} — {description}", option.label),
-                    );
-
-                let control = if question.multi_select {
-                    Checkbox::new((group.clone(), option_index))
-                        .label(label)
-                        .checked(prompt.is_selected(index, option_index))
-                        .disabled(!enabled)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_question_option(index, option_index, cx)
-                        }))
-                        .into_any_element()
-                } else {
-                    Radio::new((group.clone(), option_index))
-                        .label(label)
-                        .checked(prompt.is_selected(index, option_index))
-                        .disabled(!enabled)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_question_option(index, option_index, cx)
-                        }))
-                        .into_any_element()
-                };
-
-                row = row.child(
-                    div()
-                        .w_full()
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded(UI_RADIUS)
-                        .when(
-                            presentation.is_focused(index, option_index)
-                                && prompt.mode() != QuestionMode::Async
-                                && enabled,
-                            |this| this.bg(cx.theme().list_active),
-                        )
-                        .child(control),
-                );
+                Submission::Waiting | Submission::Failed => {}
             }
 
-            if question.input != QuestionInput::SelectionOnly {
-                if !question.options.is_empty() {
-                    row = row.child(
-                        Radio::new((group.clone(), question.options.len()))
-                            .label(t!("agent-question-custom").into_owned())
-                            .checked(prompt.is_custom(index))
-                            .disabled(!enabled)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(prompt) = this
-                                    .prompts
-                                    .questions_mut(&mut this.session.borrow_mut().input)
-                                {
-                                    if !prompt.choose_custom(index) {
-                                        return;
-                                    }
+            this.prompts.hide_settled(this.session.borrow().input());
 
-                                    if let Some(active) = this.prompts.active
-                                        && let Some(presentation) =
-                                            this.prompts.presentations.get(&active)
-                                        && let Some(editor) = &presentation.editors[index]
-                                    {
-                                        editor.focus(window, cx);
-                                    }
-
-                                    cx.notify();
-                                }
-                            })),
-                    );
-                }
-
-                if pending {
-                    if let Some(editor) = &presentation.editors[index] {
-                        row = row.child(editor.render(!enabled));
-                    }
-                } else if prompt.status() == QuestionStatus::Submitted && prompt.is_custom(index) {
-                    row = row.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if question.input == QuestionInput::Secret {
-                                t!("agent-question-secret-submitted").to_string()
-                            } else {
-                                prompt.text(index).to_string()
-                            }),
-                    );
-                }
-            }
-
-            rows.push(row.into_any_element());
-        }
-
-        panel = panel.child(
-            v_flex()
-                .id(SharedString::from(format!("question-scroll-{active:?}")))
-                .w_full()
-                .max_h((window.viewport_size().height * 0.4).min(px(280.)))
-                .overflow_y_scroll()
-                .gap_3()
-                .children(rows),
-        );
-
-        if let Some(error) = prompt.error() {
-            let error = match error {
-                QuestionError::Disconnected => t!("agent-question-disconnected").to_string(),
-                QuestionError::Rejected(message) => message.clone(),
-            };
-
-            panel = panel.child(div().text_sm().text_color(cx.theme().danger).child(error));
-        }
-
-        if let Some(remaining) = prompt
-            .auto_resolve_remaining(Instant::now())
-            .filter(|remaining| remaining.as_secs() <= 60)
-        {
-            panel = panel.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
-                        t!("agent-question-timeout", seconds = remaining.as_secs()).into_owned(),
-                    ),
-            );
-        }
-
-        let mut footer = h_flex().w_full().items_center().gap_2().child(
-            div()
-                .flex_1()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(t!(status)),
-        );
-
-        if pending {
-            footer = footer
-                .child(
-                    Button::new("question-skip")
-                        .ghost()
-                        .disabled(!enabled)
-                        .label(t!(if prompt.mode() == QuestionMode::Async {
-                            "agent-question-dismiss"
-                        } else {
-                            "agent-question-skip"
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| this.skip_current_questions(cx))),
-                )
-                .child(
-                    Button::new("question-submit")
-                        .primary()
-                        .disabled(!enabled || !prompt.is_complete())
-                        .label(t!("agent-question-submit"))
-                        .on_click(cx.listener(|this, _, _, cx| this.submit_current_questions(cx))),
-                );
-        }
-
-        Some(panel.child(footer).into_any_element())
+            cx.notify();
+        });
     }
 
     pub fn refresh_background_tasks(&mut self) {
-        self.session.borrow_mut().runtime.refresh_background_tasks();
+        self.session.borrow_mut().refresh_background_tasks();
     }
 
     /// Provider-qualified identity of the parent session child tasks belong to.
     /// `None` until the backend reports a thread or session id, which is what
     /// disables the title-bar `Background Tasks` button.
     pub fn background_task_parent(&self) -> Option<BackgroundTaskKey> {
-        self.session.borrow().runtime.background_task_parent()
+        self.session.borrow().runtime().background_task_parent()
     }
 
     /// Ask the provider for one child's conversation. A provider that already
@@ -3221,10 +2244,7 @@ impl AgentPane {
             return false;
         }
 
-        self.session
-            .borrow_mut()
-            .runtime
-            .interrupt_background_task(key)
+        self.session.borrow_mut().interrupt_background_task(key)
     }
 
     /// One child's conversation, only while the pane still holds the session
@@ -3290,35 +2310,42 @@ impl AgentPane {
             return false;
         }
 
-        let outcome = match self.session.borrow_mut().runtime.backend_mut() {
-            Some(session) => session.rename_conversation(title).map_err(operation_error),
-            None => Err(t!(
-                "agent-session-still-starting",
-                name = session_kind.display()
-            )
-            .into_owned()),
+        let command = RenameConversation {
+            title: title.to_owned(),
         };
 
-        // The accepted title is echoed rather than the requested one: the
-        // backend normalizes what it stores, and confirming text it did not
-        // keep would describe a rename that did not happen that way.
-        match outcome {
-            Ok(accepted) => {
-                self.palette.set_feedback(
-                    CommandFeedbackKind::Notice,
-                    t!("agent-session-renamed", title = &accepted).into_owned(),
-                    cx,
-                );
+        self.dispatch(command, cx, move |this, outcome, cx| {
+            let outcome = match outcome {
+                Some(outcome) => outcome.map_err(operation_error),
+                None => Err(t!(
+                    "agent-session-still-starting",
+                    name = session_kind.display()
+                )
+                .into_owned()),
+            };
 
-                true
-            }
-            Err(error) => {
-                self.palette
-                    .set_feedback(CommandFeedbackKind::Error, error, cx);
+            // The backend answers with the title it was asked for. What it
+            // keeps after its own normalization reaches the tab as a title
+            // update, and a refusal is reported in the transcript.
+            match outcome {
+                Ok(accepted) => {
+                    this.palette.set_feedback(
+                        CommandFeedbackKind::Notice,
+                        t!("agent-session-renamed", title = &accepted).into_owned(),
+                        cx,
+                    );
 
-                false
+                    true
+                }
+                Err(error) => {
+                    this.palette
+                        .set_feedback(CommandFeedbackKind::Error, error, cx);
+
+                    false
+                }
             }
-        }
+        })
+        .unwrap_or(true)
     }
 
     /// Ask the backend which earlier conversations mention a phrase.
@@ -3349,9 +2376,7 @@ impl AgentPane {
             return false;
         }
 
-        let mut state = self.session.borrow_mut();
-
-        let Some(session) = state.runtime.backend_mut() else {
+        if !self.session.borrow_mut().search_sessions(query) {
             self.palette.set_feedback(
                 CommandFeedbackKind::Error,
                 t!(
@@ -3363,9 +2388,7 @@ impl AgentPane {
             );
 
             return false;
-        };
-
-        session.search_sessions(query);
+        }
 
         self.palette.set_feedback(
             CommandFeedbackKind::Notice,
@@ -3374,6 +2397,249 @@ impl AgentPane {
         );
 
         true
+    }
+
+    /// Open the Side Chat for `question`. Where the harness answers side
+    /// questions in place, the answer lands in the side transcript; where it
+    /// forks a side thread, the question goes to that thread's own session.
+    /// Either way the window opens, or comes back from being minimized.
+    pub(crate) fn ask_side_question(
+        &mut self,
+        question: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session_host) = self.host.upgrade() else {
+            return false;
+        };
+
+        let session_kind = session_host.read(cx).kind;
+
+        if !self.binding.is_current() {
+            return false;
+        }
+
+        let question = question.trim();
+
+        if session_kind.caps().side_threads {
+            return self.ask_side_thread(question, window, cx);
+        }
+
+        let refusal = if question.is_empty() {
+            t!("agent-side-needs-question").into_owned()
+        } else {
+            let outcome = self
+                .session
+                .borrow_mut()
+                .ask_side_question(question.to_owned());
+
+            match outcome {
+                SideQuestionOutcome::Asked => {
+                    self.side_chat.minimized = false;
+
+                    self.sync_side_chat(cx);
+
+                    return true;
+                }
+                SideQuestionOutcome::Busy => t!("agent-side-busy").into_owned(),
+                SideQuestionOutcome::Unsupported => {
+                    t!("agent-side-unsupported", name = session_kind.display()).into_owned()
+                }
+                SideQuestionOutcome::Failed(error) => {
+                    t!("agent-side-failed", error = &error).into_owned()
+                }
+            }
+        };
+
+        self.palette
+            .set_feedback(CommandFeedbackKind::Error, refusal, cx);
+
+        false
+    }
+
+    /// Send `question` to the side thread, forking one first when there is
+    /// none. An empty question opens the side thread without asking anything.
+    fn ask_side_thread(
+        &mut self,
+        question: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(thread) = &self.side_chat.thread {
+            let pane = thread.pane.clone();
+
+            if !question.is_empty() {
+                let question = question.to_owned();
+
+                pane.update(cx, |pane, cx| pane.send_side_prompt(question, cx));
+            }
+
+            self.side_chat.minimized = false;
+
+            pane.update(cx, |pane, cx| pane.focus(window, cx));
+
+            self.sync_side_chat(cx);
+
+            return true;
+        }
+
+        let Some(parent_thread) = self.session.borrow().side_parent_thread() else {
+            self.palette.set_feedback(
+                CommandFeedbackKind::Error,
+                t!("agent-side-needs-history").into_owned(),
+                cx,
+            );
+
+            return false;
+        };
+
+        let Some(session_host) = self.host.upgrade() else {
+            return false;
+        };
+
+        let (profile, workspace) = {
+            let host = session_host.read(cx);
+
+            (host.profile.clone(), host.active_workspace.clone())
+        };
+
+        let settings = self.session.borrow().controls.settings.clone();
+
+        let side = SideStart {
+            parent_thread_id: parent_thread.clone(),
+            model: settings.model.clone(),
+            effort: settings.effort.clone(),
+        };
+
+        let owner = AgentSession::create_side(profile, workspace, side, settings, cx);
+
+        let pane = cx.new(|cx| {
+            let mut pane = AgentPane::attach_side_chat(&owner, window, cx);
+
+            // The fork is still being prepared, so the question waits for the
+            // side session to be ready rather than being refused as early.
+            if !question.is_empty() {
+                pane.pending_side_prompt = Some(question.to_owned());
+            }
+
+            pane
+        });
+
+        owner.start(None, cx);
+
+        pane.update(cx, |pane, cx| pane.focus(window, cx));
+
+        self.side_chat.thread = Some(SideThread {
+            owner,
+            pane,
+            parent_thread,
+        });
+
+        self.side_chat.minimized = false;
+
+        self.sync_side_chat(cx);
+
+        true
+    }
+
+    /// Send `text` in this side chat, or hold it until the side session is
+    /// ready when its fork is still being prepared.
+    fn send_side_prompt(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.session.borrow().runtime().status() == Status::Starting {
+            self.pending_side_prompt = Some(text);
+
+            return;
+        }
+
+        self.send_text_with_skill(text, None, cx);
+    }
+
+    /// Ask before discarding the side chat: closing drops every exchange, and
+    /// nothing of it was ever part of the conversation to find again.
+    pub(crate) fn confirm_close_side_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = cx.entity();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let pane = pane.clone();
+
+            alert
+                .centered(true)
+                .confirm()
+                .title(t!("agent-side-close-title"))
+                .description(t!("agent-side-close-description").into_owned())
+                .on_ok(move |_, _, cx| {
+                    pane.update(cx, |pane, cx| pane.close_side_chat(cx));
+
+                    true
+                })
+        });
+    }
+
+    /// Discard the side chat. Closing a side thread's owner stops its turn,
+    /// unsubscribes its thread, and releases its registration on the shared
+    /// host, which keeps running for the parent.
+    fn close_side_chat(&mut self, cx: &mut Context<Self>) {
+        self.session.borrow_mut().close_side_questions();
+
+        if let Some(thread) = self.side_chat.thread.take() {
+            thread.owner.close();
+        }
+
+        self.side_chat.minimized = false;
+
+        self.sync_side_chat(cx);
+    }
+
+    /// Minimize the Side Chat window, or bring it back. Answers keep arriving
+    /// while it is minimized.
+    pub fn toggle_side_chat(&mut self, cx: &mut Context<Self>) {
+        if self.side_chat_shown().is_none() {
+            return;
+        }
+
+        self.side_chat.minimized = !self.side_chat.minimized;
+
+        self.sync_side_chat(cx);
+    }
+
+    /// Whether the Side Chat window is showing, or `None` while there is no
+    /// side chat to show.
+    pub fn side_chat_shown(&self) -> Option<bool> {
+        let open =
+            self.side_chat.thread.is_some() || self.session.borrow().side_questions().is_open();
+
+        open.then_some(!self.side_chat.minimized)
+    }
+
+    /// A side thread forked from a thread this conversation no longer runs
+    /// on: a new conversation, a resumed one, or a branch replaced it. The
+    /// side chat answers about the conversation it was forked from, so it is
+    /// closed rather than left describing one that is gone.
+    fn close_orphaned_side_thread(&mut self, cx: &mut Context<Self>) {
+        let parent = self.session.borrow().side_parent_thread();
+
+        if self
+            .side_chat
+            .thread
+            .as_ref()
+            .is_some_and(|thread| Some(&thread.parent_thread) != parent.as_ref())
+        {
+            self.close_side_chat(cx);
+        }
+    }
+
+    /// Bring the side transcript up to date and tell the chrome, whose Side
+    /// Chat control follows whether the window exists and is showing.
+    fn sync_side_chat(&mut self, cx: &mut Context<Self>) {
+        self.side_chat.transcript.update(cx, |view, cx| {
+            view.sync_content();
+
+            cx.notify();
+        });
+
+        self.emit_event(AgentPaneEvent::SideChatActivity, cx);
+
+        cx.notify();
     }
 
     /// Show what one search matched, in place of whatever the list held.
@@ -3417,40 +2683,39 @@ impl AgentPane {
             return;
         }
 
-        let removed = self
-            .session
-            .borrow_mut()
-            .runtime
-            .backend_mut()
-            .is_some_and(|session| session.remove_queued_prompt(item_id));
+        let command = WithdrawQueuedPrompt {
+            item_id: item_id.to_owned(),
+        };
 
-        if !removed {
-            self.palette.set_feedback(
-                CommandFeedbackKind::Error,
-                t!("agent-session-queued-remove-failed").to_string(),
-                cx,
-            );
+        self.dispatch(command, cx, |this, removed, cx| {
+            if !removed {
+                this.palette.set_feedback(
+                    CommandFeedbackKind::Error,
+                    t!("agent-session-queued-remove-failed").to_string(),
+                    cx,
+                );
 
-            return;
-        }
+                return;
+            }
 
-        self.session.borrow_mut().delivery.removed(item_id);
-
-        cx.notify();
+            cx.notify();
+        });
     }
 
     pub(super) fn present_session_effect(&mut self, effect: SessionEffect, cx: &mut Context<Self>) {
-        let Some(session_host) = self.host.upgrade() else {
+        // A pane outliving its session has no effect left to present.
+        if self.host.upgrade().is_none() {
             return;
-        };
-
-        let session_kind = session_host.read(cx).kind;
-        let session_profile = session_host.read(cx).profile.clone();
-
-        self.presenting_session_effect = true;
+        }
 
         self.transcript
             .update(cx, |transcript, _| transcript.sync_content());
+
+        self.side_chat.transcript.update(cx, |transcript, cx| {
+            transcript.sync_content();
+
+            cx.notify();
+        });
 
         match effect {
             SessionEffect::Unchanged => {}
@@ -3458,93 +2723,49 @@ impl AgentPane {
             SessionEffect::TeamDecision(_) => {}
             SessionEffect::ProviderTurnFinished { .. } => {}
             SessionEffect::Changed => cx.notify(),
-            SessionEffect::Title(title) => {
-                self.emit_event(AgentPaneEvent::TitleSuggested(title), cx)
-            }
+            SessionEffect::Title(_) => {}
             SessionEffect::Ready(settings) => self.on_ready(settings, cx),
-            SessionEffect::Commands(commands) => {
-                self.palette.provider_commands = commands;
+            SessionEffect::Commands => {
                 self.palette.catalog = None;
-                self.palette.provider_commands_ready = true;
                 self.palette.selected = 0;
 
                 cx.notify();
             }
-            SessionEffect::Skills(catalog) => {
-                self.palette.skill_catalog = Some(catalog);
+            SessionEffect::Skills => {
                 self.palette.selected = 0;
 
                 cx.notify();
             }
-            SessionEffect::CommandResult {
-                name,
-                outcome,
-                advance,
-            } => {
-                self.on_slash_command_result(&name, outcome, advance, cx);
+            SessionEffect::CommandResult { name, outcome } => {
+                self.on_slash_command_result(&name, outcome, cx);
             }
             SessionEffect::TurnStarted { opened } => self.on_turn_started(opened, cx),
-            SessionEffect::TurnCompleted { error, .. } => self.on_turn_completed(error, cx),
-            SessionEffect::OutputTokens(_)
-            | SessionEffect::ContextWindow(_)
-            | SessionEffect::ContextComposition(_)
-            | SessionEffect::CompactionStarted
-            | SessionEffect::CompactionFinished { .. }
-            | SessionEffect::ItemStarted(_)
-            | SessionEffect::ItemCompleted(_)
-            | SessionEffect::TextDelta { .. }
-            | SessionEffect::ConfirmedPrompts(_)
-            | SessionEffect::Goal(_)
-            | SessionEffect::PlanMode(_)
-            | SessionEffect::Stats(_)
-            | SessionEffect::StatusDetail(_) => cx.notify(),
-            SessionEffect::ApprovalRequested => {
-                self.emit_lifecycle(
-                    AgentEventKind::PermissionRequested,
-                    &t!("agent-session-needs-input", name = session_kind.display()),
-                    self.session.borrow().input.approval().unwrap_or_default(),
-                    cx,
-                );
-
-                cx.notify();
-            }
-            SessionEffect::ApprovalResolved => {
-                self.emit_lifecycle(AgentEventKind::ToolFinished, "", "", cx);
-
-                cx.notify();
-            }
+            SessionEffect::TurnCompleted { .. } => self.on_turn_completed(cx),
+            SessionEffect::StatusDetail(_) => cx.notify(),
+            SessionEffect::ApprovalRequested | SessionEffect::ApprovalResolved => cx.notify(),
             SessionEffect::InputRequested { index } => self.present_questions(index, cx),
             SessionEffect::InputResolved(completion) => {
                 self.present_question_completion(completion, cx)
             }
-            SessionEffect::Workflows { activity_changed } => {
-                if activity_changed {
-                    self.emit_event(AgentPaneEvent::WorkflowActivity, cx);
-                }
-
-                cx.notify();
-            }
-            SessionEffect::BackgroundActivity => {
-                self.emit_event(AgentPaneEvent::BackgroundTaskActivity, cx);
-
-                cx.notify();
-            }
+            SessionEffect::Workflows { .. } | SessionEffect::BackgroundActivity => cx.notify(),
             SessionEffect::Branch(update @ BranchUpdate::Branching) => {
                 self.on_fork_update(update, cx)
             }
             SessionEffect::Branch(update) => self.on_rewind_update(update, cx),
+            SessionEffect::BranchClosed => {
+                self.branch.draft = None;
+
+                self.release_transcript_from_picker(cx);
+
+                cx.notify();
+            }
             SessionEffect::Error {
                 message,
                 fatal,
                 failure,
             } => self.on_error(message, fatal, failure, cx),
             SessionEffect::EffortRejected { message } => {
-                remember_defaults(
-                    &self.session.borrow().controls,
-                    session_kind,
-                    &session_profile,
-                    cx,
-                );
+                remember_defaults(self, cx);
 
                 self.palette
                     .set_feedback(CommandFeedbackKind::Error, message, cx);
@@ -3565,46 +2786,12 @@ impl AgentPane {
 
                 self.transcript
                     .update(cx, |transcript, _| transcript.sync_content());
+
+                if let Some(title) = replay.title {
+                    self.emit_event(AgentPaneEvent::TitleSuggested(title), cx);
+                }
             }
-            SessionEffect::ForkCheckpoints(checkpoints) => {
-                self.show_fork_checkpoints(checkpoints, cx)
-            }
-            SessionEffect::HostExited { message } => self.on_host_exited(message, cx),
         }
-
-        self.presenting_session_effect = false;
-    }
-
-    fn on_host_exited(&mut self, message: String, cx: &mut Context<Self>) {
-        let Some(session_host) = self.host.upgrade() else {
-            return;
-        };
-
-        let session_profile = session_host.read(cx).profile.clone();
-
-        let identity = self
-            .session
-            .borrow()
-            .runtime
-            .backend()
-            .and_then(Backend::recovery_identity);
-
-        self.session
-            .borrow_mut()
-            .runtime
-            .reconnect(Some(RecoverySnapshot {
-                identity,
-                profile_name: session_profile.name.clone(),
-            }));
-
-        self.session
-            .borrow_mut()
-            .runtime
-            .recovery_failed(message.clone());
-
-        let failure = self.session.borrow_mut().failed(&message, true);
-
-        self.on_error(message, true, failure, cx);
     }
 
     /// Handshake finished. Fold the reported thread settings together with
@@ -3628,14 +2815,29 @@ impl AgentPane {
             self.palette.feedback = None;
         }
 
+        if let Some(title) = ready.title {
+            self.emit_event(AgentPaneEvent::TitleSuggested(title), cx);
+        }
+
         let selection = ready.selection;
 
         self.prompts.reset_editors();
 
-        if let Some(Err(error)) = selection {
+        if let Some(SettingsOutcome::Refused { message }) = selection {
             self.palette
-                .set_feedback(CommandFeedbackKind::Error, error, cx);
+                .set_feedback(CommandFeedbackKind::Error, message, cx);
         }
+
+        if let Some(SettingsOutcome::Refused { message }) = ready.approval {
+            self.palette
+                .set_feedback(CommandFeedbackKind::Error, message, cx);
+        }
+
+        if let Some(text) = self.pending_side_prompt.take() {
+            self.send_text_with_skill(text, None, cx);
+        }
+
+        self.close_orphaned_side_thread(cx);
 
         info!(
             "agent thread ready: profile=\"{}\", model={:?}, profile_model={:?}",
@@ -3643,9 +2845,6 @@ impl AgentPane {
             self.session.borrow().controls.settings.model,
             launch_model(session_kind, &session_profile)
         );
-
-        // The session id is known by now, so child agents that ran
-        // before this tab opened can be rebuilt from history.
 
         cx.notify();
     }
@@ -3657,7 +2856,6 @@ impl AgentPane {
         &mut self,
         name: &str,
         outcome: SlashCommandOutcome,
-        advance: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(session_host) = self.host.upgrade() else {
@@ -3674,7 +2872,14 @@ impl AgentPane {
                     cx,
                 );
             }
-            SlashCommandOutcome::Completed { message } => {
+            SlashCommandOutcome::Completed { message, approval } => {
+                // A backend that answers its commands later reports an
+                // accepted permission switch here, and it is remembered for
+                // the next conversation the same way an immediate answer is.
+                if approval.is_some() {
+                    remember_defaults(self, cx);
+                }
+
                 self.palette.set_feedback(
                     CommandFeedbackKind::Notice,
                     message.unwrap_or_else(|| {
@@ -3697,13 +2902,7 @@ impl AgentPane {
                     .into_owned(),
                     cx,
                 );
-
-                self.run_next_queued_command(cx);
             }
-        }
-
-        if advance {
-            self.run_next_queued_command(cx);
         }
     }
 
@@ -3719,49 +2918,13 @@ impl AgentPane {
 
         self.publish_queued_user_messages(cx);
 
-        self.emit_lifecycle(AgentEventKind::PromptSubmitted, "", "", cx);
-
         cx.notify();
     }
 
-    /// Interruption is a completion state of the turn: the stop request
-    /// recorded at press time becomes the transcript mark only once the
-    /// backend actually ended the turn, so a backend that keeps streaming
-    /// never shows an "Interrupted" row above live output. A stale request
-    /// for an earlier turn is dropped at this boundary.
-    fn on_turn_completed(&mut self, error: Option<String>, cx: &mut Context<Self>) {
-        let Some(session_host) = self.host.upgrade() else {
-            return;
-        };
-
-        let session_kind = session_host.read(cx).kind;
-
-        let completion_body = error
-            .clone()
-            .or_else(|| self.latest_agent_message(cx))
-            .unwrap_or_else(|| {
-                t!(
-                    "agent-session-turn-completed",
-                    name = session_kind.display()
-                )
-                .into_owned()
-            });
-
+    fn on_turn_completed(&mut self, cx: &mut Context<Self>) {
         self.turn.refresh_timer(cx);
 
         self.refresh_git_branch(cx);
-
-        self.emit_lifecycle(
-            AgentEventKind::Stopped,
-            &t!(
-                "agent-session-provider-finished",
-                name = session_kind.display()
-            ),
-            &completion_body,
-            cx,
-        );
-
-        self.run_next_queued_command(cx);
 
         cx.notify();
     }
@@ -3793,9 +2956,7 @@ impl AgentPane {
 
         if fatal {
             self.prompts
-                .release_secret_editors(&self.session.borrow().input);
-
-            self.emit_event(AgentPaneEvent::Interrupted, cx);
+                .release_secret_editors(self.session.borrow().input());
 
             self.publish_queued_user_messages(cx);
         }
@@ -3806,8 +2967,6 @@ impl AgentPane {
                 t!("agent-session-queued-cancelled-failed").to_string(),
                 cx,
             );
-        } else if !fatal {
-            self.run_next_queued_command(cx);
         }
     }
 
@@ -3861,23 +3020,13 @@ impl AgentPane {
     /// the protocol is asked again, one that reads its own transcripts is
     /// rescanned.
     pub(crate) fn toggle_history_scope(&mut self, cx: &mut Context<Self>) {
-        self.history_ui.data.invalidate_filesystem_history();
+        let scope = self.history_ui.toggle_scope();
 
-        self.history_ui.data.scope = match self.history_ui.data.scope {
-            SessionScope::CurrentDirectory => SessionScope::AllDirectories,
-            SessionScope::AllDirectories => SessionScope::CurrentDirectory,
-        };
-
-        self.history_ui.data.sessions.clear();
-
-        self.history_ui.data.showing_search = false;
-        self.history_ui.selected = 0;
-
-        if let Some(session) = self.session.borrow_mut().runtime.backend_mut() {
-            session.request_history(self.history_ui.data.scope);
-        }
+        self.session.borrow_mut().request_history(scope);
 
         self.load_filesystem_history(cx);
+
+        self.load_other_agent_history(cx);
 
         cx.notify();
     }
@@ -3888,6 +3037,16 @@ impl AgentPane {
     /// height with placeholder rows, then title parsing, which swaps in the
     /// real rows.
     fn load_filesystem_history(&mut self, cx: &mut Context<Self>) {
+        // A remote view's conversations are the host's, whatever the harness
+        // keeps them in, and this computer's disk says nothing about them.
+        if self.remote.is_some() {
+            let step = HistoryStep::List(self.history_ui.data.scope);
+
+            self.send_history_step(step, cx);
+
+            return;
+        }
+
         let Some(session_host) = self.host.upgrade() else {
             return;
         };
@@ -3899,89 +3058,91 @@ impl AgentPane {
         }
 
         let cwd = self.cwd(cx);
-        let scope = self.history_ui.data.scope;
 
-        let request = self
-            .history_ui
-            .data
-            .begin_filesystem_history(cwd.clone(), self.session.borrow().runtime.epoch());
-
-        cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            Self::load_history_passes(this, request, scope, cwd, cx).await
-        })
-        .detach();
+        self.history_ui.load_filesystem_history(cwd, cx);
     }
 
-    async fn load_history_passes(
-        this: WeakEntity<Self>,
-        request: FilesystemHistoryRequest,
-        scope: SessionScope,
-        cwd: Option<String>,
-        cx: &mut AsyncApp,
-    ) {
-        let count_cwd = cwd.clone();
+    /// Continue `summary`, recorded by the agent its origin names, in a tab
+    /// launched on that agent's profile. A profile removed since the row was
+    /// listed leaves nothing to launch, which is reported rather than
+    /// silently resuming under a different one.
+    fn resume_with_other_agent(&mut self, summary: SessionSummary, cx: &mut Context<Self>) {
+        let Some(origin) = summary.origin.as_ref() else {
+            return;
+        };
 
-        let count = cx
-            .background_executor()
-            .spawn(async move { count_scoped_sessions(scope, count_cwd.as_deref()) })
-            .await;
+        let Some(profile) = cx
+            .global::<AgentSettings>()
+            .profiles
+            .iter()
+            .find(|profile| profile.kind == origin.kind && profile.name == origin.profile)
+            .cloned()
+        else {
+            self.palette.set_feedback(
+                CommandFeedbackKind::Error,
+                t!("agent-history-profile-missing").to_string(),
+                cx,
+            );
 
-        let proceed = this
-            .update(cx, |this, cx| {
-                let cwd = this.cwd(cx);
+            return;
+        };
 
-                match this.history_ui.publish_filesystem_count(
-                    &request,
-                    cwd.as_deref(),
-                    this.session.borrow().runtime.epoch(),
-                    count,
-                ) {
-                    CountPublication::Stale => false,
-                    CountPublication::Empty => {
-                        cx.notify();
+        let cwd = self.cwd(cx);
 
-                        false
-                    }
-                    CountPublication::LoadRows => {
-                        cx.notify();
+        // Only a blank tab is taken over; a tab with a conversation of its
+        // own keeps it and the listed one opens beside it.
+        if directories_match(summary.cwd.as_deref(), cwd.as_deref())
+            && self.can_switch_profile(cx)
+            && !self.switch_discards_conversation(cx)
+        {
+            self.emit_event(
+                AgentPaneEvent::SwitchProfile {
+                    profile,
+                    resume: Some(summary),
+                },
+                cx,
+            );
+        } else {
+            self.emit_event(
+                AgentPaneEvent::ResumeElsewhere {
+                    cwd: summary.cwd.clone(),
+                    summary,
+                    profile: Some(profile),
+                },
+                cx,
+            );
+        }
 
-                        true
-                    }
-                }
-            })
-            .unwrap_or(false);
+        cx.notify();
+    }
 
-        if !proceed {
+    /// List what every other configured agent recorded, for a tab whose list
+    /// covers all of them. A paired host's conversations are the host's, and
+    /// this computer's records say nothing about them.
+    fn load_other_agent_history(&mut self, cx: &mut Context<Self>) {
+        if !cx.global::<AgentSettings>().unified_agent_tab
+            || self.remote.is_some()
+            || self.team_member
+            || self.side_chat_member
+        {
             return;
         }
 
-        // Title parsing races a short hold: on a warm SSD it finishes
-        // within a frame, so without the hold the skeleton rows would
-        // never be visible and the swap would read as a flicker.
-        let load = cx
-            .background_executor()
-            .spawn(async move { list_scoped_sessions(scope, cwd.as_deref()) });
+        let Some(session_host) = self.host.upgrade() else {
+            return;
+        };
 
-        cx.background_executor()
-            .timer(Duration::from_millis(250))
-            .await;
+        let settings = cx.global::<AgentSettings>();
 
-        let sessions = load.await;
+        let sources = other_agent_sources(
+            &settings.profiles,
+            session_host.read(cx).profile(),
+            &settings.default_agent_profile,
+        );
 
-        let _ = this.update(cx, |this, cx| {
-            let cwd = this.cwd(cx);
+        let cwd = self.cwd(cx);
 
-            if this.history_ui.publish_filesystem_rows(
-                &request,
-                cwd.as_deref(),
-                this.session.borrow().runtime.epoch(),
-                sessions,
-            ) {
-                cx.notify();
-            }
-        });
+        self.history_ui.load_other_agents(sources, cwd, cx);
     }
 
     fn seed_restored_settings(&mut self, seed: SettingsSeed) {
@@ -4011,29 +3172,81 @@ impl AgentPane {
         // Both operations replace the conversation; a visible history list
         // must not start a resume while a branch picker or file step owns it.
         if self.history_ui.mode == RecentSessionsMode::Loading
-            || self.session.borrow().branch.holds_composer()
+            || self.session.borrow().branch().holds_composer()
         {
+            return;
+        }
+
+        if self.remote.is_some() {
+            let step = HistoryStep::Resume(summary.clone());
+
+            self.history_ui.mode = RecentSessionsMode::Hidden;
+
+            self.palette.set_feedback(
+                CommandFeedbackKind::Notice,
+                t!("agent-session-opening-recent").to_string(),
+                cx,
+            );
+
+            self.send_history_step(step, cx);
+
+            return;
+        }
+
+        // Another agent recorded this one, so only a tab running that agent's
+        // profile can continue it: this tab becomes one if it is still blank
+        // and the conversation belongs here, and a new tab opens otherwise.
+        if let Some(origin) = summary.origin.as_ref()
+            && !(origin.kind == session_kind
+                && origin.profile == session_host.read(cx).profile().name)
+        {
+            let summary = summary.clone();
+
+            self.history_ui.selected = index;
+
+            self.resume_with_other_agent(summary, cx);
+
+            return;
+        }
+
+        // No harness runs while its launch is deferred, so the pick launches
+        // one that continues the conversation once it is ready.
+        if self.launch_deferred() {
+            let summary = summary.clone();
+
+            self.history_ui.selected = index;
+
+            session_host.update(cx, |host, _| host.resume_when_ready(summary));
+
+            self.start_session(None, cx);
+
             return;
         }
 
         let cwd = self.cwd(cx);
 
-        let outcome = {
-            let mut guard = self.session.borrow_mut();
-
-            let state = &mut *guard;
-
-            state
-                .restore
-                .begin(&mut state.runtime, session_kind, summary, cwd.as_deref())
-        };
+        let outcome = self
+            .session
+            .borrow_mut()
+            .begin_resume(summary, cwd.as_deref());
 
         let request = match outcome {
             ResumeStart::Busy => return,
-            ResumeStart::Elsewhere { cwd, session_id } => {
+            ResumeStart::Elsewhere { cwd, .. } => {
+                // The whole row goes along, so the tab that opens the
+                // conversation is named after it like one resumed here.
+                let summary = summary.clone();
+
                 self.history_ui.selected = index;
 
-                self.emit_event(AgentPaneEvent::ResumeElsewhere { cwd, session_id }, cx);
+                self.emit_event(
+                    AgentPaneEvent::ResumeElsewhere {
+                        cwd: Some(cwd),
+                        summary,
+                        profile: None,
+                    },
+                    cx,
+                );
 
                 cx.notify();
 
@@ -4125,7 +3338,28 @@ impl AgentPane {
         pane
     }
 
+    /// A pane presenting `owner`'s side chat. Its transcript has no owner:
+    /// branching and rewinding address a persisted conversation, and an
+    /// ephemeral fork is not one.
+    pub(super) fn attach_side_chat(
+        owner: &SessionOwner,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut pane = Self::attach(owner, window, cx);
+
+        pane.side_chat_member = true;
+
+        pane.transcript
+            .update(cx, |transcript, _| transcript.clear_owner());
+
+        pane
+    }
+
     pub fn attach(owner: &SessionOwner, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<AgentSettings>(|_, cx| cx.notify())
+            .detach();
+
         let host = owner.session();
         let profile = host.read(cx).profile.clone();
         let workspace = host.read(cx).workspace.clone();
@@ -4195,9 +3429,21 @@ impl AgentPane {
         let transcript = cx.new(|cx| {
             let mut transcript = TranscriptView::new(kind, cwd.clone());
 
-            transcript.attach_content(session.borrow().conversation.clone(), cx);
+            transcript.attach_content(session.borrow().conversation().clone(), cx);
 
             transcript.set_owner(owner);
+
+            transcript
+        });
+
+        // The side chat renders through its own view: a conversation's
+        // measured rows and scroll position belong to one list each. Like a
+        // child agent's view it has no owner, because branching and rewinding
+        // address the main conversation, which none of its prompts opened.
+        let side_transcript = cx.new(|cx| {
+            let mut transcript = TranscriptView::new(kind, cwd.clone());
+
+            transcript.attach_content(session.borrow().side_questions().conversation().clone(), cx);
 
             transcript
         });
@@ -4212,40 +3458,40 @@ impl AgentPane {
             session,
             host: host.downgrade(),
             binding,
-            presenting_session_effect: false,
             team_member: false,
+            side_chat_member: false,
+            pending_side_prompt: None,
+            deferred_launch: None,
+            send_on_ready: false,
+            held_draft: None,
             #[cfg(test)]
             owned_session: None,
             history_ui: SessionHistoryUi::default(),
             progress_panel: ProgressPanel::default(),
-            prompts: PendingPrompts::default(),
+            side_chat: SideChatWindow::new(side_transcript),
+            prompts: QuestionPanel::default(),
             effort_drag: None,
             turn: TurnPresentation::default(),
-            palette: SlashPalette {
-                provider_commands_ready: !kind.caps().async_command_discovery,
-                ..SlashPalette::default()
-            },
+            palette: SlashPalette::default(),
             branch: BranchFlow::default(),
-            git_branch_poll: GitBranchPoll::default(),
+            composer_status: ComposerStatusBar::default(),
             workflows: WorkflowUi::default(),
-            overlay_fade: Fade::default(),
+            blocking_overlay: BlockingOverlay::default(),
+            remote: None,
+            host_control: None,
+            close_tab: None,
+            sheet_focus: cx.focus_handle(),
+            sheet_shown: false,
         };
 
         {
             let state = this.session.borrow();
 
-            for index in 0..state.input.batches().len() {
-                this.prompts.reveal(&state.input, index);
+            for index in 0..state.input().batches().len() {
+                this.prompts.reveal(state.input(), index);
             }
 
-            this.prompts.hide_settled(&state.input);
-
-            if let Some(commands) = state.command_catalog() {
-                this.palette.provider_commands = commands.to_vec();
-                this.palette.provider_commands_ready = true;
-            }
-
-            this.palette.skill_catalog = state.skill_catalog().cloned();
+            this.prompts.hide_settled(state.input());
         }
 
         this.turn.refresh_timer(cx);
@@ -4261,14 +3507,29 @@ impl AgentPane {
                 cx.notify();
             });
 
+            this.side_chat.transcript.update(cx, |view, cx| {
+                view.sync_content();
+
+                cx.notify();
+            });
+
             cx.notify();
+        })
+        .detach();
+
+        // A view on another computer can replace the conversation too, so
+        // the pane follows the session rather than its own `/new`.
+        cx.subscribe(host, |this, _, _: &ConversationReset, cx| {
+            if this.binding.is_current() {
+                this.forget_conversation(cx);
+            }
         })
         .detach();
 
         cx.subscribe(host, |this, _, event: &PresentationEffect, cx| {
             if this.binding.is_current()
                 && this.binding.generation == event.generation
-                && this.session.borrow().runtime.is_current(event.epoch)
+                && this.session.borrow().runtime().is_current(event.epoch)
                 && let Some(effect) = event.effect.borrow_mut().take()
             {
                 this.present_session_effect(effect, cx);
@@ -4278,32 +3539,13 @@ impl AgentPane {
 
         this.refresh_git_branch(cx);
 
-        cx.spawn(Self::poll_git_branch).detach();
+        cx.spawn(poll_git_branch).detach();
 
         this.load_filesystem_history(cx);
 
+        this.load_other_agent_history(cx);
+
         this
-    }
-
-    async fn poll_git_branch(this: WeakEntity<Self>, cx: &mut AsyncApp) {
-        loop {
-            let Ok(interval) = this.update(cx, |_, cx| {
-                cx.global::<AgentSettings>().git_status_refresh_interval
-            }) else {
-                break;
-            };
-
-            cx.background_executor()
-                .timer(Duration::from_secs(interval.max(1)))
-                .await;
-
-            if this
-                .update(cx, |this, cx| this.refresh_git_branch(cx))
-                .is_err()
-            {
-                break;
-            }
-        }
     }
 
     pub fn agent_route<'a>(&self, cx: &'a App) -> Option<&'a AgentRoute> {
@@ -4359,7 +3601,7 @@ impl AgentPane {
         host.update(cx, |host, _| host.workspace = workspace);
 
         if primary_changed {
-            self.git_branch_poll.invalidate();
+            self.composer_status.invalidate_branch();
 
             self.refresh_git_branch(cx);
         }
@@ -4368,76 +3610,140 @@ impl AgentPane {
     }
 
     /// Append one item to the conversation, tagged with the current turn so
-    /// settled turns fold as one unit.
+    /// settled turns fold as one unit. The controller owns the conversation,
+    /// so the item goes through it and the view picks the change up the same
+    /// way it picks up every other one.
     pub(super) fn push_item(&mut self, item: SessionItem, cx: &mut Context<Self>) {
-        self.push_item_with_images(item, Vec::new(), cx);
-    }
-
-    /// Append an item along with the images it carried, which only a sent
-    /// user message has.
-    pub(super) fn push_item_with_images(
-        &mut self,
-        item: SessionItem,
-        images: Vec<Arc<Image>>,
-        cx: &mut Context<Self>,
-    ) {
-        let turn = self.session.borrow().delivery.turn();
+        self.session.borrow_mut().push_item(item);
 
         self.transcript
-            .update(cx, |transcript, cx| transcript.push(turn, item, images, cx));
+            .update(cx, |transcript, _| transcript.sync_content());
 
         cx.notify();
     }
 
     pub(super) fn refresh_git_branch(&mut self, cx: &mut Context<Self>) {
-        let Some(generation) = self.git_branch_poll.begin_refresh() else {
-            return;
-        };
+        // A conversation on a paired host works in the host's directory,
+        // whose branch this computer cannot read.
+        if self.remote.is_some() {
+            self.composer_status.refresh_branch(None, cx);
 
-        let Some(cwd) = self.cwd(cx).or_else(|| {
+            return;
+        }
+
+        let cwd = self.cwd(cx).or_else(|| {
             env::current_dir()
                 .ok()
                 .map(|path| path.to_string_lossy().to_string())
-        }) else {
-            self.git_branch_poll.complete(generation, None);
+        });
 
-            return;
-        };
-
-        // Every tab open on this directory asks the same question on the same
-        // interval, so an answer read within one is theirs to share.
-        let max_age = Duration::from_secs(
-            cx.global::<AgentSettings>()
-                .git_status_refresh_interval
-                .max(1),
-        );
-
-        let fetch = cx
-            .background_executor()
-            .spawn(async move { branch_label(&cwd, max_age) });
-
-        cx.spawn(async move |this, cx| {
-            let branch = fetch.await;
-
-            this.update(cx, |this, cx| {
-                this.git_branch_poll.complete(generation, branch);
-
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.composer_status.refresh_branch(cwd, cx);
     }
 
     pub fn agent_session(&self) -> Option<Entity<AgentSession>> {
         self.host.upgrade()
     }
 
-    pub(super) fn emit_event(&self, event: AgentPaneEvent, cx: &mut Context<Self>) {
-        if self.presenting_session_effect {
-            return;
+    /// Whether this tab may change which agent it runs. Team members, side
+    /// chats, and tabs following a paired host run on a profile chosen
+    /// elsewhere. A resume in flight is about to name the conversation, and
+    /// relaunching under it would race the replay.
+    pub(super) fn can_switch_profile(&self, cx: &App) -> bool {
+        self.host.upgrade().is_some()
+            && cx.global::<AgentSettings>().unified_agent_tab
+            && !self.team_member
+            && !self.side_chat_member
+            && self.remote.is_none()
+            && self.history_ui.mode != RecentSessionsMode::Loading
+    }
+
+    /// Whether relaunching on another profile would end a conversation: a
+    /// turn is running, the transcript holds one, or a resumed one waits to
+    /// replay. The relaunched tab starts a fresh conversation, so these are
+    /// what a switch throws away. A conversation set aside by `/new` or
+    /// `/clear` leaves none of them behind.
+    pub(super) fn switch_discards_conversation(&self, cx: &App) -> bool {
+        self.session.borrow().runtime().status() == Status::Running
+            || !self.transcript.read(cx).is_empty()
+            || self
+                .host
+                .upgrade()
+                .is_some_and(|host| host.read(cx).saved_conversation().is_some())
+    }
+
+    /// Ask the chrome to relaunch this tab on `profile`, in a fresh
+    /// conversation. Returns whether the request was made; a tab that already
+    /// runs `profile` or cannot switch is left alone.
+    pub(super) fn switch_profile(&mut self, profile: AgentProfile, cx: &mut Context<Self>) -> bool {
+        if !self.binding.is_current() || !self.can_switch_profile(cx) {
+            return false;
         }
 
+        let Some(host) = self.host.upgrade() else {
+            return false;
+        };
+
+        let current = host.read(cx).profile();
+
+        if current.name == profile.name && current.kind == profile.kind {
+            return false;
+        }
+
+        self.emit_event(
+            AgentPaneEvent::SwitchProfile {
+                profile,
+                resume: None,
+            },
+            cx,
+        );
+
+        true
+    }
+
+    /// Move the unsent message out of this composer, leaving it empty.
+    pub fn take_composer_draft(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ComposerDraft {
+        // A message held for a launch has already left the composer, and it
+        // is the unsent message a replacing pane has to carry. The launch it
+        // waited for is retired with this pane.
+        if let Some(held) = self.held_draft.take() {
+            self.send_on_ready = false;
+
+            return held;
+        }
+
+        let text = self.input.read(cx).text().to_string();
+
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+
+        ComposerDraft {
+            text,
+            attachments: mem::take(&mut self.attachments),
+        }
+    }
+
+    /// Put a draft taken from another composer into this one, with the caret
+    /// at its end.
+    pub fn restore_composer_draft(
+        &mut self,
+        draft: ComposerDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.attachments = draft.attachments;
+
+        if !draft.text.is_empty() {
+            replace_input_with_history(&self.input, draft.text, window, cx);
+        }
+
+        cx.notify();
+    }
+
+    pub(super) fn emit_event(&self, event: AgentPaneEvent, cx: &mut Context<Self>) {
         if let Some(host) = self.host.upgrade() {
             host.update(cx, |_, cx| cx.emit(event.clone()));
         }
@@ -4453,19 +3759,16 @@ impl AgentPane {
         body: &str,
         cx: &mut Context<Self>,
     ) {
-        if self.presenting_session_effect {
-            return;
-        }
-
         if let Some(host) = self.host.upgrade() {
             host.update(cx, |host, cx| host.emit_lifecycle(kind, title, body, cx));
         }
     }
 
+    #[cfg(test)]
     pub(super) fn latest_agent_message(&self, cx: &App) -> Option<String> {
         self.transcript
             .read(cx)
-            .latest_agent_message(self.session.borrow().delivery.turn())
+            .latest_agent_message(self.session.borrow().turn())
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4479,7 +3782,7 @@ impl AgentPane {
     /// Progress through the task list this conversation is working from, as
     /// completed items out of the total, for the workspace entry's bar.
     pub fn task_tally(&self, cx: &App) -> Option<(u32, u32)> {
-        match &self.session.borrow().task_list {
+        match self.session.borrow().task_list() {
             Some(tasks) => tasks.tally(),
             None => self.transcript.read(cx).task_tally(),
         }
@@ -4495,6 +3798,218 @@ impl AgentPane {
     /// restore reopens the same profile.
     pub fn profile_name<'a>(&self, cx: &'a App) -> Option<&'a str> {
         Some(&self.host.upgrade()?.read(cx).profile.name)
+    }
+
+    /// Run a command against this tab's conversation and present its
+    /// outcome. What `present` returns comes back when the outcome is known
+    /// at once, as it is for a session running beside this view; a paired
+    /// host answers later, and `present` runs then.
+    pub(super) fn dispatch<C: AgentCommand, R: 'static>(
+        &mut self,
+        command: C,
+        cx: &mut Context<Self>,
+        present: impl FnOnce(&mut Self, C::Outcome, &mut Context<Self>) -> R + 'static,
+    ) -> Option<R> {
+        if let Some(remote) = &self.remote {
+            let sent = remote.send(&command);
+
+            cx.spawn(async move |this, cx| {
+                let outcome = sent
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|outcome| outcome);
+
+                let _ = this.update(cx, |this, cx| match outcome {
+                    Ok(outcome) => {
+                        present(this, outcome, cx);
+                    }
+                    Err(error) => this.palette.set_feedback(
+                        CommandFeedbackKind::Error,
+                        format!("{error:#}"),
+                        cx,
+                    ),
+                });
+            })
+            .detach();
+
+            return None;
+        }
+
+        let outcome = command.run(&mut self.session.borrow_mut());
+
+        Some(present(self, outcome, cx))
+    }
+
+    /// Ask the host to list or resume its conversations for this replica.
+    /// Rows and the resumed conversation follow from the host's view; only
+    /// a refusal is shown here.
+    fn send_history_step(&mut self, step: HistoryStep, cx: &mut Context<Self>) {
+        let Some(remote) = &self.remote else {
+            return;
+        };
+
+        let sent = remote.history(&step);
+
+        cx.spawn(async move |this, cx| {
+            let outcome = sent
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|outcome| outcome);
+
+            let message = match outcome {
+                Ok(Ok(())) => return,
+                Ok(Err(message)) => message,
+                Err(error) => format!("{error:#}"),
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                this.palette
+                    .set_feedback(CommandFeedbackKind::Error, message, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Ask the host to take a branch step for this replica. The picker
+    /// follows from the host's view; only a refusal is shown here.
+    fn send_branch_step(&mut self, step: BranchStep, cx: &mut Context<Self>) {
+        let Some(remote) = &self.remote else {
+            return;
+        };
+
+        let sent = remote.branch(&step);
+
+        cx.spawn(async move |this, cx| {
+            let outcome = sent
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|outcome| outcome);
+
+            let message = match outcome {
+                Ok(Ok(())) => return,
+                Ok(Err(message)) => message,
+                Err(error) => format!("{error:#}"),
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                this.palette
+                    .set_feedback(CommandFeedbackKind::Error, message, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Follow who controls this shared host tab from another computer.
+    pub fn control_from_host(&mut self, control: HostControl, cx: &mut Context<Self>) {
+        let mut changes = control.changes.clone();
+
+        cx.spawn(async move |this, cx| {
+            while changes.changed().await.is_ok() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        self.host_control = Some(control);
+    }
+
+    /// How the sheets' close buttons close this pane's tab.
+    pub fn close_tab_with(&mut self, close: CloseTab) {
+        self.close_tab = Some(close);
+    }
+
+    /// The sheet over the pane, if one belongs there: another computer
+    /// controls this host tab, or the host ended this view of its session.
+    fn control_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let close = self.close_tab.clone();
+
+        let close_tab = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            if let Some(close) = &close {
+                close(window, cx);
+            }
+        };
+
+        let controllers = self
+            .host_control
+            .as_ref()
+            .map(|control| (control.controllers)())
+            .unwrap_or_default();
+
+        let sheet = if !controllers.is_empty() {
+            let take_back = self
+                .host_control
+                .as_ref()
+                .map(|control| Arc::clone(&control.take_back));
+
+            Some(
+                ControlSheet::new(
+                    t!("remote-controlled-by", devices = controllers.join(", ")).into_owned(),
+                    self.sheet_focus.clone(),
+                )
+                .button(t!("remote-take-back"), true, move |_, _, _| {
+                    if let Some(take_back) = &take_back {
+                        take_back();
+                    }
+                })
+                .button(t!("remote-end-session"), false, close_tab),
+            )
+        } else if let Some(remote) = &self.remote
+            && let Some(reason) = remote.ended()
+        {
+            let name = remote.host_name();
+
+            match reason {
+                EndReason::Closed => Some(
+                    ControlSheet::new(
+                        t!("remote-session-closed", name = name).into_owned(),
+                        self.sheet_focus.clone(),
+                    )
+                    .button(t!("remote-close-tab"), true, close_tab),
+                ),
+                EndReason::TakenBack | EndReason::Unknown => Some(
+                    ControlSheet::new(
+                        t!("remote-taken-back", name = name).into_owned(),
+                        self.sheet_focus.clone(),
+                    )
+                    .button(
+                        t!("remote-reconnect"),
+                        true,
+                        cx.listener(|this, _, _, _| {
+                            if let Some(remote) = &this.remote {
+                                remote.reconnect();
+                            }
+                        }),
+                    )
+                    .button(t!("remote-end-session"), false, close_tab),
+                ),
+            }
+        } else {
+            None
+        };
+
+        // While the other side has the conversation, the sheet takes the
+        // keyboard so nothing typed here reaches the composer; it comes back
+        // when the sheet goes.
+        match (sheet.is_some(), self.sheet_shown) {
+            (true, false) if self.focus.contains_focused(window, cx) => {
+                window.focus(&self.sheet_focus, cx);
+            }
+            (false, true) if self.sheet_focus.is_focused(window) => {
+                window.focus(&self.focus, cx);
+            }
+            _ => {}
+        }
+
+        self.sheet_shown = sheet.is_some();
+
+        sheet.map(|sheet| sheet.render(cx))
+    }
+
+    /// The host and session of a pane following a paired host's session.
+    pub fn remote_address(&self) -> Option<(String, String)> {
+        self.remote.as_ref().map(RemoteAgent::address)
     }
 
     pub(super) fn send_text_with_skill(
@@ -4516,11 +4031,14 @@ impl AgentPane {
         restore_on_interrupt: Option<(String, Vec<String>)>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.attachments.preparing > 0 {
+            return false;
+        }
+
         let Some(session_host) = self.host.upgrade() else {
             return false;
         };
 
-        let session_agent_route = session_host.read(cx).route.clone();
         let session_kind = session_host.read(cx).kind;
 
         if !self.binding.is_current() {
@@ -4531,51 +4049,48 @@ impl AgentPane {
             .as_ref()
             .map_or(text.as_str(), |(prompt, _)| prompt.as_str());
 
-        let title_request =
-            self.session
-                .borrow()
-                .naming
-                .request(session_kind, title_text, tab_title_from_prompt);
-
-        let settings = self.session.borrow().controls.settings.clone();
-        let scratch = scratch_dir(session_agent_route.as_str());
-
-        let restores_annotations = restore_on_interrupt.is_some();
-
-        let image_prompt = (!self.attachments.images().is_empty()).then(|| text.clone());
-
-        let outcome = self.session.borrow_mut().submit(
-            text,
-            |session, text| {
-                let images = self
-                    .attachments
-                    .images()
-                    .iter()
-                    .map(|image| ImageAttachment {
-                        bytes: image.image.bytes(),
-                        media_type: image.image.format().mime_type(),
-                    });
-
-                match title_request.as_ref() {
-                    Some(title) => session.send_user_message_with_title(
-                        text, &settings, skill, images, &scratch, title,
-                    ),
-                    None => session.send_user_message(text, &settings, skill, images, &scratch),
-                }
-            },
-            || {
-                restore_on_interrupt.map(|(text, response_annotations)| RecoverablePrompt {
+        let prompt = Prompt {
+            fallback_title: tab_title_from_prompt(title_text),
+            title_text: title_text.to_owned(),
+            skill: skill.cloned(),
+            images: self
+                .attachments
+                .images()
+                .iter()
+                .map(|image| PromptImage {
+                    bytes: image.image.bytes().into(),
+                    media_type: image.image.format().mime_type().to_owned(),
+                })
+                .collect(),
+            image_paths: self.attachments.paths(),
+            recoverable: restore_on_interrupt.map(|(text, response_annotations)| {
+                RecoverablePrompt {
                     text,
                     response_annotations,
                     skill: skill.cloned(),
-                })
-            },
-        );
+                }
+            }),
+            text,
+        };
 
-        let started_text = match outcome {
-            Ok(Submission::Started { text }) => Some(text),
-            Ok(Submission::Queued) => None,
-            Ok(Submission::NotReady) => {
+        let restores_annotations = prompt.recoverable.is_some();
+
+        self.dispatch(SubmitPrompt(prompt), cx, move |this, outcome, cx| {
+            this.present_submission(outcome, restores_annotations, session_kind, cx)
+        })
+        .unwrap_or(true)
+    }
+
+    fn present_submission(
+        &mut self,
+        outcome: Result<Submitted, SubmitRefusal>,
+        restores_annotations: bool,
+        session_kind: AgentKind,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let submitted = match outcome {
+            Ok(submitted) => submitted,
+            Err(SubmitRefusal::NotReady) => {
                 self.push_item(
                     SessionItem::Error {
                         text: t!(
@@ -4589,12 +4104,12 @@ impl AgentPane {
 
                 return false;
             }
-            Ok(Submission::Rejected { message }) => {
+            Err(SubmitRefusal::Rejected { message }) => {
                 self.push_item(SessionItem::Error { text: message }, cx);
 
                 return false;
             }
-            Err(reason) => {
+            Err(SubmitRefusal::Blocked(reason)) => {
                 let (kind, message) = match reason {
                     SubmissionBlock::QuestionResponse => {
                         (CommandFeedbackKind::Notice, "agent-question-send-pending")
@@ -4614,27 +4129,13 @@ impl AgentPane {
             }
         };
 
-        // Both providers generate their final title asynchronously. Claiming
-        // the first accepted prompt here prevents a failed generation from
-        // naming the conversation from a later message.
-        if matches!(session_kind, AgentKind::Codex | AgentKind::Claude)
-            && let Some(title) = title_request
-        {
-            self.session.borrow_mut().naming.named = true;
-
-            self.emit_event(AgentPaneEvent::TitleSuggested(title.provisional_title), cx);
+        if let Some(title) = submitted.title {
+            self.emit_event(AgentPaneEvent::TitleSuggested(title), cx);
         }
 
         // Accepted: the images went with it, so the transcript keeps them and
         // the composer lets them go. A refusal above keeps them pending, so
         // the message stays as recoverable as its text.
-        let sent_images: Vec<Arc<Image>> = self
-            .attachments
-            .images()
-            .iter()
-            .map(|attachment| attachment.image.clone())
-            .collect();
-
         self.attachments.clear_images();
 
         if restores_annotations {
@@ -4645,42 +4146,13 @@ impl AgentPane {
         // history list is no longer offered.
         self.history_ui.mode = RecentSessionsMode::Hidden;
 
-        match started_text {
-            Some(text) => {
-                let _ = text;
-                let shared = self.session.borrow().conversation.clone();
+        if submitted.started_turn {
+            self.transcript
+                .update(cx, |transcript, _| transcript.sync_content());
 
-                let mut conversation = shared.borrow_mut();
-
-                conversation.attach_last_images(
-                    sent_images
-                        .into_iter()
-                        .map(|image| Arc::new(ConversationImage::new(image.bytes().into())))
-                        .collect(),
-                );
-
-                drop(conversation);
-
-                self.transcript
-                    .update(cx, |transcript, _| transcript.sync_content());
-
-                self.start_working(cx);
-            }
-            None => {
-                if let Some(text) = image_prompt {
-                    let images = sent_images
-                        .into_iter()
-                        .map(|image| Arc::new(ConversationImage::new(image.bytes().into())))
-                        .collect();
-
-                    self.session
-                        .borrow_mut()
-                        .pending_images
-                        .push_back((text, images));
-                }
-
-                cx.notify();
-            }
+            self.start_working(cx);
+        } else {
+            cx.notify();
         }
 
         true
@@ -4710,58 +4182,186 @@ impl AgentPane {
             return;
         }
 
-        self.session.borrow_mut().naming.rename(title);
-
-        self.sync_pending_rename();
-    }
-
-    pub(super) fn sync_pending_rename(&mut self) {
-        if !self.binding.is_current() {
-            return;
-        }
-
-        {
-            let mut guard = self.session.borrow_mut();
-
-            let state = &mut *guard;
-
-            state.naming.sync(state.runtime.backend_mut())
-        };
+        self.session.borrow_mut().rename(title);
     }
 
     pub(super) fn reset_conversation(&mut self, cx: &mut Context<Self>) {
-        let Some(session_host) = self.host.upgrade() else {
-            return;
-        };
-
-        let session_kind = session_host.read(cx).kind;
-
         if !self.binding.is_current() {
             return;
         }
 
+        // A replica has no harness process to restart; the host replaces its
+        // conversation and the replica follows the host's view of the new one.
+        if let Some(remote) = &self.remote {
+            let sent = remote.new_conversation();
+
+            cx.spawn(async move |this, cx| {
+                let outcome = sent
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|outcome| outcome);
+
+                let _ = this.update(cx, |this, cx| match outcome {
+                    Ok(Ok(())) => this.forget_conversation(cx),
+                    Ok(Err(message)) => {
+                        this.palette
+                            .set_feedback(CommandFeedbackKind::Error, message, cx);
+                    }
+                    Err(error) => this.palette.set_feedback(
+                        CommandFeedbackKind::Error,
+                        format!("{error:#}"),
+                        cx,
+                    ),
+                });
+            })
+            .detach();
+
+            return;
+        }
+
+        // The session tells every pane showing it, this one included, through
+        // `ConversationReset`.
         if let Some(host) = self.host.upgrade() {
             host.update(cx, |host, cx| host.reset(cx));
         }
+    }
 
+    /// Drop what the pane kept for a conversation its session replaced.
+    fn forget_conversation(&mut self, cx: &mut Context<Self>) {
         self.clear_conversation_presentation(cx);
 
-        self.palette.skill_catalog = None;
         self.palette.skill_binding = None;
 
-        self.palette
-            .reset_discovery(!session_kind.caps().async_command_discovery);
+        self.palette.reset_discovery();
 
-        self.session.borrow_mut().commands.clear();
+        self.session.borrow_mut().clear_commands();
 
         self.palette.feedback = None;
-        self.history_ui.mode = RecentSessionsMode::Hidden;
+
+        // `/new` asks for an empty conversation, so the list stays out of the
+        // way. A tab set back to blank after a failed start is a new tab
+        // again and offers the list as one does; the reset above dropped any
+        // transcript directory read still in flight, so it is read again.
+        if self.launch_deferred() {
+            self.history_ui.mode = RecentSessionsMode::Automatic;
+
+            self.load_filesystem_history(cx);
+        } else {
+            self.history_ui.mode = RecentSessionsMode::Hidden;
+        }
 
         cx.notify();
     }
 
+    /// Whether the start holds the whole pane. A launch the user's own input
+    /// asked for does not: that input is already waiting for it, and the
+    /// pane says so in the transcript instead.
     pub(crate) fn shows_start_overlay(&self) -> bool {
-        self.session.borrow().runtime.status() == Status::Starting
+        self.session.borrow().runtime().status() == Status::Starting
+            && !self.launch_deferred()
+            && !self.send_on_ready
+    }
+
+    /// Whether no harness runs and the next request that needs one launches
+    /// it.
+    pub fn launch_deferred(&self) -> bool {
+        self.deferred_launch == Some(self.session.borrow().runtime().epoch())
+    }
+
+    /// Hold a tab that has not launched its harness until the user sends
+    /// something or picks a recent session.
+    pub fn defer_launch(&mut self, cx: &mut Context<Self>) {
+        self.deferred_launch = Some(self.session.borrow().runtime().epoch());
+
+        if let Some(host) = self.host.upgrade() {
+            host.update(cx, |host, cx| host.show_reported_controls(cx));
+        }
+
+        cx.notify();
+    }
+
+    /// Launch the harness for input submitted while its launch is deferred,
+    /// and hold the input until the harness reports ready. A message leaves
+    /// the composer for the transcript, where it shows as sent; a slash
+    /// command stays in the composer, since it steers the session rather than
+    /// adding to the conversation. Returns whether the input was held,
+    /// including input submitted again while an earlier one still waits.
+    fn launch_for_input(
+        &mut self,
+        input: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.send_on_ready {
+            return true;
+        }
+
+        if !self.launch_deferred() {
+            return false;
+        }
+
+        if !input.trim().is_empty() {
+            if parse_slash_command(input).is_none() {
+                self.held_draft = Some(self.take_composer_draft(window, cx));
+            }
+
+            self.send_on_ready = true;
+
+            self.start_session(None, cx);
+        }
+
+        true
+    }
+
+    /// Send the input `launch_for_input` held once the harness it launched is
+    /// ready. Sending clears the composer through the window, which a ready
+    /// event does not carry, so this runs in the frame that event repaints.
+    /// A launch that ends any other way puts the message back in the
+    /// composer, where a retry finds it.
+    fn send_held_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.send_on_ready {
+            return;
+        }
+
+        let send = match self.session.borrow().runtime().status() {
+            Status::Starting => return,
+            Status::Idle => true,
+            Status::Running | Status::Exited => false,
+        };
+
+        self.send_on_ready = false;
+
+        if let Some(draft) = self.held_draft.take() {
+            self.restore_composer_draft(draft, window, cx);
+        }
+
+        if send {
+            self.send_user_message_now(window, cx);
+        }
+    }
+
+    /// Leave a failed start for a blank tab that still lists recent sessions
+    /// and accepts input, instead of only retrying or closing.
+    pub(crate) fn return_to_blank_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.binding.is_current() {
+            return;
+        }
+
+        let Some(host) = self.host.upgrade() else {
+            return;
+        };
+
+        // Set before the reset, whose `ConversationReset` reads it to offer
+        // the recent-session list again.
+        self.deferred_launch = Some(self.session.borrow().runtime().epoch());
+
+        host.update(cx, |host, cx| {
+            host.clear_failed_start(cx);
+
+            host.show_reported_controls(cx);
+        });
+
+        cx.notify();
     }
 
     pub(crate) fn start_session(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
@@ -4790,7 +4390,6 @@ impl AgentPane {
 
         self.history_ui.data.invalidate_filesystem_history();
 
-        self.palette.skill_catalog = None;
         self.palette.skill_binding = None;
 
         let pane = cx.entity().downgrade();
@@ -4813,20 +4412,20 @@ impl AgentPane {
         });
 
         self.prompts
-            .release_secret_editors(&self.session.borrow().input);
+            .release_secret_editors(self.session.borrow().input());
 
-        if !self.session.borrow().branch.holds_composer() {
+        if !self.session.borrow().branch().holds_composer() {
             self.branch.clear();
         }
 
         cx.notify();
     }
 
-    /// Start the turn clock and drive the once-a-second repaint of the live
-    /// progress row; the ticker stops itself once `finish_working` clears it.
+    /// Show the live progress row the controller just opened and drive its
+    /// once-a-second repaint; the ticker stops itself once the turn settles.
     pub(crate) fn start_working(&mut self, cx: &mut Context<Self>) {
         self.transcript
-            .update(cx, |transcript, cx| transcript.start_working(cx));
+            .update(cx, |transcript, _| transcript.sync_content());
 
         cx.notify();
 
@@ -4857,11 +4456,17 @@ impl AgentPane {
             return;
         }
 
-        let interrupted = self.session.borrow_mut().interrupt_from_user();
+        // Restoring the composer needs the window this handler has, so the
+        // outcome is presented here rather than in a callback.
+        let Some(interrupted) = self.dispatch(Interrupt, cx, |_, interrupted, _| interrupted)
+        else {
+            return;
+        };
 
-        if let Some((turn, prompt)) = interrupted.prompt {
+        if let Some((_, prompt)) = interrupted.prompt {
+            // The controller already dropped the turn that produced nothing.
             self.transcript
-                .update(cx, |transcript, cx| transcript.discard_turn(turn, cx));
+                .update(cx, |transcript, _| transcript.sync_content());
 
             let current = self.input.read(cx).text().to_string();
             let restored = restored_input_after_interruption(&prompt.text, &current);
@@ -4907,8 +4512,16 @@ impl AgentPane {
             return;
         }
 
-        let outcome = self.session.borrow_mut().respond_approval(decision);
+        let command = RespondApproval {
+            decision: decision.to_owned(),
+        };
 
+        self.dispatch(command, cx, |this, outcome, cx| {
+            this.present_approval(outcome, cx)
+        });
+    }
+
+    fn present_approval(&mut self, outcome: ApprovalOutcome, cx: &mut Context<Self>) {
         match outcome {
             ApprovalOutcome::Ignored => return,
             ApprovalOutcome::Settled => {
@@ -4930,7 +4543,7 @@ impl AgentPane {
     pub fn recovery_readiness(&self, cx: &App) -> RecoveryReadiness {
         self.host.upgrade().map_or_else(
             || RecoveryReadiness::Busy("session closed".into()),
-            |host| host.read(cx).recovery_readiness(cx),
+            |host| host.read(cx).recovery_readiness(),
         )
     }
 
@@ -4965,16 +4578,24 @@ impl AgentPane {
             return;
         }
 
-        let Some(outcome) = self.session.borrow_mut().apply_model_selection() else {
-            return;
-        };
+        let settings = self.session.borrow().controls.settings.clone();
 
-        match outcome {
-            Ok(()) => cx.notify(),
-            Err(error) => self
-                .palette
-                .set_feedback(CommandFeedbackKind::Error, error, cx),
-        }
+        self.dispatch(
+            ApplyModelSelection { settings },
+            cx,
+            |this, outcome, cx| match outcome {
+                None => {}
+                Some(
+                    SettingsOutcome::Effective
+                    | SettingsOutcome::Requested
+                    | SettingsOutcome::RidesNextSubmission,
+                ) => cx.notify(),
+                Some(SettingsOutcome::Refused { message }) => {
+                    this.palette
+                        .set_feedback(CommandFeedbackKind::Error, message, cx)
+                }
+            },
+        );
     }
 
     /// Rebuild this conversation's agent from another composition.
@@ -4988,808 +4609,104 @@ impl AgentPane {
             return;
         }
 
-        let Some(outcome) = self.session.borrow_mut().select_agent_preset(preset) else {
-            return;
-        };
+        self.dispatch(SelectAgentPreset { preset }, cx, |this, outcome, cx| {
+            match outcome {
+                None => {}
+                Some(
+                    SettingsOutcome::Effective
+                    | SettingsOutcome::Requested
+                    | SettingsOutcome::RidesNextSubmission,
+                ) => {
+                    // The harness composes an agent only when a conversation
+                    // is created, so the pick is remembered for the next
+                    // creation.
+                    remember_defaults(this, cx);
 
-        match outcome {
-            Ok(()) => cx.notify(),
-            Err(error) => self
-                .palette
-                .set_feedback(CommandFeedbackKind::Error, error, cx),
-        }
+                    cx.notify()
+                }
+                Some(SettingsOutcome::Refused { message }) => {
+                    this.palette
+                        .set_feedback(CommandFeedbackKind::Error, message, cx)
+                }
+            }
+        });
     }
 
     pub(super) fn render_approval_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let session_host = self.host.upgrade()?;
+        let session_kind = self.host.upgrade()?.read(cx).kind;
 
-        let session_kind = session_host.read(cx).kind;
-
-        self.session
+        let description = self
+            .session
             .borrow()
-            .input
+            .input()
             .approval()
-            .map(str::to_owned)
-            .map(|approval| {
-                v_flex()
-                    .w_full()
-                    .px_4()
-                    .py_3()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border.opacity(0.65))
-                    .bg(cx.theme().muted.opacity(0.2))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("agent-approval-pending")),
-                    )
-                    .child(
-                        div()
-                            // The description carries whatever the request holds:
-                            // a whole plan for ExitPlanMode, a full command line
-                            // for Bash. Without a ceiling the card grows past the
-                            // pane and the decision buttons below it are clipped
-                            // away, leaving the turn unanswerable.
-                            .id("approval-description")
-                            .max_h(px(256.))
-                            .overflow_y_scroll()
-                            .px_3()
-                            .py_2()
-                            .rounded(UI_RADIUS)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().background.opacity(0.7))
-                            .text_sm()
-                            .child(approval),
-                    )
-                    .child(
-                        h_flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("approval-cancel")
-                                    .ghost()
-                                    .label(t!("agent-approval-cancel-turn"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.respond_approval("cancel", cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("approval-decline")
-                                    .outline()
-                                    .label(t!("agent-approval-decline"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.respond_approval("decline", cx)
-                                    })),
-                            )
-                            // Offered only where it means something. A harness that
-                            // can answer just this one call would quietly turn a
-                            // session-wide grant into a single-use one.
-                            .when(session_kind.caps().session_scoped_approval, |this| {
-                                this.child(
-                                    Button::new("approval-session")
-                                        .outline()
-                                        .label(t!("agent-approval-allow-session"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.respond_approval("acceptForSession", cx)
-                                        })),
-                                )
-                            })
-                            .child(
-                                Button::new("approval-accept")
-                                    .primary()
-                                    .label(t!("agent-approval-approve-once"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.respond_approval("accept", cx)
-                                    })),
-                            ),
-                    )
-                    .into_any_element()
-            })
+            .map(str::to_owned)?;
+
+        Some(approval_card(
+            description,
+            session_kind.caps().session_scoped_approval,
+            cx,
+        ))
+    }
+
+    /// Empty the composer once the Team has taken what it held.
+    pub(crate) fn clear_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+    }
+
+    /// What this Team member is waiting on the user for: an approval, then
+    /// the questions it asked. Empty while it asks nothing. The Team view
+    /// draws these in its own composer as well as in the member's view, so
+    /// an answer never depends on which of the two is open.
+    pub(crate) fn render_team_interactions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let composer_free = !self.branch_flow_holds_composer();
+
+        self.render_approval_panel(cx)
+            .into_iter()
+            .chain(
+                self.prompts
+                    .render(&self.session, composer_free, window, cx),
+            )
+            .collect()
     }
 
     /// A strip naming the workspace directories the installed harness cannot
-    /// use. It is not dismissible and appears before the first prompt, because
-    /// a user who attached three directories would otherwise only discover the
-    /// reduction from the agent failing to find a file.
+    /// use, when there are any.
     pub(super) fn render_multi_root_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let session_host = self.host.upgrade()?;
-
-        let session_kind = session_host.read(cx).kind;
+        let session_kind = self.host.upgrade()?.read(cx).kind;
 
         let notice = multi_root_notice(session_kind, self.configured_workspace(cx)?)?;
 
-        Some(
-            h_flex()
-                .w_full()
-                .px_4()
-                .py_2()
-                .gap_3()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().warning.opacity(0.10))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(notice),
-                )
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.session
-            .borrow()
-            .runtime
-            .update_suspension()
-            .and_then(|state| {
-                // The phases that tear the backend down and bring it back own the
-                // whole surface through `render_update_overlay`, so the strip only
-                // covers the two states the tab stays usable in.
-                let (label, detail, failed) = match state {
-                    UpdateSuspension::Waiting => (
-                        t!("agent-update-waiting-label"),
-                        t!("agent-update-waiting-detail"),
-                        false,
-                    ),
-                    UpdateSuspension::Failed(message) => (
-                        t!("agent-update-reconnect-failed-label"),
-                        message.as_str().into(),
-                        true,
-                    ),
-                    UpdateSuspension::Stopping
-                    | UpdateSuspension::Updating
-                    | UpdateSuspension::Reconnecting => return None,
-                };
-
-                let banner = h_flex()
-                    .w_full()
-                    .px_4()
-                    .py_2()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .bg(if failed {
-                        cx.theme().danger.opacity(0.12)
-                    } else {
-                        cx.theme().primary.opacity(0.10)
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if failed {
-                                cx.theme().danger
-                            } else {
-                                cx.theme().primary
-                            })
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(detail.to_string()),
-                    )
-                    .when(failed, |row| {
-                        row.child(
-                            Button::new("agent-update-retry")
-                                .outline()
-                                .small()
-                                .label(t!("agent-update-retry"))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.retry_update_recovery(cx)),
-                                ),
-                        )
-                        .child(
-                            Button::new("agent-update-new-session")
-                                .danger()
-                                .small()
-                                .label(t!("agent-update-start-new-session"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.start_new_after_update_failure(cx)
-                                })),
-                        )
-                    })
-                    .into_any_element();
-
-                Some(banner)
-            })
-    }
-
-    /// What the blocking layer shows while the update transaction owns the
-    /// backend: input would go nowhere, and the transcript underneath is a
-    /// stale snapshot of a conversation that is about to be replayed.
-    pub(super) fn render_update_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let label =
-            update_overlay_phase(self.session.borrow().runtime.update_suspension()?)?.label();
-
-        let body = v_flex()
-            .items_center()
-            .gap_3()
-            .child(
-                Spinner::new()
-                    .icon(IconName::LoaderCircle)
-                    .with_size(px(22.))
-                    .color(cx.theme().primary),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(cx.theme().foreground)
-                    .child(label),
-            );
-
-        Some(body.into_any_element())
-    }
-
-    /// What the blocking layer shows during the harness's start. When a start
-    /// counts as still running is the session's own call.
-    ///
-    /// A start that failed keeps the layer and answers with the two things
-    /// left to do, because the pane behind it has no conversation to return
-    /// to: the transcript holds one error row and nothing else.
-    pub(super) fn render_start_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let failure = self
-            .session
-            .borrow()
-            .runtime
-            .start_failure()
-            .map(str::to_owned);
-
-        if failure.is_none() && !self.shows_start_overlay() {
-            return None;
-        }
-
-        let body = match &failure {
-            Some(message) => v_flex()
-                .max_w(px(420.))
-                .items_center()
-                .gap_4()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(message.clone()),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("agent-start-retry")
-                                .primary()
-                                .small()
-                                .label(t!("agent-start-retry"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.start_session(None, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("agent-start-close-tab")
-                                .outline()
-                                .small()
-                                .label(t!("agent-start-close-tab"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.emit_event(AgentPaneEvent::CloseRequested, cx);
-                                })),
-                        ),
-                ),
-            None => v_flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    ProgressCircle::new("agent-start-progress")
-                        .loading(true)
-                        .loading_duration(Duration::from_millis(1_200))
-                        .size(px(22.))
-                        .color(cx.theme().primary),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(cx.theme().foreground)
-                        .child(t!("agent-start-starting")),
-                ),
-        };
-
-        Some(body.into_any_element())
+        Some(multi_root_strip(notice, cx))
     }
 
     pub(super) fn render_composer_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (branch, branch_opacity) = self.git_branch_poll.presentation();
+        let session = self.session.borrow();
+        let steps = self.transcript.read(cx).turn_steps(session.turn());
 
-        let shared = self.session.borrow().conversation.clone();
-        let conversation = shared.borrow();
-
-        let usage = conversation.context_window_usage.map(|usage| {
-            ContextUsageIndicator::new(
-                usage,
-                conversation.context_composition.clone(),
-                conversation.session_stats,
-            )
-        });
-
-        // A backend that folds the count from its whole log is authoritative:
-        // this side's counter sees only the turns it replayed, and a replay is
-        // one page rather than the conversation.
-        let turns = conversation
-            .session_stats
-            .map(|stats| stats.turns)
-            .unwrap_or(self.session.borrow().delivery.turn());
-
-        let stats = composer_stats_label(
-            turns,
-            self.transcript
-                .read(cx)
-                .turn_steps(self.session.borrow().delivery.turn()),
-            conversation.first_output_latency,
-            conversation
-                .context_window_usage
-                .and_then(cache_hit_percent),
-        );
-
-        h_flex()
-            .w_full()
-            .min_h(px(24.))
-            // No rule and no fill of its own: the readouts are quiet text
-            // resting on the pane, and an edge under the composer would read
-            // as a second card boundary right below the card's own.
-            .px(px(COMPOSER_STATUS_PADDING_X))
-            .py(px(COMPOSER_STATUS_PADDING_Y))
-            .items_center()
-            .justify_between()
-            .gap_3()
-            // Everything the footer reports is an identifier or a figure — a
-            // branch name, turn counts, timings, percentages — so the whole
-            // strip is set in the code face rather than each readout choosing
-            // for itself and the context indicator between them falling back
-            // to the prose face.
-            .font(cx.global::<AgentSettings>().transcript_font())
-            .text_size(px(COMPOSER_STATUS_TEXT_SIZE))
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .gap_1p5()
-                    .items_center()
-                    .text_color(cx.theme().muted_foreground.opacity(branch_opacity))
-                    .child(Icon::new(IconName::GitBranch).size_3())
-                    .child(div().min_w_0().truncate().child(branch)),
-            )
-            .child(
-                // The readouts belong with the context indicator rather than
-                // centered between it and the branch: both report what the
-                // conversation has spent, and a variable-width group in the
-                // middle would drift as its parts appear.
-                h_flex()
-                    .flex_none()
-                    .gap_3()
-                    .items_center()
-                    .children(stats.map(|stats| {
-                        div()
-                            .id("agent-composer-stats")
-                            .aria_label(
-                                t!("agent-status-accessibility", stats = &stats).into_owned(),
-                            )
-                            .text_color(cx.theme().muted_foreground.opacity(0.72))
-                            .child(stats)
-                    }))
-                    .children(usage),
-            )
-            .into_any_element()
-    }
-
-    /// The prompts waiting behind the running turn, one row each, above the
-    /// composer. A row whose backend named it carries a control that drops it
-    /// again; one this side is only remembering does not, because there is
-    /// nothing on the backend such a control could address.
-    pub(super) fn render_queued_prompts(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement + use<>> {
-        if self.session.borrow().delivery.pending().is_empty() {
-            return None;
-        }
-
-        Some(
-            v_flex()
-                .w_full()
-                .px_3()
-                .py_1p5()
-                .gap_0p5()
-                .border_b_1()
-                .border_color(cx.theme().border.opacity(0.6))
-                .bg(cx.theme().muted.opacity(0.3))
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .children(
-                    self.session
-                        .borrow()
-                        .delivery
-                        .pending()
-                        .iter()
-                        .enumerate()
-                        .map(|(index, prompt)| {
-                            h_flex()
-                                .w_full()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(queued_message_label(prompt)),
-                                )
-                                .children(prompt.id.clone().map(|id| {
-                                    Button::new(("queued-prompt-remove", index))
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(IconName::Close)
-                                        .tooltip(t!("agent-history-queued-remove"))
-                                        .accessibility_label(t!("agent-history-queued-remove"))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.remove_queued_prompt(&id, cx)
-                                        }))
-                                }))
-                        }),
-                ),
-        )
-    }
-
-    /// Height of one history row; all rows are uniform, which is what lets
-    /// the virtual list precompute its scroll geometry.
-    const HISTORY_ROW_HEIGHT: f32 = 32.0;
-
-    /// Three rows remain visible; older sessions scroll within this viewport.
-    const HISTORY_MAX_HEIGHT: f32 = Self::HISTORY_ROW_HEIGHT * 3.0;
-
-    /// Recent sessions share the composer's width and keep a stable height
-    /// while loading, so returning results do not move the input field.
-    pub(super) fn render_history(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let rows = self
-            .history_ui
-            .data
-            .pending
-            .unwrap_or(self.history_ui.data.sessions.len());
-
-        let body_height =
-            px((Self::HISTORY_ROW_HEIGHT * rows as f32).min(Self::HISTORY_MAX_HEIGHT));
-
-        let body: AnyElement = if self.history_ui.data.pending.is_some() {
-            // Both loading and loaded bodies use the same explicit viewport
-            // height. The virtual list's inferred first-frame measurement
-            // must not move the composer when it replaces these placeholders.
-            v_flex()
-                .w_full()
-                .h(body_height)
-                .flex_none()
-                .px_2()
-                .gap_0()
-                .children((0..rows.min(3)).map(|i| {
-                    h_flex()
-                        .h(px(Self::HISTORY_ROW_HEIGHT))
-                        .w_full()
-                        .px_2()
-                        .items_center()
-                        .child(
-                            Skeleton::new()
-                                .h(px(14.))
-                                .w(relative(if i % 2 == 0 { 0.72 } else { 0.55 }))
-                                .rounded(UI_RADIUS),
-                        )
-                }))
-                .into_any_element()
-        } else {
-            let row_sizes = Rc::new(vec![size(px(0.), px(Self::HISTORY_ROW_HEIGHT)); rows]);
-
-            div()
-                .id("agent-history-rows")
-                .relative()
-                .w_full()
-                .h(body_height)
-                .flex_none()
-                .overflow_hidden()
-                .px_2()
-                // The highlight is drawn for a pointer over the strip even
-                // while a search is being typed, where the arrow keys belong
-                // to the input and the keyboard has no highlight of its own.
-                // The last pointer position goes with it: a pointer that left
-                // and came back to the same place has moved.
-                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                    if this.history_ui.pointer_inside == *inside {
-                        return;
-                    }
-
-                    this.history_ui.pointer_inside = *inside;
-
-                    if !*inside {
-                        this.history_ui.pointer = None;
-                    }
-
-                    cx.notify();
-                }))
-                .child(
-                    v_virtual_list(
-                        cx.entity(),
-                        "agent-history",
-                        row_sizes,
-                        move |this, visible_range, _, cx| {
-                            // The final page in view is the cue to fetch
-                            // the next one (no-op without a cursor, and
-                            // only Codex pages from the backend).
-                            if visible_range.end >= this.history_ui.data.sessions.len()
-                                && let Some(session) =
-                                    this.session.borrow_mut().runtime.backend_mut()
-                            {
-                                session.request_more_history();
-                            }
-
-                            visible_range
-                                .map(|index| this.render_history_row(index, cx))
-                                .collect()
-                        },
-                    )
-                    .track_scroll(&self.history_ui.scroll)
-                    .with_sizing_behavior(ListSizingBehavior::Infer),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .right_0()
-                        .bottom_0()
-                        .w(px(16.))
-                        .child(Scrollbar::vertical(&self.history_ui.scroll)),
-                )
-                .into_any_element()
-        };
-
-        // The picker shares the composer width and leaves a visible gap above it.
-        div()
-            .w_full()
-            .flex()
-            .justify_center()
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.history_ui.mode.dismisses_on_outside_click() {
-                    this.history_ui.mode = RecentSessionsMode::Hidden;
-
-                    cx.notify();
-                }
-            }))
-            .child(
-                v_flex()
-                    .w_full()
-                    .pb(px(2.))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px_2()
-                            .pt_2()
-                            .pb_1()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t!("agent-history-recent-sessions")),
-                            )
-                            .child(
-                                Button::new("history-scope")
-                                    .ghost()
-                                    .small()
-                                    .label(
-                                        t!(if self.history_ui.data.scope
-                                            == SessionScope::AllDirectories
-                                        {
-                                            "agent-history-all-directories"
-                                        } else {
-                                            "agent-history-current-directory"
-                                        })
-                                        .into_owned(),
-                                    )
-                                    .tooltip(t!("agent-history-show-all-sessions-tooltip"))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_history_scope(cx)),
-                                    ),
-                            ),
-                    )
-                    .child(body),
-            )
-    }
-
-    /// The directory a listed conversation ran in, when that is not this
-    /// tab's. A row from this tab's own directory says nothing by repeating
-    /// it, so only the ones that will open elsewhere carry it.
-    fn foreign_directory(&self, session: &SessionSummary, cx: &App) -> Option<String> {
-        let cwd = session.cwd.as_deref()?;
-
-        (!directories_match(Some(cwd), self.working_directory(cx).as_deref()))
-            .then(|| directory_label(cwd))
-    }
-
-    /// One history row: title, branch, and relative time, in the settings
-    /// row's ghost-control idiom (small, muted, hover lifts the foreground).
-    fn render_history_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(session) = self.history_ui.data.sessions.get(index) else {
-            return div().into_any_element();
-        };
-
-        // One fill, for the one current row. The pointer and the arrow keys
-        // move the same highlight, so a hover tint on top of it would be a
-        // second mark for a state the list only has one of.
-        let selected = self.history_ui.selected == index
-            && matches!(
-                self.history_ui.mode,
-                RecentSessionsMode::Automatic | RecentSessionsMode::Open
-            )
-            && (self.history_ui.pointer_inside || self.input.read(cx).text().len() == 0);
-
-        h_flex()
-            .id(("history-row", index))
-            .h(px(Self::HISTORY_ROW_HEIGHT))
-            .w_full()
-            .px_2()
-            .gap_2()
-            .items_center()
-            .rounded(UI_RADIUS)
-            .cursor_pointer()
-            .when(selected, |this| this.bg(cx.theme().list_active))
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if this.history_ui.point_at(index, event.position) {
-                    cx.notify();
-                }
-            }))
-            .on_click(cx.listener(move |this, _, _, cx| this.resume_session(index, cx)))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_2()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .flex_none()
-                            .max_w(relative(1.0))
-                            .truncate()
-                            .text_sm()
-                            .text_color(cx.theme().foreground.opacity(0.82))
-                            .child(session.title.clone()),
-                    )
-                    // A search excerpt is why this row is on screen at all, so
-                    // it shares the title's line rather than adding a second
-                    // one that would change the list's fixed row height.
-                    .children(session.snippet.clone().map(|snippet| {
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7))
-                            .child(snippet.lines().collect::<Vec<_>>().join(" "))
-                    })),
-            )
-            // Where the conversation ran, on rows that ran somewhere else.
-            // Clicking one opens it there rather than continuing it here, so
-            // the directory is the row's most load-bearing detail.
-            .children(self.foreign_directory(session, cx).map(|directory| {
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .items_center()
-                    .max_w(px(180.))
-                    .child(
-                        Icon::new(IconName::Folder)
-                            .size_3()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7)),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7))
-                            .child(directory),
-                    )
-            }))
-            .children(session.branch.clone().map(|branch| {
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .items_center()
-                    .max_w(px(180.))
-                    .child(
-                        Icon::new(IconName::GitBranch)
-                            .size_3()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7)),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7))
-                            .child(branch),
-                    )
-            }))
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground.opacity(0.55))
-                    .child(relative_time(session.last_active)),
-            )
-            .into_any_element()
-    }
-
-    fn show_selected_text_menu(
-        pane: WeakEntity<Self>,
-        released_at: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let selected_text = TextSelection::selected_text(window, cx).trim().to_string();
-
-        if selected_text.is_empty() {
-            return;
-        }
-
-        // Anchored on the selection rather than the pointer, and opened above
-        // it, so the text the two actions operate on stays visible while the
-        // menu is up. The rect is the union of the selected line boxes, so its
-        // top-left is above and left of every selected line.
-        let anchor = window
-            .selected_text_bounds(cx)
-            .map_or(released_at, |bounds| bounds.origin);
-
-        let copy_text = selected_text.clone();
-
-        ModernMenu::new()
-            // A selection menu offers two actions that are recognised by icon, so
-            // the command row reaches them in one horizontal band instead of a
-            // stack of labelled rows the pointer has to travel down.
-            .commands(|menu| {
-                menu.item(t!("agent-transcript-copy"), move |_, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                })
-                .icon(IconName::Copy)
-                .item(t!("agent-transcript-quote"), move |window, cx| {
-                    let selected_text = selected_text.clone();
-
-                    let _ = pane.update(cx, |pane, cx| {
-                        pane.add_response_annotation(selected_text, window, cx);
-                    });
-                })
-                .icon(IconName::TextSelect)
-            })
-            .show_above(anchor, window, cx);
+        self.composer_status.render(&session, steps, cx)
     }
 
     fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         // A branch or rewind picker owns Escape ahead of anything
         // under it, and closing one changes nothing else.
         if self.cancel_branch_picker(cx) {
-        } else if self.session.borrow().input.approval().is_some() {
+        } else if self.session.borrow().input().approval().is_some() {
             self.respond_approval("cancel", cx);
-        } else if self.prompts.questions_open(&self.session.borrow().input) {
+        } else if self.prompts.questions_open(self.session.borrow().input()) {
             self.prompts.collapsed = true;
 
             cx.notify();
-        } else if self.session.borrow().runtime.status() == Status::Running {
+        } else if self.session.borrow().runtime().status() == Status::Running {
             self.interrupt_from_ui(window, cx);
         }
     }
@@ -5810,28 +4727,21 @@ impl AgentPane {
         let released_at = event.position;
 
         window.on_next_frame(move |window, cx| {
-            Self::show_selected_text_menu(pane, released_at, window, cx);
+            show_selected_text_menu(pane, released_at, window, cx);
         });
 
         cx.notify();
     }
 
-    /// How long ago the agent last answered, beside the composer's controls.
-    ///
-    /// Drawn as a mark rather than as a reading: the number itself only
-    /// matters once it is large enough to change what the next message costs,
-    /// and until then a line of text beside the settings is one more thing to
-    /// read past on the way to sending. The wording it used to carry is on the
-    /// mark's tooltip, and in its accessible label.
-    ///
-    /// Absent until a turn has settled, and while one is running: the
-    /// transcript's own live "Working for" reading is the answer then, and two
-    /// clocks a few pixels apart would be read as disagreeing.
+    /// How long ago the agent last answered, as a mark beside the composer's
+    /// controls. Absent until a turn has settled, and while one is running:
+    /// the transcript's own live "Working for" reading is the answer then, and
+    /// two clocks a few pixels apart would be read as disagreeing.
     fn render_last_response(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let at = self
             .session
             .borrow()
-            .conversation
+            .conversation()
             .borrow()
             .last_response_at?;
 
@@ -5839,31 +4749,7 @@ impl AgentPane {
             return None;
         }
 
-        let seconds = at.elapsed().as_secs();
-
-        let color = match last_response_tone(seconds)? {
-            LastResponseTone::Warning => cx.theme().warning,
-            LastResponseTone::Danger => cx.theme().danger,
-        };
-
-        let label = last_response_label(seconds);
-        let tooltip = label.clone();
-
-        Some(
-            div()
-                .id("agent-last-response")
-                .flex_none()
-                .flex()
-                .items_center()
-                .aria_label(label)
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .child(
-                    Icon::new(IconName::TriangleAlert)
-                        .size(px(LAST_RESPONSE_MARK))
-                        .text_color(color),
-                )
-                .into_any_element(),
-        )
+        last_response_mark(at.elapsed().as_secs(), cx)
     }
 
     /// Session id when this pane runs a harness that reports workflows, which
@@ -5879,7 +4765,7 @@ impl AgentPane {
 
         self.session
             .borrow()
-            .runtime
+            .runtime()
             .backend()
             .and_then(Backend::session_id)
             .map(str::to_owned)
@@ -5887,19 +4773,21 @@ impl AgentPane {
 
     /// Runs of the scoped session, in provider order.
     pub fn workflow_runs(&self) -> Ref<'_, [WorkflowRun]> {
-        Ref::map(self.session.borrow(), |session| session.workflows.runs())
+        Ref::map(self.session.borrow(), |session| session.workflows().runs())
     }
 
     /// Agents of this tab the provider currently reports as running.
     pub fn running_workflow_agents(&self) -> usize {
-        self.session.borrow().workflows.running_agents()
+        self.session.borrow().workflows().running_agents()
     }
 
     /// Rows for a skill query, shared by the `/` picker stage and the `$`
     /// prefix. Discovery runs in the background, so a missing catalog is a
     /// loading state rather than an empty result.
     fn skill_palette_model(&self, query: &str) -> PaletteModel {
-        let Some(skill_catalog) = self.palette.skill_catalog.as_ref() else {
+        let session = self.session.borrow();
+
+        let Some(skill_catalog) = session.skill_catalog() else {
             return PaletteModel {
                 rows: Vec::new(),
                 note: Some(SharedString::from(t!(
@@ -5971,78 +4859,173 @@ impl Render for AgentPane {
 
         let session_kind = session_host.read(cx).kind;
 
+        // A Team member takes its requests from the room: what is typed here
+        // goes to the Team that owns the room, which sends it and records the
+        // exchange for every member. The card under the transcript holds what
+        // the member is asking of the user, the input, and the settings its
+        // next turn runs with, on the same column and card as an ordinary
+        // conversation.
         if self.team_member {
+            let interactions = self.render_team_interactions(window, cx);
+
+            // A member waiting on the user's answer cannot take a request
+            // until it has one, and its question is drawn just above.
+            let waiting = self.session.borrow().input().waiting();
+
             return v_flex()
+                .id("agent-pane")
+                .role(Role::Pane)
                 .size_full()
                 .min_h_0()
                 .track_focus(&self.focus)
                 .child(div().flex_1().min_h_0().child(self.transcript.clone()))
-                .children(self.render_approval_panel(cx))
-                .children(self.render_question_panel(window, cx))
-                .child(self.render_composer_status(cx))
+                .child(
+                    transcript_column(
+                        v_flex()
+                            .w_full()
+                            .child(
+                                composer_card(cx)
+                                    .debug_selector(|| "team-member-composer".into())
+                                    .children(interactions)
+                                    .child(
+                                        composer_input_row()
+                                            .capture_action(cx.listener(
+                                                |this, action: &Enter, window, cx| {
+                                                    match composer_enter_behavior(
+                                                        cx.global::<AgentSettings>()
+                                                            .newline_shortcut,
+                                                        action,
+                                                    ) {
+                                                        ComposerEnterBehavior::InsertNewline => {
+                                                            this.input.update(cx, |input, cx| {
+                                                                input.replace("\n", window, cx)
+                                                            })
+                                                        }
+                                                        ComposerEnterBehavior::Submit
+                                                        | ComposerEnterBehavior::ActivateOrSubmit => {
+                                                            this.send_user_message(window, cx)
+                                                        }
+                                                    }
+
+                                                    cx.stop_propagation();
+                                                },
+                                            ))
+                                            .child(div().flex_1().min_w_0().child(
+                                                Textarea::new(&self.input).appearance(false),
+                                            )),
+                                    )
+                                    .child(
+                                        composer_controls_row()
+                                            .child(div().flex_1().min_w_0().child(render_row(
+                                                &self.session.borrow().controls,
+                                                session_kind,
+                                                None,
+                                                cx,
+                                            )))
+                                            .child(
+                                                send_button("team-member-send", false, waiting)
+                                                    .on_click(cx.listener(
+                                                        |this, _, window, cx| {
+                                                            this.send_user_message(window, cx)
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
+                            )
+                            .child(self.render_composer_status(cx)),
+                        cx,
+                    )
+                    .pb_3()
+                    .pt_1(),
+                )
                 .into_any_element();
         }
 
-        let command_palette = self.render_command_palette(cx);
+        let command_palette = self.palette_model(cx).map(|model| {
+            let hover_selects = self.branch_picker_is_open();
 
-        let command_feedback = self
-            .palette
-            .visible_feedback(&self.session.borrow().commands)
-            .map(|feedback| {
-                let (color, label) = match feedback.kind {
-                    CommandFeedbackKind::Notice => {
-                        (cx.theme().primary, t!("agent-feedback-notice"))
-                    }
-                    CommandFeedbackKind::Status => {
-                        (cx.theme().muted_foreground, t!("agent-feedback-status"))
-                    }
-                    CommandFeedbackKind::Error => (cx.theme().danger, t!("agent-feedback-error")),
-                    CommandFeedbackKind::Queued => {
-                        (cx.theme().warning, t!("agent-feedback-queued"))
-                    }
-                };
+            self.palette.render(model, hover_selects, cx)
+        });
 
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .px_3()
-                    .pb_2()
-                    .text_xs()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(color)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(feedback.message.clone()),
-                    )
-            });
+        let notices = composer_notice_panel(
+            self.palette
+                .render_feedback(self.session.borrow().commands(), cx)
+                .map(IntoElement::into_any_element)
+                .into_iter()
+                .chain(
+                    queued_prompts(self.session.borrow().queued_prompts(), cx)
+                        .map(IntoElement::into_any_element),
+                )
+                .collect(),
+            cx,
+        );
 
-        let queued_message = self.render_queued_prompts(cx);
+        let side_chat =
+            (self.side_chat_shown() == Some(true)).then(|| side_chat_window(&self.side_chat, cx));
 
         let approval = self.render_approval_panel(cx);
-        let questions = self.render_question_panel(window, cx);
+        let composer_free = !self.branch_flow_holds_composer();
 
-        let action: ComposerAction = self.session.borrow().runtime.status().into();
-        let running = action == ComposerAction::Stop;
-        let update_suspended = self.session.borrow().runtime.update_suspension().is_some();
-        let update_banner = self.render_update_banner(cx);
+        let questions = self
+            .prompts
+            .render(&self.session, composer_free, window, cx);
+
+        let running = self.session.borrow().runtime().status() == Status::Running;
+
+        let profile = self.can_switch_profile(cx).then(|| {
+            let current = session_host.read(cx).profile().clone();
+            let profiles = cx.global::<AgentSettings>().profiles.clone();
+
+            profile_picker(cx, &current, profiles)
+        });
+
+        let update_suspended = self
+            .session
+            .borrow()
+            .runtime()
+            .update_suspension()
+            .is_some();
+
+        let update_banner = update_banner(self.session.borrow().runtime().update_suspension(), cx);
         let multi_root_notice = self.render_multi_root_notice(cx);
-        let update_overlay = self.render_update_overlay(cx);
-        let start_overlay = self.render_start_overlay(cx);
+
+        let update_overlay =
+            update_overlay(self.session.borrow().runtime().update_suspension(), cx);
+
+        // A failure set aside for a blank tab has already been read; the
+        // next launch reports its own.
+        let start_failure = self
+            .session
+            .borrow()
+            .runtime()
+            .start_failure()
+            .filter(|_| !self.launch_deferred())
+            .map(str::to_owned);
+
+        let start_overlay = start_overlay(start_failure, self.shows_start_overlay(), cx);
 
         // A branch settled from the backend's answer has no window to reach
         // the composer through, so the prompt it cut in front of is put back
         // here, in the frame that answer asked for.
         self.branch.fill_branch_prompt(&self.input, window, cx);
 
+        self.send_held_input(window, cx);
+
         let branch_flow_active = self.branch_flow_holds_composer();
         let branch_flow_working = self.branch_flow_is_working();
         let session_loading = self.history_ui.mode == RecentSessionsMode::Loading;
+
+        // Input held for a launch is what the harness answers first, so the
+        // composer takes no more until it has gone out.
+        let input_held = self.send_on_ready;
+
+        let held = input_held.then(|| {
+            held_prompt(
+                self.held_draft.as_ref().map(|draft| draft.text.as_str()),
+                session_kind.display(),
+                cx,
+            )
+        });
 
         let background = if cx
             .global::<AgentSettings>()
@@ -6056,20 +5039,17 @@ impl Render for AgentPane {
         // Blank tabs expose recent sessions automatically; `/resume` can
         // request the same list after a conversation has started. A count
         // result reserves placeholder rows until the full entries arrive.
-        let history_rows = self
-            .history_ui
-            .data
-            .pending
-            .unwrap_or(self.history_ui.data.sessions.len());
-
         let transcript_empty = self.transcript.read(cx).is_empty();
         let composer_empty = self.input.read(cx).text().len() == 0;
 
-        let history = self
-            .history_ui
-            .mode
-            .is_visible(transcript_empty, composer_empty, history_rows)
-            .then(|| self.render_history(cx));
+        // A side chat starts empty on purpose and cannot switch to another
+        // conversation, so it never offers the list.
+        // A held message has left the composer without starting the
+        // conversation yet, and the list would offer to replace it.
+        let history = (self.history_ui.is_visible(transcript_empty, composer_empty)
+            && !self.side_chat_member
+            && !input_held)
+            .then(|| self.history_ui.render(cx));
 
         // A list opened over a live conversation is a picker, and the
         // transcript behind it is not what the next click should reach. Blur
@@ -6077,20 +5057,19 @@ impl Render for AgentPane {
         // conversation; a blank tab has nothing to push back.
         let blur_transcript = history.is_some() && !transcript_empty;
 
-        let auxiliary_margin = if history.is_some() { 12.0 } else { -14.0 };
-
-        let progress = if history.is_none() {
+        // Progress stays up while the history list is open: the list floats
+        // over it, and hiding the panel would move the transcript under the
+        // blur for a picker that is about to close again.
+        let progress = {
             let session = self.session.borrow();
 
             self.progress_panel.render(
-                session.goal.as_ref(),
-                session.task_list.as_ref(),
-                session.plan_mode,
-                background,
+                session.goal(),
+                session.task_list(),
+                session.plan_mode(),
+                window,
                 cx,
             )
-        } else {
-            None
         };
 
         let now = Instant::now();
@@ -6104,11 +5083,16 @@ impl Render for AgentPane {
         // over an update is the more recent thing to say.
         let blocking_body = start_overlay.or(update_overlay);
 
-        let blocking_frost = self
-            .overlay_fade
-            .drive(blocking_body.is_some(), now, window, cx);
+        let blocking_layer = self.blocking_overlay.render(blocking_body, now, window, cx);
+
+        let sheet = self.control_sheet(window, cx);
 
         v_flex()
+            // The pane takes keyboard focus when the transcript is clicked, so
+            // it needs its own node for screen readers to announce it rather
+            // than the whole window.
+            .id("agent-pane")
+            .role(Role::Pane)
             .size_full()
             .relative()
             // The outer frame matches the window chrome. The Agent surface owns
@@ -6117,6 +5101,7 @@ impl Render for AgentPane {
             .rounded(UI_RADIUS - px(1.))
             .overflow_hidden()
             .track_focus(&self.focus)
+            .on_prepaint(self.side_chat.track_pane())
             // Escape force-stops the agent whenever the pane or composer has
             // focus. The input propagates Escape here when the editor did not
             // consume it (inline completion, IME), and transcript clicks focus
@@ -6129,9 +5114,11 @@ impl Render for AgentPane {
             .font(cx.global::<AgentSettings>().font())
             .text_size(px(cx.global::<AgentSettings>().font_size))
             .children(multi_root_notice)
+            .children(self.remote.as_ref().and_then(|remote| remote.banner(cx)))
             .children(update_banner)
             .child(
                 div()
+                    .debug_selector(|| "agent-progress-transcript".into())
                     .flex_1()
                     .min_h_0()
                     // Selectable transcript text claims focus during mouse-down
@@ -6140,6 +5127,16 @@ impl Render for AgentPane {
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_transcript_mouse_up))
                     .relative()
                     .child(self.transcript.clone())
+                    // Only a blank tab defers its launch, so the transcript
+                    // under the held message has nothing for it to cover.
+                    .children(held.map(|held| {
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .child(transcript_column(held, cx))
+                    }))
                     // The layer swallows clicks aimed at the transcript; the
                     // list's outside-click handler still sees them and
                     // dismisses itself.
@@ -6148,72 +5145,76 @@ impl Render for AgentPane {
                     }),
             )
             .child({
-                // History and progress share an absolute anchor so opening
-                // either panel keeps the input in place. Painting the panel
-                // first tucks its lower edge behind the input card's shadow.
+                // Progress takes its own space above the composer, so opening
+                // its details pushes the transcript up instead of covering it.
+                // Painting it before the card tucks its lower edge behind the
+                // card's shadow.
                 transcript_column(
-                    div()
+                    v_flex()
                         .w_full()
-                        .relative()
-                        .children(history.map(IntoElement::into_any_element).or(progress).map(
-                            |panel| {
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .right_0()
-                                    .bottom(relative(1.))
-                                    .mb(px(auxiliary_margin))
-                                    .child(panel)
-                            },
-                        ))
+                        .children(progress)
+                        .children(notices)
                         .child(
-                            composer_card(cx)
-                                .debug_selector(|| "agent-progress-composer".into())
-                                .children(approval)
-                                .children(questions)
-                                .children(command_feedback)
-                                .children(queued_message)
-                                .children(self.attachments.render(cx))
+                            div()
+                                .w_full()
+                                .relative()
+                                // History is a picker over the conversation, so it
+                                // floats from the card's top edge and leaves the
+                                // progress panel and the transcript where they are.
+                                .children(history.map(|panel| {
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(relative(1.))
+                                        .child(panel)
+                                }))
                                 .child(
-                                    composer_input_row()
-                                        // GPUI resolves these keystrokes
-                                        // into Textarea actions before raw
-                                        // key listeners run. Capturing
-                                        // the actions lets the palette
-                                        // own navigation while visible;
-                                        // the handler propagates them
-                                        // unchanged when it is closed.
-                                        // The composer's own paste inserts
-                                        // text; an image on the clipboard has
-                                        // to be taken before it gets there.
-                                        .capture_action(cx.listener(
-                                            |this, _: &Paste, window, cx| {
-                                                if this.paste_image(window, cx) {
-                                                    cx.stop_propagation();
-                                                }
-                                            },
-                                        ))
-                                        .capture_action(cx.listener(
-                                            |this, _: &MoveUp, window, cx| {
-                                                this.handle_palette_control(
-                                                    PaletteControl::Previous,
-                                                    window,
-                                                    cx,
-                                                )
-                                            },
-                                        ))
-                                        .capture_action(cx.listener(
-                                            |this, _: &MoveDown, window, cx| {
-                                                this.handle_palette_control(
-                                                    PaletteControl::Next,
-                                                    window,
-                                                    cx,
-                                                )
-                                            },
-                                        ))
-                                        .capture_action(cx.listener(
-                                            |this, action: &Enter, window, cx| {
-                                                match composer_enter_behavior(
+                                    composer_card(cx)
+                                        .debug_selector(|| "agent-progress-composer".into())
+                                        .children(approval)
+                                        .children(questions)
+                                        .children(self.attachments.render(cx))
+                                        .child(
+                                            composer_input_row()
+                                                // GPUI resolves these keystrokes
+                                                // into Textarea actions before raw
+                                                // key listeners run. Capturing
+                                                // the actions lets the palette
+                                                // own navigation while visible;
+                                                // the handler propagates them
+                                                // unchanged when it is closed.
+                                                // The composer's own paste inserts
+                                                // text; an image on the clipboard has
+                                                // to be taken before it gets there.
+                                                .capture_action(cx.listener(
+                                                    |this, _: &Paste, window, cx| {
+                                                        if this.paste_image(window, cx) {
+                                                            cx.stop_propagation();
+                                                        }
+                                                    },
+                                                ))
+                                                .capture_action(cx.listener(
+                                                    |this, _: &MoveUp, window, cx| {
+                                                        this.handle_palette_control(
+                                                            PaletteControl::Previous,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                ))
+                                                .capture_action(cx.listener(
+                                                    |this, _: &MoveDown, window, cx| {
+                                                        this.handle_palette_control(
+                                                            PaletteControl::Next,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                ))
+                                                .capture_action(cx.listener(
+                                                    |this, action: &Enter, window, cx| {
+                                                        match composer_enter_behavior(
                                                     cx.global::<AgentSettings>().newline_shortcut,
                                                     action,
                                                 ) {
@@ -6236,339 +5237,120 @@ impl Render for AgentPane {
                                                             cx,
                                                         ),
                                                 }
-                                            },
-                                        ))
-                                        .capture_action(cx.listener(
-                                            |this, _: &IndentInline, window, cx| {
-                                                this.handle_palette_control(
-                                                    PaletteControl::Complete,
-                                                    window,
+                                                    },
+                                                ))
+                                                .capture_action(cx.listener(
+                                                    |this, _: &IndentInline, window, cx| {
+                                                        this.handle_palette_control(
+                                                            PaletteControl::Complete,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                ))
+                                                .capture_action(cx.listener(
+                                                    |this, _: &Escape, window, cx| {
+                                                        this.handle_palette_control(
+                                                            PaletteControl::Dismiss,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                ))
+                                                // The prompt editor reads larger than the
+                                                // chrome around it (t3code uses 16px over
+                                                // a 14px UI); +2 keeps that ratio at any
+                                                // configured agent font size.
+                                                .text_size(px(cx
+                                                    .global::<AgentSettings>()
+                                                    .font_size
+                                                    + 2.0))
+                                                .child(
+                                                    div().flex_1().min_w_0().child(
+                                                        Textarea::new(&self.input)
+                                                            .appearance(false)
+                                                            .disabled(
+                                                                branch_flow_working
+                                                                    || session_loading
+                                                                    || update_suspended
+                                                                    || input_held,
+                                                            ),
+                                                    ),
+                                                ),
+                                        )
+                                        .child(
+                                            composer_controls_row()
+                                                .child(div().flex_1().min_w_0().child(render_row(
+                                                    &self.session.borrow().controls,
+                                                    session_kind,
+                                                    profile,
                                                     cx,
-                                                )
-                                            },
-                                        ))
-                                        .capture_action(cx.listener(
-                                            |this, _: &Escape, window, cx| {
-                                                this.handle_palette_control(
-                                                    PaletteControl::Dismiss,
-                                                    window,
-                                                    cx,
-                                                )
-                                            },
-                                        ))
-                                        // The prompt editor reads larger than the
-                                        // chrome around it (t3code uses 16px over
-                                        // a 14px UI); +2 keeps that ratio at any
-                                        // configured agent font size.
-                                        .text_size(px(cx.global::<AgentSettings>().font_size + 2.0))
-                                        .child(div().flex_1().min_w_0().child(
-                                            Textarea::new(&self.input).appearance(false).disabled(
-                                                branch_flow_working
-                                                    || session_loading
-                                                    || update_suspended,
-                                            ),
-                                        )),
+                                                )))
+                                                .children(self.render_last_response(cx))
+                                                // Send stands at the card's trailing
+                                                // corner, past the settings it is
+                                                // qualified by: those say what the next
+                                                // message is sent as, and this is the
+                                                // one control that sends it, so it is
+                                                // the last thing the eye reaches on its
+                                                // way out of the card. Stop replaces
+                                                // Send in place while a turn runs.
+                                                .child(
+                                                    send_button(
+                                                        "agent-send",
+                                                        running,
+                                                        !running
+                                                            && (branch_flow_active
+                                                                || session_loading
+                                                                || update_suspended
+                                                                || input_held),
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            if running {
+                                                                this.interrupt_from_ui(window, cx)
+                                                            } else {
+                                                                this.send_user_message(window, cx)
+                                                            }
+                                                        },
+                                                    )),
+                                                ),
+                                        ),
                                 )
-                                .child(
-                                    composer_controls_row()
-                                        .child(div().flex_1().min_w_0().child(render_row(
-                                            &self.session.borrow().controls,
-                                            session_kind,
-                                            cx,
-                                        )))
-                                        .children(self.render_last_response(cx))
-                                        // Send stands at the card's trailing
-                                        // corner, past the settings it is
-                                        // qualified by: those say what the next
-                                        // message is sent as, and this is the
-                                        // one control that sends it, so it is
-                                        // the last thing the eye reaches on its
-                                        // way out of the card. Stop replaces
-                                        // Send in place while a turn runs.
-                                        .child(if running {
-                                            Button::new("agent-send")
-                                                .primary()
-                                                .size(px(COMPOSER_SEND_BUTTON))
-                                                .rounded_full()
-                                                .icon(StopResponseIcon)
-                                                .tooltip(t!("agent-action-stop-response"))
-                                                .accessibility_label(t!(
-                                                    "agent-action-stop-response",
-                                                ))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.interrupt_from_ui(window, cx)
-                                                }))
-                                        } else {
-                                            Button::new("agent-send")
-                                                .primary()
-                                                .disabled(
-                                                    branch_flow_active
-                                                        || session_loading
-                                                        || update_suspended,
-                                                )
-                                                .size(px(COMPOSER_SEND_BUTTON))
-                                                .rounded_full()
-                                                .icon(IconName::ArrowUp)
-                                                .tooltip(t!("agent-action-send-message"))
-                                                .accessibility_label(t!(
-                                                    "agent-action-send-message",
-                                                ))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.send_user_message(window, cx)
-                                                }))
-                                        }),
-                                ),
-                        )
-                        // The status footer reads out what the session has
-                        // spent so far, which is context for the message
-                        // rather than part of composing it. It sits under
-                        // the card on the pane's own surface, so the card's
-                        // edge still ends at the input it encloses.
-                        .child(self.render_composer_status(cx))
-                        .children(command_palette.map(|palette| {
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom(relative(1.))
-                                .mb_2()
-                                .occlude()
-                                .child(palette)
-                        })),
+                                // The status footer reads out what the session has
+                                // spent so far, which is context for the message
+                                // rather than part of composing it. It sits under
+                                // the card on the pane's own surface, so the card's
+                                // edge still ends at the input it encloses.
+                                .child(self.render_composer_status(cx))
+                                .children(command_palette.map(|palette| {
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(relative(1.))
+                                        .mb_2()
+                                        .occlude()
+                                        .child(palette)
+                                })),
+                        ),
                     cx,
                 )
                 .pb_3()
                 .pt_1()
             })
+            // The Side Chat window floats over the transcript and the composer
+            // but under the blocking layer, which must cover the whole pane.
+            .children(side_chat)
             // Painted last so it sits over the transcript and the composer.
-            // Once the state it showed has ended the layer keeps fading with
-            // nothing on it; the body belonged to that state.
-            .when(!blocking_frost.gone(), |this| {
-                this.child(
-                    FrostedLayer::new(blocking_frost)
-                        .padded()
-                        .children(blocking_body),
-                )
-            })
+            .children(blocking_layer)
+            .children(sheet)
             .into_any_element()
     }
 }
 
 // The composer sits in the same column as the transcript above it, so the
 // two edges line up at every window width.
-
-/// Diameter of the send/stop control that closes the input line.
-const COMPOSER_SEND_BUTTON: f32 = 32.0;
-
-/// The status footer along the bottom edge of the composer card. It reports
-/// rather than invites input, so it is set below the chrome size to keep the
-/// prompt above it the loudest thing on the card.
-pub(super) const COMPOSER_STATUS_PADDING_X: f32 = 14.0;
-
-pub(super) const COMPOSER_STATUS_PADDING_Y: f32 = 6.0;
-pub(super) const COMPOSER_STATUS_TEXT_SIZE: f32 = 11.5;
-
-pub(super) struct StopResponseIcon;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ComposerEnterBehavior {
-    InsertNewline,
-    Submit,
-    ActivateOrSubmit,
-}
-
-pub(super) fn composer_enter_behavior(
-    shortcut: NewlineShortcut,
-    action: &Enter,
-) -> ComposerEnterBehavior {
-    match (action.secondary, action.shift) {
-        (false, false) => ComposerEnterBehavior::ActivateOrSubmit,
-        (true, false) if shortcut == NewlineShortcut::CtrlEnter => {
-            ComposerEnterBehavior::InsertNewline
-        }
-        (false, true) if shortcut == NewlineShortcut::ShiftEnter => {
-            ComposerEnterBehavior::InsertNewline
-        }
-        _ => ComposerEnterBehavior::Submit,
-    }
-}
-
-impl IconNamed for StopResponseIcon {
-    fn path(self) -> SharedString {
-        "icons/stop.svg".into()
-    }
-}
-
-/// Edge of the mark. Set to the size of a settings pill's own glyph, so the
-/// row it stands in keeps one glyph size across its whole width.
-const LAST_RESPONSE_MARK: f32 = 12.0;
-
-/// How far into the window a conversation has to have drifted before the
-/// composer says so, and before it says so in the danger colour. The window is
-/// the one a provider's prompt cache is expected to hold, so the first mark
-/// says the next message is going to start costing more than the last one did,
-/// and the second says it is about to cost a full re-read of the context.
-const LAST_RESPONSE_WARNING: f32 = 0.5;
-
-const LAST_RESPONSE_DANGER: f32 = 0.9;
-
-/// How loudly the composer marks a conversation that has been sitting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LastResponseTone {
-    Warning,
-    Danger,
-}
-
-/// The mark a settled conversation carries, from how long it has been sitting.
-///
-/// Under half the window there is nothing worth saying: a conversation picked
-/// up that soon costs what it would have cost immediately, and a reading that
-/// is always on screen is one the eye stops seeing. Past the window the answer
-/// stops changing, which is the same answer as the last reading inside it.
-fn last_response_tone(seconds: u64) -> Option<LastResponseTone> {
-    let drift = seconds as f32 / LAST_RESPONSE_LIMIT.as_secs() as f32;
-
-    if drift >= LAST_RESPONSE_DANGER {
-        Some(LastResponseTone::Danger)
-    } else if drift >= LAST_RESPONSE_WARNING {
-        Some(LastResponseTone::Warning)
-    } else {
-        None
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum UpdateOverlayPhase {
-    Stopping,
-    Updating,
-    Reconnecting,
-}
-
-impl UpdateOverlayPhase {
-    fn label(self) -> Cow<'static, str> {
-        match self {
-            Self::Stopping => t!("agent-update-stopping-label"),
-            Self::Updating => t!("agent-update-updating-label"),
-            Self::Reconnecting => t!("agent-update-reconnecting-label"),
-        }
-    }
-}
-
-/// The composer's one-line account of the conversation: how many turns it has
-/// run, how many actions the newest turn took, how long that turn waited for
-/// its first output, and how much of the input the provider had cached. Each
-/// part is dropped rather than shown as a zero when nothing reports it, and a
-/// conversation that has not run a turn yet reports nothing at all.
-pub(super) fn composer_stats_label(
-    turns: u64,
-    steps: usize,
-    first_output: Option<Duration>,
-    cache_hit: Option<u64>,
-) -> Option<String> {
-    if turns == 0 {
-        return None;
-    }
-
-    let mut parts = vec![t!("agent-status-turns", count = turns).into_owned()];
-
-    if steps > 0 {
-        parts.push(t!("agent-status-steps", count = steps).into_owned());
-    }
-
-    if let Some(first_output) = first_output {
-        parts.push(
-            t!(
-                "agent-status-first-output",
-                value = &latency_readout(first_output)
-            )
-            .into_owned(),
-        );
-    }
-
-    if let Some(percent) = cache_hit {
-        parts.push(t!("agent-status-cache-hit", percent = percent).into_owned());
-    }
-
-    Some(parts.join(" · "))
-}
-
-/// Sub-second latencies are the interesting ones, and a reading like `0.8s`
-/// hides how much of a second it was; past a second the tenth is enough.
-fn latency_readout(latency: Duration) -> String {
-    if latency < Duration::from_secs(1) {
-        format!("{}ms", latency.as_millis())
-    } else {
-        format!("{:.1}s", latency.as_secs_f64())
-    }
-}
-
-pub(super) fn update_overlay_phase(state: &UpdateSuspension) -> Option<UpdateOverlayPhase> {
-    match state {
-        UpdateSuspension::Stopping => Some(UpdateOverlayPhase::Stopping),
-        UpdateSuspension::Updating => Some(UpdateOverlayPhase::Updating),
-        UpdateSuspension::Reconnecting => Some(UpdateOverlayPhase::Reconnecting),
-        UpdateSuspension::Waiting | UpdateSuspension::Failed(_) => None,
-    }
-}
-
-/// What an Agent Tab has to disclose about the directories its harness cannot
-/// reach, or `None` when there is nothing to disclose. Derived from the
-/// harness's declared access and the workspace alone, so a permission-preset
-/// change can neither raise nor clear it: choosing a broader preset widens what
-/// the harness may do inside the one root it has, and does not give it
-/// selected-root isolation across the others.
-pub(super) fn multi_root_notice(kind: AgentKind, workspace: &AgentWorkspace) -> Option<String> {
-    if kind.caps().multi_root_access == MultiRootAccess::Full || !workspace.is_multi_root() {
-        return None;
-    }
-
-    Some(
-        t!(
-            "agent-multi-root-primary-only",
-            agent = kind.display(),
-            path = workspace.primary().unwrap_or_default(),
-            count = workspace.additional().len()
-        )
-        .into_owned(),
-    )
-}
-
-/// One queued prompt on one line. A prompt spanning several lines is folded
-/// into one so every waiting row costs the composer the same height.
-pub(super) fn queued_message_label(prompt: &QueuedPrompt) -> String {
-    let text = visible_prompt(&prompt.text)
-        .lines()
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    t!("agent-history-queued-message", text = &text).into_owned()
-}
-
-fn cancel_row() -> PaletteRow {
-    PaletteRow {
-        label: SharedString::from(t!("agent-fork-cancel")),
-        description: SharedString::from(t!("agent-fork-cancel-description")),
-        hint: None,
-        disabled_reason: None,
-        action: PaletteAction::ForkCancel,
-    }
-}
-
-/// The pane's branch label: a detached `HEAD` shows its short commit,
-/// matching the git footer's presentation of the same state.
-fn branch_label(cwd: &str, max_age: Duration) -> Option<String> {
-    let branch = match git::current_branch(cwd, max_age) {
-        Ok(branch) => branch?,
-        Err(_) => return Some("Git unavailable".into()),
-    };
-
-    Some(match branch {
-        git::CheckedOut::Branch(branch) => branch,
-        git::CheckedOut::Detached(commit) => {
-            t!("git-status-detached", commit = &commit).into_owned()
-        }
-    })
-}
 
 /// Cap for a tab title taken from a prompt. The strip truncates whatever it is
 /// given, so this only bounds what the tab carries around.
@@ -6597,27 +5379,6 @@ fn replace_input_with_history<T: 'static>(
 
         input.set_selected_range(end..end, cx);
     });
-}
-
-/// A copied file read as an image, or `None` for anything that is not one.
-/// Only the extension is trusted to decide whether reading is worth it; the
-/// decode decides whether it was an image.
-fn image_file(path: &Path) -> Option<Image> {
-    let format = match path
-        .extension()
-        .and_then(|extension| extension.to_str())?
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => ImageFormat::Png,
-        "jpg" | "jpeg" => ImageFormat::Jpeg,
-        "webp" => ImageFormat::Webp,
-        "gif" => ImageFormat::Gif,
-        "bmp" => ImageFormat::Bmp,
-        _ => return None,
-    };
-
-    Some(Image::from_bytes(format, fs::read(path).ok()?))
 }
 
 #[derive(Clone, Copy)]

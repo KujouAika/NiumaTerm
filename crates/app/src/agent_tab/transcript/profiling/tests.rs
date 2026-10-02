@@ -15,7 +15,7 @@ use tracing::subscriber::with_default;
 use tracing_subscriber::fmt;
 
 use crate::agent_tab::profile::AgentKind;
-use crate::agent_tab::transcript::{Entry, TranscriptView};
+use crate::agent_tab::transcript::TranscriptView;
 
 #[global_allocator]
 static ALLOCATOR: ProfilingAllocator = ProfilingAllocator;
@@ -59,7 +59,7 @@ impl Drop for Enabled {
     }
 }
 
-fn take_totals() -> [Totals; 9] {
+fn take_totals() -> [Totals; 8] {
     take_samples()
 }
 
@@ -77,11 +77,7 @@ fn history(turns: u64, live: Item) -> TranscriptView {
                 questions: None,
             },
         ] {
-            view.append_entry(Entry {
-                turn,
-                item,
-                metadata: Default::default(),
-            });
+            view.push_stamped(turn, item);
         }
 
         view.conversation
@@ -90,11 +86,7 @@ fn history(turns: u64, live: Item) -> TranscriptView {
             .replay(turn, false, None, None);
     }
 
-    view.append_entry(Entry {
-        turn: turns,
-        item: live,
-        metadata: Default::default(),
-    });
+    view.push_stamped(turns, live);
 
     view.refresh_rows(CollapseRows::WorkAndToolCalls);
 
@@ -113,7 +105,7 @@ fn reasoning(capacity: usize) -> Item {
 }
 
 #[gpui::test]
-fn profiles_real_updates_and_mirror_revisions_without_changing_results(cx: &mut TestAppContext) {
+fn profiles_real_updates_without_changing_results(cx: &mut TestAppContext) {
     assert!(Probe::start(Operation::AppendDelta).is_none());
     assert!(AllocationScope::start().is_none());
 
@@ -121,7 +113,7 @@ fn profiles_real_updates_and_mirror_revisions_without_changing_results(cx: &mut 
         let entity = cx.new(|_| history(4, reasoning(1024)));
         let _enabled = Enabled::new();
 
-        entity.update(cx, |view, cx| {
+        entity.update(cx, |view, _| {
             assert!(view.append_delta("live", " more", TextField::ReasoningSummary));
             assert!(!view.append_delta("missing", "ignored", TextField::ReasoningSummary));
 
@@ -147,41 +139,16 @@ fn profiles_real_updates_and_mirror_revisions_without_changing_results(cx: &mut 
             assert_eq!(grown.allocations.reallocations, 1);
             assert!(grown.allocations.reallocated_bytes >= 2048);
 
-            let source = [Item::AgentMessage {
-                id: "mirrored".into(),
-                text: Some("mirror content".repeat(128)),
-                questions: None,
-            }];
+            view.push_stamped(
+                5,
+                Item::AgentMessage {
+                    id: "mirrored".into(),
+                    text: Some("mirror content".repeat(128)),
+                    questions: None,
+                },
+            );
 
-            for operation in [Operation::BackgroundSnapshot, Operation::WorkflowSnapshot] {
-                let snapshot = {
-                    let _profile = Probe::start(operation);
-
-                    source.to_vec()
-                };
-
-                view.show_items(&snapshot, 1, cx);
-            }
-
-            let totals = take_totals();
-
-            for operation in [
-                Operation::BackgroundSnapshot,
-                Operation::WorkflowSnapshot,
-                Operation::MirrorRebuild,
-            ] {
-                let total = totals[operation as usize];
-
-                assert_eq!(total.calls, 1);
-                assert!(total.allocations.allocated_bytes >= 128 * 14);
-            }
-
-            assert!(view.contains_item("mirrored"));
-            assert!(!view.contains_item("live"));
-
-            view.show_items(&source, 2, cx);
-
-            assert_eq!(take_totals()[Operation::MirrorRebuild as usize].calls, 1);
+            take_totals();
 
             let log = LogBuffer(Arc::default());
             let writer = log.clone();
@@ -291,9 +258,9 @@ fn measure<C, T>(
     }
 }
 
-#[gpui::test]
+#[test]
 #[ignore = "manual transcript timing and allocation baseline; run alone"]
-fn long_transcript_profile(cx: &mut TestAppContext) {
+fn long_transcript_profile() {
     eprintln!(
         "transcript baseline: debug_assertions={} timings exclude active probes; allocations are separate inclusive batches",
         cfg!(debug_assertions)
@@ -384,57 +351,4 @@ fn long_transcript_profile(cx: &mut TestAppContext) {
             black_box(&view.rows);
         },
     );
-
-    for (name, operation, entries) in [
-        ("background", Operation::BackgroundSnapshot, 512),
-        ("workflow", Operation::WorkflowSnapshot, 10_000),
-    ] {
-        let source: Vec<_> = (0..entries)
-            .map(|index| Item::AgentMessage {
-                id: format!("mirror-{index}"),
-                text: Some("stored output ".repeat(32)),
-                questions: None,
-            })
-            .collect();
-
-        for changed in [false, true] {
-            let entity = cx.new(|_| TranscriptView::new(AgentKind::Codex, None));
-
-            cx.update(|cx| {
-                entity.update(cx, |_, cx| {
-                    measure(
-                        cx,
-                        &format!("{name}-snapshot-changed={changed}/{entries}"),
-                        20,
-                        |cx| {
-                            let mut view = TranscriptView::new(AgentKind::Codex, None);
-
-                            view.show_items(&source, 1, cx);
-
-                            view.refresh_rows(CollapseRows::WorkAndToolCalls);
-
-                            view
-                        },
-                        |view, index, cx| {
-                            // Keep the source copy before the revision check,
-                            // matching the current detail-panel update order.
-                            let snapshot = {
-                                let _profile = Probe::start(operation);
-
-                                source.clone()
-                            };
-
-                            let revision = if changed { index as u64 + 2 } else { 1 };
-
-                            view.show_items(&snapshot, revision, cx);
-
-                            view.refresh_rows(CollapseRows::WorkAndToolCalls);
-
-                            black_box(&view.rows);
-                        },
-                    );
-                });
-            });
-        }
-    }
 }

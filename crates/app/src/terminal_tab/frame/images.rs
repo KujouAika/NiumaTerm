@@ -1,10 +1,11 @@
 use std::collections;
 use std::sync::{self, Arc};
 
-use nmt_terminal::ansi::kitty_virtual::{self, IncompletePlacement, PLACEHOLDER, PlaceholderRun};
 use nmt_terminal::ghostty::SnapshotPlacement;
+use nmt_terminal::graphics::{
+    IncompletePlacement, PLACEHOLDER, PlaceholderRun, compute_run_geometry,
+};
 use nmt_terminal::render_buffer::RenderBuffer;
-use nmt_terminal::terminal::square::ContentTag;
 
 use crate::terminal_tab::graphics;
 
@@ -67,19 +68,10 @@ pub(super) fn empty_images() -> Arc<[FrameImage]> {
 }
 
 impl FrameImage {
-    /// The image's top viewport row, for computing its row displacement (fixed-bottom
-    /// / block-list) before geometry.
-    pub(crate) fn top_row(&self) -> i32 {
-        match self.kind {
-            FrameImageKind::Ordinary { viewport_row, .. } => viewport_row,
-            FrameImageKind::Virtual { screen_line, .. } => screen_line as i32,
-        }
-    }
-
     /// Pixel destination rectangle `[x, y, w, h]` and normalized source rectangle
     /// `[u0, v0, u1, v1]` for painting this image. `origin_x`/`origin_y` are
-    /// the terminal grid's top-left; `row_offset` is the extra y displacement for this
-    /// image's top row (`top_row`). Ordinary placements map viewport cells + sub-cell
+    /// the terminal grid's top-left; `row_offset` is the y displacement the grid
+    /// itself has, the fixed-bottom slack. Ordinary placements map viewport cells + sub-cell
     /// offsets directly; virtual runs go through `compute_run_geometry` (aspect-fit).
     /// Returns `None` for degenerate geometry (paint skips it).
     pub(crate) fn destination(
@@ -127,7 +119,7 @@ impl FrameImage {
                 // row at screen line 0 of the adjusted origin.
                 let oy = origin_y + screen_line as f32 * cell_h + row_offset;
 
-                let g = kitty_virtual::compute_run_geometry(
+                let g = compute_run_geometry(
                     &run,
                     placement_cols,
                     placement_rows,
@@ -249,8 +241,7 @@ fn extract_virtual_images(
         for col in 0..buf.cols() {
             let cell = buf.cell(col, row);
 
-            let is_placeholder =
-                cell.content_tag() == ContentTag::Codepoint && cell.c() == PLACEHOLDER;
+            let is_placeholder = cell.c() == PLACEHOLDER;
 
             if !is_placeholder {
                 if let Some((run, start)) = current.take() {

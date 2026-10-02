@@ -1,17 +1,20 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
+use std::task::{Context, Poll as TaskPoll};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gpui::{FontFallbacks, px};
+use futures::task::AtomicWaker;
+use gpui::FontFallbacks;
 use nmt_config::CursorShape;
 use nmt_config::appearance::InputStyle;
 use nmt_config::colors::Colors;
 use nmt_config::system::NewlineShortcut;
-use nmt_platform::{EventedPty, Interest, Poll, ProcessReadWrite, Token, Waker, WinsizeBuilder};
-use nmt_terminal::pty_pipe::SessionOptions;
+use nmt_platform::{AsyncPty, WinsizeBuilder, poll_nonblocking};
+use nmt_terminal::clipboard::ClipboardType;
 use nmt_terminal::session::TerminalSession;
+use nmt_terminal::termio::SessionOptions;
 use parking_lot::Mutex;
 
 use crate::terminal_tab::block_list::chrome::DurationLabels;
@@ -22,11 +25,22 @@ use crate::terminal_tab::settings::TerminalSettings;
 use crate::terminal_tab::wake::wake_channel;
 
 struct TestPty {
-    output: VecDeque<u8>,
+    output: Arc<TestOutput>,
     input: Arc<Mutex<Vec<u8>>>,
-    read_token: Token,
-    write_token: Token,
-    child_token: Token,
+}
+
+#[derive(Default)]
+pub(crate) struct TestOutput {
+    bytes: Mutex<VecDeque<u8>>,
+    task_waker: AtomicWaker,
+}
+
+impl TestOutput {
+    pub(crate) fn push(&self, bytes: &[u8]) {
+        self.bytes.lock().extend(bytes);
+
+        self.task_waker.wake();
+    }
 }
 
 #[derive(Clone, Default)]
@@ -40,7 +54,7 @@ impl ClipboardAccess for TestClipboard {
         self.text.lock().clone()
     }
 
-    fn write(&mut self, text: String) -> bool {
+    fn write(&mut self, _kind: ClipboardType, text: String) -> bool {
         if self.reject_writes {
             return false;
         }
@@ -53,10 +67,12 @@ impl ClipboardAccess for TestClipboard {
 
 impl Read for TestPty {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let count = buffer.len().min(self.output.len());
+        let mut output = self.output.bytes.lock();
+
+        let count = buffer.len().min(output.len());
 
         for slot in &mut buffer[..count] {
-            *slot = self.output.pop_front().unwrap();
+            *slot = output.pop_front().unwrap();
         }
 
         Ok(count)
@@ -75,94 +91,51 @@ impl Write for TestPty {
     }
 }
 
-impl ProcessReadWrite for TestPty {
-    type Reader = Self;
+impl AsyncPty for TestPty {
+    fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> TaskPoll<io::Result<usize>> {
+        self.output.task_waker.register(cx.waker());
 
-    type Writer = Self;
-
-    fn reader(&mut self) -> &mut Self {
-        self
-    }
-
-    fn writer(&mut self) -> &mut Self {
-        self
-    }
-
-    fn read_token(&self) -> Token {
-        self.read_token
-    }
-
-    fn write_token(&self) -> Token {
-        self.write_token
-    }
-
-    fn set_winsize(&mut self, _: WinsizeBuilder) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn register(
-        &mut self,
-        _: &Poll,
-        tokens: &mut dyn Iterator<Item = Token>,
-        _: Interest,
-        _: &Arc<Waker>,
-    ) -> io::Result<()> {
-        self.read_token = tokens.next().unwrap();
-        self.write_token = tokens.next().unwrap();
-        self.child_token = tokens.next().unwrap();
-
-        Ok(())
-    }
-
-    fn reregister(&mut self, _: &Poll, _: Interest) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn deregister(&mut self, _: &Poll) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn drain_ready(&self) -> Vec<Token> {
-        let mut tokens = vec![self.write_token];
-
-        if !self.output.is_empty() {
-            tokens.push(self.read_token);
+        match self.read(buf) {
+            Ok(0) => TaskPoll::Pending,
+            result => poll_nonblocking(cx, result),
         }
-
-        tokens
     }
 
-    fn has_ready(&self) -> bool {
-        !self.output.is_empty()
-    }
-}
-
-impl EventedPty for TestPty {
-    fn child_event_token(&self) -> Token {
-        self.child_token
+    fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> TaskPoll<io::Result<usize>> {
+        poll_nonblocking(cx, self.write(buf))
     }
 
-    fn child_exited(&mut self) -> bool {
-        false
+    fn poll_exit(&mut self, _: &mut Context<'_>) -> TaskPoll<()> {
+        TaskPoll::Pending
+    }
+
+    fn poll_resize(&mut self, _: &mut Context<'_>, _: WinsizeBuilder) -> TaskPoll<io::Result<()>> {
+        TaskPoll::Ready(Ok(()))
     }
 }
 
 pub(crate) fn controller(vt: &[u8], engine_blocks: bool) -> (PaneController, Arc<Mutex<Vec<u8>>>) {
+    let (controller, input, _) = streaming_controller(vt, engine_blocks);
+
+    (controller, input)
+}
+
+pub(crate) fn streaming_controller(
+    vt: &[u8],
+    engine_blocks: bool,
+) -> (PaneController, Arc<Mutex<Vec<u8>>>, Arc<TestOutput>) {
     let input = Arc::new(Mutex::new(Vec::new()));
+    let output = Arc::new(TestOutput::default());
 
-    let mut output = vt.to_vec();
-
-    output.extend_from_slice(b"\x1b]0;controller-ready\x07");
+    output.push(vt);
+    output.push(b"\x1b]0;controller-ready\x07");
 
     let pty = TestPty {
-        output: output.into(),
+        output: output.clone(),
         input: input.clone(),
-        read_token: Token(0),
-        write_token: Token(0),
-        child_token: Token(0),
     };
 
-    let source = TerminalFrameSource::attach(wake_channel().0, 1, |observer| {
+    let source = TerminalFrameSource::attach(wake_channel().0, |observer| {
         TerminalSession::from_pty(
             pty,
             None,
@@ -175,7 +148,6 @@ pub(crate) fn controller(vt: &[u8], engine_blocks: bool) -> (PaneController, Arc
                 scrollback_lines: 100,
                 engine_blocks,
                 terminal_responses: true,
-                output_sink: None,
             },
             Some(observer),
         )
@@ -195,13 +167,11 @@ pub(crate) fn controller(vt: &[u8], engine_blocks: bool) -> (PaneController, Arc
 
     let settings = TerminalSettings {
         input_style: InputStyle::Waterfall,
-        manage_subprocess_job: false,
         command_blocks: true,
         font_family: "Consolas".into(),
         font_size: 14.0,
         line_height: 1.0,
         background_opacity: 1.0,
-        corner_radius: px(0.0),
         font_fallbacks: FontFallbacks::default(),
         smooth_wheel: true,
         scroll_to_bottom_when_typing: true,
@@ -227,7 +197,7 @@ pub(crate) fn controller(vt: &[u8], engine_blocks: bool) -> (PaneController, Arc
 
     controller.refresh_frame();
 
-    (controller, input)
+    (controller, input, output)
 }
 
 pub(crate) fn assert_input(input: &Mutex<Vec<u8>>, expected: &[u8]) {

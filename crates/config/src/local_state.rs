@@ -1,4 +1,5 @@
-//! Machine-owned local state (window geometry), stored as
+//! Machine-owned local state (window geometry and what agent harnesses
+//! last reported), stored as
 //! `local_state.toml` next to `config.toml`.
 //!
 //! Unlike `config.toml` this file is not meant for hand editing: it is
@@ -8,12 +9,12 @@
 #[path = "local_state_tests.rs"]
 mod local_state_tests;
 
-use std::collections::BTreeMap;
 #[cfg(test)]
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use nmt_profile::AgentKind;
 use serde::{Deserialize, Serialize};
 use toml::{from_str as parse_toml, to_string as serialize_toml};
 
@@ -23,22 +24,69 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_all_tabs(fold: &TabFold) -> bool {
+    *fold == TabFold::All
+}
+
+/// How many of a workspace's tabs the vertical sidebar lists under it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabFold {
+    /// Only the tabs that are running: a restored tab sleeps until it is
+    /// first shown, and listing those is what makes a long workspace long.
+    /// Builds before this fold was named for awake tabs saved it as
+    /// `active`.
+    #[serde(alias = "active")]
+    Awake,
+    /// None: the workspace row alone.
+    Collapsed,
+    /// Every tab. A fold a newer build saved also lists every tab here, so
+    /// no tab is hidden by a state this build cannot show.
+    #[default]
+    #[serde(other)]
+    All,
+}
+
+impl TabFold {
+    /// The fold a click on the workspace row steps to: every tab, then none,
+    /// then only the awake ones.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Collapsed,
+            Self::Collapsed => Self::Awake,
+            Self::Awake => Self::All,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LocalState {
     #[serde(default)]
     pub windows: Vec<WindowLocalState>,
 
-    /// Last-chosen agent thread settings per agent profile name (older
-    /// snapshots keyed by agent ID, which still reads as a fallback);
-    /// newly opened agent tabs seed their dropdowns from these.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub agent_defaults: BTreeMap<String, AgentDefaults>,
+    /// What each agent profile's harness last reported for its thread
+    /// controls. Omitted while empty so a file without it stays unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_controls: Vec<AgentControlsState>,
 }
 
-/// The thread-settings picks worth carrying into the next conversation from
-/// the same agent profile. All optional: `None` leaves the CLI's own default.
+/// The thread controls one agent profile's harness last reported, before any
+/// tab's own picks. A tab that has not launched its harness shows them, so
+/// its pickers are filled before the first message launches one, including
+/// right after a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentControlsState {
+    pub agent: AgentKind,
+    pub profile: String,
+    #[serde(default)]
+    pub settings: AgentTabSettings,
+}
+
+/// The thread-settings picks one agent tab is running under, carried into the
+/// conversations that tab opens later. All optional: `None` leaves the value
+/// the launch profile and the CLI resolve between them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AgentDefaults {
+pub struct AgentTabSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +99,8 @@ pub struct AgentDefaults {
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
 }
 
 /// One window's persisted state: geometry plus its session snapshot.
@@ -105,6 +155,12 @@ pub struct WorkspaceState {
     pub pinned: bool,
     #[serde(default)]
     pub active_tab: usize,
+
+    /// Omitted while every tab is listed, so a snapshot of unfolded
+    /// workspaces stays byte-identical to one written before folding.
+    #[serde(default, skip_serializing_if = "is_all_tabs")]
+    pub tab_fold: TabFold,
+
     #[serde(default)]
     pub tabs: Vec<TabState>,
 }
@@ -128,9 +184,8 @@ pub struct TabState {
     pub cwd: Option<String>,
 
     /// The agent kind ("codex") when this tab hosts an agent conversation
-    /// instead of a terminal. Conversations are not persisted; restore
-    /// reopens a fresh agent tab of the same kind, and an unknown kind
-    /// degrades to a plain terminal tab.
+    /// instead of a terminal. Restore reopens an agent tab of the same kind,
+    /// and an unknown kind degrades to a plain terminal tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
 
@@ -151,6 +206,47 @@ pub struct TabState {
     /// Directory reviewed by a Git tab. Older snapshots omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_cwd: Option<String>,
+
+    /// The title the tab's content last reported: the shell's OSC title or
+    /// the agent conversation's name. A restored tab shows it before it is
+    /// activated, so tabs that have not spawned yet stay distinguishable
+    /// instead of all carrying their profile name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// Provider id of the conversation an agent tab held. The harness keeps
+    /// the conversation on disk, so a restored tab continues it; absent for a
+    /// tab whose conversation never received a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_conversation: Option<String>,
+
+    /// Device id of the host a remote terminal tab shows, and the session on
+    /// that host. Restore reattaches to the session, which kept running on
+    /// the host, instead of starting a shell here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_session: Option<String>,
+
+    /// The id paired devices know this host agent tab by. The restored tab
+    /// keeps it, so a device that followed the tab before a restart
+    /// reattaches to it instead of losing its view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_agent: Option<String>,
+
+    /// The id paired devices know this terminal tab by while it waits to be
+    /// started. Its shell never outlives the app, so no device can follow it
+    /// across a restart: the id is handed out on every restore, never saved.
+    #[serde(skip)]
+    pub shared_terminal: Option<String>,
+
+    /// Thread controls this agent tab was last running under. Absent for a
+    /// tab the user never adjusted, which reopens on its profile's defaults.
+    /// Declared with `panes` below the scalars: TOML requires tables after
+    /// plain values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_settings: Option<AgentTabSettings>,
 
     /// Split-pane layout for a multi-pane tab. Absent for single-pane tabs,
     /// which keep the flat fields above as their whole format (so snapshots
@@ -218,35 +314,42 @@ fn decode(content: Option<&str>) -> io::Result<LocalState> {
     )
 }
 
-/// Update only the supplied profiles, preserving windows and other profiles
-/// that may have been written by another application instance.
-pub fn save_agent_defaults(agent_defaults: &BTreeMap<String, AgentDefaults>) -> io::Result<()> {
-    save_agent_defaults_to(&local_state_file_path(), agent_defaults)
-}
-
-fn save_agent_defaults_to(
-    path: &Path,
-    agent_defaults: &BTreeMap<String, AgentDefaults>,
-) -> io::Result<()> {
-    update_state(path, |state| {
-        state.agent_defaults.extend(agent_defaults.clone());
-    })
-}
-
-/// Save window state without replacing newer profile choices on disk.
+/// Save window state. The read-modify-replace cycle runs under the lock in
+/// `persistence::update`, and a file that fails to decode is left untouched
+/// rather than overwritten with what this instance happens to hold.
 pub fn save_windows(windows: &[WindowLocalState]) -> io::Result<()> {
     save_windows_to(&local_state_file_path(), windows)
 }
 
 fn save_windows_to(path: &Path, windows: &[WindowLocalState]) -> io::Result<()> {
-    update_state(path, |state| state.windows = windows.to_vec())
-}
-
-fn update_state(path: &Path, edit: impl FnOnce(&mut LocalState)) -> io::Result<()> {
     persistence::update(path, |content| {
         let mut state = decode(content)?;
 
-        edit(&mut state);
+        state.windows = windows.to_vec();
+
+        serialize_toml(&state).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    })
+}
+
+/// Record what one profile's harness reported, replacing its previous entry.
+/// Other profiles' entries and the windows are kept as the file holds them,
+/// since other windows and instances write the same file.
+pub fn save_agent_controls(entry: AgentControlsState) -> io::Result<()> {
+    save_agent_controls_to(&local_state_file_path(), entry)
+}
+
+fn save_agent_controls_to(path: &Path, entry: AgentControlsState) -> io::Result<()> {
+    persistence::update(path, |content| {
+        let mut state = decode(content)?;
+
+        match state
+            .agent_controls
+            .iter_mut()
+            .find(|saved| saved.agent == entry.agent && saved.profile == entry.profile)
+        {
+            Some(saved) => *saved = entry.clone(),
+            None => state.agent_controls.push(entry.clone()),
+        }
 
         serialize_toml(&state).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     })

@@ -1,8 +1,7 @@
 //! Provider update registration, test isolation, and presentation reduction.
 
 pub(crate) use crate::agent_updates::notification::{
-    FocusedVisibleLifetime, NotificationPrimaryAction, NotificationProgress,
-    UpdateNotificationTone, UpdateNotificationView, notification_view,
+    FocusedVisibleLifetime, NotificationPrimaryAction, UpdateNotificationView, notification_view,
 };
 pub(crate) use crate::agent_updates::transaction::{provider_for_profile, request_update};
 
@@ -37,12 +36,25 @@ use crate::agent_updates::maintenance::{
 #[cfg(test)]
 use crate::agent_updates::transaction::{affected_installation_indices, combine_transaction_error};
 use crate::ui::AppSettings;
+use crate::utils::on_runtime;
 
 pub(crate) struct AgentUpdates {
     pub(crate) coordinator: UpdateCoordinator,
     testing: bool,
     claude: Arc<dyn ProviderMaintenance>,
     codex: Arc<dyn ProviderMaintenance>,
+    registrations: Vec<RegisteredLauncher>,
+}
+
+struct RegisteredLauncher {
+    definition: LauncherDefinition,
+    key: InstallationKey,
+}
+
+#[derive(PartialEq, Eq)]
+struct LauncherDefinition {
+    provider: ProviderKind,
+    launcher: AgentCli,
 }
 
 impl Global for AgentUpdates {}
@@ -57,22 +69,60 @@ impl AgentUpdates {
     /// `None` for a profile whose harness has no vendor-managed installation:
     /// it registers nothing, so it never reaches the status rows or the shared
     /// Check action.
-    fn register_profile(&self, profile: &AgentProfile) -> Option<InstallationKey> {
-        let provider = provider_for_profile(profile.kind)?;
-        let launch = agent_launch(profile);
-        let launcher = AgentCli::from_launch(&launch, provider.default_executable());
+    fn register_profile(&mut self, profile: &AgentProfile) -> Option<InstallationKey> {
+        Some(self.register_launcher(profile_launcher(profile)?))
+    }
 
-        let maintenance = match provider {
+    fn register_launcher(&mut self, definition: LauncherDefinition) -> InstallationKey {
+        let maintenance = match definition.provider {
             ProviderKind::Claude => self.claude.clone(),
             ProviderKind::Codex => self.codex.clone(),
         };
 
-        Some(self.coordinator.register(provider, launcher, maintenance))
+        let key = self.coordinator.register(
+            definition.provider,
+            definition.launcher.clone(),
+            maintenance,
+        );
+
+        if let Some(registered) = self
+            .registrations
+            .iter_mut()
+            .find(|registered| registered.definition == definition)
+        {
+            registered.key = key.clone();
+        } else {
+            self.registrations.push(RegisteredLauncher {
+                definition,
+                key: key.clone(),
+            });
+        }
+
+        key
+    }
+
+    fn registered_key(&self, profile: &AgentProfile) -> Option<InstallationKey> {
+        let definition = profile_launcher(profile)?;
+
+        self.registrations
+            .iter()
+            .find(|registered| registered.definition == definition)
+            .map(|registered| registered.key.clone())
     }
 
     pub(crate) fn testing(&self) -> bool {
         self.testing
     }
+}
+
+fn profile_launcher(profile: &AgentProfile) -> Option<LauncherDefinition> {
+    let provider = provider_for_profile(profile.kind)?;
+    let launch = agent_launch(profile);
+
+    Some(LauncherDefinition {
+        provider,
+        launcher: AgentCli::from_launch(&launch, provider.default_executable()),
+    })
 }
 
 pub(crate) fn initialize(testing: bool, profiles: &[AgentProfile], cx: &mut App) {
@@ -97,11 +147,12 @@ pub(crate) fn initialize(testing: bool, profiles: &[AgentProfile], cx: &mut App)
         (claude, Arc::new(CodexMaintenance))
     };
 
-    let updates = AgentUpdates {
+    let mut updates = AgentUpdates {
         coordinator: UpdateCoordinator::new(cache_path),
         testing,
         claude,
         codex,
+        registrations: Vec::new(),
     };
 
     for profile in profiles {
@@ -127,9 +178,46 @@ pub(crate) fn reconcile_profiles(profiles: &[AgentProfile], cx: &mut App) {
         return;
     };
 
-    for profile in profiles {
-        updates.register_profile(profile);
+    let launchers: Vec<_> = profiles.iter().filter_map(profile_launcher).collect();
+
+    let unchanged = updates
+        .registrations
+        .iter()
+        .all(|registered| launchers.contains(&registered.definition))
+        && launchers.iter().all(|definition| {
+            updates
+                .registrations
+                .iter()
+                .any(|registered| registered.definition == *definition)
+        });
+
+    if unchanged {
+        return;
     }
+
+    let updates = cx.global_mut::<AgentUpdates>();
+
+    updates
+        .registrations
+        .retain(|registered| launchers.contains(&registered.definition));
+
+    for definition in launchers {
+        if !updates
+            .registrations
+            .iter()
+            .any(|registered| registered.definition == definition)
+        {
+            updates.register_launcher(definition);
+        }
+    }
+
+    let kept: HashSet<InstallationKey> = updates
+        .registrations
+        .iter()
+        .map(|registered| registered.key.clone())
+        .collect();
+
+    updates.coordinator.retain(|key| kept.contains(key));
 }
 
 fn distinct_installation_keys(
@@ -153,7 +241,7 @@ pub(crate) fn installations_for_profiles(
     distinct_installation_keys(
         profiles
             .iter()
-            .filter_map(|profile| updates.register_profile(profile)),
+            .filter_map(|profile| updates.registered_key(profile)),
     )
     .into_iter()
     .filter_map(|key| updates.coordinator.snapshot(&key))
@@ -165,7 +253,7 @@ pub(crate) fn installation(key: &InstallationKey, cx: &App) -> Option<Installati
 }
 
 pub(crate) fn manual_check_profiles(profiles: &[AgentProfile], cx: &mut App) {
-    let updates = cx.global::<AgentUpdates>();
+    let updates = cx.global_mut::<AgentUpdates>();
 
     let keys = distinct_installation_keys(
         profiles
@@ -176,13 +264,12 @@ pub(crate) fn manual_check_profiles(profiles: &[AgentProfile], cx: &mut App) {
     let coordinator = updates.coordinator.clone();
 
     cx.spawn(async move |cx| {
-        let worker = cx.background_executor().spawn(async move {
+        on_runtime(async move {
             for key in keys {
-                let _ = coordinator.check(&key, true);
+                let _ = coordinator.check(&key, true).await;
             }
-        });
-
-        worker.await;
+        })
+        .await;
 
         cx.update(AgentUpdates::notify_changed);
     })
@@ -219,13 +306,12 @@ async fn run_automatic_checks(cx: &mut AsyncApp) {
         });
 
         if let Some(coordinator) = active {
-            let worker = cx.background_executor().spawn(async move {
+            on_runtime(async move {
                 for snapshot in coordinator.snapshots() {
-                    let _ = coordinator.check(&snapshot.identity.key, false);
+                    let _ = coordinator.check(&snapshot.identity.key, false).await;
                 }
-            });
-
-            worker.await;
+            })
+            .await;
 
             cx.update(AgentUpdates::notify_changed);
         }

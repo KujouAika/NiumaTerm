@@ -1,13 +1,14 @@
 use std::sync::mpsc::channel;
 
+use crate::codex::ProviderConfig;
 use crate::codex::app_server::compaction::{
     CompactionState, compaction_completed, compaction_started,
 };
 use crate::codex::app_server::protocol::{
-    command_purpose, initial_thread_request, parse_context_window_usage, parse_item,
-    turn_start_params,
+    CodexCommand, initial_thread_request, parse_context_window_usage, parse_item, turn_start_params,
 };
 use crate::codex::app_server::*;
+use crate::session::ConversationTitleRequest;
 use crate::workspace::AgentWorkspace;
 
 /// Replayed conversation with its turn grouping flattened away, for the tests
@@ -39,6 +40,8 @@ pub(super) fn disconnected_session() -> Session {
         suppress_resume_replay: false,
         background: CodexTasks::default(),
         team: None,
+        side: None,
+        side_ready: None,
     }
 }
 
@@ -48,11 +51,14 @@ fn disconnected_controls_reject_without_consuming_approval_or_switching_state() 
 
     session.conversation.thread_id = Some("parent".into());
     session.conversation.current_turn = Some("turn".into());
-    session.conversation.pending_approval = Some(42);
+
+    session
+        .conversation
+        .request_approval(42, "Run command".into());
 
     assert!(!session.interrupt());
     assert!(!session.respond_approval("accept"));
-    assert_eq!(session.conversation.pending_approval, Some(42));
+    assert_eq!(session.conversation.shown_approval(), Some(42));
     assert!(!session.resume_thread("other"));
     assert!(!session.request_fork_checkpoints());
     assert!(
@@ -62,6 +68,63 @@ fn disconnected_controls_reject_without_consuming_approval_or_switching_state() 
     );
     assert_eq!(session.thread_id(), Some("parent"));
     assert!(session.control.is_empty());
+}
+
+#[test]
+fn steering_retries_require_an_explicit_refusal_and_an_active_owner() {
+    for response in [
+        json!({"result": {"turnId": "turn"}}),
+        json!({"error": {"message": "request timed out", "data": {"requestTimedOut": true}}}),
+        json!({"error": {"message": "input must not be empty"}}),
+    ] {
+        let mut session = disconnected_session();
+
+        let id = session.alloc_rpc_id();
+
+        session.control.track(
+            id,
+            ControlOperation::Steer {
+                next_turn_params: json!({"threadId": "parent"}),
+            },
+        );
+
+        let next_id = session.control.next_id();
+
+        let mut response = response;
+
+        response["id"] = json!(id);
+
+        session.process(response.clone());
+        session.process(response);
+
+        assert_eq!(session.control.next_id(), next_id);
+        assert!(session.control.is_empty());
+    }
+
+    for retire in [
+        ControlState::cancel_steering_retries,
+        ControlState::reset_thread,
+        ControlState::close,
+    ] {
+        let mut session = disconnected_session();
+
+        let id = session.alloc_rpc_id();
+
+        session.control.track(
+            id,
+            ControlOperation::Steer {
+                next_turn_params: json!({"threadId": "old"}),
+            },
+        );
+
+        retire(&mut session.control);
+
+        let next_id = session.control.next_id();
+
+        session.process(json!({"id": id, "error": {"message": "no active turn to steer"}}));
+
+        assert_eq!(session.control.next_id(), next_id);
+    }
 }
 
 #[test]
@@ -228,7 +291,7 @@ fn control_responses_complete_once_and_ignore_unknown_ids() {
 
     session
         .control
-        .track(id, ControlOperation::Command("compact".into()));
+        .track(id, ControlOperation::Command(CodexCommand::Compact));
 
     session.conversation.compaction.request_manual();
 
@@ -253,13 +316,16 @@ fn thread_switch_retires_commands_but_keeps_catalog_responses() {
         let mut session = disconnected_session();
 
         session.conversation.thread_id = Some("old".into());
-        session.conversation.pending_approval = Some(42);
+
+        session
+            .conversation
+            .request_approval(42, "Run command".into());
 
         let command = session.alloc_rpc_id();
 
         session
             .control
-            .track(command, ControlOperation::Command("compact".into()));
+            .track(command, ControlOperation::Command(CodexCommand::Compact));
 
         session.conversation.compaction.request_manual();
 
@@ -323,7 +389,7 @@ fn failed_thread_switch_preserves_pending_command() {
 
     session
         .control
-        .track(id, ControlOperation::Command("review".into()));
+        .track(id, ControlOperation::Command(CodexCommand::Review));
 
     let transition = session.alloc_rpc_id();
 
@@ -433,7 +499,10 @@ fn disconnected_submissions_are_rejected_without_requesting_a_title() {
             &ThreadSettings::default(),
             None,
             &[],
-            "draft title",
+            &ConversationTitleRequest {
+                description: "keep this draft".into(),
+                provisional_title: "draft title".into(),
+            },
         );
 
         assert!(
@@ -505,30 +574,46 @@ fn routed_child_completion_does_not_finish_the_parent_turn() {
     );
 }
 
+/// The parent and a child agent can both wait on an approval. Each needs
+/// its own answer, and a child's resolution names the child's thread.
 #[test]
-fn conversation_approval_resolution_requires_its_thread_and_request() {
+fn concurrent_approvals_are_shown_one_at_a_time_and_each_resolves() {
     let mut state = ThreadState::default();
 
     state.thread_id = Some("parent".into());
-    state.pending_approval = Some(8);
 
+    assert!(matches!(
+        state.request_approval(8, "Run command: `ls`".into()),
+        Some(Event::ApprovalRequested { .. })
+    ));
+    assert!(
+        state
+            .request_approval(9, "Apply file changes".into())
+            .is_none()
+    );
+    assert_eq!(state.shown_approval(), Some(8));
+
+    // An unrelated request id leaves both waiting.
     assert!(
         state
             .on_notification(
                 "serverRequest/resolved",
-                &json!({"threadId":"other","requestId":8})
+                &json!({"threadId":"parent","requestId":10})
             )
             .is_empty()
     );
+
+    // The child's approval is cleared by turn lifecycle while the parent's
+    // is on screen: nothing visible changes.
     assert!(
         state
             .on_notification(
                 "serverRequest/resolved",
-                &json!({"threadId":"parent","requestId":9})
+                &json!({"threadId":"child","requestId":9})
             )
             .is_empty()
     );
-    assert_eq!(state.pending_approval, Some(8));
+    assert_eq!(state.shown_approval(), Some(8));
     assert!(matches!(
         state
             .on_notification(
@@ -538,7 +623,18 @@ fn conversation_approval_resolution_requires_its_thread_and_request() {
             .as_slice(),
         [Event::ApprovalResolved]
     ));
-    assert!(state.pending_approval.is_none());
+    assert!(!state.has_pending_approval());
+
+    // Answering the shown request brings up the next one.
+    state.request_approval(11, "Run command: `a`".into());
+    state.request_approval(12, "Run command: `b`".into());
+    state.answered_approval(11);
+
+    assert!(matches!(
+        state.next_approval(),
+        Some(Event::ApprovalRequested { description }) if description == "Run command: `b`"
+    ));
+    assert_eq!(state.shown_approval(), Some(12));
 }
 
 #[test]
@@ -665,29 +761,6 @@ fn context_usage_preserves_current_and_thread_breakdowns() {
             }),
             max_tokens: Some(258_400),
         }
-    );
-}
-
-#[test]
-fn context_usage_accepts_older_sparse_breakdowns() {
-    let usage = parse_context_window_usage(&json!({
-        "last": {"totalTokens": 9_000, "inputTokens": 8_500},
-        "total": {"totalTokens": 21_000},
-        "modelContextWindow": null
-    }))
-    .expect("sparse Codex token usage should parse");
-
-    assert_eq!(usage.current.total_tokens, 9_000);
-    assert_eq!(usage.current.input_tokens, Some(8_500));
-    assert_eq!(usage.current.cache_write_input_tokens, None);
-    assert_eq!(
-        usage.cumulative.map(|scoped| scoped.breakdown),
-        Some(TokenUsageBreakdown::total_only(21_000))
-    );
-    assert_eq!(usage.max_tokens, None);
-    assert_eq!(
-        parse_context_window_usage(&json!({"last": {"totalTokens": 0}})),
-        None
     );
 }
 
@@ -821,51 +894,6 @@ fn local_images_follow_the_text_in_the_order_the_message_names_them() {
 }
 
 #[test]
-fn codex_advertises_the_picker_but_not_plugin_management() {
-    let commands = Session::adapter_commands();
-
-    let skills = commands
-        .iter()
-        .find(|command| command.name == "skills")
-        .unwrap();
-
-    assert_eq!(skills.arguments, SlashCommandArguments::Skills);
-    assert!(!commands.iter().any(|command| command.name == "plugins"));
-    assert!(codex_command_request(12, "thread", "skills").is_none());
-}
-
-#[test]
-fn commands_render_as_string_or_joined_argv() {
-    assert_eq!(stringify_command(&json!("pytest -q")), "pytest -q");
-    assert_eq!(
-        stringify_command(&json!(["cargo", "check", "-p", "app"])),
-        "cargo check -p app"
-    );
-}
-
-#[test]
-fn model_catalog_keeps_visible_models_and_their_tiers() {
-    let result = json!({
-        "data": [
-            {
-                "model": "gpt-a",
-                "displayName": "GPT A",
-                "hidden": false,
-                "serviceTiers": [{"id": "priority", "name": "Fast"}],
-                "defaultServiceTier": null
-            },
-            {"model": "gpt-b", "displayName": "GPT B", "hidden": true}
-        ]
-    });
-
-    let models = parse_models(&result, None);
-
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].model, "gpt-a");
-    assert_eq!(models[0].tiers, vec![("priority".into(), "Fast".into())]);
-}
-
-#[test]
 fn turn_start_sends_the_selected_approval_reviewer() {
     let settings = ThreadSettings {
         model: Some("gpt-5.6-codex".into()),
@@ -874,6 +902,7 @@ fn turn_start_sends_the_selected_approval_reviewer() {
         sandbox: Some("workspaceWrite".into()),
         effort: Some("high".into()),
         tier: None,
+        agent_preset: None,
     };
 
     assert_eq!(
@@ -901,7 +930,7 @@ fn turn_start_sends_the_selected_approval_reviewer() {
 fn thread_start_injects_profile_model_and_provider_without_a_secret() {
     let profile = ThreadProfile {
         model: Some("vendor/custom-model".into()),
-        provider: Some(CodexProviderConfig {
+        provider: Some(ProviderConfig {
             id: "niumaterm-a1".into(),
             name: "Proxy".into(),
             base_url: "https://proxy.example.com/v1".into(),
@@ -928,20 +957,6 @@ fn thread_start_injects_profile_model_and_provider_without_a_secret() {
     assert_eq!(
         thread_start_params(&profile, &AgentWorkspace::single(Some("C:/A".into()))),
         expected
-    );
-}
-
-#[test]
-fn a_single_directory_thread_start_carries_an_explicit_cwd() {
-    let profile = ThreadProfile::default();
-
-    assert_eq!(
-        thread_start_params(&profile, &AgentWorkspace::default()),
-        json!({"experimentalRawEvents": true})
-    );
-    assert_eq!(
-        thread_start_params(&profile, &AgentWorkspace::single(Some("C:/A".into()))),
-        json!({"experimentalRawEvents": true, "cwd": "C:/A"})
     );
 }
 
@@ -1078,7 +1093,7 @@ fn in_place_resume_suppresses_transcript_replay_but_still_becomes_ready() {
 fn resume_without_profile_model_restores_the_persisted_model_and_provider() {
     let profile = ThreadProfile {
         model: None,
-        provider: Some(CodexProviderConfig {
+        provider: Some(ProviderConfig {
             id: "niumaterm-a1".into(),
             name: "Proxy".into(),
             base_url: "https://proxy.example.com/v1".into(),
@@ -1101,9 +1116,9 @@ fn resume_without_profile_model_restores_the_persisted_model_and_provider() {
 fn custom_profile_filters_history_and_adds_an_unknown_selected_model() {
     let profile = ThreadProfile {
         model: Some("vendor/custom-model".into()),
-        provider: Some(CodexProviderConfig {
+        provider: Some(ProviderConfig {
             id: "niumaterm-a1".into(),
-            ..CodexProviderConfig::default()
+            ..ProviderConfig::default()
         }),
     };
 
@@ -1130,33 +1145,6 @@ fn custom_profile_filters_history_and_adds_an_unknown_selected_model() {
 
     assert_eq!(models[0].model, "vendor/custom-model");
     assert_eq!(models.len(), 1);
-}
-
-#[test]
-fn thread_summaries_skip_own_thread_and_fall_back_to_id_titles() {
-    let result = json!({
-        "data": [
-            {"id": "thr_live", "preview": "current"},
-            {"id": "thr_a", "name": "Fix tests\nacross workspace", "recencyAt": 1730831111,
-             "gitInfo": {"branch": "dev"}},
-            {"id": "thr_b", "preview": "", "updatedAt": 1730750000}
-        ],
-        "nextCursor": null
-    });
-
-    let summaries = parse_thread_summaries(&result, Some("thr_live"));
-
-    assert_eq!(summaries.len(), 2);
-    assert_eq!(summaries[0].id, "thr_a");
-    assert_eq!(summaries[0].title, "Fix tests across workspace");
-    assert_eq!(summaries[0].branch.as_deref(), Some("dev"));
-    assert_eq!(
-        summaries[0].last_active,
-        UNIX_EPOCH + Duration::from_secs(1730831111)
-    );
-
-    // Empty preview falls back to an id-prefix title.
-    assert_eq!(summaries[1].title, "thr_b");
 }
 
 #[test]
@@ -1214,92 +1202,6 @@ fn resumed_turns_replay_dialogue_and_preserve_activity_details() {
                 questions: None,
             },
         ]
-    );
-}
-
-#[test]
-fn unknown_items_become_titled_tool_cards() {
-    let item = json!({
-        "id": "call1",
-        "type": "mcpToolCall",
-        "server": "github",
-        "tool": "search_issues",
-        "status": "inProgress"
-    });
-
-    assert_eq!(
-        parse_item(&item),
-        Some(Item::Other {
-            id: "call1".into(),
-            kind: "mcpToolCall".into(),
-            title: "github/search_issues".into(),
-            output: None,
-            status: Some("inProgress".into()),
-        })
-    );
-}
-
-#[test]
-fn command_actions_become_compact_purpose_labels() {
-    let actions = json!([
-        {"type": "search", "command": "rg main src", "query": "main", "path": "src"},
-        {"type": "read", "command": "Get-Content src/main.rs", "name": "src/main.rs",
-         "path": "C:\\work\\src\\main.rs"},
-        {"type": "read", "command": "Get-Content src/main.rs", "name": "src/main.rs",
-         "path": "C:\\work\\src\\main.rs"}
-    ]);
-
-    assert_eq!(
-        command_purpose(&actions).as_deref(),
-        Some("Search main in src · Read src/main.rs")
-    );
-    assert_eq!(
-        command_purpose(&json!([
-            {"type": "read", "command": "Get-Content a", "name": "a", "path": "a"},
-            {"type": "unknown", "command": "cargo check"}
-        ])),
-        None
-    );
-}
-
-#[test]
-fn command_requests_use_dedicated_compact_and_inline_review_methods() {
-    assert_eq!(
-        codex_command_request(100, "thr_1", "compact"),
-        Some(json!({
-            "jsonrpc": "2.0",
-            "id": 100,
-            "method": "thread/compact/start",
-            "params": {"threadId": "thr_1"},
-        }))
-    );
-    assert_eq!(
-        codex_command_request(101, "thr_1", "review"),
-        Some(json!({
-            "jsonrpc": "2.0",
-            "id": 101,
-            "method": "review/start",
-            "params": {
-                "threadId": "thr_1",
-                "delivery": "inline",
-                "target": {"type": "uncommittedChanges"},
-            },
-        }))
-    );
-    assert_eq!(codex_command_request(102, "thr_1", "unknown"), None);
-    assert_eq!(
-        codex_command_response("compact", None),
-        SlashCommandOutcome::Accepted
-    );
-    assert_eq!(
-        codex_command_response("review", None),
-        SlashCommandOutcome::Accepted
-    );
-    assert_eq!(
-        codex_command_response("review", Some("unsupported target")),
-        SlashCommandOutcome::Rejected {
-            message: "/review failed: unsupported target".into()
-        }
     );
 }
 
@@ -1396,7 +1298,8 @@ fn manual_compaction_completes_only_from_the_item_lifecycle() {
         Event::SlashCommandResult {
             name: "compact".into(),
             outcome: SlashCommandOutcome::Completed {
-                message: Some("Conversation context compacted.".into())
+                message: Some("Conversation context compacted.".into()),
+                approval: None,
             },
         }
     );
@@ -1463,53 +1366,6 @@ fn incomplete_manual_compaction_cannot_mark_a_later_auto_run_manual() {
             ..
         })
     ));
-}
-
-#[test]
-fn replayed_compaction_ignores_non_protocol_summary_fields() {
-    let turns = json!([{"id": "turn1", "items": [
-        {"id": "compact-1", "type": "contextCompaction",
-         "message": "manual compact context",
-         "replacementHistory": [{"type": "compaction", "encryptedContent": "opaque"}]}
-    ]}]);
-
-    assert_eq!(
-        replayed_items(&turns),
-        vec![Item::Compaction {
-            id: "compact-1".into(),
-            detail: Compaction::default(),
-        }]
-    );
-}
-
-#[test]
-fn compaction_is_structural_while_review_lifecycle_items_remain_tools() {
-    assert!(is_legacy_compaction_notification("thread/compacted"));
-    assert!(!is_legacy_compaction_notification("item/completed"));
-
-    assert_eq!(
-        parse_item(&json!({"id": "compact", "type": "contextCompaction"})),
-        Some(Item::Compaction {
-            id: "compact".into(),
-            detail: Compaction::default(),
-        })
-    );
-
-    for (kind, title) in [
-        ("enteredReviewMode", "Entered review mode"),
-        ("exitedReviewMode", "Exited review mode"),
-    ] {
-        assert_eq!(
-            parse_item(&json!({"id": "item", "type": kind, "status": "completed"})),
-            Some(Item::Other {
-                id: "item".into(),
-                kind: kind.into(),
-                title: title.into(),
-                output: None,
-                status: Some("completed".into()),
-            })
-        );
-    }
 }
 
 #[test]
@@ -1618,19 +1474,6 @@ fn a_branch_is_never_anchored_on_a_turn_that_did_not_finish() {
 }
 
 #[test]
-fn a_thread_with_one_turn_offers_no_branch_point() {
-    let turns = serde_json::json!([
-        {"id": "turn1", "status": "completed", "items": [
-            {"id": "i1", "type": "userMessage",
-             "content": [{"type": "text", "text": "only"}]}
-        ]}
-    ]);
-
-    assert!(parse_fork_checkpoints(&turns).is_empty());
-    assert!(parse_fork_checkpoints(&serde_json::Value::Null).is_empty());
-}
-
-#[test]
 fn raw_reasoning_tokens_outrank_the_generated_recap() {
     let recap_only = json!({
         "id": "r1",
@@ -1687,4 +1530,57 @@ fn raw_reasoning_tokens_outrank_the_generated_recap() {
             summary: Some("Recap".into()),
         })
     );
+}
+
+#[test]
+fn side_start_is_ready_only_after_its_boundary_is_written() {
+    let mut session = disconnected_session();
+
+    let fork = session.control.next_id();
+
+    session.send_query(QueryKind::SideFork, json!({"method": "thread/fork"}));
+
+    let boundary = session.control.next_id();
+
+    // The fork reply names the side thread and writes the boundary; nothing
+    // is ready yet, so a question sent now would reach an unmarked history.
+    assert!(
+        session
+            .process(json!({"id": fork, "result": {
+                "thread": {"id": "side", "turns": []},
+                "model": "gpt-6-astra",
+                "reasoningEffort": "low",
+            }}))
+            .is_empty()
+    );
+    assert_eq!(session.thread_id(), Some("side"));
+
+    let events = session.process(json!({"id": boundary, "result": {}}));
+
+    assert!(matches!(
+        events.as_slice(),
+        [Event::Ready(settings), Event::ItemStarted(Item::SideBoundary { message, .. })]
+            if settings.model.as_deref() == Some("gpt-6-astra")
+                && settings.effort.as_deref() == Some("low")
+                && message.starts_with("Side conversation boundary.")
+    ));
+}
+
+#[test]
+fn a_side_that_cannot_take_its_boundary_fails_fatally() {
+    let mut session = disconnected_session();
+
+    let boundary = session.control.next_id();
+
+    session.send_query(
+        QueryKind::SideBoundary,
+        json!({"method": "thread/inject_items"}),
+    );
+
+    assert!(matches!(
+        session
+            .process(json!({"id": boundary, "error": {"message": "unsupported"}}))
+            .as_slice(),
+        [Event::Error { fatal: true, message }] if message.contains("side chat")
+    ));
 }

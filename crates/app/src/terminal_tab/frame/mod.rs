@@ -1,3 +1,4 @@
+pub(super) use crate::terminal_tab::frame::colors::BackgroundColors;
 #[cfg(test)]
 pub(super) use crate::terminal_tab::frame::images::FrameImageKind;
 pub(super) use crate::terminal_tab::frame::images::{FrameImage, ZLayer};
@@ -8,9 +9,6 @@ pub(super) use crate::terminal_tab::frame::line::{
 };
 
 mod colors;
-mod images;
-mod line;
-
 /// Full-pipeline performance profile (manual, release-only). Puts every stage of
 /// a fast-scrollback frame on ONE scale so engine-side costs can be compared
 /// against the real render-thread cost.
@@ -32,6 +30,8 @@ mod line;
 /// GPU submission is excluded (GPUI's own bench harness excludes it off-macOS).
 #[cfg(all(test, enable_profiling))]
 mod full_frame_profile;
+mod images;
+mod line;
 
 #[cfg(test)]
 mod tests;
@@ -39,16 +39,13 @@ mod tests;
 use std::iter;
 use std::sync::Arc;
 
+use nmt_config::CursorShape;
 use nmt_config::colors::NamedColor;
-use nmt_terminal::ansi::CursorShape;
 use nmt_terminal::ghostty::ScrollbarInfo;
-use nmt_terminal::grid_emit::{RowSelection, row_selection_for};
+use nmt_terminal::grid::{StyleFlags, Wide};
 use nmt_terminal::render_buffer::RenderBuffer;
-use nmt_terminal::selection::SelectionRange;
-use nmt_terminal::terminal::square::{ContentTag, Wide};
-use nmt_terminal::terminal::style::StyleFlags;
+use nmt_terminal::selection::{RowSelection, SelectionRange, row_selection_for};
 
-use crate::terminal_tab::frame::colors::BackgroundColors;
 use crate::terminal_tab::frame::images::{empty_images, extract_frame_images};
 use crate::terminal_tab::frame::line::display_char;
 use crate::terminal_tab::pane_model::FrameTheme;
@@ -60,6 +57,7 @@ pub(super) struct TerminalFrame {
     line_states: Arc<[TerminalLineState]>,
     cols: usize,
     cursor: Option<TerminalCursor>,
+    layout_cursor_row: Option<usize>,
     scrollbar: ScrollbarInfo,
 
     /// Paintable Kitty image placements resolved against the session image cache
@@ -87,6 +85,10 @@ impl TerminalFrame {
 
     pub(super) fn cursor(&self) -> Option<TerminalCursor> {
         self.cursor
+    }
+
+    pub(super) fn layout_cursor_row(&self) -> Option<usize> {
+        self.layout_cursor_row
     }
 
     pub(super) fn scrollbar(&self) -> ScrollbarInfo {
@@ -166,6 +168,7 @@ impl TerminalFrame {
             line_states: line_states.into_boxed_slice().into(),
             cols: buf.cols(),
             cursor,
+            layout_cursor_row: buf.layout_cursor_row(),
             scrollbar: buf.scrollbar(),
             images,
         }
@@ -206,9 +209,7 @@ fn extract_row_with_colors(
             continue;
         }
 
-        let is_codepoint = cell.content_tag() == ContentTag::Codepoint;
-
-        let source_ch = if is_codepoint { cell.c() } else { '\0' };
+        let source_ch = cell.c();
 
         let cursor_shape = cursor
             .filter(|cursor| cursor.col == col as u16)
@@ -222,36 +223,22 @@ fn extract_row_with_colors(
             colors.cell_background(buf, cell)
         };
 
-        let extras = if is_codepoint {
-            cell.extras_id()
-                .and_then(|extras_id| buf.extras().get(&extras_id))
-                .map(|extras| extras.zerowidth.clone())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let extras = cell
+            .extras_id()
+            .and_then(|extras_id| buf.extras().get(&extras_id))
+            .map(|extras| extras.zerowidth.clone())
+            .unwrap_or_default();
 
-        let mut style = if is_codepoint {
-            let style = buf.style(cell.style_id());
-            let flags = style.flags;
+        let style = buf.style(cell.style_id());
+        let flags = style.flags;
 
-            StyleRun {
-                len: 0,
-                fg: colors.cell_foreground(style),
-                bold: flags.contains(StyleFlags::BOLD),
-                italic: flags.contains(StyleFlags::ITALIC),
-                underline: flags.intersects(StyleFlags::ALL_UNDERLINES),
-                strikethrough: flags.contains(StyleFlags::STRIKEOUT),
-            }
-        } else {
-            StyleRun {
-                len: 0,
-                fg: colors.default_foreground(),
-                bold: false,
-                italic: false,
-                underline: false,
-                strikethrough: false,
-            }
+        let mut style = StyleRun {
+            len: 0,
+            fg: colors.cell_foreground(style),
+            bold: flags.contains(StyleFlags::BOLD),
+            italic: flags.contains(StyleFlags::ITALIC),
+            underline: flags.intersects(StyleFlags::ALL_UNDERLINES),
+            strikethrough: flags.contains(StyleFlags::STRIKEOUT),
         };
 
         if cursor_shape == Some(CursorShape::Block) {
@@ -269,7 +256,7 @@ fn extract_row_with_colors(
         builder.push_cell(TerminalCell {
             col: col as u16,
             ch: source_ch,
-            style_id: if is_codepoint { cell.style_id() } else { 0 },
+            style_id: cell.style_id(),
             background,
             wide,
             extras,

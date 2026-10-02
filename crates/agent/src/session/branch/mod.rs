@@ -1,21 +1,19 @@
 //! Branch and rewind operations independent of picker widgets and executors.
 
-pub use crate::session::branch::local::{CheckpointRead, ForkRequest};
-
-mod local;
-
 #[cfg(test)]
 mod tests;
 
 use std::mem::replace;
 
-use crate::chat::{ForkCheckpoint, ReplayTurn, SlashCommandOutcome};
-use crate::claude_code::sessions::{ClaudeCheckpoint, ClaudeFork, FileRestoreAvailability};
-use crate::session::branch::local::{failure, fork_request};
-use crate::session::lifecycle::{SessionRuntime, Status};
-use crate::session::{AgentKind, Backend, OperationError, RecoveryIdentity};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use crate::chat::{ForkCheckpoint, ReplayTurn, SlashCommandOutcome};
+use crate::claude_code::sessions;
+use crate::claude_code::sessions::{ClaudeCheckpoint, ClaudeFork, FileRestoreAvailability};
+use crate::session::lifecycle::{SessionRuntime, Status};
+use crate::session::{AgentKind, Backend, OperationError, RecoveryIdentity, UnsupportedOperation};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptTarget {
     pub prompt: String,
 
@@ -35,7 +33,7 @@ pub fn checkpoint_at_depth<'a, T>(
         .filter(|checkpoint| prompt_of(checkpoint) == target.prompt)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RewindAction {
     Files,
     Conversation,
@@ -43,7 +41,7 @@ pub enum RewindAction {
     Cancel,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileProgress {
     NotConfirmed,
     Restored,
@@ -65,8 +63,17 @@ pub enum BranchError {
     MissingSession,
     FilesUnavailable,
     InvalidFileResult(Option<String>),
-    Operation(OperationError),
+    Unsupported(UnsupportedOperation),
     Failed(String),
+}
+
+impl From<OperationError> for BranchError {
+    fn from(error: OperationError) -> Self {
+        match error {
+            OperationError::Unsupported(operation) => Self::Unsupported(operation),
+            OperationError::Failed(message) => Self::Failed(message),
+        }
+    }
 }
 
 pub struct BranchFailure {
@@ -75,12 +82,13 @@ pub struct BranchFailure {
     pub error: BranchError,
 }
 
+/// A branch the conversation is now on. A local branch replays the copied
+/// transcript itself; a protocol branch already carries its replay in the
+/// incoming event, which is what `replayed` tells apart.
 pub struct BranchCompletion {
-    /// Protocol branches already carry their replay in the incoming event.
-    pub replay: Option<Vec<ReplayTurn>>,
-
     pub prompt: String,
     pub files: FileProgress,
+    pub replayed: bool,
 }
 
 pub enum BranchUpdate {
@@ -106,7 +114,55 @@ pub enum BranchView<'a> {
     Working,
 }
 
-pub enum BranchReplay {
+/// The picker as a view in another process shows it: [`BranchView`] owning
+/// its content.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BranchPicker {
+    #[default]
+    Idle,
+    LoadingRewind,
+    RewindCheckpoints(Vec<ClaudeCheckpoint>),
+    RewindAction(ClaudeCheckpoint, FileProgress),
+    LoadingFork,
+    ForkCheckpoints(Vec<ForkCheckpoint>),
+    Working,
+}
+
+impl From<BranchView<'_>> for BranchPicker {
+    fn from(view: BranchView<'_>) -> Self {
+        match view {
+            BranchView::Idle => Self::Idle,
+            BranchView::LoadingRewind => Self::LoadingRewind,
+            BranchView::RewindCheckpoints(checkpoints) => {
+                Self::RewindCheckpoints(checkpoints.to_vec())
+            }
+            BranchView::RewindAction(checkpoint, files) => {
+                Self::RewindAction(checkpoint.clone(), files)
+            }
+            BranchView::LoadingFork => Self::LoadingFork,
+            BranchView::ForkCheckpoints(checkpoints) => Self::ForkCheckpoints(checkpoints.to_vec()),
+            BranchView::Working => Self::Working,
+        }
+    }
+}
+
+/// The command a view in another process takes one [`BranchStep`] with.
+pub const BRANCH_METHOD: &str = "branch";
+
+/// One step of a branch operation, as a view in another process asks the
+/// host to take it. The host takes it the way its own pane does, and every
+/// view shows the one picker that follows.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum BranchStep {
+    BeginRewind(Option<PromptTarget>),
+    SelectCheckpoint(ClaudeCheckpoint),
+    Rewind(RewindAction),
+    BeginFork(Option<PromptTarget>),
+    Fork(ForkCheckpoint),
+    Cancel,
+}
+
+pub(crate) enum BranchReplay {
     Unrelated,
     Ignore,
     Complete(BranchCompletion),
@@ -118,15 +174,10 @@ struct Operation {
     epoch: u64,
 }
 
-#[derive(Clone)]
-struct Source {
-    id: String,
-    cwd: Option<String>,
-}
-
 struct LocalOperation {
     operation: Operation,
-    source: Source,
+    session_id: String,
+    cwd: Option<String>,
     phase: LocalPhase,
 }
 
@@ -173,6 +224,9 @@ enum State {
         previous: Status,
         prompt: String,
     },
+    /// A replica's copy of the host's picker. The host runs the operation;
+    /// a replica only shows it and holds its composer while it runs.
+    Mirror(BranchPicker),
 }
 
 #[derive(Default)]
@@ -205,7 +259,7 @@ impl ConversationBranch {
         matches!(self.into(), BranchView::Working)
     }
 
-    pub fn cancel_picker(&mut self) -> bool {
+    pub(crate) fn cancel_picker(&mut self) -> bool {
         if !self.picker_is_open() {
             return false;
         }
@@ -218,6 +272,12 @@ impl ConversationBranch {
     /// Retire visible state without admitting a still-outstanding protocol reply.
     pub fn clear(&mut self) {
         self.state = None;
+    }
+
+    /// Show the host's picker. Only a replica, which runs no operation of
+    /// its own, takes these.
+    pub(crate) fn mirror(&mut self, picker: BranchPicker) {
+        self.state = (picker != BranchPicker::Idle).then_some(State::Mirror(picker));
     }
 
     fn next_operation(&mut self, runtime: &SessionRuntime) -> Result<Operation, BranchError> {
@@ -267,7 +327,9 @@ impl ConversationBranch {
         self.state.is_some()
     }
 
-    pub fn ready(&mut self, epoch: u64) -> Option<BranchCompletion> {
+    /// The finished local branch and the transcript it replays into the
+    /// conversation the provider just opened.
+    pub fn ready(&mut self, epoch: u64) -> Option<(BranchCompletion, Vec<ReplayTurn>)> {
         if !matches!(&self.state, Some(State::Local(local)) if local.operation.epoch == epoch &&
             matches!(local.phase, LocalPhase::Starting { .. }))
         {
@@ -287,14 +349,17 @@ impl ConversationBranch {
             unreachable!()
         };
 
-        Some(BranchCompletion {
-            replay: Some(fork.replay),
-            prompt,
-            files,
-        })
+        Some((
+            BranchCompletion {
+                prompt,
+                files,
+                replayed: true,
+            },
+            fork.replay,
+        ))
     }
 
-    pub fn replayed(&mut self, epoch: u64) -> BranchReplay {
+    pub(crate) fn replayed(&mut self, epoch: u64) -> BranchReplay {
         match &self.state {
             Some(State::Branching { operation, .. }) if operation.epoch == epoch => {
                 let Some(State::Branching { prompt, .. }) = self.state.take() else {
@@ -302,9 +367,9 @@ impl ConversationBranch {
                 };
 
                 BranchReplay::Complete(BranchCompletion {
-                    replay: None,
                     prompt,
                     files: FileProgress::NotConfirmed,
+                    replayed: false,
                 })
             }
             Some(State::Local(_)) | Some(State::Branching { .. }) => BranchReplay::Ignore,
@@ -366,16 +431,16 @@ impl ConversationBranch {
             .ok_or(BranchError::MissingSession)?
             .to_owned();
 
-        let source = Source { id, cwd };
-
         let request = CheckpointRead {
             operation,
-            source: source.clone(),
+            session_id: id.clone(),
+            cwd: cwd.clone(),
         };
 
         self.state = Some(State::Local(LocalOperation {
             operation,
-            source,
+            session_id: id,
+            cwd,
             phase: LocalPhase::Loading(target),
         }));
 
@@ -513,13 +578,13 @@ impl ConversationBranch {
                 .and_then(|backend| {
                     backend
                         .rewind_files(&checkpoint.user_message_id)
-                        .map_err(BranchError::Operation)
+                        .map_err(BranchError::from)
                 })
                 .and_then(|outcome| match outcome {
                     SlashCommandOutcome::Accepted => Ok(()),
                     SlashCommandOutcome::NotReady => Err(BranchError::NotReady),
                     SlashCommandOutcome::Rejected { message } => Err(BranchError::Failed(message)),
-                    SlashCommandOutcome::Completed { message } => {
+                    SlashCommandOutcome::Completed { message, .. } => {
                         Err(BranchError::InvalidFileResult(message))
                     }
                 })
@@ -679,7 +744,7 @@ impl ConversationBranch {
         Ok(())
     }
 
-    pub fn fork_checkpoints(
+    pub(crate) fn fork_checkpoints(
         &mut self,
         runtime: &mut SessionRuntime,
         result: Result<Vec<ForkCheckpoint>, String>,
@@ -754,7 +819,7 @@ impl ConversationBranch {
             .and_then(|backend| {
                 backend
                     .fork_conversation(&checkpoint.anchor)
-                    .map_err(BranchError::Operation)
+                    .map_err(BranchError::from)
             });
 
         match result {
@@ -785,6 +850,21 @@ impl<'a> From<&'a ConversationBranch> for BranchView<'a> {
             Some(State::LoadingFork { .. }) => BranchView::LoadingFork,
             Some(State::ForkPicker { checkpoints, .. }) => BranchView::ForkCheckpoints(checkpoints),
             Some(State::Branching { .. }) => BranchView::Working,
+            Some(State::Mirror(picker)) => match picker {
+                BranchPicker::Idle => BranchView::Idle,
+                BranchPicker::LoadingRewind => BranchView::LoadingRewind,
+                BranchPicker::RewindCheckpoints(checkpoints) => {
+                    BranchView::RewindCheckpoints(checkpoints)
+                }
+                BranchPicker::RewindAction(checkpoint, files) => {
+                    BranchView::RewindAction(checkpoint, *files)
+                }
+                BranchPicker::LoadingFork => BranchView::LoadingFork,
+                BranchPicker::ForkCheckpoints(checkpoints) => {
+                    BranchView::ForkCheckpoints(checkpoints)
+                }
+                BranchPicker::Working => BranchView::Working,
+            },
             Some(State::Local(local)) => match &local.phase {
                 LocalPhase::Loading(_) => BranchView::LoadingRewind,
                 LocalPhase::Checkpoints(checkpoints) => BranchView::RewindCheckpoints(checkpoints),
@@ -795,4 +875,56 @@ impl<'a> From<&'a ConversationBranch> for BranchView<'a> {
             },
         }
     }
+}
+
+pub struct CheckpointRead {
+    operation: Operation,
+    session_id: String,
+    cwd: Option<String>,
+}
+
+impl CheckpointRead {
+    /// Synchronous disk work for the caller's existing background executor.
+    pub fn load(&self) -> Result<Vec<ClaudeCheckpoint>, String> {
+        sessions::load_checkpoints(self.cwd.as_deref(), &self.session_id)
+    }
+}
+
+pub struct ForkRequest {
+    operation: Operation,
+    session_id: String,
+    cwd: Option<String>,
+    user_message_id: String,
+}
+
+impl ForkRequest {
+    /// Uses the existing transcript algorithm and leaves the source file intact.
+    pub fn run(&self) -> Result<ClaudeFork, String> {
+        sessions::fork_session_before(self.cwd.as_deref(), &self.session_id, &self.user_message_id)
+    }
+}
+
+fn failure(stage: FailureStage, files: FileProgress, error: BranchError) -> BranchUpdate {
+    BranchUpdate::Failed(BranchFailure {
+        stage,
+        files,
+        error,
+    })
+}
+
+fn fork_request(
+    local: &mut LocalOperation,
+    checkpoint: ClaudeCheckpoint,
+    files: FileProgress,
+) -> ForkRequest {
+    let request = ForkRequest {
+        operation: local.operation,
+        session_id: local.session_id.clone(),
+        cwd: local.cwd.clone(),
+        user_message_id: checkpoint.user_message_id.clone(),
+    };
+
+    local.phase = LocalPhase::Forking { checkpoint, files };
+
+    request
 }

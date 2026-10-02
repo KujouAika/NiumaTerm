@@ -1,0 +1,58 @@
+[package]
+name = "nmt_remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["host", "lan"]
+# The host service: sharing this machine's terminal and agent sessions with
+# paired devices. A client-only build (the mobile core) leaves it out, which
+# also drops the terminal engine the host runs its sessions in.
+host = ["lan", "dep:nmt_terminal", "dep:reqwest"]
+# LAN discovery and addressing through DNS-SD. Without it a client reaches
+# hosts only at addresses it was given and through the relay.
+lan = ["dep:mdns-sd", "dep:if-addrs"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+dirs.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+if-addrs = { workspace = true, optional = true }
+mdns-sd = { workspace = true, optional = true }
+nmt_config.workspace = true
+nmt_platform.workspace = true
+nmt_remote_core.workspace = true
+nmt_terminal = { workspace = true, optional = true }
+nmt_net.workspace = true
+parking_lot.workspace = true
+reqwest = { workspace = true, optional = true, features = [
+    "rustls-tls-native-roots",
+    "system-proxy",
+] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+aes-gcm.workspace = true
+core-foundation.workspace = true
+security-framework.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

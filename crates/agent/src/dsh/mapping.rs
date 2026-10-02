@@ -4,6 +4,10 @@
 //! rather than interprets: there is no vendor stream to reassemble, and
 //! anything unrecognized becomes nothing at all instead of an error.
 
+#[cfg(test)]
+#[path = "generation_tests.rs"]
+mod generation_tests;
+
 use std::collections::HashMap;
 
 use serde_json::{Value, from_str, json};
@@ -11,6 +15,8 @@ use serde_json::{Value, from_str, json};
 use crate::chat::{
     Compaction, CompactionTrigger, Event, Item, Question, QuestionOption, TurnRetry,
 };
+use crate::dsh::generation::GenerationTracker;
+use crate::json::diff_lines;
 
 /// The status vocabulary the transcript renders: anything else reads as still
 /// running, and `failed` is what turns a row red.
@@ -152,7 +158,7 @@ pub(crate) fn question_request(
 /// this build does not know, produce no events. Both are normal: the mux stream
 /// is aggregated across every attached session, and the harness adds event
 /// types between releases.
-pub(crate) fn map_frame(frame: &Value, session_id: &str, tools: &mut ToolTracker) -> Vec<Event> {
+pub(crate) fn map_frame(frame: &Value, session_id: &str, tools: &mut EventTracker) -> Vec<Event> {
     let payload = &frame["payload"];
 
     match payload["type"].as_str() {
@@ -161,7 +167,18 @@ pub(crate) fn map_frame(frame: &Value, session_id: &str, tools: &mut ToolTracker
                 return Vec::new();
             }
 
-            map_session_event(&payload["event"], &payload["view"], tools)
+            let event = &payload["event"];
+
+            let mut events = map_session_event(event, &payload["view"], tools);
+
+            events.extend(
+                tools
+                    .generation
+                    .apply(event)
+                    .map(Event::GenerationCompleted),
+            );
+
+            events
         }
         Some("host/agent-error") if payload["sessionId"].as_str() == Some(session_id) => {
             match payload["message"].as_str() {
@@ -186,14 +203,15 @@ pub(crate) fn map_frame(frame: &Value, session_id: &str, tools: &mut ToolTracker
     }
 }
 
-/// The tool calls a session has started but not yet seen a result for.
+/// Unfinished tool calls and model-step timing retained across session events.
 ///
 /// The result event names only the call it answers, so what kind of transcript
 /// row it belongs to — and the command or paths that row already shows — is
 /// knowable only from the call that opened it.
 #[derive(Default)]
-pub(crate) struct ToolTracker {
+pub(crate) struct EventTracker {
     started: HashMap<String, Item>,
+    pub(crate) generation: GenerationTracker,
 }
 
 /// Derive native rows from the standard tools' logged arguments. Unknown tools
@@ -378,19 +396,13 @@ fn render_diffs(diffs: &Value) -> Option<String> {
 
         body.push_str(&format!("--- {path}\n+++ {path}\n"));
 
-        for line in old.lines() {
-            body.push_str(&format!("-{line}\n"));
-        }
-
-        for line in new.lines() {
-            body.push_str(&format!("+{line}\n"));
-        }
+        body.push_str(&diff_lines(old, new));
     }
 
     (!body.is_empty()).then_some(body)
 }
 
-fn map_tool_call(data: &Value, view: &Value, tools: &mut ToolTracker) -> Vec<Event> {
+fn map_tool_call(data: &Value, view: &Value, tools: &mut EventTracker) -> Vec<Event> {
     let Some(call_id) = data["callId"].as_str() else {
         return Vec::new();
     };
@@ -412,7 +424,7 @@ fn map_tool_call(data: &Value, view: &Value, tools: &mut ToolTracker) -> Vec<Eve
     vec![Event::ItemStarted(item)]
 }
 
-fn map_tool_result(data: &Value, view: &Value, tools: &mut ToolTracker) -> Vec<Event> {
+fn map_tool_result(data: &Value, view: &Value, tools: &mut EventTracker) -> Vec<Event> {
     let message = &data["message"];
 
     let call_id = message["source"]["callId"]
@@ -441,7 +453,7 @@ fn map_tool_result(data: &Value, view: &Value, tools: &mut ToolTracker) -> Vec<E
 pub(crate) fn map_session_event(
     event: &Value,
     view: &Value,
-    tools: &mut ToolTracker,
+    tools: &mut EventTracker,
 ) -> Vec<Event> {
     let data = &event["data"];
 

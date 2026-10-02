@@ -232,6 +232,13 @@ impl AlertDialog {
         self
     }
 
+    /// Center the alert dialog in the window and open it without the
+    /// slide-down motion, defaults to `false`.
+    pub fn centered(mut self, centered: bool) -> Self {
+        self.base = self.base.centered(centered);
+        self
+    }
+
     /// Sets the callback for when the alert dialog is closed.
     ///
     /// Called after [`Self::on_action`] or [`Self::on_cancel`] callback.

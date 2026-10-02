@@ -1,0 +1,9 @@
+// Copy to Config/Local.xcconfig (gitignored) and fill in your own values.
+// See Config/Signing.xcconfig for how they are resolved.
+
+NMT_DEVELOPMENT_TEAM = ABCDE12345
+NMT_BUNDLE_ID = com.yourname.niumaterm
+
+// Optional: the push endpoint of your relay (see relay/README.md). The "$()"
+// keeps xcconfig from reading "//" as a comment.
+// NMT_PUSH_ENDPOINT = https:/$()/niumaterm-relay.example.workers.dev/v1/push

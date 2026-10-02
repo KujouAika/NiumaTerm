@@ -4,19 +4,24 @@ mod router;
 mod tests;
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, LazyLock, Weak, mpsc};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use parking_lot::{Condvar, Mutex};
+use futures::future::{BoxFuture, Shared};
+use futures::{FutureExt as _, TryFutureExt as _};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::sync::oneshot;
+use tokio::time::timeout;
 
 use crate::LaunchConfig;
 use crate::codex::app_server::host::router::Router;
 use crate::launcher::AgentCli;
-use crate::subprocess::JsonLineProcess;
+use crate::subprocess::{DROP_SHUTDOWN_GRACE, JsonLineProcess};
 
 const HOST_INIT_RPC_ID: u64 = 1;
 const FIRST_HOST_RPC_ID: u64 = 2;
@@ -27,32 +32,16 @@ pub(super) type RegistrationId = u64;
 
 type Delivery = Arc<dyn Fn(Value) + Send + Sync>;
 
-static SHARED_HOST: LazyLock<SharedHostSlot> = LazyLock::new(SharedHostSlot::new);
+static SHARED_HOST: Mutex<SharedHost> = Mutex::new(SharedHost::Idle(Weak::new()));
 
-struct SharedHostState {
-    host: Weak<CodexHost>,
-    starting: bool,
-    attempt: u64,
-    failed_attempts: VecDeque<(u64, String)>,
-}
-
-struct SharedHostSlot {
-    state: Mutex<SharedHostState>,
-    ready: Condvar,
-}
-
-impl SharedHostSlot {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(SharedHostState {
-                host: Weak::new(),
-                starting: false,
-                attempt: 0,
-                failed_attempts: VecDeque::new(),
-            }),
-            ready: Condvar::new(),
-        }
-    }
+/// The host every Codex tab shares, held weakly so it stops with its last
+/// tab. While a start runs, its future is what is shared: tabs opened together
+/// wait for that one start and receive its outcome, failure included, so a
+/// failing launch is paid for once. A start whose initiator was cancelled
+/// stays here and is resumed by the next tab that asks.
+enum SharedHost {
+    Idle(Weak<CodexHost>),
+    Starting(Shared<BoxFuture<'static, Result<Arc<CodexHost>, String>>>),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -81,81 +70,69 @@ impl CodexHost {
         self.router.retain_requests(owner, ids);
     }
 
-    pub(super) fn acquire(
+    pub(super) async fn acquire(
         launch: &LaunchConfig,
         catalog: &[LaunchConfig],
         on_stderr: impl Fn(String) + Send + 'static,
     ) -> Result<Arc<Self>, String> {
-        let bootstrap = HostBootstrap::from_launches(launch, catalog)?;
+        let mut bootstrap = Some(HostBootstrap::from_launches(launch, catalog)?);
 
-        let mut on_stderr = Some(on_stderr);
+        let start = {
+            let mut shared = SHARED_HOST.lock();
 
-        loop {
-            let mut shared = SHARED_HOST.state.lock();
-
-            if let Some(host) = shared.host.upgrade()
+            if let SharedHost::Idle(host) = &*shared
+                && let Some(host) = host.upgrade()
                 && host.router.alive.load(Ordering::Acquire)
             {
-                host.ensure_compatible(launch, &bootstrap)?;
+                host.ensure_compatible(launch, bootstrap.as_ref().expect("bootstrap"))?;
 
                 return Ok(host);
             }
 
-            if shared.starting {
-                let attempt = shared.attempt;
+            match &*shared {
+                SharedHost::Starting(start) => start.clone(),
+                SharedHost::Idle(_) => {
+                    let start = Self::start(bootstrap.take().expect("bootstrap"), on_stderr)
+                        .map_ok(Arc::new)
+                        .boxed()
+                        .shared();
 
-                while shared.starting && shared.attempt == attempt {
-                    SHARED_HOST.ready.wait(&mut shared);
-                }
+                    *shared = SharedHost::Starting(start.clone());
 
-                if let Some((_, error)) = shared
-                    .failed_attempts
-                    .iter()
-                    .find(|(failed_attempt, _)| *failed_attempt == attempt)
-                {
-                    return Err(error.clone());
-                }
-
-                continue;
-            }
-
-            shared.starting = true;
-            shared.attempt = shared.attempt.wrapping_add(1).max(1);
-
-            let attempt = shared.attempt;
-
-            drop(shared);
-
-            let started = Self::start(
-                bootstrap,
-                on_stderr
-                    .take()
-                    .expect("host startup callback is consumed by one attempt"),
-            )
-            .map(Arc::new);
-
-            let mut shared = SHARED_HOST.state.lock();
-
-            shared.starting = false;
-
-            match &started {
-                Ok(host) => shared.host = Arc::downgrade(host),
-                Err(error) => {
-                    shared.failed_attempts.push_back((attempt, error.clone()));
-
-                    while shared.failed_attempts.len() > 8 {
-                        shared.failed_attempts.pop_front();
-                    }
+                    start
                 }
             }
+        };
 
-            SHARED_HOST.ready.notify_all();
+        let started = start.clone().await;
 
-            return started;
+        {
+            let mut shared = SHARED_HOST.lock();
+
+            // A later start may already have replaced this one.
+            if let SharedHost::Starting(current) = &*shared
+                && current.ptr_eq(&start)
+            {
+                *shared = SharedHost::Idle(
+                    started
+                        .as_ref()
+                        .map_or_else(|_| Weak::new(), Arc::downgrade),
+                );
+            }
         }
+
+        let host = started?;
+
+        // The initiator built the host from its own launch; a waiter has to
+        // check that the shared host matches the launch it asked for.
+        if let Some(bootstrap) = &bootstrap {
+            host.ensure_compatible(launch, bootstrap)?;
+        }
+
+        Ok(host)
     }
 
-    fn start(
+    async fn start(
         bootstrap: HostBootstrap,
         on_stderr: impl Fn(String) + Send + 'static,
     ) -> Result<Self, String> {
@@ -166,7 +143,7 @@ impl CodexHost {
         // Goal scheduling must be available to the tab's native goal controls.
         // This enables it only in the child process, without changing user files.
         let command = launcher.command(["-c", "features.goals=true", "app-server"]);
-        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let (startup_tx, startup_rx) = oneshot::channel();
         let router = Arc::new(Router::new(startup_tx));
 
         let process = JsonLineProcess::spawn_with_stdout_closed(
@@ -193,16 +170,18 @@ impl CodexHost {
             process: Mutex::new(process),
         };
 
-        host.router.start_timer()?;
+        host.router.start_timer();
 
         host.process
             .lock()
             .write_line(initialize_request())
             .map_err(|error| error.to_string())?;
 
-        let initialized = startup_rx
-            .recv_timeout(START_TIMEOUT)
-            .map_err(|_| "Codex app-server did not initialize in time".to_string())?;
+        let initialized = timeout(START_TIMEOUT, startup_rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .ok_or_else(|| "Codex app-server did not initialize in time".to_string())?;
 
         initialized.map_err(|error| redact(&error, &credential_values))?;
 
@@ -312,7 +291,11 @@ impl CodexHost {
         self.router.detach(owner)
     }
 
-    pub(super) fn shutdown(&self, timeout: Duration, force: bool) -> Result<(), String> {
+    pub(super) fn shutdown(
+        &self,
+        timeout: Duration,
+        force: bool,
+    ) -> impl Future<Output = Result<(), String>> + Send + use<> {
         self.router.expected_shutdown.store(true, Ordering::Release);
 
         self.process.lock().shutdown(timeout, force)
@@ -321,12 +304,7 @@ impl CodexHost {
 
 impl Drop for CodexHost {
     fn drop(&mut self) {
-        self.router.expected_shutdown.store(true, Ordering::Release);
-
-        let _ = self
-            .process
-            .get_mut()
-            .shutdown(Duration::from_millis(250), true);
+        nmt_platform::runtime().spawn(self.shutdown(DROP_SHUTDOWN_GRACE, true));
     }
 }
 

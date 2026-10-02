@@ -6,21 +6,17 @@ mod delivery_tests;
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{QueuedPrompt, SendOutcome, SkillReference};
 use crate::session::AgentKind;
 
 /// What a backend does with a prompt submitted while a turn is running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueuedPromptDelivery {
-    /// The prompt joins the turn already in flight. The backend reports
-    /// nothing about it, so assistant output arriving after the submit is the
-    /// only sign it landed, and the turn's end is the last chance to say so.
-    RunningTurn,
-    /// The harness holds the prompt until the running turn ends and then opens
-    /// a turn of its own for it. The prompt therefore heads that next turn,
-    /// and drawing it into the finished one would put it above output written
-    /// before it was ever submitted.
-    FollowingTurn,
+    /// A user-message echo identifies the input actually consumed. Assistant
+    /// output or a turn boundary alone cannot acknowledge later submissions.
+    ProviderEcho,
     /// The backend republishes its own pending inbox, so a prompt waiting
     /// behind the running turn is known rather than guessed at. Guessing
     /// beside it would show a message as sent while the snapshot still lists
@@ -29,20 +25,11 @@ enum QueuedPromptDelivery {
 }
 
 /// Text and bindings returned when an unanswered prompt is interrupted.
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecoverablePrompt {
     pub text: String,
     pub response_annotations: Vec<String>,
     pub skill: Option<SkillReference>,
-}
-
-/// Admission result; only a new turn publishes its message immediately.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Submission {
-    Started { text: String },
-    Queued,
-    NotReady,
-    Rejected { message: String },
 }
 
 /// Owns pending messages and recovery eligibility for one conversation.
@@ -62,8 +49,7 @@ impl MessageDelivery {
     pub fn new(kind: AgentKind) -> Self {
         Self {
             policy: match kind {
-                AgentKind::Codex => QueuedPromptDelivery::RunningTurn,
-                AgentKind::Claude => QueuedPromptDelivery::FollowingTurn,
+                AgentKind::Codex | AgentKind::Claude => QueuedPromptDelivery::ProviderEcho,
                 AgentKind::DeepSeek => QueuedPromptDelivery::PendingInbox,
             },
             turn: 0,
@@ -90,6 +76,13 @@ impl MessageDelivery {
         &self.pending
     }
 
+    /// Follow the delivery state of a conversation in another process.
+    pub fn mirror(&mut self, turn: u64, active: bool, pending: VecDeque<QueuedPrompt>) {
+        self.turn = turn;
+        self.active = active;
+        self.pending = pending;
+    }
+
     /// A refusal changes no delivery state and never builds recovery data.
     /// Recovery is retained only for the prompt that starts a new turn.
     pub fn submit(
@@ -97,27 +90,20 @@ impl MessageDelivery {
         outcome: SendOutcome,
         text: String,
         recovery: impl FnOnce() -> Option<RecoverablePrompt>,
-    ) -> Submission {
-        match outcome {
-            SendOutcome::NotReady => Submission::NotReady,
-            SendOutcome::Rejected { message } => Submission::Rejected { message },
-            SendOutcome::Steered => {
-                self.pending.push_back(QueuedPrompt::local(text));
-
-                Submission::Queued
-            }
+    ) -> SendOutcome {
+        match &outcome {
+            SendOutcome::NotReady | SendOutcome::Rejected { .. } => {}
+            SendOutcome::Steered => self.pending.push_back(QueuedPrompt::local(text)),
             SendOutcome::StartedTurn => {
                 self.begin_turn();
 
-                if self.policy == QueuedPromptDelivery::PendingInbox {
-                    self.published_prompt = Some(text.clone());
-                }
+                self.published_prompt = Some(text);
 
                 self.unanswered = recovery().map(|prompt| (self.turn, prompt));
-
-                Submission::Started { text }
             }
         }
+
+        outcome
     }
 
     /// Commands and accepted question answers can open a turn without a prompt.
@@ -135,10 +121,6 @@ impl MessageDelivery {
         }
 
         self.begin_turn();
-
-        if self.policy == QueuedPromptDelivery::FollowingTurn {
-            self.confirmed = self.pending.len();
-        }
 
         true
     }
@@ -176,17 +158,13 @@ impl MessageDelivery {
         Some(prompt)
     }
 
-    pub(crate) fn agent_message(&mut self) {
-        if self.policy == QueuedPromptDelivery::RunningTurn {
-            self.confirmed = self.pending.len();
-        }
-    }
-
-    pub fn completed(&mut self) {
+    pub(crate) fn completed(&mut self) {
         self.active = false;
         self.unanswered = None;
 
-        self.agent_message();
+        if self.policy == QueuedPromptDelivery::ProviderEcho {
+            self.published_prompt = None;
+        }
     }
 
     /// A dead session cannot claim further work, so all remaining accepted
@@ -226,7 +204,17 @@ impl MessageDelivery {
 
     /// Only the oldest matching pending prompt can be acknowledged by an echo.
     /// Removing it here also prevents a later snapshot from publishing it twice.
-    pub fn echoed(&mut self, text: &str) -> Option<String> {
+    pub(crate) fn echoed(&mut self, text: &str) -> Option<String> {
+        // The opening prompt is already in the transcript. Its echo must not
+        // consume a later queued message with identical text.
+        if self.policy == QueuedPromptDelivery::ProviderEcho
+            && self.published_prompt.as_deref() == Some(text)
+        {
+            self.published_prompt = None;
+
+            return None;
+        }
+
         if !self
             .pending
             .front()
@@ -268,7 +256,7 @@ impl MessageDelivery {
 
     /// Called only after the provider accepts removal; rejected requests leave
     /// the pending list unchanged.
-    pub fn removed(&mut self, id: &str) {
+    pub(crate) fn removed(&mut self, id: &str) {
         self.pending
             .retain(|prompt| prompt.id.as_deref() != Some(id));
     }

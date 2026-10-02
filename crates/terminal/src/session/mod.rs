@@ -1,92 +1,65 @@
 //! One terminal surface's runtime state: libghostty-vt engine, render buffer, and
 //! the ConPTY-backed PTY worker so platform details stay outside the UI layer.
 
-pub use crate::session::blocks::BlockPoint;
 pub use crate::session::config::TerminalSessionConfig;
-pub use crate::session::error::{EngineError, EngineErrorCode};
-pub use crate::session::mouse::{
-    SurfaceCell, SurfaceCellSide, SurfaceMouseButton, SurfaceMouseEventKind, SurfaceScreenCell,
-};
-pub use crate::session::observer::{SessionChange, SessionObserver};
-pub use crate::session::rows::RowText;
-
-pub mod page;
-pub mod request;
+pub use crate::session::selection::BlockPoint;
 
 pub mod interaction;
+pub mod page;
 
 pub(crate) mod selection;
 
-mod blocks;
-
-mod rows;
-
 mod config;
-mod error;
-
-mod mouse;
-mod observer;
 mod proxy;
 
 #[cfg(test)]
-mod interaction_tests;
+mod engine_tests;
 #[cfg(test)]
-mod psreadline_tests;
-#[cfg(test)]
-mod state_tests;
+mod shell_integration_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod vtebench_tests;
-
-#[cfg(test)]
-mod block_tests;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::{io, time};
+use std::{error, fmt, io, time};
 
 use futures::channel::oneshot;
 use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
 use nmt_input::event::ElementState;
 use nmt_input::keyboard::{Key, KeyLocation, ModifiersState};
-use nmt_input::{
-    KeyEncodeFlags, KeyInput, bracket_paste, encode_mouse_report, encode_terminal_input,
-};
+use nmt_input::{KeyEncodeFlags, KeyInput, bracket_paste, encode_terminal_input};
 use nmt_platform::process::ProcessTree;
-use nmt_platform::{
-    EventedPty, PtyOptions, WinsizeBuilder, create_managed_pty_with_env, create_pty_with_env,
-};
+use nmt_platform::{AsyncPty, PtyOptions, WinsizeBuilder, create_managed_pty_with_env};
 use parking_lot::Mutex;
 use tracing::error;
 
 use crate::block_store::{BlockItem, BlockStore};
-use crate::event::{Msg, MsgSender, ProgressReport};
-use crate::ghostty::BlockHandle;
-use crate::graphics::GraphicData;
+use crate::clipboard::ClipboardType;
+use crate::event::{
+    BlockEvent, BlockRange, Msg, MsgSender, ProgressReport, Query, Request, TextPiece, TextSource,
+};
+use crate::ghostty::{BlockHandle, MouseAction, MouseButton, MouseReporter, ScreenRowRead};
+use crate::graphics::{GraphicData, UpdateQueues};
+use crate::grid::{Column, Line, Pos};
 use crate::input::{TerminalKey, key_encode_flags, should_defer_to_ime};
-use crate::pty_pipe::{SessionOptions, SessionWorker, start_session};
-use crate::publication::FrameStore;
-use crate::render_buffer::RenderBuffer;
+use crate::render_buffer::{FrameStore, RenderBuffer};
 use crate::selection::{SelectionRange, SelectionType, WORD_DELIMITERS};
-use crate::session::blocks::frozen_selection_pieces;
 use crate::session::config::{default_shell, is_windows_powershell};
-use crate::session::mouse::{mouse_button_code, mouse_motion_code, mouse_report_mods};
-use crate::session::page::{PageCache, PageSource, RowPage};
+use crate::session::page::{PageCache, PageSource, RowPage, ScreenState};
 use crate::session::proxy::TerminalEventProxy;
-use crate::session::request::{BlockRange, Query, Request, TextPiece, TextSource};
-use crate::session::rows::materialized_pointer_row;
-use crate::session::selection::{SurfaceSelection, selection_screen_range};
-use crate::terminal::Mode;
-use crate::terminal::pos::{Column, Line, Pos};
+use crate::session::selection::{
+    SurfaceSelection, frozen_selection_pieces, selection_screen_range,
+};
+use crate::termio::{SessionOptions, SessionWorker, start_session};
+use crate::vt_modes::Mode;
 
 type SessionBuffer = Arc<FrameStore>;
 
-/// A host event surfaced from the PTY thread to the shell. The shell
+/// A host event surfaced from the PTY task to the shell. The shell
 /// drains these on its render tick via [`TerminalSession::poll_events`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
@@ -119,6 +92,11 @@ pub enum HostEvent {
     CommandFinished { exit_code: Option<i32> },
     /// An integrated-shell command began executing; read `in_flight_block`.
     CommandStarted,
+    /// The program wrote to a clipboard (OSC 52 and its relatives). Delivered
+    /// with the other host events so the platform clipboard, which can wait
+    /// on another process holding it, is written from the UI thread rather
+    /// than from the PTY task.
+    Clipboard { kind: ClipboardType, text: String },
 }
 
 /// The currently executing command for split live chrome.
@@ -133,6 +111,7 @@ pub struct InFlightBlock {
 pub struct TerminalSession {
     _worker: SessionWorker,
     pages: RefCell<PageCache>,
+    mouse: RefCell<MouseReporter>,
     render_buffer: SessionBuffer,
     vt_modes: Arc<AtomicU32>,
     messenger: MsgSender,
@@ -193,12 +172,7 @@ impl TerminalSession {
             bootstrap: config.bootstrap.as_deref(),
         };
 
-        let pty = if config.manage_process_tree {
-            create_managed_pty_with_env(pty_options)
-        } else {
-            create_pty_with_env(pty_options)
-        }
-        .map_err(|error| {
+        let pty = create_managed_pty_with_env(pty_options).map_err(|error| {
             error!("session create_pty failed: {error:?}");
 
             EngineError::new(
@@ -221,7 +195,6 @@ impl TerminalSession {
                 scrollback_lines: config.scrollback_lines,
                 engine_blocks: config.engine_blocks,
                 terminal_responses: true,
-                output_sink: None,
             },
             observer,
         )?;
@@ -233,7 +206,7 @@ impl TerminalSession {
         Ok(session)
     }
 
-    pub fn from_pty<T: EventedPty + Send + 'static>(
+    pub fn from_pty<T: AsyncPty + Send + 'static>(
         pty: T,
         process_tree: Option<ProcessTree>,
         options: SessionOptions,
@@ -252,9 +225,17 @@ impl TerminalSession {
             )
         })?;
 
+        let mouse = MouseReporter::new().map_err(|error| {
+            EngineError::new(
+                EngineErrorCode::EngineInit,
+                format!("libghostty-vt mouse encoder init failed: {error}"),
+            )
+        })?;
+
         Ok(Self {
             _worker: handles.worker,
             pages: RefCell::new(PageCache::default()),
+            mouse: RefCell::new(mouse),
             render_buffer: handles.render_buffer,
             vt_modes: handles.vt_modes,
             messenger: handles.messenger,
@@ -263,6 +244,12 @@ impl TerminalSession {
             engine_blocks,
             supports_powershell_compatibility: false,
         })
+    }
+
+    /// A handle that drives this session's PTY loop from any thread, for a
+    /// host offering the terminal to remote views.
+    pub fn messenger(&self) -> MsgSender {
+        self.messenger.clone()
     }
 
     /// Whether frozen history lives in finished engine blocks.
@@ -533,29 +520,24 @@ impl TerminalSession {
         selection_type: SelectionType,
     ) -> bool {
         if let Some(mode) = self.app_mouse_mode(modifiers) {
-            return match kind {
-                SurfaceMouseEventKind::Down | SurfaceMouseEventKind::Up => {
-                    let Some(code) = button.and_then(mouse_button_code) else {
-                        return false;
-                    };
-
-                    self.report_mouse(
-                        mode,
-                        code,
-                        kind == SurfaceMouseEventKind::Down,
-                        cell.col,
-                        cell.row,
-                        modifiers,
-                    )
-                }
-                SurfaceMouseEventKind::Move => {
-                    let Some(code) = mouse_motion_code(mode, button) else {
-                        return false;
-                    };
-
-                    self.report_mouse(mode, code, true, cell.col, cell.row, modifiers)
-                }
+            let action = match kind {
+                SurfaceMouseEventKind::Down => MouseAction::Press,
+                SurfaceMouseEventKind::Up => MouseAction::Release,
+                SurfaceMouseEventKind::Move => MouseAction::Motion,
             };
+
+            // A press or release always names the button it belongs to.
+            if action != MouseAction::Motion && button.is_none() {
+                return false;
+            }
+
+            let button = button.map(|button| match button {
+                SurfaceMouseButton::Left => MouseButton::Left,
+                SurfaceMouseButton::Middle => MouseButton::Middle,
+                SurfaceMouseButton::Right => MouseButton::Right,
+            });
+
+            return self.report_mouse(mode, action, button, cell.col, cell.row, modifiers);
         }
 
         if button != Some(SurfaceMouseButton::Left) {
@@ -601,20 +583,24 @@ impl TerminalSession {
     fn report_mouse(
         &self,
         mode: Mode,
-        button: u8,
-        pressed: bool,
+        action: MouseAction,
+        button: Option<MouseButton>,
         col: u16,
         row: u16,
         modifiers: ModifiersState,
     ) -> bool {
-        let Some(msg) = encode_mouse_report(
-            mode.contains(Mode::SGR_MOUSE),
-            button,
-            mouse_report_mods(modifiers),
-            pressed,
-            col,
-            row,
-        ) else {
+        let snapshot = self.snapshot();
+
+        let grid = (
+            u16::try_from(snapshot.cols()).unwrap_or(u16::MAX),
+            u16::try_from(snapshot.rows()).unwrap_or(u16::MAX),
+        );
+
+        let Some(msg) = self
+            .mouse
+            .borrow_mut()
+            .encode(mode, action, button, modifiers, col, row, grid)
+        else {
             return false;
         };
 
@@ -663,6 +649,31 @@ impl TerminalSession {
         self.pages
             .borrow_mut()
             .read(PageSource::Screen { revision }, row, &self.messenger)
+    }
+
+    /// Screen rows for painting at `snapshot`'s revision. While the fresh
+    /// read is pending this returns the previous page for the same rows, so
+    /// a repaint after new output keeps the history text on screen. The rows
+    /// may therefore lag by a frame; pointer and selection text use
+    /// [`Self::screen_row_text_in`], which only returns exact rows.
+    pub fn screen_page_for_display(
+        &self,
+        snapshot: &RenderBuffer,
+        row: usize,
+    ) -> Option<Arc<RowPage>> {
+        let scrollbar = snapshot.scrollbar();
+
+        let state = ScreenState {
+            revision: snapshot.revision(),
+            cols: snapshot.cols(),
+            history_rows: scrollbar.total.saturating_sub(scrollbar.len),
+            theme: snapshot.theme_revision(),
+            history_epoch: self.shared.block_store.lock().history_epoch(),
+        };
+
+        self.pages
+            .borrow_mut()
+            .read_screen_for_display(state, row, &self.messenger)
     }
 
     pub fn block_page(&self, handle: BlockHandle, row: usize) -> Option<Arc<RowPage>> {
@@ -718,9 +729,20 @@ impl TerminalSession {
         }
 
         if let Some(mode) = self.mouse_mode() {
-            let button = if lines > 0 { 64 } else { 65 };
+            let button = if lines > 0 {
+                MouseButton::WheelUp
+            } else {
+                MouseButton::WheelDown
+            };
 
-            return self.report_mouse(mode, button, true, cell.col, cell.row, modifiers);
+            return self.report_mouse(
+                mode,
+                MouseAction::Press,
+                Some(button),
+                cell.col,
+                cell.row,
+                modifiers,
+            );
         }
 
         if self.exited() {
@@ -813,4 +835,130 @@ fn paste_payload(text: &str, bracketed: bool) -> Option<Vec<u8>> {
     }
 
     Some(bracket_paste(body.as_bytes(), bracketed))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionChange {
+    Content,
+    HostEvents,
+}
+
+/// Receives synchronous updates on the PTY worker. Implementations must not
+/// access windows or wait for another thread: a callback can run during a
+/// parse batch, and waiting for an enqueued command would stall its owner.
+pub trait SessionObserver: Send + Sync {
+    fn graphics(&self, _updates: UpdateQueues) {}
+
+    fn blocks(&self, _events: &[BlockEvent]) {}
+
+    fn changed(&self, _change: SessionChange) {}
+}
+
+/// Pointer text preserves grid columns by retaining the first codepoint per cell.
+#[derive(Clone, Debug)]
+pub struct RowText {
+    pub text: String,
+    pub wrapped: bool,
+    pub hyperlinks: Vec<(u16, u16, String)>,
+}
+
+fn materialized_pointer_row(row: &ScreenRowRead, cols: u16) -> RowText {
+    let mut chars = Vec::with_capacity(cols as usize);
+
+    for cell in &row.cells {
+        let x = cell.x as usize;
+
+        if chars.len() < x {
+            chars.resize(x, ' ');
+        }
+
+        if chars.len() == x {
+            chars.push(cell.text.as_str().chars().next().unwrap_or(' '));
+        }
+    }
+
+    let cols = cols as usize;
+
+    if chars.len() < cols {
+        chars.resize(cols, ' ');
+    }
+
+    RowText {
+        text: chars.into_iter().collect(),
+        wrapped: row.meta.wrapped,
+        hyperlinks: row.meta.hyperlinks.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Engine start-up errors
+// ---------------------------------------------------------------------------
+
+/// Stable error categories for the shell's in-window error panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineErrorCode {
+    /// ConPTY spawn failed (bad shell, working dir, …).
+    PtySpawn,
+    /// libghostty-vt engine init failed.
+    EngineInit,
+}
+
+/// A structured engine failure.
+#[derive(Debug)]
+pub struct EngineError {
+    pub code: EngineErrorCode,
+    pub message: String,
+}
+
+impl EngineError {
+    pub(crate) fn new(code: EngineErrorCode, message: impl Into<String>) -> Self {
+        EngineError {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for EngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl error::Error for EngineError {}
+
+// ---------------------------------------------------------------------------
+// Surface mouse events and their VT report encoding
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceCell {
+    pub col: u16,
+    pub row: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceScreenCell {
+    pub col: u16,
+    pub row: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceCellSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceMouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceMouseEventKind {
+    Down,
+    Up,
+    Move,
 }

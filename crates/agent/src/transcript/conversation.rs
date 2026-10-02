@@ -12,7 +12,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::chat::{ContextComposition, ContextWindowUsage, Item, ReplayTurn, SessionStats};
-use crate::transcript::turns::{LiveTurn, TurnLedger};
+use crate::transcript::turns::{GenerationSpeed, GenerationStats, LiveTurn, TurnLedger};
 use crate::transcript::{TextAppend, TextField, TranscriptContent, TranscriptEntry};
 
 /// Immutable PNG data retained after an image submission is accepted.
@@ -44,6 +44,7 @@ pub struct ConversationState {
     pub content: TranscriptContent<EntryMetadata>,
     pub turns: TurnLedger,
     pub live: LiveTurn,
+    pub generation_stats: GenerationStats,
     pub context_window_usage: Option<ContextWindowUsage>,
     pub context_composition: Option<ContextComposition>,
     pub session_stats: Option<SessionStats>,
@@ -63,6 +64,17 @@ pub struct ContentChange {
 }
 
 impl ConversationState {
+    pub fn session_generation_speed(&self) -> Option<GenerationSpeed> {
+        match self.session_stats {
+            Some(stats) => GenerationSpeed::from_totals(
+                stats.decode_tokens,
+                Duration::from_millis(stats.decode_ms),
+                false,
+            ),
+            None => self.generation_stats.session_speed(),
+        }
+    }
+
     pub fn attach_last_images(&mut self, images: Vec<Arc<ConversationImage>>) {
         if let Some(metadata) = self.content.last_metadata_mut() {
             metadata.images = images;
@@ -152,6 +164,12 @@ impl ConversationState {
     pub fn replay(&mut self, turn: u64, replay: ReplayTurn) {
         let first = self.content.entries().len();
 
+        self.generation_stats.begin_turn();
+
+        for sample in replay.generation_samples {
+            self.generation_stats.record(sample);
+        }
+
         for entry in replay.items {
             self.content.append(TranscriptEntry {
                 turn,
@@ -196,6 +214,8 @@ impl ConversationState {
     pub fn start(&mut self) {
         self.submitted_at = Some(Instant::now());
 
+        self.generation_stats.begin_turn();
+
         self.live.start();
 
         self.changed(self.content.entries().len(), None);
@@ -231,6 +251,20 @@ impl ConversationState {
         self.changed(first, None);
     }
 
+    /// Replace every entry from `from` on, as a replica following another
+    /// process's conversation does.
+    pub fn splice(&mut self, from: usize, entries: Vec<TranscriptEntry<EntryMetadata>>) {
+        let from = from.min(self.content.entries().len());
+
+        self.content.truncate(from);
+
+        for entry in entries {
+            self.content.append(entry);
+        }
+
+        self.changed(from, None);
+    }
+
     pub fn retain_last(&mut self, count: usize) -> usize {
         let dropped = self.content.retain_last(count);
 
@@ -251,6 +285,8 @@ impl ConversationState {
         self.turns.clear();
 
         self.live.discard();
+
+        self.generation_stats = GenerationStats::default();
 
         self.context_window_usage = None;
         self.context_composition = None;

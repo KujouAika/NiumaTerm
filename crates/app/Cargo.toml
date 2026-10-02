@@ -16,19 +16,23 @@ path = "src/main.rs"
 unicode-width.workspace = true
 nmt_profiling.workspace = true
 nmt_agent.workspace = true
-nmt_config = { workspace = true, features = ["application"] }
+nmt_config.workspace = true
+nmt_input.workspace = true
 nmt_terminal.workspace = true
 nmt_platform.workspace = true
-nmt_version.workspace = true
+nmt_updater.workspace = true
+nmt_remote.workspace = true
+nmt_remote_core.workspace = true
+nmt_net.workspace = true
 
 dirs.workspace = true
+dunce.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 
 anyhow.workspace = true
-base64.workspace = true
 serde.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -38,30 +42,22 @@ serde_json.workspace = true
 semver.workspace = true
 toml.workspace = true
 gpui.workspace = true
+gpui_tokio.workspace = true
+tokio.workspace = true
 gpui-component.workspace = true
-lsp-types.workspace = true
 gpui-kit-assets.workspace = true
 rust-embed.workspace = true
-nmt_input.workspace = true
 # Kitty graphics: construct GPUI `RenderImage` frames from decoded pixels. Same
 # crate/version GPUI links, so `image_rs::Frame` unifies with `gpui`'s `Frame`.
 image_rs.workspace = true
 
-reqwest = { workspace = true, features = [
-    "blocking",
-    "rustls-tls-native-roots",
-    "system-proxy",
-] }
 percent-encoding.workspace = true
-raw-window-handle.workspace = true
-sha2.workspace = true
-zip.workspace = true
+qrcode.workspace = true
 tree-sitter.workspace = true
 tree-sitter-language.workspace = true
 gpui-base.workspace = true
 ropey.workspace = true
 vte.workspace = true
-tempfile.workspace = true
 uuid.workspace = true
 rust-i18n.workspace = true
 rand.workspace = true
@@ -74,17 +70,13 @@ winres.workspace = true
 # platform type, and the application picks one to hand `Application::with_platform`.
 [target.'cfg(windows)'.dependencies]
 gpui_windows.workspace = true
-# Remote sessions are hosted by ConPTY and keyed by DPAPI, neither of which has
-# been ported.
-nmt_remote_net.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos.workspace = true
-nmt_sparkle.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-tokio.workspace = true
+tempfile.workspace = true
 # The same font source GPUI's text system selects families through, so a
 # default face can be checked against what the host actually has.
 font-kit.workspace = true

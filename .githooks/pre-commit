@@ -1,47 +1,6 @@
 #!/bin/sh
 set -eu
 
-# A merge carries changes already committed on both parents. The automatic
-# merge tree isolates conflict resolutions and edits made during the merge,
-# including changes in files that merged without conflicts.
-merge_in_progress=false
-merge_base_tree=
-merge_head_file=$(git rev-parse --git-path MERGE_HEAD)
-if [ -f "$merge_head_file" ]; then
-    merge_in_progress=true
-    if merge_base_tree=$(git rev-parse --verify -q 'AUTO_MERGE^{tree}'); then
-        :
-    else
-        # Clean merges may not leave AUTO_MERGE. Reconstruct the same baseline
-        # without changing the working tree or the real index.
-        if [ "$(wc -l <"$merge_head_file" | tr -d ' ')" -ne 1 ]; then
-            echo 'pre-commit: merge checks require exactly two parents' >&2
-            exit 1
-        fi
-        merge_parent=$(cat "$merge_head_file")
-        if merge_output=$(git merge-tree --write-tree HEAD "$merge_parent"); then
-            :
-        else
-            merge_status=$?
-            if [ "$merge_status" -ne 1 ]; then
-                echo 'pre-commit: could not reconstruct the automatic merge tree' >&2
-                exit 1
-            fi
-        fi
-        merge_base_tree=$(printf '%s\n' "$merge_output" | sed -n '1p')
-        git cat-file -e "$merge_base_tree^{tree}" || exit 1
-    fi
-    echo 'pre-commit: checking resolutions and edits against the automatic merge'
-fi
-
-staged_diff() {
-    if [ "$merge_in_progress" = true ]; then
-        git diff --cached --find-renames "$merge_base_tree" "$@"
-    else
-        git diff --cached "$@"
-    fi
-}
-
 collect_staged_code_files() {
     printf '%s\n' "$staged_files" |
         awk -v protected="$protected_paths" -v code_path="$code_file_pattern" '
@@ -51,7 +10,7 @@ collect_staged_code_files() {
 }
 
 collect_added_comment_lines() {
-    staged_diff --diff-filter=ACMR -U0 |
+    git diff --cached --diff-filter=ACMR -U0 |
         awk -v protected="$protected_paths" -v code_path="$code_file_pattern"             -v generated="$generated_paths" '
             /^\+\+\+ b\// {
                 file = substr($0, 7)
@@ -67,12 +26,6 @@ collect_added_comment_lines() {
 }
 
 check_ai_docs_are_separate() {
-    # Conflict resolution can span directories whose original commits remain
-    # separate in the merge's parent history.
-    if [ "$merge_in_progress" = true ]; then
-        return 0
-    fi
-
     if [ -z "$protected_files" ] || [ -z "$code_files" ]; then
         return 0
     fi
@@ -86,11 +39,11 @@ $protected_files
 Code files:
 $code_files
 EOF
-    exit 1
+    failed=1
 }
 
 check_no_incomplete_openspec_changes() {
-    incomplete_spec_files=$(staged_diff --name-only --diff-filter=ACMR |
+    incomplete_spec_files=$(git diff --cached --name-only --diff-filter=ACMR |
         grep -E '^openspec/changes/' |
         grep -Ev '^openspec/changes/archive/' || true)
     if [ -z "$incomplete_spec_files" ]; then
@@ -102,16 +55,10 @@ pre-commit: unfinished spec documents cannot be committed
 
 $incomplete_spec_files
 EOF
-    exit 1
+    failed=1
 }
 
 check_third_party_dirs_are_separate() {
-    # Conflict resolution can span directories whose original commits remain
-    # separate in the merge's parent history.
-    if [ "$merge_in_progress" = true ]; then
-        return 0
-    fi
-
     for isolated_path in third_party/gpui 'third_party/gpui-(kit|component)'; do
         isolated_files=$(printf '%s\n' "$staged_files" | grep -E "^$isolated_path/" || true)
         other_files=$(printf '%s\n' "$staged_files" | grep -Ev "^$isolated_path/" || true)
@@ -128,7 +75,7 @@ $isolated_files
 Other staged files:
 $other_files
 EOF
-        exit 1
+        failed=1
     done
 }
 
@@ -142,15 +89,21 @@ pre-commit: refusing protected-path commit on main
 
 $protected_files
 EOF
-    exit 1
+    failed=1
 }
 
 check_no_ai_slop_marker() {
     slop_markers='ponytail|seam|fact|parity|envelope|wire|contract'
-    slop=$(staged_diff --diff-filter=ACMR -U0 |
+    slop=$(git diff --cached --diff-filter=ACMR -U0 |
         awk -v generated="$generated_paths" '
-            /^\+\+\+ b\// { file = substr($0, 7); vendored = file ~ generated; next }
-            !vendored && /^\+/ { print file ": " $0 }
+            /^\+\+\+ b\// {
+                file = substr($0, 7)
+                vendored = file ~ generated
+                # License notices must retain the original upstream wording.
+                license_file = tolower(file) ~ /(^|\/)license([.](md|txt|rst))?$/
+                next
+            }
+            !vendored && !license_file && /^\+/ { print file ": " $0 }
         ' | grep -Eiw "$slop_markers" || true)
     if [ -z "$slop" ]; then
         return 0
@@ -161,7 +114,7 @@ pre-commit: refusing to commit AI slop containing '$slop_markers'
 
 $slop
 EOF
-    exit 1
+    failed=1
 }
 
 check_comment_rationale() {
@@ -191,7 +144,41 @@ are allowed when the comment remains understandable without opening the referenc
 
 $instruction_refs
 EOF
-    exit 1
+    failed=1
+}
+
+check_no_xcode_signing_identity() {
+    # A team ID, provisioning profile, or named certificate ties the Xcode
+    # project to one developer account. Those live in the gitignored
+    # mobile/ios/Config/Local.xcconfig or in environment variables. Picking a
+    # team in Xcode's Signing & Capabilities tab writes it into project.pbxproj
+    # instead, where it is easy to commit without noticing. Values that expand
+    # a build setting, such as $(NMT_DEVELOPMENT_TEAM), stay allowed.
+    # Deletions stay allowed, so a file committed by mistake can be removed.
+    personal_files=$(git diff --cached --name-only --diff-filter=ACMR |
+        grep -E '(^|/)(Local[.]xcconfig$|xcuserdata/)' || true)
+    signing_lines=$(git diff --cached --diff-filter=ACMR -U0 -- '*.pbxproj' '*.xcconfig' |
+        awk '
+            /^\+\+\+ b\// { file = substr($0, 7); next }
+            /^\+/ { print file ": " substr($0, 2) }
+        ' |
+        grep -E ': [[:space:]]*"?(DEVELOPMENT_TEAM|PROVISIONING_PROFILE(_SPECIFIER)?)(\[[^]]*\])?"?[[:space:]]*=[[:space:]]*"?[^"$;[:space:]]|: [[:space:]]*"?CODE_SIGN_IDENTITY(\[[^]]*\])?"?[[:space:]]*=.*:' ||
+        true)
+    if [ -z "$personal_files" ] && [ -z "$signing_lines" ]; then
+        return 0
+    fi
+
+    cat >&2 <<EOF
+pre-commit: refusing to commit a personal Xcode signing identity
+
+Set the team and bundle ID in mobile/ios/Config/Local.xcconfig (gitignored) or
+the NMT_DEVELOPMENT_TEAM and NMT_BUNDLE_ID environment variables, and leave the
+team unset in Xcode's Signing & Capabilities tab.
+
+$personal_files
+$signing_lines
+EOF
+    failed=1
 }
 
 check_readability() {
@@ -201,28 +188,30 @@ check_readability() {
         return 0
     fi
 
-    echo "pre-commit: checking readability of staged Rust changes"
-    cargo run --quiet --locked --manifest-path tools/readability/Cargo.toml -- --staged
+    if ! readability_output=$(cargo run --quiet --locked \
+        --manifest-path tools/readability/Cargo.toml -- --staged 2>&1); then
+        printf 'pre-commit: readability issues\n\n%s\n\n' "$readability_output" >&2
+        failed=1
+    fi
 }
 
 check_rustfmt_and_clippy() {
-    rust_files=$(staged_diff --name-only --diff-filter=ACMRD -- '*.rs')
+    rust_files=$(git diff --cached --name-only --diff-filter=ACMRD -- '*.rs')
 
     if [ -z "$rust_files" ]; then
-        echo "pre-commit: no staged Rust files; skipping rustfmt and clippy"
         return 0
     fi
 
-    echo "pre-commit: staged Rust files detected"
-
     if ! command -v jq >/dev/null 2>&1; then
         echo "pre-commit: jq is required to select changed workspace members" >&2
-        exit 1
+        failed=1
+        return 0
     fi
 
-    workspace_metadata=$(cargo metadata --no-deps --format-version 1) || {
+    workspace_metadata=$(cargo metadata --no-deps --format-version 1 2>/dev/null) || {
         echo "pre-commit: failed to read Cargo workspace metadata" >&2
-        exit 1
+        failed=1
+        return 0
     }
 
     package_classes=$(
@@ -267,24 +256,27 @@ check_rustfmt_and_clippy() {
             '
     ) || {
         echo "pre-commit: failed to classify changed workspace members" >&2
-        exit 1
+        failed=1
+        return 0
     }
     package_classes=$(printf '%s\n' "$package_classes" | tr -d '\r')
 
-    rustfmt_files=$(staged_diff --name-only --diff-filter=ACMR -- '*.rs')
+    rustfmt_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
     if [ -n "$rustfmt_files" ]; then
-        echo "pre-commit: checking rustfmt on staged Rust files"
         set --
         while IFS= read -r file; do
             set -- "$@" "$file"
         done <<EOF
 $rustfmt_files
 EOF
-        rustfmt --edition 2024 --check --config skip_children=true "$@"
+        if ! rustfmt_output=$(rustfmt --edition 2024 --check \
+            --config skip_children=true "$@" 2>&1); then
+            printf 'pre-commit: rustfmt differences\n\n%s\n\n' "$rustfmt_output" >&2
+            failed=1
+        fi
     fi
 
     if [ -z "$package_classes" ]; then
-        echo "pre-commit: staged Rust files are outside workspace members; skipping clippy"
         return 0
     fi
 
@@ -293,19 +285,27 @@ EOF
     other_packages=$(printf '%s\n' "$package_classes" |
         awk -F '\t' '$1 == "other" { print $2 }')
 
+    # Clippy reports through check mode, so a run writes metadata-only artifacts
+    # for the whole dependency graph where a build writes linked libraries. In a
+    # shared target directory both sets stay on disk under different hashes and no
+    # build reuses the check copies, so every crate accumulates a second artifact
+    # set that only a manual delete removes. A nested directory keeps the check
+    # artifacts disposable on their own, and an existing CARGO_TARGET_DIR is
+    # extended rather than replaced so CI cache paths keep working.
+    repo_root=$(git rev-parse --show-toplevel)
+    clippy_target_dir="${CARGO_TARGET_DIR:-$repo_root/target}/pre-commit-check"
+
     if [ -n "$other_packages" ]; then
         set --
         for package in $other_packages; do
             set -- "$@" -p "$package"
         done
 
-        echo "pre-commit: running clippy on changed non-first-party members"
-        cargo clippy --all-targets --no-deps --quiet "$@"
+        run_clippy "$@"
     fi
 
     first_party_packages=$(printf '%s\n' "$first_party_packages" | tr -d '\r')
     if [ -z "$first_party_packages" ]; then
-        echo "pre-commit: no changed first-party workspace members; skipping clippy::absolute_paths"
         return 0
     fi
 
@@ -314,8 +314,24 @@ EOF
         set -- "$@" -p "$package"
     done
 
-    echo "pre-commit: running strict clippy groups on changed first-party members"
-    cargo clippy --all-targets --no-deps --quiet "$@" --         -D clippy::absolute_paths         -D clippy::complexity         -D clippy::perf         -D clippy::style
+    run_clippy "$@" -- -D clippy::absolute_paths -D clippy::complexity -D clippy::perf -D clippy::style
+}
+
+# Runs clippy and reports only its errors. A clippy run also prints every
+# warning in the changed crates plus Cargo's workspace-level warnings, which
+# would bury the few lines that block the commit. The short message format
+# puts each diagnostic on one line, so the errors can be picked out; if a
+# failure produced no recognizable error line, the full output is shown
+# rather than hiding why the run failed.
+run_clippy() {
+    if clippy_output=$(CARGO_TARGET_DIR="$clippy_target_dir" cargo clippy \
+        --all-targets --no-deps --quiet --message-format=short "$@" 2>&1); then
+        return 0
+    fi
+
+    clippy_errors=$(printf '%s\n' "$clippy_output" | grep -E '(^|: )error(\[[^]]*\])?:' || true)
+    printf 'pre-commit: clippy errors\n\n%s\n\n' "${clippy_errors:-$clippy_output}" >&2
+    failed=1
 }
 
 branch=$(git symbolic-ref --quiet --short HEAD || true)
@@ -327,9 +343,12 @@ protected_paths='^([.]agents|[.]claude|[.]codex|[.]scratch|openspec|spec|docs/ad
 # third_party stay covered because we write those.
 generated_paths='^third_party/[^/]+/(prebuilt/|src/bindings[.]rs$)'
 code_file_pattern='(^|/)(Cargo[.](toml|lock)|build[.]rs)$|[.](rs|zig|c|cc|cpp|cxx|h|hh|hpp|hxx|m|mm|swift|py|sh|bash|zsh|ps1|js|jsx|ts|tsx|css|scss|html|wgsl|hlsl|metal)$'
-staged_files=$(staged_diff --name-only --diff-filter=ACMRD)
+staged_files=$(git diff --cached --name-only --diff-filter=ACMRD)
 protected_files=$(printf '%s\n' "$staged_files" | grep -E "$protected_paths" || true)
 code_files=$(collect_staged_code_files)
+# Every check runs even after one fails, so a single attempt reports every
+# problem instead of revealing them one commit attempt at a time.
+failed=0
 
 check_no_incomplete_openspec_changes
 check_ai_docs_are_separate
@@ -337,5 +356,11 @@ check_third_party_dirs_are_separate
 check_protected_paths_on_main
 check_no_ai_slop_marker
 check_comment_rationale
+check_no_xcode_signing_identity
 check_readability
 check_rustfmt_and_clippy
+
+if [ "$failed" -ne 0 ]; then
+    echo "pre-commit: commit rejected; fix the issues above" >&2
+    exit 1
+fi

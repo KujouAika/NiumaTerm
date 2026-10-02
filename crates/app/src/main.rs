@@ -10,59 +10,54 @@ mod i18n;
 mod ipc;
 mod keymap;
 mod logging;
-#[cfg(target_os = "macos")]
-mod menu;
-mod pane_tree;
 mod profiling;
-#[cfg(windows)]
-mod remote;
-#[cfg(target_os = "macos")]
-mod sparkle;
 mod tabs;
 mod ui;
-#[cfg(windows)]
 mod update;
 mod usage_refresh;
 mod usage_sources;
-mod window;
 mod workspace;
 
-#[cfg(test)]
-mod tests;
-
-use std::ffi::OsString;
-use std::future::{Ready, ready};
+use std::future::Future;
 use std::rc::Rc;
-use std::{env, mem, path, process, time};
+use std::{env, path, process, time};
 
-use app::agent_tab::{AgentThreadDefaults, input_history, thread_settings_from_defaults};
+use app::agent_tab::execution::install_reported_controls;
+use app::agent_tab::input_history;
 use app::assets::AppAssets;
 use app::{syntax, utils};
 use clap::{Arg, ArgAction, Command as ClapCommand};
 use futures::StreamExt as _;
-use futures::channel::mpsc::unbounded;
+use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 #[cfg(windows)]
 use gpui::Global;
 use gpui::{Anchor, AnyWindowHandle, App, Application, WeakEntity, WindowId, px};
-use gpui_component::{Theme as ComponentTheme, init as init_components};
+use gpui_component::Theme as ComponentTheme;
 #[cfg(target_os = "macos")]
 use gpui_macos::MacPlatform as Platform;
 #[cfg(windows)]
 use gpui_windows::WindowsPlatform as Platform;
 use nmt_agent::{AgentEvent, AgentRoute, agent_process};
-use nmt_config::local_state::{self, LocalState};
-use nmt_config::{Config, config_dir_path, config_file_path, enable_testing_mode, get, init};
+use nmt_config::local_state::{self, WindowLocalState};
+use nmt_config::{Config, config_dir_path, config_file_path, get, set_testing_mode};
+use nmt_net::set_proxy;
 use nmt_platform::ipc as platform_ipc;
 use nmt_platform::window::show_error_dialog;
 #[cfg(enable_profiling)]
 use nmt_profiling::allocation::ProfilingAllocator;
+use nmt_updater::AWAIT_EXIT_FLAG;
+#[cfg(windows)]
+use nmt_updater::windows::{settle_previous_update, wait_for_previous_instance};
 use rust_i18n::t;
 use tracing::warn;
 
 use crate::cli::CliAction;
-use crate::ui::AppSettings;
-use crate::window::{
-    AppWindow, LastActiveWindow, ShellRegistry, WindowRegistry, selected_window_appearance,
+use crate::ipc::IpcAction;
+#[cfg(target_os = "macos")]
+use crate::ui::macos_menu;
+use crate::ui::{
+    AppSettings, AppWindow, LastActiveWindow, WindowRegistry, open_window,
+    selected_window_appearance,
 };
 
 #[cfg(enable_profiling)]
@@ -72,21 +67,12 @@ static ALLOCATOR: ProfilingAllocator = ProfilingAllocator;
 struct StartupArgs {
     url: Option<String>,
     testing: bool,
-    profiling: bool,
+    enable_profiling: bool,
 
     /// The instance an update replaced, which this one must outlive before it
     /// may claim the single-instance mutex that instance still holds.
-    await_exit: Option<u32>,
+    previous_instance_pid: Option<u32>,
 }
-
-struct StartupFiles {
-    remembered_state: LocalState,
-}
-
-/// The flag a freshly installed build is relaunched with, naming the process
-/// it has to outlive. It lives here rather than with the updater because the
-/// command line is parsed on every platform, whether one is built or not.
-pub(crate) const AWAIT_EXIT_FLAG: &str = "--await-exit";
 
 /// The concrete Windows platform, kept as a gpui global so settings toggles
 /// can reach platform-level knobs (UI thread priority). The one knob behind it
@@ -101,18 +87,63 @@ fn main() {
     let StartupArgs {
         url,
         testing,
-        profiling,
-        await_exit,
-    } = parse_startup_args_from(env::args_os());
+        enable_profiling: profiling,
+        previous_instance_pid: _previous_instance_pid,
+    } = parse_startup_args();
 
     // Only a build that can replace itself has a predecessor to outlive.
     #[cfg(windows)]
-    if let Some(pid) = await_exit {
-        update::await_predecessor(pid);
+    let previous_instance_lingers =
+        _previous_instance_pid.is_some_and(|pid| !wait_for_previous_instance(pid));
+
+    // A second launch forwards its action to the existing process so one process
+    // URL (or an activate request) to the running instance and exits. A
+    // malformed URL degrades to activate — the primary just comes forward.
+    let (argv_action, argv_error) = match url.map(|url| cli::parse_nmt_url(&url)) {
+        Some(Ok(action)) => (Some(action), None),
+        Some(Err(error)) => (Some(CliAction::Activate), Some(error)),
+        None => (None, None),
+    };
+
+    // A testing instance with its own configuration home acts as a separate
+    // device, such as the second computer in a remote-session test. It
+    // neither forwards to nor serves the testing instance's command pipe.
+    let isolated = testing && env::var_os("NMT_CONFIG_HOME").is_some();
+
+    let mut pipe_error = None;
+
+    if !isolated && !platform_ipc::try_become_primary(testing) {
+        let action = argv_action.clone().unwrap_or(CliAction::Activate);
+        let url: String = (&action).into();
+
+        match platform_ipc::send(&url, time::Duration::from_secs(2), testing) {
+            Ok(()) => return,
+            Err(error) => pipe_error = Some(error),
+        }
+        // The mutex holder never answered (booting forever, or hung): serve
+        // the user with a fresh primary rather than doing nothing.
     }
 
-    #[cfg(not(windows))]
-    let _ = await_exit;
+    // Logging starts only once this process is known to stay. Initializing
+    // rotates app.log, so a forwarding launch that exits right away would
+    // otherwise push the running primary's log aside behind an empty file,
+    // and an updated build would do the same to the instance it replaced
+    // while that instance was still shutting down. Hold the appender guard
+    // for the whole app lifetime; `main` blocks until exit.
+    let _log_guard = logging::init_logging(testing).expect("init logging");
+
+    #[cfg(windows)]
+    if previous_instance_lingers {
+        warn!("update: the previous instance is still running; starting anyway");
+    }
+
+    if let Some(error) = argv_error {
+        warn!("ignoring command line: {error}");
+    }
+
+    if let Some(error) = pipe_error {
+        warn!("primary instance pipe unreachable: {error}");
+    }
 
     // Builds without performance collection accept these switches through
     // empty hooks and do not install the allocator wrapper.
@@ -127,53 +158,32 @@ fn main() {
             .to_string(),
     );
 
-    if testing {
-        enable_testing_mode();
-    }
-
-    // Hold the appender guard for the whole app lifetime; `main` blocks until exit.
-    let _log_guard = logging::init_logging(testing).expect("init logging");
-
     if !hook_initialized {
         warn!("hook executable was already initialized; keeping the existing path");
     }
+
+    set_testing_mode(testing);
 
     if profiling && !cfg!(enable_profiling) {
         warn!("--enable-profiling requires a build with --cfg enable_profiling");
     }
 
-    let startup_files = load_startup_files_or_exit();
+    let config = Config::load_for_startup_from(&config_file_path(), &config_dir_path())
+        .unwrap_or_else(|err| {
+            startup_error_and_exit("config.toml", &err.to_string());
+        });
+
+    nmt_config::init_from(config);
 
     // Translations must be ready before any view exists so the first frame
     // already renders in the configured language.
     rust_i18n::set_locale(get().appearance.language.into());
 
-    // A second launch forwards its action to the existing process so one process
-    // URL (or an activate request) to the running instance and exits. A
-    // malformed URL degrades to activate — the primary just comes forward.
-    let argv_action = url.map(|url| {
-        cli::parse_nmt_url(&url).unwrap_or_else(|err| {
-            warn!("ignoring command line: {err}");
+    let (cli_tx, cli_rx) = unbounded::<ipc::IpcAction>();
 
-            CliAction::Activate
-        })
-    });
-
-    if !platform_ipc::try_become_primary(testing) {
-        let action = argv_action.clone().unwrap_or(CliAction::Activate);
-        let url: String = (&action).into();
-
-        match platform_ipc::send(&url, time::Duration::from_secs(2), testing) {
-            Ok(()) => return,
-            Err(error) => warn!("primary instance pipe unreachable: {error}"),
-        }
-        // The mutex holder never answered (booting forever, or hung): serve
-        // the user with a fresh primary rather than doing nothing.
+    if !isolated {
+        ipc::spawn_pipe_server(cli_tx.clone(), testing);
     }
-
-    let (cli_tx, mut cli_rx) = unbounded::<ipc::IpcAction>();
-
-    ipc::spawn_pipe_server(cli_tx.clone(), testing);
 
     if let Some(action) = argv_action {
         // The primary's own argv URL joins the same dispatch path as
@@ -196,208 +206,25 @@ fn main() {
     #[cfg(windows)]
     let platform_handle = platform.clone();
 
-    let app = Application::with_platform(platform)
-        // Serve project icons + gpui-component's embedded icons so `svg().path()`
-        // resolves both.
-        .with_assets(AppAssets);
+    let app = Application::with_platform(platform).with_assets(AppAssets);
 
     // Installed on the builder because the handler lives on the platform, which
     // only the builder owns; the app context handed to `run` cannot reach it.
     app.on_reopen(reopen_after_last_window_closed);
 
     app.run(move |cx: &mut App| {
-        profiling::initialize(cx);
-
-        // Initialize gpui-component (theme, root, component globals) before any
-        // component renders. Themes without `[colors.ui]` retain the dark default.
-        init_components(cx);
-
-        // An update is performed by the instance it replaces, so this
-        // startup is where the files that instance renamed aside are
-        // finally removable and where a package file it was too old to know
-        // about gets installed. Syntax highlighting loads one of those
-        // files, which is why this runs before it rather than beside the
-        // rest of the update setup below.
-        #[cfg(windows)]
-        update::settle_previous_update();
-
-        if let Err(error) = syntax::register_languages() {
-            warn!("syntax highlighting is limited to built-in languages: {error}");
-        }
-
-        ui::apply_ui_theme(get().ui_theme.as_ref(), cx);
-
-        let notification = &mut ComponentTheme::global_mut(cx).notification;
-
-        notification.placement = Anchor::TopCenter;
-        notification.margins.top = px(16.);
-
-        cx.set_global(AppSettings::load());
-
-        ui::install_terminal_settings(cx);
-
-        ui::install_agent_settings(cx);
-
-        let agent_profiles = cx
-            .global::<AppSettings>()
-            .config()
-            .agent_profiles
-            .list
-            .clone();
-
-        agent_updates::initialize(testing, &agent_profiles, cx);
-
-        input_history::initialize(testing, cx);
-
-        #[cfg(windows)]
-        update::initialize(testing, cx);
-
-        #[cfg(target_os = "macos")]
-        sparkle::initialize(testing, cx);
-
-        // Bring up the remote host service if it was left enabled. Runs on
-        // its own runtime thread; failures only log.
-        #[cfg(windows)]
-        remote::reconcile(&nmt_config::get().remote_session);
-
-        ui::apply_window_translucency(cx);
-
-        // Terminal and agent scrolling are their own elements carrying
-        // their own switch; this one covers every container that scrolls
-        // through a plain scroll handle, which is the rest of the app.
-        let enable_smooth_scrolling = cx
-            .global::<AppSettings>()
-            .config()
-            .appearance
-            .smooth_scrolling
-            .panels_enabled();
-
-        cx.set_smooth_wheel_scrolling(enable_smooth_scrolling);
-
-        // The platform remembers the choice and applies it to the vsync
-        // thread when that spawns (after this closure returns).
-        #[cfg(windows)]
-        if cx
-            .global::<AppSettings>()
-            .config()
-            .system
-            .prioritize_ui_threads
-        {
-            platform_handle.set_ui_thread_priority(true);
-        }
-
-        #[cfg(windows)]
-        cx.set_global(PlatformHandle(platform_handle));
-
-        // Keep live behavior in sync on any settings change. Persistence is
-        // deferred to when the settings dialog closes (see Shell::on_show_settings).
-        cx.observe_global::<AppSettings>(on_settings_changed)
-            .detach();
-
-        keymap::bind(cx);
-
-        // The bar shows each command's shortcut, so it is built once the
-        // bindings above are registered.
-        #[cfg(target_os = "macos")]
-        menu::install(cx);
-
-        // Restore local state; first run centers and starts one default tab.
-        let remembered_state = startup_files.remembered_state.clone();
-
-        let restore_last_session_when_opening = cx
-            .global::<AppSettings>()
-            .config()
-            .system
-            .restore_last_session_when_opening;
-
-        let mut initials: Vec<AppWindow> = if restore_last_session_when_opening {
-            remembered_state
-                .windows
-                .iter()
-                .map(|w| AppWindow::from_local_state(w, true))
-                .collect()
-        } else {
-            // Restore disabled: one window, first remembered geometry.
-            let first = remembered_state
-                .windows
-                .first()
-                .cloned()
-                .unwrap_or_default();
-
-            vec![AppWindow::from_local_state(&first, false)]
-        };
-
-        if initials.is_empty() {
-            initials.push(AppWindow {
-                bounds: None,
-                session: None,
-                sidebar_width: None,
-                initial_cwd: None,
-            });
-        }
-
-        // Restore disabled with saved sessions: rewrite the file without
-        // them now, so a crash before quit can't resurrect them.
-        if !restore_last_session_when_opening
-            && remembered_state.windows.iter().any(|w| w.session.is_some())
-        {
-            let windows: Vec<_> = initials.iter().map(|w| w.to_local_state(false)).collect();
-
-            if let Err(err) = local_state::save_windows(&windows) {
-                warn!("failed to clear sessions from local_state.toml: {err}");
-            }
-        }
-
-        cx.set_global(WindowRegistry(Vec::new()));
-
-        cx.set_global(ShellRegistry(Vec::new()));
-
-        cx.set_global(LastActiveWindow(None));
-
-        cx.set_global::<AgentThreadDefaults>(thread_settings_from_defaults(
-            &remembered_state.agent_defaults,
-        ));
-
-        // A closed window is discarded — except the last one, whose
-        // geometry and session the quit hook still has to write out. On
-        // Windows that quit is immediate; on macOS the process stays alive,
-        // and `reopen_after_last_window_closed` consumes the entry if the
-        // user comes back through the Dock first.
-        cx.on_window_closed(on_window_closed).detach();
-
-        cx.on_app_quit(on_app_quit).detach();
-
-        for initial in initials {
-            AppWindow::open(cx, initial);
-        }
-
-        agent_updates::schedule_automatic_checks(cx);
-
-        #[cfg(windows)]
-        update::schedule_automatic_checks(cx);
-
-        // Apply CLI actions (argv + forwarded over the IPC pipe) on the
-        // foreground; windows above exist before the first poll.
-        cx.spawn(async move |cx| {
-            while let Some(action) = cli_rx.next().await {
-                cx.update(|cx| match action {
-                    ipc::IpcAction::Cli(action) => on_ipc_cli(action, cx),
-                    ipc::IpcAction::Agent(event) => on_ipc_agent_hook(event, cx),
-                });
-            }
-        })
-        .detach();
-
-        cx.activate(true);
+        on_finish_launching(
+            cx,
+            testing,
+            #[cfg(windows)]
+            platform_handle,
+            cli_rx,
+        )
     });
 }
 
-fn parse_startup_args_from<I, T>(args: I) -> StartupArgs
-where
-    I: IntoIterator<Item = T>,
-    T: Into<OsString>,
-{
-    let args = args.into_iter().map(Into::<OsString>::into);
+fn parse_startup_args() -> StartupArgs {
+    let args = env::args_os();
 
     let matches = ClapCommand::new("NiumaTerm")
         .disable_help_flag(true)
@@ -444,8 +271,8 @@ where
 
     StartupArgs {
         testing: matches.get_flag("testing"),
-        profiling: matches.get_flag("enable-profiling"),
-        await_exit: matches.get_one::<u32>("await-exit").copied(),
+        enable_profiling: matches.get_flag("enable-profiling"),
+        previous_instance_pid: matches.get_one::<u32>("await-exit").copied(),
         url: matches
             .get_one::<String>("url")
             .cloned()
@@ -462,6 +289,170 @@ where
     }
 }
 
+fn on_finish_launching(
+    cx: &mut App,
+    is_testing: bool,
+    #[cfg(windows)] platform: Rc<Platform>,
+    mut cli_rx: UnboundedReceiver<IpcAction>,
+) {
+    profiling::initialize(cx);
+
+    // Foreground code awaits network work through this bridge. It is handed
+    // the process-wide runtime the backends already run on, because a runtime
+    // of its own would be a second reactor and thread pool for the same kind
+    // of work.
+    gpui_tokio::init_from_handle(cx, nmt_platform::runtime().clone());
+
+    // Initialize gpui-component (theme, root, component globals) before any
+    // component renders. Themes without `[colors.ui]` retain the dark default.
+    gpui_component::init(cx);
+
+    // An update is performed by the instance it replaces, so this
+    // startup is where the files that instance renamed aside are
+    // finally removable and where a package file it was too old to know
+    // about gets installed. Syntax highlighting loads one of those
+    // files, which is why this runs before it rather than beside the
+    // rest of the update setup below.
+    #[cfg(windows)]
+    settle_previous_update(&nmt_config::config_dir_path(), &utils::get_exe_dir());
+
+    if let Err(error) = syntax::register_languages() {
+        warn!("syntax highlighting is limited to built-in languages: {error}");
+    }
+
+    ui::apply_ui_theme(get().ui_theme.as_ref(), cx);
+
+    let notification = &mut ComponentTheme::global_mut(cx).notification;
+
+    notification.placement = Anchor::TopCenter;
+    notification.margins.top = px(16.);
+
+    cx.set_global(AppSettings::load());
+
+    ui::install_terminal_settings(cx);
+
+    ui::install_agent_settings(cx);
+
+    let agent_profiles = cx
+        .global::<AppSettings>()
+        .config()
+        .agent_profiles
+        .list
+        .clone();
+
+    agent_updates::initialize(is_testing, &agent_profiles, cx);
+
+    input_history::initialize(is_testing, cx);
+
+    #[cfg(any(windows, target_os = "macos"))]
+    update::initialize(is_testing, cx);
+
+    ui::remote::initialize(cx);
+
+    // The platform remembers the choice and applies it to the vsync
+    // thread when that spawns (after this closure returns).
+    #[cfg(windows)]
+    if cx
+        .global::<AppSettings>()
+        .config()
+        .system
+        .prioritize_ui_threads
+    {
+        platform.set_ui_thread_priority(true);
+    }
+
+    #[cfg(windows)]
+    cx.set_global(PlatformHandle(platform));
+
+    // Keep live behavior in sync on any settings change. Persistence is
+    // deferred until the settings dialog closes.
+    cx.observe_global::<AppSettings>(on_settings_changed)
+        .detach();
+
+    // A closed window is discarded — except the last one, whose
+    // geometry and session the quit hook still has to write out. On
+    // Windows that quit is immediate; on macOS the process stays alive,
+    // and `reopen_after_last_window_closed` consumes the entry if the
+    // user comes back through the Dock first.
+    cx.on_window_closed(on_window_closed).detach();
+    cx.on_app_quit(on_app_quit).detach();
+
+    keymap::bind(cx);
+
+    // The bar shows each command's shortcut, so it is built once the
+    // bindings above are registered.
+    #[cfg(target_os = "macos")]
+    macos_menu::install(cx);
+
+    let remembered_state = local_state::try_load().unwrap_or_else(|err| {
+        startup_error_and_exit("local_state.toml", &err.to_string());
+    });
+
+    let restore_last_session_when_opening = cx
+        .global::<AppSettings>()
+        .config()
+        .system
+        .restore_last_session_when_opening;
+
+    let clear_saved_sessions = !restore_last_session_when_opening
+        && remembered_state.windows.iter().any(|w| w.session.is_some());
+
+    install_reported_controls(remembered_state.agent_controls, cx);
+
+    let mut initials = remembered_state.windows;
+
+    if !restore_last_session_when_opening {
+        // Restore disabled: one window, first remembered geometry.
+        initials.truncate(1);
+
+        if let Some(first) = initials.first_mut() {
+            first.session = None;
+        }
+    }
+
+    if initials.is_empty() {
+        initials.push(WindowLocalState::default());
+    }
+
+    // Restore disabled with saved sessions: rewrite the file without
+    // them now, so a crash before quit can't resurrect them.
+    if clear_saved_sessions && let Err(err) = local_state::save_windows(&initials) {
+        warn!("failed to clear sessions from local_state.toml: {err}");
+    }
+
+    cx.set_global(WindowRegistry::default());
+    cx.set_global(LastActiveWindow(None));
+
+    // The callback needs the service globals and window registry. Applying
+    // settings before opening windows also configures their first frame.
+    on_settings_changed(cx);
+
+    for initial in initials {
+        open_window(cx, initial, None);
+    }
+
+    ui::remote::tabs_restored(cx);
+
+    agent_updates::schedule_automatic_checks(cx);
+
+    #[cfg(windows)]
+    update::schedule_automatic_checks(cx);
+
+    // Apply CLI actions (argv + forwarded over the IPC pipe) on the
+    // foreground; windows above exist before the first poll.
+    cx.spawn(async move |cx| {
+        while let Some(action) = cli_rx.next().await {
+            cx.update(|cx| match action {
+                ipc::IpcAction::Cli(action) => on_ipc_cli(action, cx),
+                ipc::IpcAction::Agent(event) => on_ipc_agent_hook(event, cx),
+            });
+        }
+    })
+    .detach();
+
+    cx.activate(true);
+}
+
 fn on_settings_changed(cx: &mut App) {
     let agent_profiles = cx
         .global::<AppSettings>()
@@ -472,12 +463,20 @@ fn on_settings_changed(cx: &mut App) {
 
     agent_updates::reconcile_profiles(&agent_profiles, cx);
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     update::on_settings_changed(cx);
 
-    #[cfg(target_os = "macos")]
-    sparkle::on_settings_changed(cx);
+    // Before hosting syncs, so a relay link it opens uses the new proxy.
+    let system = &cx.global::<AppSettings>().config().system;
 
+    set_proxy(system.proxy, &system.proxy_url);
+
+    ui::remote::sync_hosting(cx);
+    ui::remote::sync_lan_browse(cx);
+
+    // Terminal and agent scrolling are their own elements carrying
+    // their own switch; this one covers every container that scrolls
+    // through a plain scroll handle, which is the rest of the app.
     let enable_smooth_scrolling = cx
         .global::<AppSettings>()
         .config()
@@ -509,15 +508,15 @@ fn on_settings_changed(cx: &mut App) {
         // AppKit holds the strings the bar was built from, so it
         // keeps the previous language until it is rebuilt.
         #[cfg(target_os = "macos")]
-        menu::refresh(cx);
+        macos_menu::refresh(cx);
     }
 
     let background = ui::window_background_appearance(cx);
     let appearance = selected_window_appearance(cx);
 
     let handles: Vec<_> = cx
-        .global::<ShellRegistry>()
-        .0
+        .global::<WindowRegistry>()
+        .windows()
         .iter()
         .map(|entry| entry.handle)
         .collect();
@@ -540,11 +539,7 @@ fn on_settings_changed(cx: &mut App) {
 }
 
 fn on_window_closed(cx: &mut App, window_id: WindowId) {
-    if cx.any_window_keeps_app_alive() {
-        cx.global_mut::<WindowRegistry>().remove(window_id);
-    }
-
-    cx.global_mut::<ShellRegistry>().remove(window_id);
+    cx.global_mut::<WindowRegistry>().close(window_id);
 
     let last_active = cx.global_mut::<LastActiveWindow>();
 
@@ -553,18 +548,20 @@ fn on_window_closed(cx: &mut App, window_id: WindowId) {
     }
 }
 
-fn on_app_quit(cx: &mut App) -> Ready<()> {
-    if let Err(error) = input_history::flush(cx) {
-        warn!("failed to flush Agent input history: {error}");
-    }
+fn on_app_quit(cx: &mut App) -> impl Future<Output = ()> + use<> {
+    let history_flushed = input_history::flush(cx);
 
     // Settings edits live in the global until something writes
     // them out. Closing the settings surface does that, and so
     // does quitting with it still open.
-    if cx.global::<AppSettings>().should_save_on_exit()
-        && let Err(error) = cx.global::<AppSettings>().save()
-    {
-        warn!("failed to save settings on application shutdown: {error}");
+    if cx.global::<AppSettings>().should_save_on_exit() {
+        let settings = cx.global::<AppSettings>().clone();
+
+        utils::background_write(cx, move || {
+            if let Err(error) = settings.save() {
+                warn!("failed to save settings on application shutdown: {error}");
+            }
+        });
     }
 
     let restore_last_session_when_opening = cx
@@ -573,35 +570,48 @@ fn on_app_quit(cx: &mut App) -> Ready<()> {
         .system
         .restore_last_session_when_opening;
 
-    let windows: Vec<_> = cx
+    // Refresh each open window's session first: an agent tab's remembered
+    // thread controls change without notifying its window.
+    let views: Vec<_> = cx
         .global::<WindowRegistry>()
-        .0
+        .windows()
         .iter()
-        .map(|(_, w)| w.to_local_state(restore_last_session_when_opening))
+        .map(|entry| entry.view.clone())
         .collect();
 
-    if !windows.is_empty()
-        && let Err(err) = local_state::save_windows(&windows)
-    {
-        warn!("failed to save local_state.toml: {err}");
+    for view in views {
+        let _ = view.update(cx, |window, cx| window.sync_session_memory(cx));
     }
 
-    ready(())
-}
+    let states = cx.global::<WindowRegistry>().states();
 
-fn load_startup_files_or_exit() -> StartupFiles {
-    let config = Config::load_for_startup_from(&config_file_path(), &config_dir_path())
-        .unwrap_or_else(|err| {
-            startup_error_and_exit("config.toml", &err.to_string());
-        });
+    let windows: Vec<_> = if restore_last_session_when_opening {
+        states.cloned().collect()
+    } else {
+        states
+            .map(|state| WindowLocalState {
+                window: state.window.clone(),
+                session: None,
+                sidebar_width: state.sidebar_width,
+            })
+            .collect()
+    };
 
-    init(config);
-
-    let remembered_state = local_state::try_load().unwrap_or_else(|err| {
-        startup_error_and_exit("local_state.toml", &err.to_string());
+    let saved = utils::background_write_reply(cx, move || {
+        if !windows.is_empty()
+            && let Err(err) = local_state::save_windows(&windows)
+        {
+            warn!("failed to save local_state.toml: {err}");
+        }
     });
 
-    StartupFiles { remembered_state }
+    async move {
+        saved.await;
+
+        if let Err(error) = history_flushed.await {
+            warn!("failed to flush Agent input history: {error}");
+        }
+    }
 }
 
 fn startup_error_and_exit(file: &str, error: &str) -> ! {
@@ -614,20 +624,20 @@ pub(crate) fn show_startup_error_dialog(message: &str) {
     show_error_dialog(&t!("startup-configuration-error"), message);
 }
 
-/// The most recently active window's shell, falling back to the newest open
+/// The most recently active window's view, falling back to the newest open
 /// window when none was activated yet (or the active one just closed).
-fn get_last_active_shell(cx: &App) -> Option<(AnyWindowHandle, WeakEntity<ui::Shell>)> {
-    let registry = cx.global::<ShellRegistry>();
+pub(crate) fn last_active_window(cx: &App) -> Option<(AnyWindowHandle, WeakEntity<AppWindow>)> {
+    let registry = cx.global::<WindowRegistry>();
     let last = cx.global::<LastActiveWindow>().0;
 
     registry
         .prioritized(last)
         .next()
-        .map(|entry| (entry.handle, entry.shell.clone()))
+        .map(|entry| (entry.handle, entry.view.clone()))
 }
 
 fn foreground_last_active(cx: &mut App) {
-    if let Some((handle, _)) = get_last_active_shell(cx) {
+    if let Some((handle, _)) = last_active_window(cx) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
     }
 }
@@ -640,11 +650,9 @@ fn foreground_last_active(cx: &mut App) {
 /// AppKit also asks when every window is merely minimized or hidden, so an
 /// existing window is brought forward rather than joined by a second one.
 fn reopen_after_last_window_closed(cx: &mut App) {
-    // The shell registry, not GPUI's window list: the menu layer builds one
-    // popup window and reuses it for the life of the process, so GPUI always
-    // has a window even when the last terminal window is gone. The registry
-    // holds exactly the terminal windows and is pruned as each one closes.
-    if cx.global::<ShellRegistry>().0.is_empty() {
+    // Menu popups outlive terminal windows, so reopening depends on the
+    // registry's open entries rather than GPUI's complete window list.
+    if cx.global::<WindowRegistry>().windows().is_empty() {
         open_window_without_a_source(cx);
     } else {
         foreground_last_active(cx);
@@ -654,46 +662,31 @@ fn reopen_after_last_window_closed(cx: &mut App) {
 /// Open a window for a command that has no window to open one from: the Dock
 /// answer above, and `NewWindow` when no focused window is there to handle it.
 ///
-/// Closing the last window leaves its registry entry behind so the quit hook
-/// can still write out its geometry. With no shell left, that entry is the
-/// stale one, and consuming it both reopens where the user left off and keeps
-/// the new window from being recorded beside an entry whose window no longer
-/// exists, which would otherwise restore two windows on the next launch. While
-/// a window is still open — minimized, and so unfocused — every entry belongs
-/// to a live window, and a default window is opened instead.
+/// The registry retains the last closed window's state until a window opens.
+/// Consuming it here restores where the user left off without saving the old
+/// state beside the replacement. An existing, unfocused window has no retained
+/// state, so the new window uses defaults.
 pub(crate) fn open_window_without_a_source(cx: &mut App) {
-    let mut initial = AppWindow {
-        bounds: None,
-        session: None,
-        sidebar_width: None,
-        initial_cwd: None,
-    };
+    let mut initial = cx
+        .global_mut::<WindowRegistry>()
+        .take_last_closed()
+        .unwrap_or_default();
 
-    if cx.global::<ShellRegistry>().0.is_empty()
-        && let Some((_, remembered)) = mem::take(&mut cx.global_mut::<WindowRegistry>().0)
-            .into_iter()
-            .next()
+    if !cx
+        .global::<AppSettings>()
+        .config()
+        .system
+        .restore_last_session_when_opening
     {
-        initial.bounds = remembered.bounds;
-        initial.sidebar_width = remembered.sidebar_width;
-
-        if cx
-            .global::<AppSettings>()
-            .config()
-            .system
-            .restore_last_session_when_opening
-        {
-            initial.session = remembered.session;
-        }
+        initial.session = None;
     }
 
-    AppWindow::open(cx, initial);
+    open_window(cx, initial, None);
 }
 
 /// Apply one `nmt://` action: validate the target
-/// directory, then reuse an exact workspace, open it as a tab in the
-/// best-matching workspace, or create a new window. Invalid targets only bring
-/// the app forward.
+/// directory, then focus a terminal there or open one in a matching workspace
+/// or a new window. Invalid targets only bring the app forward.
 fn on_ipc_cli(action: CliAction, cx: &mut App) {
     match action {
         CliAction::FocusNotification {
@@ -706,29 +699,46 @@ fn on_ipc_cli(action: CliAction, cx: &mut App) {
                 return;
             };
 
-            // Prefer an exact-path workspace across all windows. The most
-            // recently active window wins when duplicates already exist;
+            // Existing terminals take priority over workspace roots. The most
+            // recently active window wins when multiple terminals match;
             // remaining windows are checked newest first.
             let last = cx.global::<LastActiveWindow>().0;
-            let registry = cx.global::<ShellRegistry>();
+            let registry = cx.global::<WindowRegistry>();
 
             let targets: Vec<_> = registry
                 .prioritized(last)
-                .map(|entry| (entry.handle, entry.shell.clone()))
+                .map(|entry| (entry.handle, entry.view.clone()))
                 .collect();
 
-            for (handle, shell) in targets {
+            for (handle, app_window) in &targets {
+                let focused = handle
+                    .update(cx, |_, window, cx| {
+                        app_window
+                            .update(cx, |app_window, cx| {
+                                app_window.focus_dir_tab(&path, window, cx)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+                if focused {
+                    return;
+                }
+            }
+
+            for (handle, app_window) in targets {
                 let activated = handle
                     .update(cx, |_, window, cx| {
-                        shell
-                            .update(cx, |shell, cx| {
-                                if workspace::exact_match(&shell.workspaces.summaries(), &path)
+                        app_window
+                            .update(cx, |app_window, cx| {
+                                if workspace::exact_match(&app_window.workspaces.summaries(), &path)
                                     .is_none()
                                 {
                                     return false;
                                 }
 
-                                shell.open_dir_tab(&path, window, cx);
+                                app_window.open_dir_tab(&path, window, cx);
+                                window.activate_window();
 
                                 true
                             })
@@ -742,15 +752,17 @@ fn on_ipc_cli(action: CliAction, cx: &mut App) {
             }
 
             // No live window (all closed mid-dispatch): degrade to new_window.
-            let Some((handle, shell)) = get_last_active_shell(cx) else {
+            let Some((handle, app_window)) = last_active_window(cx) else {
                 open_window_at(&path, cx);
 
                 return;
             };
 
             let opened = handle.update(cx, |_, window, cx| {
-                let ok = shell
-                    .update(cx, |shell, cx| shell.open_dir_tab(&path, window, cx))
+                let ok = app_window
+                    .update(cx, |app_window, cx| {
+                        app_window.open_dir_tab(&path, window, cx)
+                    })
                     .is_ok();
 
                 if ok {
@@ -790,14 +802,12 @@ fn openable_directory(path: path::PathBuf, cx: &mut App) -> Option<path::PathBuf
 }
 
 fn on_ipc_focus_notification(route: &AgentRoute, notification_id: &str, cx: &mut App) {
-    let focused = ShellRegistry::dispatch(cx, |entry, cx| {
-        entry
-            .handle
+    let focused = WindowRegistry::dispatch(cx, |handle, app_window, cx| {
+        handle
             .update(cx, |_, window, cx| {
-                entry
-                    .shell
-                    .update(cx, |shell, cx| {
-                        shell.focus_notification(route, notification_id, window, cx)
+                app_window
+                    .update(cx, |app_window, cx| {
+                        app_window.focus_notification(route, notification_id, window, cx)
                     })
                     .unwrap_or(false)
             })
@@ -816,10 +826,11 @@ fn on_ipc_agent_hook(event: AgentEvent, cx: &mut App) {
         return;
     }
 
-    if ShellRegistry::dispatch(cx, |entry, cx| {
-        entry
-            .shell
-            .update(cx, |shell, cx| shell.on_agent_event(event.clone(), cx))
+    if WindowRegistry::dispatch(cx, |_, app_window, cx| {
+        app_window
+            .update(cx, |app_window, cx| {
+                app_window.on_agent_event(event.clone(), cx)
+            })
             .unwrap_or(false)
     }) {
         return;
@@ -831,13 +842,9 @@ fn on_ipc_agent_hook(event: AgentEvent, cx: &mut App) {
 /// CLI `new_window`: a fresh window (default geometry) whose single
 /// workspace is rooted at `path`.
 fn open_window_at(path: &path::Path, cx: &mut App) {
-    AppWindow::open(
+    open_window(
         cx,
-        AppWindow {
-            bounds: None,
-            session: None,
-            sidebar_width: None,
-            initial_cwd: Some(path.display().to_string()),
-        },
+        WindowLocalState::default(),
+        Some(path.display().to_string()),
     );
 }

@@ -46,3 +46,21 @@ updates/public/appcast.xml
 updates/public/windows/
 
 AGENTS.local.md
+
+# Local secrets for `wrangler dev`; never committed.
+.dev.vars
+
+.scratch
+mobile/ios/DerivedData
+# Archives and exports from scripts/ios-testflight.sh.
+mobile/ios/build
+
+# Per-developer signing (team ID, bundle ID); see mobile/ios/Config/Signing.xcconfig.
+mobile/ios/Config/Local.xcconfig
+
+# Xcode per-user state: window layout, breakpoints, scheme choices.
+xcuserdata/
+
+# Schemes Xcode writes when it opens the XcodeGen project. project.yml
+# declares no schemes, and xcodebuild creates the default ones on demand.
+mobile/ios/NiumaTerm.xcodeproj/xcshareddata/

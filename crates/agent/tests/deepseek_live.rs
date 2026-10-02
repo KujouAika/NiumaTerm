@@ -3,6 +3,7 @@
 //! Ignored by default: it starts `dsh`, spends a model call, and therefore
 //! needs both a resolvable installation and a working credential. Run it with
 //! `cargo test -p nmt_agent --test deepseek_live -- --ignored --nocapture`.
+//! Set `NMT_DSH_TEST_LAUNCHER` to `pnpm-dlx` or `npx` for package launchers.
 
 #![cfg(target_os = "windows")]
 
@@ -13,7 +14,9 @@ use std::{env, fs};
 
 use nmt_agent::chat::{Event, Item, SendOutcome, SlashCommandOutcome};
 use nmt_agent::dsh::{Host, Session};
+use nmt_agent::profile::agent_launch;
 use nmt_agent::{AgentWorkspace, LaunchConfig};
+use nmt_profile::{AgentKind, AgentProfile, AgentProfileLauncher};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -36,10 +39,22 @@ const LONG_PROMPT: &str =
     "Count from 1 to 400, one number per line, with a short remark on each. Do not stop early.";
 
 fn launch() -> LaunchConfig {
-    LaunchConfig {
+    let launcher = match env::var("NMT_DSH_TEST_LAUNCHER")
+        .as_deref()
+        .unwrap_or("custom")
+    {
+        "custom" => AgentProfileLauncher::Custom,
+        "pnpm-dlx" => AgentProfileLauncher::PnpmDlx,
+        "npx" => AgentProfileLauncher::Npx,
+        other => panic!("unsupported test launcher: {other}"),
+    };
+
+    agent_launch(&AgentProfile {
+        kind: AgentKind::DeepSeek,
         executable: "dsh".to_string(),
-        ..LaunchConfig::default()
-    }
+        launcher,
+        ..AgentProfile::default()
+    })
 }
 
 /// Drain events until `stop` accepts one, or the deadline passes. Returns every
@@ -95,16 +110,220 @@ fn item_text(item: &Item) -> &str {
 }
 
 #[test]
+#[ignore = "requires the local provider runner"]
+fn a_steered_message_is_consumed_without_another_submission() {
+    assert!(env::var("DEEPSEEK_BASE_URL").is_ok_and(|url| url.starts_with("http://127.0.0.1:")));
+
+    let (tx, frames) = channel();
+
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .unwrap();
+
+    session
+        .send_user_message("queue-probe first", &[])
+        .assert_started_a_turn();
+
+    let (before, started) = collect_until(
+        &mut session,
+        &frames,
+        Duration::from_secs(30),
+        |event| matches!(event, Event::ItemStarted(Item::UserMessage { text: Some(text) }) if text == "queue-probe first"),
+    );
+
+    assert!(started, "the first prompt was not consumed: {before:?}");
+
+    assert_eq!(
+        session.send_user_message("queue-probe second", &[]),
+        SendOutcome::Steered
+    );
+
+    let (after, ended) = collect_until(&mut session, &frames, Duration::from_secs(30), |event| {
+        matches!(event, Event::TurnCompleted { .. })
+    });
+
+    assert!(ended, "the steered turn did not complete: {after:?}");
+    assert!(
+        after.iter().any(|event| matches!(event,
+            Event::ItemCompleted(Item::AgentMessage { text: Some(text), .. })
+                if text.contains("queue-probe consumed"))),
+        "steering was not consumed: {after:?}"
+    );
+    assert!(
+        after
+            .iter()
+            .any(|event| matches!(event, Event::QueuedPrompts(prompts) if prompts.is_empty()))
+    );
+}
+
+/// The profile is a JSON copy of one persisted agent profile entry. Its normal
+/// deserializer reads encrypted credentials without printing them to the log.
+#[test]
+#[ignore = "requires NMT_DSH_TEST_PROFILE_PATH and spends real model calls"]
+fn a_configured_profile_consumes_steering_without_resubmission() {
+    let profile_path =
+        env::var_os("NMT_DSH_TEST_PROFILE_PATH").expect("provide a persisted profile JSON path");
+
+    let profile: AgentProfile = serde_json::from_slice(&fs::read(profile_path).unwrap()).unwrap();
+
+    assert_eq!(profile.kind, AgentKind::DeepSeek);
+
+    let isolated = TempDir::new().unwrap();
+    let workspace = isolated.path().join("workspace");
+
+    fs::create_dir(&workspace).unwrap();
+
+    let mut launch = agent_launch(&profile);
+
+    launch
+        .env
+        .retain(|(name, _)| !name.eq_ignore_ascii_case("DSH_HOME"));
+
+    launch.env.push((
+        "DSH_HOME".into(),
+        isolated.path().join("home").display().to_string(),
+    ));
+
+    let (tx, frames) = channel();
+
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch,
+            &AgentWorkspace::single(Some(workspace.display().to_string())),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .unwrap();
+
+    let (_, ready) = collect_until(
+        &mut session,
+        &frames,
+        Duration::from_secs(30),
+        |event| matches!(event, Event::Ready(settings) if settings.model == launch.model),
+    );
+
+    assert!(ready, "the configured model was not selected");
+
+    println!("profile={} model={}", profile.name, profile.model);
+
+    let first = "Do not use tools or inspect files. Count from 1 to 60, one number per line, with a short sentence about each number. If a later user message arrives, follow it instead.";
+
+    session
+        .send_user_message(first, &[])
+        .assert_started_a_turn();
+
+    let (_, consumed) = collect_until(
+        &mut session,
+        &frames,
+        Duration::from_secs(30),
+        |event| matches!(event, Event::ItemStarted(Item::UserMessage { text: Some(text) }) if text == first),
+    );
+
+    assert!(consumed, "the first prompt was not consumed");
+
+    // Leave time for the first model request to begin before adding its correction.
+    let _ = collect_until(&mut session, &frames, Duration::from_secs(1), |_| false);
+
+    assert!(
+        session.has_active_operation(),
+        "the first turn ended before steering"
+    );
+
+    let marker = format!("NMT_QUEUE_OK_{}", Uuid::new_v4().simple());
+
+    let queued =
+        format!("Stop counting. Do not use tools or inspect files. Reply with exactly: {marker}");
+
+    let started = Instant::now();
+
+    assert_eq!(
+        session.send_user_message(&queued, &[]),
+        SendOutcome::Steered
+    );
+
+    println!("steered while the first turn was active");
+
+    let mut queued_seen = false;
+    let mut latest_queue_empty = false;
+    let mut user_echo = false;
+    let mut model_replied = false;
+    let mut turn_ends = 0;
+    let mut turn_running = true;
+
+    let (_, finished) = collect_until(&mut session, &frames, Duration::from_secs(180), |event| {
+        match event {
+            Event::QueuedPrompts(prompts) => {
+                queued_seen |= prompts.iter().any(|prompt| prompt.text == queued);
+                latest_queue_empty = prompts.is_empty();
+
+                println!(
+                    "+{:.1}s pending={}",
+                    started.elapsed().as_secs_f32(),
+                    prompts.len()
+                );
+            }
+            Event::ItemStarted(Item::UserMessage { text: Some(text) }) if text == &queued => {
+                user_echo = true;
+
+                println!(
+                    "+{:.1}s queued prompt consumed",
+                    started.elapsed().as_secs_f32()
+                );
+            }
+            Event::ItemCompleted(Item::AgentMessage {
+                text: Some(text), ..
+            }) => {
+                model_replied |= text.contains(&marker);
+
+                println!(
+                    "+{:.1}s assistant completed marker={model_replied}",
+                    started.elapsed().as_secs_f32()
+                );
+            }
+            Event::TurnCompleted { error } => {
+                assert!(error.is_none(), "the turn failed: {error:?}");
+
+                turn_ends += 1;
+                turn_running = false;
+                println!("+{:.1}s turn ended", started.elapsed().as_secs_f32());
+            }
+            Event::TurnStarted => turn_running = true,
+            Event::Error { message, .. } => panic!("the provider failed: {message}"),
+            _ => {}
+        }
+
+        user_echo && model_replied && latest_queue_empty && !turn_running
+    });
+
+    assert!(
+        finished,
+        "queued_seen={queued_seen} user_echo={user_echo} model_replied={model_replied} queue_empty={latest_queue_empty} turn_ends={turn_ends}"
+    );
+    assert!(!session.has_active_operation());
+}
+
+#[test]
 #[ignore = "starts a real harness host and spends a model call"]
 fn a_turn_streams_and_survives_being_stopped() {
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .expect("the harness host should start and open a conversation");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the harness host should start and open a conversation");
 
-    assert!(session.host_is_running());
     assert!(session.session_id().is_some());
 
     session
@@ -163,7 +382,6 @@ fn a_turn_streams_and_survives_being_stopped() {
         !session.has_active_operation(),
         "the turn should have ended"
     );
-    assert!(session.host_is_running(), "the host outlives its turns");
 
     let id = session.session_id().unwrap().to_string();
 
@@ -208,7 +426,9 @@ fn a_turn_streams_and_survives_being_stopped() {
 #[test]
 #[ignore = "starts a real harness host"]
 fn the_host_serves_whether_or_not_it_knows_the_no_browser_flag() {
-    let host = Host::start(&launch()).expect("the installed harness should serve");
+    let host = nmt_platform::runtime()
+        .block_on(Host::start(&launch()))
+        .expect("the installed harness should serve");
 
     assert!(host.is_running());
 }
@@ -218,12 +438,16 @@ fn the_host_serves_whether_or_not_it_knows_the_no_browser_flag() {
 fn a_session_opens_and_receives_its_preset_catalog() {
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .expect("the harness should create a conversation through its local API");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the harness should create a conversation through its local API");
 
-    assert!(session.host_is_running());
     assert!(session.session_id().is_some());
 
     let (seen, received) = collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
@@ -241,17 +465,27 @@ fn a_session_opens_and_receives_its_preset_catalog() {
 fn two_sessions_share_one_host_and_do_not_see_each_other() {
     let (first_tx, first_frames) = channel();
 
-    let mut first = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = first_tx.send(frame);
-    })
-    .expect("the first conversation should open");
+    let mut first = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = first_tx.send(frame);
+            },
+        ))
+        .expect("the first conversation should open");
 
     let (second_tx, second_frames) = channel();
 
-    let mut second = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = second_tx.send(frame);
-    })
-    .expect("the second conversation should reuse the running host");
+    let mut second = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = second_tx.send(frame);
+            },
+        ))
+        .expect("the second conversation should reuse the running host");
 
     assert_ne!(first.session_id(), second.session_id());
 
@@ -293,10 +527,15 @@ fn an_approval_is_raised_answered_and_the_turn_continues() {
 
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .expect("the harness host should start and open a conversation");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the harness host should start and open a conversation");
 
     // Writing outside the workspace is denied under the default sandbox, and
     // the model escalates, which is what raises the approval.
@@ -382,14 +621,15 @@ fn a_real_turn_shows_its_commands_and_file_changes() {
 
     let (tx, frames) = channel();
 
-    let mut session = Session::create(
-        &launch(),
-        &AgentWorkspace::single(Some(workspace.display().to_string())),
-        move |frame| {
-            let _ = tx.send(frame);
-        },
-    )
-    .expect("the harness host should start and open a conversation");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::single(Some(workspace.display().to_string())),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the harness host should start and open a conversation");
 
     session
         .send_user_message(
@@ -504,10 +744,15 @@ fn a_profile_pinning_an_unserved_effort_is_told_rather_than_ignored() {
 
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch, &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .expect("the harness host should start and open a conversation");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch,
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the harness host should start and open a conversation");
 
     let (seen, refused) = collect_until(&mut session, &frames, Duration::from_secs(60), |e| {
         matches!(e, Event::EffortRejected { .. })
@@ -534,10 +779,15 @@ fn a_profile_pinning_an_unserved_effort_is_told_rather_than_ignored() {
 fn the_agent_preset_roster_reaches_the_picker() {
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .expect("the harness host should start and open a conversation");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the harness host should start and open a conversation");
 
     let (seen, listed) = collect_until(&mut session, &frames, Duration::from_secs(60), |e| {
         matches!(e, Event::AgentPresets { .. })
@@ -575,10 +825,15 @@ fn the_agent_preset_roster_reaches_the_picker() {
 fn a_question_is_answered_and_the_turn_continues() {
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch(), &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .unwrap();
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch(),
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .unwrap();
 
     session.send_user_message("Ask the protocol-probe question using ask_user_question. Offer Yes and No, then report the answer.", &[]).assert_started_a_turn();
 
@@ -635,10 +890,15 @@ fn a_profile_can_declare_and_select_an_image_model() {
 
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch, &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .unwrap();
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch,
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .unwrap();
 
     let (seen, _) = collect_until(&mut session, &frames, Duration::from_secs(5), |_| false);
 
@@ -670,10 +930,15 @@ fn permission_commands_update_the_session_preset() {
 
     let (tx, frames) = channel();
 
-    let mut session = Session::create(&launch, &AgentWorkspace::default(), move |frame| {
-        let _ = tx.send(frame);
-    })
-    .expect("the isolated harness should open a conversation");
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch,
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the isolated harness should open a conversation");
 
     let (seen, received) = collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
         matches!(
@@ -698,21 +963,160 @@ fn permission_commands_update_the_session_preset() {
     assert_ne!(initial, "danger-full-access");
 
     for preset in ["danger-full-access", initial.as_str()] {
-        let outcome = session.execute_slash_command("permission", preset);
-
-        assert!(
-            matches!(outcome, SlashCommandOutcome::Completed { .. }),
-            "switching to {preset} failed: {outcome:?}"
+        assert_eq!(
+            session.execute_slash_command("permission", preset),
+            SlashCommandOutcome::Accepted
         );
 
-        let (seen, updated) = collect_until(
-            &mut session,
-            &frames,
-            Duration::from_secs(15),
-            |event| matches!(event, Event::ApprovalPresets { current: Some(current), .. } if current == preset),
-        );
+        // The command's answer and the projection it moved travel on separate
+        // paths, so either may arrive first.
+        let mut completed = false;
+        let mut published = false;
 
-        assert!(updated, "the host did not publish {preset}: {seen:?}");
+        let (seen, settled) =
+            collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
+                match event {
+                    Event::SlashCommandResult {
+                        outcome: SlashCommandOutcome::Completed { approval, .. },
+                        ..
+                    } => completed = approval.as_deref() == Some(preset),
+                    Event::ApprovalPresets {
+                        current: Some(current),
+                        ..
+                    } if current == preset => published = true,
+                    _ => {}
+                }
+
+                completed && published
+            });
+
+        assert!(settled, "switching to {preset} did not settle: {seen:?}");
         assert!(!session.has_active_operation());
     }
+
+    // A remembered pick restored on the user's behalf says nothing when it
+    // takes: the projection it moved is the whole report.
+    session.select_permission("danger-full-access");
+
+    let (seen, published) = collect_until(
+        &mut session,
+        &frames,
+        Duration::from_secs(15),
+        |event| matches!(event, Event::ApprovalPresets { current: Some(current), .. } if current == "danger-full-access"),
+    );
+
+    assert!(published, "the restored pick was not applied: {seen:?}");
+
+    // The answer trails the projection by the length of one reply, so the
+    // window below is what would catch a report of the success.
+    let (trailing, _) = collect_until(&mut session, &frames, Duration::from_secs(2), |_| false);
+
+    assert!(
+        !seen
+            .iter()
+            .chain(&trailing)
+            .any(|event| matches!(event, Event::SlashCommandResult { .. })),
+        "a restored pick that took was reported: {seen:?} {trailing:?}"
+    );
+
+    // One the deployment does not serve is refused out loud, and the picker
+    // is put back on the preset still in force.
+    session.select_permission("no-such-preset");
+
+    let mut refused = false;
+    let mut reverted = false;
+
+    let (seen, settled) = collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
+        match event {
+            Event::SlashCommandResult {
+                outcome: SlashCommandOutcome::Rejected { .. },
+                ..
+            } => refused = true,
+            Event::ApprovalPresets {
+                current: Some(current),
+                ..
+            } if current == "danger-full-access" => reverted = true,
+            _ => {}
+        }
+
+        refused && reverted
+    });
+
+    assert!(settled, "the refused pick was not reported: {seen:?}");
+}
+
+/// A conversation change is a call and a stream handshake, and the thread that
+/// asks for it draws the window, so the request has to return at once and the
+/// tab has to arrive on the conversation through the frames that follow.
+#[test]
+#[ignore = "starts an isolated harness host without sending a prompt"]
+fn a_conversation_change_is_requested_without_waiting() {
+    let isolated = TempDir::new().unwrap();
+
+    let launch = LaunchConfig {
+        env: vec![
+            ("DSH_HOME".into(), isolated.path().display().to_string()),
+            ("DEEPSEEK_API_KEY".into(), "local-probe".into()),
+        ],
+        ..launch()
+    };
+
+    let (tx, frames) = channel();
+
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &launch,
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the isolated harness should open a conversation");
+
+    let id = session.session_id().unwrap().to_string();
+
+    // The opening replay is set aside first, so the one awaited below can only
+    // be the reopened conversation's.
+    let (seen, opened) = collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
+        matches!(event, Event::Replay(_))
+    });
+
+    assert!(opened, "the new conversation never replayed: {seen:?}");
+
+    let asked = Instant::now();
+
+    assert!(session.resume_thread(&id));
+    assert!(
+        asked.elapsed() < Duration::from_millis(100),
+        "the request waited on the harness for {:?}",
+        asked.elapsed()
+    );
+
+    let (seen, replayed) = collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
+        matches!(event, Event::Replay(_))
+    });
+
+    assert!(
+        replayed,
+        "the reopened conversation never replayed: {seen:?}"
+    );
+    assert_eq!(session.session_id(), Some(id.as_str()));
+
+    // The reopened streams serve commands like the first ones did.
+    assert_eq!(
+        session.execute_slash_command("permission", "danger-full-access"),
+        SlashCommandOutcome::Accepted
+    );
+
+    let (seen, answered) = collect_until(&mut session, &frames, Duration::from_secs(15), |event| {
+        matches!(
+            event,
+            Event::SlashCommandResult {
+                outcome: SlashCommandOutcome::Completed { .. },
+                ..
+            }
+        )
+    });
+
+    assert!(answered, "the command was not answered: {seen:?}");
 }

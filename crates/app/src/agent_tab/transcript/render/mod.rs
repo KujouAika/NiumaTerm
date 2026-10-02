@@ -1,25 +1,25 @@
 #[cfg(test)]
 pub(super) use crate::agent_tab::transcript::render::text_style::highlight_theme_for_surface;
-#[cfg(test)]
-pub(super) use crate::agent_tab::transcript::render::text_style::is_dark_surface;
-#[cfg(test)]
-pub(super) use crate::agent_tab::transcript::render::text_style::transcript_code_block_style;
-
-pub(super) mod image_preview;
-pub(super) mod text_style;
 
 pub(super) mod compaction_row;
-
-#[cfg(test)]
-mod working_indicator_tests;
+pub(super) mod held_prompt;
+pub(super) mod image_preview;
+pub(super) mod menus;
+pub(super) mod message_rows;
+pub(super) mod side_boundary_row;
+pub(super) mod task_list_row;
+pub(super) mod text_style;
+pub(super) mod user_row;
+pub(super) mod work_card;
 
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Div, ElementId, Hsla, RenderOnce,
-    Window, div, ease_in_out, px, relative, rems,
+    ScrollHandle, Stateful, Window, div, ease_in_out, px, relative, rems,
 };
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
 use rust_i18n::t;
 
@@ -31,6 +31,7 @@ use crate::agent_tab::transcript::disclosure_row::{
 use crate::agent_tab::transcript::format::{interrupted_status_label, worked_status_label};
 use crate::agent_tab::transcript::reveal::{Disclosures, RevealKey};
 use crate::agent_tab::transcript::rows::RowGap;
+use crate::design::status_animation_fps;
 
 /// Edge of a transcript thumbnail, matching the composer strip so an image
 /// does not change size when the message it belongs to is sent.
@@ -287,8 +288,9 @@ impl WorkingIndicator {
 }
 
 impl RenderOnce for WorkingIndicator {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let color = self.color;
+        let max_fps = status_animation_fps(window);
 
         h_flex()
             .gap(px(DOT_GAP))
@@ -300,19 +302,23 @@ impl RenderOnce for WorkingIndicator {
                     .size(px(DOT_CELL_SIZE))
                     .items_center()
                     .justify_center()
-                    .child(div().rounded_full().bg(color).with_animation(
-                        ElementId::NamedInteger("working-indicator-dot".into(), index as u64),
-                        Animation::new(CYCLE_DURATION).repeat(),
-                        move |dot, delta| {
-                            let pulse = dot_pulse(delta, index);
-                            let size = DOT_MIN_SIZE + (DOT_CELL_SIZE - DOT_MIN_SIZE) * pulse;
+                    .child(
+                        div().rounded_full().bg(color).with_animation(
+                            ElementId::NamedInteger("working-indicator-dot".into(), index as u64),
+                            Animation::new(CYCLE_DURATION)
+                                .repeat()
+                                .with_max_fps(max_fps),
+                            move |dot, delta| {
+                                let pulse = dot_pulse(delta, index);
+                                let size = DOT_MIN_SIZE + (DOT_CELL_SIZE - DOT_MIN_SIZE) * pulse;
 
-                            let opacity =
-                                DOT_MIN_OPACITY + (DOT_MAX_OPACITY - DOT_MIN_OPACITY) * pulse;
+                                let opacity =
+                                    DOT_MIN_OPACITY + (DOT_MAX_OPACITY - DOT_MIN_OPACITY) * pulse;
 
-                            dot.size(px(size)).opacity(opacity)
-                        },
-                    ))
+                                dot.size(px(size)).opacity(opacity)
+                            },
+                        ),
+                    )
             }))
     }
 }
@@ -327,4 +333,29 @@ fn dot_pulse(delta: f32, index: usize) -> f32 {
     let pulse = (1.0 - distance / interval).clamp(0.0, 1.0);
 
     ease_in_out(pulse)
+}
+
+/// A detail surface bounded to its own height inside the virtual list: `area`
+/// scrolls with `scroll`, and the scrollbar rides a non-scrolling wrapper so
+/// it stays in view as the content moves. The list handles wheel input before
+/// child listeners run, so the area occludes the list's earlier hitbox to be
+/// the only scroll target under the pointer, even at either limit.
+pub(super) fn bounded_scroll(
+    scroll: &ScrollHandle,
+    scrollbar_id: impl Into<ElementId>,
+    area: Stateful<Div>,
+) -> Div {
+    div()
+        .w_full()
+        .relative()
+        .child(area.overflow_y_scroll().track_scroll(scroll).occlude())
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .w(px(16.0))
+                .child(Scrollbar::vertical(scroll).id(scrollbar_id)),
+        )
 }

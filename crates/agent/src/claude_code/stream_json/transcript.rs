@@ -1,13 +1,23 @@
+#[cfg(test)]
+#[path = "generation_tests.rs"]
+mod generation_tests;
+
 use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::chat::{ContextComposition, ContextWindowUsage, Event, Item, TokenUsageBreakdown};
-use crate::claude_code::compaction::{compaction_metadata, parse_compaction};
+use crate::chat::{
+    ContextComposition, ContextWindowUsage, Event, GenerationSample, Item, TokenUsageBreakdown,
+};
+use crate::claude_code::records::{
+    AssistantBlock, assistant_block, compaction_metadata, complete_tool_item, is_api_error,
+    parse_compaction,
+};
 use crate::claude_code::stream_json::parse::{
     claude_context_window, context_window_usage, parse_claude_usage, update_claude_output,
+    user_prompt_text,
 };
-use crate::claude_code::tool_items::{complete_tool_item, tool_item};
 
 #[derive(Default)]
 pub(super) struct TurnOutputUsage {
@@ -69,14 +79,22 @@ pub(super) struct TranscriptState {
     last_turn_usage: Option<TokenUsageBreakdown>,
     context_window: Option<u64>,
     turn_output_usage: TurnOutputUsage,
+    generation_id: Option<String>,
+    generation_started: Option<Instant>,
 }
 
 impl TranscriptState {
     pub(super) fn begin_turn(&mut self) {
         self.turn_output_usage.reset();
+
+        self.generation_id = None;
+        self.generation_started = None;
     }
 
     pub(super) fn finish_turn(&mut self, message: &Value) -> Vec<Event> {
+        self.generation_id = None;
+        self.generation_started = None;
+
         let mut events = Vec::new();
 
         if let Some(max_tokens) = claude_context_window(&message["modelUsage"]) {
@@ -100,7 +118,13 @@ impl TranscriptState {
         &mut self,
         composition: &ContextComposition,
     ) -> Option<ContextWindowUsage> {
-        let filled = window_from_composition(self.context_usage, composition)?;
+        // Live accounting breaks the window down by category; a coarse total
+        // only stands in while none has arrived.
+        if self.context_usage.is_some() || composition.used_tokens == 0 {
+            return None;
+        }
+
+        let filled = TokenUsageBreakdown::total_only(composition.used_tokens);
 
         self.context_usage = Some(filled);
         self.context_window = self.context_window.or(composition.max_tokens);
@@ -159,6 +183,9 @@ impl TranscriptState {
 
         match event["type"].as_str() {
             Some("message_start") => {
+                self.generation_id = event["message"]["id"].as_str().map(str::to_owned);
+                self.generation_started = None;
+
                 self.open_blocks.clear();
 
                 self.open_texts.clear();
@@ -205,6 +232,23 @@ impl TranscriptState {
 
                 events
             }
+            Some("message_stop") => {
+                let started = self.generation_started.take();
+                let id = self.generation_id.take();
+
+                started
+                    .zip(id)
+                    .and_then(|(started, response_id)| {
+                        Some(Event::GenerationCompleted(GenerationSample {
+                            response_id,
+                            output_tokens: self.context_usage?.output_tokens?,
+                            elapsed: started.elapsed(),
+                            estimated: false,
+                        }))
+                    })
+                    .into_iter()
+                    .collect()
+            }
             Some("content_block_start") => {
                 let Some(index) = index else {
                     return Vec::new();
@@ -240,11 +284,22 @@ impl TranscriptState {
                 }
             }
             Some("content_block_delta") => {
+                let delta = &event["delta"];
+
+                // Tool argument fragments have no transcript item, but still
+                // count as model output when locating the first token.
+                if self.generation_started.is_none()
+                    && self.generation_id.is_some()
+                    && ["text", "thinking", "partial_json"]
+                        .iter()
+                        .any(|field| delta[field].as_str().is_some_and(|text| !text.is_empty()))
+                {
+                    self.generation_started = Some(Instant::now());
+                }
+
                 let Some(item_id) = index.and_then(|i| self.open_blocks.get(&i)).cloned() else {
                     return Vec::new();
                 };
-
-                let delta = &event["delta"];
 
                 match delta["type"].as_str() {
                     Some("text_delta") => delta["text"]
@@ -299,9 +354,15 @@ impl TranscriptState {
             }
         }
 
+        // A message wrapping an API failure is synthesized without streamed
+        // blocks, and the turn's result reports the same failure, so its text
+        // is not shown a second time as a reply.
+        let api_error = is_api_error(message);
+
         for block in blocks {
-            match block["type"].as_str() {
-                Some("text") => {
+            match assistant_block(block) {
+                Some(AssistantBlock::Text(_)) if api_error => {}
+                Some(AssistantBlock::Text(text)) => {
                     let id = self
                         .open_texts
                         .pop_front()
@@ -309,11 +370,11 @@ impl TranscriptState {
 
                     events.push(Event::ItemCompleted(Item::AgentMessage {
                         id,
-                        text: block["text"].as_str().map(str::to_owned),
+                        text: Some(text.to_owned()),
                         questions: None,
                     }));
                 }
-                Some("thinking") => {
+                Some(AssistantBlock::Thinking(summary)) => {
                     let id = self
                         .open_thinkings
                         .pop_front()
@@ -321,39 +382,37 @@ impl TranscriptState {
 
                     events.push(Event::ItemCompleted(Item::Reasoning {
                         id,
-                        summary: block["thinking"].as_str().map(str::to_owned),
+                        summary: Some(summary.to_owned()),
                     }));
                 }
-                Some("tool_use") | Some("server_tool_use") | Some("mcp_tool_use") => {
-                    let Some(id) = block["id"].as_str() else {
-                        continue;
-                    };
-
-                    let item = tool_item(
-                        id,
-                        block["name"].as_str().unwrap_or("tool"),
-                        &block["input"],
-                    );
-
+                Some(AssistantBlock::ToolUse { id, item }) => {
                     self.pending_tools.insert(id.to_string(), item.clone());
 
                     events.push(Event::ItemStarted(item));
                 }
-                _ => {}
+                None => {}
             }
         }
 
         events
     }
 
-    /// `user` messages in the stream carry tool results; each one completes
-    /// its started tool item with output and success/failure status.
-    pub(super) fn on_tool_results(&mut self, message: &Value) -> Vec<Event> {
-        let Some(blocks) = message["message"]["content"].as_array() else {
+    /// User input echoes acknowledge queued prompts, while tool-result blocks
+    /// complete existing tool rows. Both arrive under the same message type.
+    pub(super) fn on_user_message(&mut self, message: &Value) -> Vec<Event> {
+        if !message["parent_tool_use_id"].is_null() {
             return Vec::new();
-        };
+        }
 
         let mut events = Vec::new();
+
+        if let Some(text) = user_prompt_text(message) {
+            events.push(Event::ItemStarted(Item::UserMessage { text: Some(text) }));
+        }
+
+        let Some(blocks) = message["message"]["content"].as_array() else {
+            return events;
+        };
 
         for block in blocks {
             if block["type"].as_str() != Some("tool_result") {
@@ -381,15 +440,4 @@ impl TranscriptState {
             self.context_window,
         )
     }
-}
-
-/// Whether a context breakdown should stand in for the window's own
-/// accounting. Live accounting names each category, so it is always the better
-/// answer; the breakdown only fills the gap before any has arrived.
-pub(super) fn window_from_composition(
-    live: Option<TokenUsageBreakdown>,
-    composition: &ContextComposition,
-) -> Option<TokenUsageBreakdown> {
-    (live.is_none() && composition.used_tokens > 0)
-        .then(|| TokenUsageBreakdown::total_only(composition.used_tokens))
 }

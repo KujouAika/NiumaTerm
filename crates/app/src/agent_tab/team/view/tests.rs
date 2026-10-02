@@ -1,24 +1,32 @@
+#[cfg(windows)]
 use std::path::Path;
 
 use gpui::{AppContext as _, TestAppContext, VisualTestContext, px};
 use gpui_component::Root;
 use nmt_agent::AgentWorkspace;
-use nmt_agent::chat::{Event, Item, SendOutcome, SlashCommandOutcome, ThreadSettings};
+use nmt_agent::background_task::{
+    BackgroundTaskKey, BackgroundTaskRegistry, BackgroundTaskState, BackgroundTaskUpdate,
+};
+use nmt_agent::chat::{
+    Event, Item, Question, QuestionInput, QuestionMode, QuestionRequest, SendOutcome,
+    SlashCommandOutcome, ThreadSettings,
+};
+#[cfg(windows)]
 use nmt_agent::session::lifecycle::Status;
-use nmt_agent::session::team_capabilities::ModeratorAdmission;
-use nmt_agent::session::team_recovery::RecoveredTeamTurn;
+use nmt_agent::session::team_capabilities::{ModeratorAdmission, RecoveredTeamTurn};
 use nmt_agent::session::test_support::TestBackend;
 use nmt_agent::session::{AgentKind, Backend};
 use nmt_agent::team::attempt::AttemptState;
-use nmt_agent::team::content::UserInput;
 use nmt_agent::team::discussion::DiscussionMode;
-use nmt_agent::team::member::{HistoryScope, MemberConfig, ProfileReference};
+use nmt_agent::team::member::{MemberConfig, ProfileReference};
+use nmt_agent::team::model::UserInput;
 use nmt_agent::team::room::Room;
-use nmt_agent::team::session::{AttemptEventKey, TeamSession};
-use nmt_config::profile::{AgentProfile, AgentProfileKind, EnvVar};
+use nmt_agent::team::session::{AttemptEventKey, TeamError, TeamSession};
+use nmt_config::profile::AgentProfile;
+#[cfg(windows)]
+use nmt_config::profile::EnvVar;
 use tempfile::tempdir;
 
-use crate::agent_tab::AgentThreadDefaults;
 use crate::agent_tab::execution::AgentSession;
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::team::dispatch::CONTEXT_LIMITS;
@@ -37,18 +45,16 @@ async fn claude_member_startup_retains_native_permission_selection(cx: &mut Test
         ..ThreadSettings::default()
     };
 
-    let (runtime, member, host) = cx.update(|cx| {
+    let (runtime, member) = cx.update(|cx| {
         gpui_component::init(cx);
 
         cx.set_global(AgentSettings::default());
 
-        cx.set_global(AgentThreadDefaults::default());
-
-        let runtime = TeamRuntime::create(directory.path(), AgentWorkspace::default(), cx).unwrap();
+        let runtime = TeamRuntime::create(directory.path(), AgentWorkspace::default(), cx);
 
         let profile = AgentProfile {
             name: "test-claude".into(),
-            kind: AgentProfileKind::Claude,
+            kind: AgentKind::Claude,
             executable: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../agent/tests/fixtures/claude/fake-stream-json.cmd")
                 .to_string_lossy()
@@ -65,41 +71,40 @@ async fn claude_member_startup_retains_native_permission_selection(cx: &mut Test
         };
 
         let member = runtime.update(cx, |runtime, cx| {
-            runtime
-                .add_member(
-                    profile,
-                    MemberConfig {
-                        name: "Alice".into(),
-                        profile: ProfileReference {
-                            kind: AgentKind::Claude,
-                            name: "test-claude".into(),
-                        },
-                        roots: AgentWorkspace::default(),
-                        settings: settings.clone(),
-                        role: String::new(),
-                        history: HistoryScope::CompletedPublic,
+            runtime.add_member(
+                profile,
+                MemberConfig {
+                    name: "Alice".into(),
+                    profile: ProfileReference {
+                        kind: AgentKind::Claude,
+                        name: "test-claude".into(),
                     },
-                    cx,
-                )
-                .unwrap()
+                    roots: AgentWorkspace::default(),
+                    settings: settings.clone(),
+                    role: String::new(),
+                },
+                cx,
+            )
         });
 
-        let host = runtime.read(cx).member_session(member).unwrap().clone();
-
-        (runtime, member, host)
+        (runtime, member)
     });
+
+    let member = member.await.unwrap();
+    let host = cx.update(|cx| runtime.read(cx).member_session(member).unwrap().clone());
 
     cx.condition(&host, |session, _| {
         matches!(
-            session.controller.borrow().runtime.status(),
+            session.controller.borrow().runtime().status(),
             Status::Idle | Status::Exited
         )
     })
     .await;
 
-    runtime.update(cx, |runtime, cx| {
-        runtime.pump(cx).unwrap();
+    runtime.update(cx, |runtime, cx| runtime.schedule(cx));
+    cx.run_until_parked();
 
+    runtime.update(cx, |runtime, cx| {
         assert_eq!(runtime.error(), None);
         assert_eq!(
             runtime
@@ -144,7 +149,6 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
             roots: AgentWorkspace::default(),
             settings: ThreadSettings::default(),
             role: "Explain clearly".into(),
-            history: HistoryScope::CompletedPublic,
         })
         .unwrap();
 
@@ -180,7 +184,6 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
             AttemptEventKey {
                 attempt: attempt.id,
                 member,
-                ownership: attempt.intent.ownership,
                 backend_generation: 1,
             },
             "interrupted-turn",
@@ -188,7 +191,7 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
         .unwrap();
 
     saved
-        .record_provider_identity(member, attempt.intent.ownership, "saved-team-thread", false)
+        .record_provider_identity(member, "saved-team-thread", false)
         .unwrap();
 
     let room_id = saved.store().room().id();
@@ -197,21 +200,19 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
 
     drop(saved);
 
-    let (saved, _) = TeamSession::open(directory.path(), room_id).unwrap();
+    let saved = TeamSession::open(directory.path(), room_id).unwrap();
 
     let (runtime, pane, host, window) = cx.update(|cx| {
         gpui_component::init(cx);
 
         cx.set_global(AgentSettings::default());
 
-        cx.set_global(AgentThreadDefaults::default());
-
-        let runtime = cx.new(|_| TeamRuntime::new(saved));
+        let runtime = cx.new(|cx| TeamRuntime::new(saved, cx.background_executor().clone()));
 
         let owner = AgentSession::create(
             AgentProfile {
                 name: "test".into(),
-                kind: AgentProfileKind::Codex,
+                kind: AgentKind::Codex,
                 ..AgentProfile::default()
             },
             AgentWorkspace::default(),
@@ -262,7 +263,7 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
             });
         }
 
-        let epoch = session.controller.borrow_mut().starting(None).epoch;
+        let epoch = session.controller.borrow_mut().starting(None);
 
         session.install(Ok(Backend::Test(backend)), epoch, "test", cx);
 
@@ -306,18 +307,16 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
                     .status_text(cx)
                     .contains(rust_i18n::t!("team-ready").as_ref())
             );
-            assert!(
-                pane.perform(TeamCommand::AbandonRestored(attempt.id), cx),
-                "{:?}",
-                pane.error
-            );
+
+            pane.perform(TeamCommand::AbandonRestored(attempt.id), cx)
+                .detach();
         }
     });
 
     cx.run_until_parked();
 
     runtime.update(&mut cx, |runtime, _| {
-        assert!(runtime.session.pending_recovery().next().is_none());
+        assert!(runtime.pending_recovery().next().is_none());
         assert_eq!(runtime.room().attempts().len(), 1);
         assert!(if completed {
             matches!(
@@ -328,17 +327,17 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
             runtime.room().attempts()[0].state == AttemptState::Abandoned
         });
         assert_eq!(
-            runtime.room().discussions()[0]
-                .budget()
-                .remaining_non_report_turns(),
+            runtime.room().discussions()[0].remaining_non_report_turns(runtime.room().attempts()),
             10
         );
         assert_eq!(runtime.error(), None);
     });
 
-    pane.update(&mut cx, |pane, cx| {
-        assert!(pane.perform(TeamCommand::Continue(discussion), cx))
-    });
+    assert!(
+        pane.update(&mut cx, |pane, cx| pane
+            .perform(TeamCommand::Continue(discussion), cx))
+            .await
+    );
 
     cx.run_until_parked();
 
@@ -366,8 +365,6 @@ async fn sent_team_request_displays_stream_before_completion(cx: &mut TestAppCon
 
         cx.set_global(AgentSettings::default());
 
-        cx.set_global(AgentThreadDefaults::default());
-
         let mut session =
             TeamSession::create(directory.path(), Room::new(AgentWorkspace::default())).unwrap();
 
@@ -381,16 +378,15 @@ async fn sent_team_request_displays_stream_before_completion(cx: &mut TestAppCon
                 roots: AgentWorkspace::default(),
                 settings: ThreadSettings::default(),
                 role: "Explain clearly".into(),
-                history: HistoryScope::CompletedPublic,
             })
             .unwrap();
 
-        let runtime = cx.new(|_| TeamRuntime::new(session));
+        let runtime = cx.new(|cx| TeamRuntime::new(session, cx.background_executor().clone()));
 
         let owner = AgentSession::create(
             AgentProfile {
                 name: "test".into(),
-                kind: AgentProfileKind::Codex,
+                kind: AgentKind::Codex,
                 ..AgentProfile::default()
             },
             AgentWorkspace::default(),
@@ -429,7 +425,7 @@ async fn sent_team_request_displays_stream_before_completion(cx: &mut TestAppCon
         )
         .with_recovery(AgentKind::Codex, "retained-team-thread");
 
-        let epoch = session.controller.borrow_mut().starting(None).epoch;
+        let epoch = session.controller.borrow_mut().starting(None);
 
         assert_eq!(
             session.install(Ok(Backend::Test(backend)), epoch, "test", cx),
@@ -626,5 +622,586 @@ async fn sent_team_request_displays_stream_before_completion(cx: &mut TestAppCon
 
     runtime.update(&mut cx, |runtime, _| {
         assert_eq!(runtime.room().attempts().len(), 1)
+    });
+}
+
+#[gpui::test]
+async fn completed_reply_waits_for_background_work_before_advancing(cx: &mut TestAppContext) {
+    let directory = tempdir().unwrap();
+
+    let (runtime, host, member, epoch) = cx.update(|cx| {
+        cx.set_global(AgentSettings::default());
+
+        let mut room = Room::new(AgentWorkspace::default());
+
+        let member = room
+            .add_member(MemberConfig {
+                name: "Alice".into(),
+                profile: ProfileReference {
+                    kind: AgentKind::Codex,
+                    name: "test".into(),
+                },
+                roots: AgentWorkspace::default(),
+                settings: ThreadSettings::default(),
+                role: String::new(),
+            })
+            .unwrap();
+
+        let session = TeamSession::create(directory.path(), room).unwrap();
+        let runtime = cx.new(|cx| TeamRuntime::new(session, cx.background_executor().clone()));
+
+        let owner = AgentSession::create(
+            AgentProfile {
+                name: "test".into(),
+                kind: AgentKind::Codex,
+                ..AgentProfile::default()
+            },
+            AgentWorkspace::default(),
+            None,
+            cx,
+        );
+
+        let host = owner.session().clone();
+
+        runtime.update(cx, |runtime, cx| {
+            runtime.attach_member_owner(member, owner, cx)
+        });
+
+        let epoch = host.update(cx, |session, cx| {
+            let backend = TestBackend::new(
+                [SendOutcome::StartedTurn, SendOutcome::StartedTurn],
+                SlashCommandOutcome::NotReady,
+                vec![],
+            )
+            .with_recovery(AgentKind::Codex, "background-room");
+
+            let epoch = session.controller.borrow_mut().starting(None);
+
+            assert_eq!(
+                session.install(Ok(Backend::Test(backend)), epoch, "test", cx),
+                Some(true)
+            );
+
+            session.on_event(epoch, Event::Ready(ThreadSettings::default()), cx);
+
+            epoch
+        });
+
+        (runtime, host, member, epoch)
+    });
+
+    cx.run_until_parked();
+
+    runtime
+        .update(cx, |runtime, cx| {
+            runtime.command(
+                TeamCommand::Start {
+                    input: UserInput {
+                        text: "Review".into(),
+                        ..UserInput::default()
+                    },
+                    participants: vec![member],
+                    mode: DiscussionMode::Fixed {
+                        report_author: member,
+                    },
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+
+    cx.run_until_parked();
+
+    let mut tasks = BackgroundTaskRegistry::new(BackgroundTaskKey::codex("background-room"));
+
+    let child = BackgroundTaskKey::codex("child");
+
+    tasks.apply(
+        child.clone(),
+        BackgroundTaskUpdate::state(BackgroundTaskState::Working),
+    );
+
+    host.update(cx, |session, cx| {
+        session.on_event(
+            epoch,
+            Event::ProviderTurnAccepted { id: "first".into() },
+            cx,
+        );
+
+        session.on_event(epoch, Event::TurnStarted, cx);
+        session.on_event(epoch, Event::BackgroundTasks(tasks.snapshot()), cx);
+        session.on_event(epoch, Event::TurnCompleted { error: None }, cx);
+
+        session.on_event(
+            epoch,
+            Event::ProviderTurnFinished {
+                id: "first".into(),
+                error: None,
+            },
+            cx,
+        );
+    });
+
+    cx.run_until_parked();
+
+    let result = runtime
+        .update(cx, |runtime, cx| {
+            assert!(matches!(
+                runtime.room().attempts()[0].state,
+                AttemptState::Completed { .. }
+            ));
+            assert_eq!(runtime.room().attempts().len(), 1);
+
+            runtime.command(TeamCommand::Exclude(member), cx)
+        })
+        .await;
+
+    assert!(matches!(result, Err(TeamError::Busy)));
+
+    tasks.apply(
+        child,
+        BackgroundTaskUpdate::state(BackgroundTaskState::Done),
+    );
+
+    host.update(cx, |session, cx| {
+        session.on_event(epoch, Event::BackgroundTasks(tasks.snapshot()), cx)
+    });
+
+    cx.run_until_parked();
+
+    runtime.update(cx, |runtime, _| {
+        assert_eq!(runtime.room().attempts().len(), 2);
+        assert_eq!(runtime.room().attempts()[1].state, AttemptState::Sending);
+        assert_eq!(runtime.error(), None);
+    });
+}
+
+#[gpui::test]
+async fn member_question_shows_in_team_composer_and_blocks_new_requests(cx: &mut TestAppContext) {
+    let directory = tempdir().unwrap();
+
+    let (runtime, pane, host, window, member) = cx.update(|cx| {
+        gpui_component::init(cx);
+
+        cx.set_global(AgentSettings::default());
+
+        let mut session =
+            TeamSession::create(directory.path(), Room::new(AgentWorkspace::default())).unwrap();
+
+        let member = session
+            .add_member(MemberConfig {
+                name: "Alice".into(),
+                profile: ProfileReference {
+                    kind: AgentKind::Codex,
+                    name: "test".into(),
+                },
+                roots: AgentWorkspace::default(),
+                settings: ThreadSettings::default(),
+                role: "Explain clearly".into(),
+            })
+            .unwrap();
+
+        let runtime = cx.new(|cx| TeamRuntime::new(session, cx.background_executor().clone()));
+
+        let owner = AgentSession::create(
+            AgentProfile {
+                name: "test".into(),
+                kind: AgentKind::Codex,
+                ..AgentProfile::default()
+            },
+            AgentWorkspace::default(),
+            None,
+            cx,
+        );
+
+        let host = owner.session().clone();
+
+        runtime.update(cx, |runtime, cx| {
+            runtime.attach_member_owner(member, owner, cx)
+        });
+
+        let mut pane = None;
+
+        let window = cx
+            .open_window(Default::default(), |window, cx| {
+                let view = cx.new(|cx| TeamPane::new(runtime.clone(), window, cx));
+
+                pane = Some(view.clone());
+
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .unwrap();
+
+        (runtime, pane.unwrap(), host, window, member)
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    host.update(&mut cx, |session, cx| {
+        let backend = TestBackend::new(
+            [SendOutcome::StartedTurn],
+            SlashCommandOutcome::NotReady,
+            vec![],
+        )
+        .with_recovery(AgentKind::Codex, "asking-team-thread");
+
+        let epoch = session.controller.borrow_mut().starting(None);
+
+        session.install(Ok(Backend::Test(backend)), epoch, "test", cx);
+
+        session.on_event(epoch, Event::Ready(ThreadSettings::default()), cx);
+
+        session.on_event(
+            epoch,
+            Event::InputRequested(QuestionRequest {
+                id: "scope".into(),
+                mode: QuestionMode::Blocking,
+                questions: vec![Question {
+                    input: QuestionInput::Text,
+                    header: None,
+                    question: "How far should this go?".into(),
+                    multi_select: false,
+                    options: Vec::new(),
+                }],
+            }),
+            cx,
+        );
+    });
+
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+
+    let composer = cx.debug_bounds("team-composer").unwrap();
+
+    let question = cx
+        .debug_bounds("agent-question-panel")
+        .expect("a member's question must be drawn in the Team composer");
+
+    assert!(
+        question.top() >= composer.top() && question.bottom() <= composer.bottom(),
+        "the question belongs inside the composer card"
+    );
+
+    cx.update(|window, cx| {
+        pane.update(cx, |pane, cx| {
+            pane.input.update(cx, |input, cx| {
+                input.set_value("Go all the way", window, cx)
+            });
+
+            pane.focus(window, cx);
+        })
+    });
+
+    cx.simulate_keystrokes("enter");
+
+    cx.run_until_parked();
+
+    runtime.update(&mut cx, |runtime, _| {
+        assert!(
+            runtime.room().attempts().is_empty(),
+            "a request to a member waiting on the user must not be queued"
+        );
+    });
+
+    pane.update(&mut cx, |pane, cx| {
+        assert_eq!(
+            pane.error.as_deref(),
+            Some(rust_i18n::t!("team-member-needs-answer", name = "Alice").as_ref())
+        );
+        assert_eq!(pane.input.read(cx).text().to_string(), "Go all the way");
+    });
+
+    cx.update(|window, cx| {
+        pane.update(cx, |pane, cx| pane.inspect_member(member, window, cx));
+
+        let _ = window.draw(cx);
+    });
+
+    let surface = cx.debug_bounds("team-surface").unwrap();
+
+    let composer = cx
+        .debug_bounds("team-member-composer")
+        .expect("the member's view carries its own composer card");
+
+    let question = cx.debug_bounds("agent-question-panel").unwrap();
+
+    assert!(
+        composer.size.width < surface.size.width,
+        "the member's card keeps the reading column instead of the pane width"
+    );
+    assert!(
+        question.left() >= composer.left() && question.right() <= composer.right(),
+        "the question sits inside the member's card"
+    );
+}
+
+#[gpui::test]
+async fn member_conversation_is_named_after_the_request_once(cx: &mut TestAppContext) {
+    let directory = tempdir().unwrap();
+
+    let (runtime, pane, host, window) = cx.update(|cx| {
+        gpui_component::init(cx);
+
+        cx.set_global(AgentSettings::default());
+
+        let mut session =
+            TeamSession::create(directory.path(), Room::new(AgentWorkspace::default())).unwrap();
+
+        let member = session
+            .add_member(MemberConfig {
+                name: "Alice".into(),
+                profile: ProfileReference {
+                    kind: AgentKind::Codex,
+                    name: "test".into(),
+                },
+                roots: AgentWorkspace::default(),
+                settings: ThreadSettings::default(),
+                role: "Explain clearly".into(),
+            })
+            .unwrap();
+
+        let runtime = cx.new(|cx| TeamRuntime::new(session, cx.background_executor().clone()));
+
+        let owner = AgentSession::create(
+            AgentProfile {
+                name: "test".into(),
+                kind: AgentKind::Codex,
+                ..AgentProfile::default()
+            },
+            AgentWorkspace::default(),
+            None,
+            cx,
+        );
+
+        let host = owner.session().clone();
+
+        runtime.update(cx, |runtime, cx| {
+            runtime.attach_member_owner(member, owner, cx)
+        });
+
+        let mut pane = None;
+
+        let window = cx
+            .open_window(Default::default(), |window, cx| {
+                let view = cx.new(|cx| TeamPane::new(runtime.clone(), window, cx));
+
+                pane = Some(view.clone());
+
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .unwrap();
+
+        (runtime, pane.unwrap(), host, window)
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    let epoch = host.update(&mut cx, |session, cx| {
+        let backend = TestBackend::new(
+            [SendOutcome::StartedTurn, SendOutcome::StartedTurn],
+            SlashCommandOutcome::NotReady,
+            vec![],
+        )
+        .with_recovery(AgentKind::Codex, "named-team-thread");
+
+        let epoch = session.controller.borrow_mut().starting(None);
+
+        session.install(Ok(Backend::Test(backend)), epoch, "test", cx);
+
+        session.on_event(epoch, Event::Ready(ThreadSettings::default()), cx);
+
+        epoch
+    });
+
+    cx.run_until_parked();
+
+    for (turn, text) in [
+        ("first-turn", "Compare the two caches"),
+        ("second-turn", "Now pick one"),
+    ] {
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.input
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+
+                pane.focus(window, cx);
+            })
+        });
+
+        cx.simulate_keystrokes("enter");
+
+        cx.run_until_parked();
+
+        host.update(&mut cx, |session, cx| {
+            session.on_event(epoch, Event::ProviderTurnAccepted { id: turn.into() }, cx);
+
+            session.on_event(epoch, Event::TurnStarted, cx);
+
+            session.on_event(
+                epoch,
+                Event::ItemCompleted(Item::AgentMessage {
+                    id: turn.into(),
+                    text: Some("Done".into()),
+                    questions: None,
+                }),
+                cx,
+            );
+
+            session.on_event(epoch, Event::TurnCompleted { error: None }, cx);
+        });
+
+        cx.run_until_parked();
+    }
+
+    runtime.update(&mut cx, |runtime, _| {
+        assert_eq!(runtime.room().attempts().len(), 2);
+    });
+
+    host.update(&mut cx, |session, _| {
+        let state = session.controller.borrow();
+
+        let Some(Backend::Test(backend)) = state.runtime().backend() else {
+            panic!("the test backend must still be installed");
+        };
+
+        assert_eq!(
+            backend.title_requests,
+            vec!["Compare the two caches".to_string()],
+            "the first request names the conversation from the user's text alone"
+        );
+    });
+}
+
+#[gpui::test]
+async fn a_message_written_in_the_member_view_is_a_team_request(cx: &mut TestAppContext) {
+    let directory = tempdir().unwrap();
+
+    let (runtime, pane, host, window, member) = cx.update(|cx| {
+        gpui_component::init(cx);
+
+        cx.set_global(AgentSettings::default());
+
+        let mut session =
+            TeamSession::create(directory.path(), Room::new(AgentWorkspace::default())).unwrap();
+
+        let member = session
+            .add_member(MemberConfig {
+                name: "Alice".into(),
+                profile: ProfileReference {
+                    kind: AgentKind::Codex,
+                    name: "test".into(),
+                },
+                roots: AgentWorkspace::default(),
+                settings: ThreadSettings::default(),
+                role: "Explain clearly".into(),
+            })
+            .unwrap();
+
+        let runtime = cx.new(|cx| TeamRuntime::new(session, cx.background_executor().clone()));
+
+        let owner = AgentSession::create(
+            AgentProfile {
+                name: "test".into(),
+                kind: AgentKind::Codex,
+                ..AgentProfile::default()
+            },
+            AgentWorkspace::default(),
+            None,
+            cx,
+        );
+
+        let host = owner.session().clone();
+
+        runtime.update(cx, |runtime, cx| {
+            runtime.attach_member_owner(member, owner, cx)
+        });
+
+        let mut pane = None;
+
+        let window = cx
+            .open_window(Default::default(), |window, cx| {
+                let view = cx.new(|cx| TeamPane::new(runtime.clone(), window, cx));
+
+                pane = Some(view.clone());
+
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .unwrap();
+
+        (runtime, pane.unwrap(), host, window, member)
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    host.update(&mut cx, |session, cx| {
+        let backend = TestBackend::new(
+            [SendOutcome::StartedTurn],
+            SlashCommandOutcome::NotReady,
+            vec![],
+        )
+        .with_recovery(AgentKind::Codex, "member-chat-thread");
+
+        let epoch = session.controller.borrow_mut().starting(None);
+
+        session.install(Ok(Backend::Test(backend)), epoch, "test", cx);
+
+        session.on_event(epoch, Event::Ready(ThreadSettings::default()), cx);
+    });
+
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        pane.update(cx, |pane, cx| {
+            pane.inspect_member(member, window, cx);
+
+            let member_pane = pane.member_panes[&member].clone();
+
+            member_pane.update(cx, |member_pane, cx| {
+                member_pane.input.update(cx, |input, cx| {
+                    input.set_value("Explain the cache", window, cx)
+                });
+
+                member_pane.focus(window, cx);
+            });
+        });
+
+        let _ = window.draw(cx);
+    });
+
+    cx.simulate_keystrokes("enter");
+
+    cx.run_until_parked();
+
+    runtime.update(&mut cx, |runtime, _| {
+        assert_eq!(runtime.error(), None);
+        assert_eq!(
+            runtime.room().attempts().len(),
+            1,
+            "the member view sends one direct request to its member"
+        );
+        assert_eq!(runtime.room().attempts()[0].intent.recipient, member);
+        assert_eq!(runtime.room().messages()[0].text, "Explain the cache");
+    });
+
+    pane.update(&mut cx, |pane, cx| {
+        assert!(
+            pane.timeline
+                .rows
+                .iter()
+                .any(|row| row.text == "Explain the cache"),
+            "the request is part of the Team conversation"
+        );
+
+        let member_pane = pane.member_panes[&member].clone();
+
+        assert_eq!(
+            member_pane.read(cx).input.read(cx).text().to_string(),
+            "",
+            "a sent message leaves the member composer"
+        );
     });
 }

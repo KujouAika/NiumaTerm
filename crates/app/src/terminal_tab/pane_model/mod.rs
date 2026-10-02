@@ -1,107 +1,69 @@
 pub(super) use crate::terminal_tab::pane_model::settings::FrameTheme;
 
 pub(super) mod frame_cache;
-
 pub(super) mod frame_record;
-
-pub(super) mod key_action;
-
 pub(super) mod frozen_hit_map;
-
+pub(super) mod key_action;
 pub(super) mod list_mirror;
-
 pub(super) mod mouse;
-
 pub(super) mod scroll;
-
 pub(super) mod selection_geometry;
-
 pub(super) mod viewport;
 
-mod settings;
-
 mod blocks;
-
 mod links;
-
 mod scrollbar_activity;
+mod settings;
 
 #[cfg(test)]
 pub(super) mod test_session;
-
 #[cfg(test)]
 mod tests;
 
 use nmt_config::colors::Colors;
-
 use nmt_input::keyboard::ModifiersState;
-
+use nmt_terminal::clipboard::ClipboardType;
 use nmt_terminal::input::{TerminalKey, WheelDelta};
-
 use nmt_terminal::links::{follows_link, resolve_link};
-
 use nmt_terminal::selection::SelectionType;
-
 use nmt_terminal::session::interaction::{
     CopyCompletion, InputOutcome, TerminalInteraction, selection_type_for_click_count,
 };
-
 use nmt_terminal::session::{
     HostEvent, InFlightBlock, SurfaceMouseButton, SurfaceMouseEventKind, SurfaceScreenCell,
 };
 
-use crate::terminal_tab::block_list::ITEM_PAD_ROWS;
-
 use crate::terminal_tab::block_list::chrome::DurationLabels;
-
 use crate::terminal_tab::block_list::{
-    BlockListPoint, block_list_active_top_px, block_list_render_metrics, nav_item_top,
+    BlockListPoint, ITEM_PAD_ROWS, block_list_active_top_px, block_list_render_metrics,
+    nav_item_top,
 };
-
 use crate::terminal_tab::dirty::DirtyState;
-
 use crate::terminal_tab::frame::TerminalFrame;
-
 use crate::terminal_tab::frame_source::TerminalFrameSource;
-
-use crate::terminal_tab::layout::{bottom_anchor_offsets, frame_content_rows};
-
+use crate::terminal_tab::layout::{bottom_slack, frame_content_rows};
 use crate::terminal_tab::metrics::CellMetrics;
-
 use crate::terminal_tab::pane_model::blocks::ListPlan;
-
 use crate::terminal_tab::pane_model::frame_cache::TerminalFrameCache;
-
 use crate::terminal_tab::pane_model::frame_record::FrameRecord;
-
 use crate::terminal_tab::pane_model::frozen_hit_map::FrozenHitMap;
-
 use crate::terminal_tab::pane_model::key_action::{KeyOutcome, TextInput};
-
 use crate::terminal_tab::pane_model::links::{LinkHit, LinkHover};
-
 use crate::terminal_tab::pane_model::list_mirror::{BlockListMirror, ListOp, ListPosition};
-
 use crate::terminal_tab::pane_model::mouse::{
     MouseInput, MouseOutcome, MouseRelease, WheelOutcome,
 };
-
 use crate::terminal_tab::pane_model::scroll::ScrollOutcome;
-
 use crate::terminal_tab::pane_model::scrollbar_activity::ScrollbarActivity;
-
 use crate::terminal_tab::pane_model::selection_geometry::selection_drag_started;
-
 use crate::terminal_tab::pane_model::settings::{CursorShapeFailure, CursorShapeUpdate};
-
 use crate::terminal_tab::pane_model::viewport::{LocalPoint, LocalRect, Viewport};
-
 use crate::terminal_tab::settings::TerminalSettings;
 
 pub(super) trait ClipboardAccess {
     fn read(&mut self) -> Option<String>;
 
-    fn write(&mut self, text: String) -> bool;
+    fn write(&mut self, kind: ClipboardType, text: String) -> bool;
 }
 
 pub(super) struct PaneController {
@@ -125,7 +87,6 @@ pub(super) struct PaneController {
 
     pub scrollbar: ScrollbarActivity,
     links: LinkHover,
-    pub viewport: Viewport,
     clipboard: Box<dyn ClipboardAccess>,
 }
 
@@ -159,7 +120,6 @@ impl PaneController {
             selection_origin: None,
             scrollbar: ScrollbarActivity::default(),
             links: LinkHover::default(),
-            viewport: Viewport::default(),
             clipboard,
         }
     }
@@ -182,8 +142,6 @@ impl PaneController {
         self.frame_cache
             .rebuild(self.source.frame(previous.as_ref(), &self.theme));
 
-        self.update_viewport();
-
         if self.links.enabled
             && let Some(position) = self.links.position()
         {
@@ -193,8 +151,11 @@ impl PaneController {
         }
     }
 
-    pub(super) fn update_viewport(&mut self) {
-        self.viewport = if self.block_list_mode() {
+    /// The scroll geometry the pointer, cursor and scrollbar code reads, built
+    /// from what owns each part: the list mirror and the frozen hit map in
+    /// block-list mode, the displayed frame and the cell metrics otherwise.
+    pub(super) fn viewport(&self) -> Viewport {
+        if self.block_list_mode() {
             Viewport::BlockList {
                 scroll_px: self.block_list.scrollbar.0,
                 max_scroll_px: self.block_list.scrollbar.1,
@@ -206,14 +167,11 @@ impl PaneController {
 
             Viewport::Grid {
                 scrollbar: frame.scrollbar(),
-                row_offsets: self
-                    .cell_metrics
-                    .map_or_else(Vec::new, |cell| {
-                        bottom_anchor_offsets(&frame, cell.height_px, self.settings.fixed_bottom())
-                    })
-                    .into(),
+                bottom_slack: self.cell_metrics.map_or(0.0, |cell| {
+                    bottom_slack(&frame, cell.height_px, self.settings.fixed_bottom())
+                }),
             }
-        };
+        }
     }
 
     pub(super) fn drain_host_events(&mut self) -> Vec<HostEvent> {
@@ -221,6 +179,9 @@ impl PaneController {
 
         for event in &events {
             match event {
+                HostEvent::Clipboard { kind, text } => {
+                    self.clipboard.write(*kind, text.clone());
+                }
                 HostEvent::CommandFinished { .. } => {
                     self.frame_cache.invalidate();
 
@@ -314,8 +275,6 @@ impl PaneController {
 
         self.frozen.set_active_top(self.block_list.active_top);
 
-        self.update_viewport();
-
         Some(ListPlan {
             ops,
             history_rows,
@@ -339,8 +298,6 @@ impl PaneController {
 
         if let Some(top) = record.active_top {
             self.frozen.set_active_top(top);
-
-            self.update_viewport();
         }
     }
 
@@ -395,7 +352,7 @@ impl PaneController {
     }
 
     pub(super) fn copy_text_to_clipboard(&mut self, text: String) -> bool {
-        !text.is_empty() && self.clipboard.write(text)
+        !text.is_empty() && self.clipboard.write(ClipboardType::Clipboard, text)
     }
 
     pub(super) fn finish_copy(&mut self, text: String, completion: CopyCompletion) -> bool {
@@ -419,8 +376,6 @@ impl PaneController {
     pub(super) fn resize_content(&mut self, width: f32, height: f32, cell: CellMetrics) -> bool {
         self.content_size = (width, height);
         self.cell_metrics = Some(cell);
-
-        self.update_viewport();
 
         let resized = self.source.resize_for_content(width, height, cell);
 
@@ -451,8 +406,6 @@ impl PaneController {
 
     pub(super) fn begin_block_list_frame(&mut self) {
         self.frozen.begin_frame(self.block_list.active_top);
-
-        self.update_viewport();
     }
 
     pub(super) fn hovered_link(&self) -> Option<&LinkHit> {
@@ -523,7 +476,7 @@ impl PaneController {
                 (RowSource::Screen(row as i64), col as usize)
             }
             None => {
-                let (cell, _) = self.viewport.cell_at(position, cell_metrics);
+                let (cell, _) = self.viewport().cell_at(position, cell_metrics);
 
                 (
                     RowSource::Screen(viewport_top? as i64 + cell.row as i64),
@@ -556,7 +509,7 @@ impl PaneController {
                         return self.frozen.row_top(usize::MAX, usize::try_from(row).ok()?);
                     }
 
-                    Some(self.viewport.cursor_y(
+                    Some(self.viewport().cursor_y(
                         (row - top).min(u16::MAX as i64) as u16,
                         cell_metrics.height_px,
                     ))
@@ -642,7 +595,12 @@ impl PaneController {
 
         self.selection_origin = None;
 
-        let outcome = if self.interaction.commit_block_selection() {
+        let committed = self.interaction.commit_block_selection();
+
+        // The thumb's press stopped propagation, so the terminal never saw a
+        // matching press; forwarding the release would hand the program an
+        // unmatched button-up or end a selection that never started.
+        let outcome = if scrollbar_released || committed {
             MouseOutcome::Ignored
         } else {
             self.apply_mouse(input, SurfaceMouseEventKind::Up, SelectionType::Simple)
@@ -721,7 +679,7 @@ impl PaneController {
             return MouseOutcome::Ignored;
         };
 
-        let (cell, side) = self.viewport.cell_at(input.position, metrics);
+        let (cell, side) = self.viewport().cell_at(input.position, metrics);
 
         let handled = if self.block_list_mode()
             && !self
@@ -802,7 +760,7 @@ impl PaneController {
             return outcome;
         };
 
-        let (cell, _) = self.viewport.cell_at(position, metrics);
+        let (cell, _) = self.viewport().cell_at(position, metrics);
 
         outcome.handled = self.source.session.apply_scroll(cell, lines, modifiers);
 
@@ -829,15 +787,13 @@ impl PaneController {
     }
 
     pub(super) fn scroll_to_latest(&mut self) -> ScrollOutcome {
-        if !self.viewport.is_scrolled() {
+        if !self.viewport().is_scrolled() {
             return ScrollOutcome::Ignored;
         }
 
-        match self.viewport {
+        match self.viewport() {
             Viewport::BlockList { .. } => {
                 self.block_list.scrollbar.0 = self.block_list.scrollbar.1;
-
-                self.update_viewport();
 
                 ScrollOutcome::List(ListOp::ScrollToEnd)
             }
@@ -846,11 +802,11 @@ impl PaneController {
     }
 
     pub(super) fn scroll_thumb_to(&mut self, thumb_top: f32) -> ScrollOutcome {
-        let Some(target) = self.viewport.thumb_target(thumb_top) else {
+        let Some(target) = self.viewport().thumb_target(thumb_top) else {
             return ScrollOutcome::Ignored;
         };
 
-        match &self.viewport {
+        match self.viewport() {
             Viewport::BlockList { .. } => self.scroll_list_to(target as f32),
             Viewport::Grid { .. } => {
                 let accepted = if thumb_top >= 1.0 {
@@ -886,8 +842,6 @@ impl PaneController {
         );
 
         self.block_list.scrollbar.0 = target.min(self.block_list.scrollbar.1);
-
-        self.update_viewport();
 
         ScrollOutcome::List(op)
     }

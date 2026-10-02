@@ -14,6 +14,7 @@ mod tests;
 use std::borrow::Cow;
 use std::{iter, path};
 
+use nmt_config::local_state::TabFold;
 use rust_i18n::t;
 
 use crate::tabs::{CommandOutcome, TabId, TabManager};
@@ -104,11 +105,15 @@ pub struct WorkspaceId(pub u64);
 /// What a workspace entry stands for. `Settings` is a pseudo workspace: it
 /// holds the settings surface instead of shells, is never persisted, and is
 /// excluded from the counts that decide whether a close request is about to
-/// take the user's last real workspace away.
+/// take the user's last real workspace away. `Remote` holds the tabs that
+/// follow one paired host's sessions: those run on the host, so they stay out
+/// of this computer's workspaces, which the sidebar lists as local, and out of
+/// the saved session, since the host lists its sessions again on connect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceKind {
     Normal,
     Settings,
+    Remote,
 }
 
 pub struct Workspace {
@@ -121,6 +126,9 @@ pub struct Workspace {
     roots: Option<WorkspaceRoots>,
 
     pinned: bool,
+
+    /// How many of its tabs the vertical sidebar lists under it.
+    tab_fold: TabFold,
 
     /// A workspace the user has not adopted yet: it stays out of the saved
     /// session, so opening a directory to run one command leaves nothing
@@ -145,6 +153,22 @@ pub struct WorkspaceManager {
 
 pub fn default_workspace_name() -> Cow<'static, str> {
     t!("shell-workspace-default-name")
+}
+
+/// The name a workspace is shown by: its own, or for one still carrying the
+/// default name, the last component of its primary directory, which tells
+/// unnamed workspaces apart.
+pub fn workspace_display_label(name: &str, cwd: &str) -> String {
+    if name != "New Workspace" && name != t!("shell-workspace-default-name") {
+        return name.to_string();
+    }
+
+    cwd.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|component| !component.is_empty())
+        .filter(|component| *component != ".")
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// Every directory a summary owns, primary first, skipping placeholder
@@ -229,6 +253,7 @@ pub struct WorkspaceSummary {
     pub active: bool,
     pub pinned: bool,
     pub closeable: bool,
+    pub tab_fold: TabFold,
 
     /// Not part of the saved session until the user activates it.
     pub temporary: bool,
@@ -261,6 +286,7 @@ impl WorkspaceManager {
                 name,
                 roots: Some(roots),
                 pinned: false,
+                tab_fold: TabFold::All,
                 temporary: false,
                 kind: WorkspaceKind::Normal,
                 tabs,
@@ -282,6 +308,7 @@ impl WorkspaceManager {
             name,
             roots,
             pinned: false,
+            tab_fold: TabFold::All,
             temporary: false,
             kind,
             tabs,
@@ -387,6 +414,20 @@ impl WorkspaceManager {
         });
     }
 
+    /// Set how many of the workspace's tabs the vertical sidebar lists.
+    pub fn set_tab_fold(&mut self, id: WorkspaceId, fold: TabFold) {
+        if let Some(workspace) = self.workspaces.find_mut(id) {
+            workspace.tab_fold = fold;
+        }
+    }
+
+    /// Step the workspace's fold on to the next one its row cycles through.
+    pub fn cycle_tab_fold(&mut self, id: WorkspaceId) {
+        if let Some(workspace) = self.workspaces.find_mut(id) {
+            workspace.tab_fold = workspace.tab_fold.next();
+        }
+    }
+
     /// Move the workspace at `from` to `to`, keeping the same workspace active.
     /// Cross-boundary pinned/unpinned moves are ignored.
     pub fn reorder(&mut self, from: usize, to: usize) {
@@ -468,9 +509,29 @@ impl WorkspaceManager {
         self.workspaces.find(id).map(|ws| &ws.tabs)
     }
 
+    pub fn tabs_of_mut(&mut self, id: WorkspaceId) -> Option<&mut TabManager<TabSurface>> {
+        self.workspaces.find_mut(id).map(|ws| &mut ws.tabs)
+    }
+
     /// Tab sets of every workspace (the window-close process sweep).
     pub fn all_tabs(&self) -> impl Iterator<Item = &TabManager<TabSurface>> {
         self.workspaces.items().iter().map(|ws| &ws.tabs)
+    }
+
+    /// Every workspace that holds shells, in order, with the name it is
+    /// shown by and its tabs.
+    pub fn normal_workspaces(
+        &self,
+    ) -> impl Iterator<Item = (WorkspaceId, String, &TabManager<TabSurface>)> {
+        self.workspaces
+            .items()
+            .iter()
+            .filter(|ws| ws.kind == WorkspaceKind::Normal)
+            .map(|ws| {
+                let cwd = ws.roots.as_ref().map_or("", WorkspaceRoots::primary);
+
+                (ws.id, workspace_display_label(&ws.name, cwd), &ws.tabs)
+            })
     }
 
     pub fn is_pinned(&self, id: WorkspaceId) -> bool {
@@ -520,8 +581,9 @@ impl WorkspaceManager {
     /// Lightweight per-workspace summary for chrome (name/active), in order.
     /// A presentation-agnostic view of the workspaces for the shell chrome.
     pub fn summaries(&self) -> Vec<WorkspaceSummary> {
-        // The settings entry is always dismissible; a normal workspace stays
-        // closeable only while another normal one would remain.
+        // The settings and remote entries are always dismissible; a normal
+        // workspace stays closeable only while another normal one would
+        // remain.
         let closeable = self.real_len() > 1;
 
         self.workspaces
@@ -541,7 +603,8 @@ impl WorkspaceManager {
                     .map_or_else(Vec::new, |roots| roots.additional().to_vec()),
                 active: index == self.workspaces.active_index(),
                 pinned: ws.pinned,
-                closeable: (closeable || ws.kind == WorkspaceKind::Settings) && !ws.pinned,
+                closeable: (closeable || ws.kind != WorkspaceKind::Normal) && !ws.pinned,
+                tab_fold: ws.tab_fold,
                 temporary: ws.temporary,
                 kind: ws.kind,
                 terminal_progress: tabs_progress(&ws.tabs),

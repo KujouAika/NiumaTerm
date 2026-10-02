@@ -33,6 +33,24 @@ pub enum NewlineShortcut {
     Off,
 }
 
+/// Which proxy the application's own network requests use: the relay, update
+/// checks and downloads, and usage queries. Shells and agents started in a
+/// terminal keep their own environment.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProxyMode {
+    /// Connect directly, ignoring the environment and system settings.
+    Off,
+    /// The `HTTPS_PROXY` family of environment variables, then the operating
+    /// system's proxy settings; direct when neither names one.
+    #[default]
+    System,
+    /// The HTTP proxy in `proxy-url`, tunneling with `CONNECT`.
+    Http,
+    /// The SOCKS5 proxy in `proxy-url`.
+    Socks,
+}
+
 /// The `[system]` section: process/system behavior settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SystemConfig {
@@ -42,10 +60,6 @@ pub struct SystemConfig {
         rename = "restore-last-session-when-opening"
     )]
     pub restore_last_session_when_opening: bool,
-
-    /// Manage each tab's shell with a Windows Job Object (kill tree on close).
-    #[serde(default, rename = "manage-subprocess-job")]
-    pub manage_subprocess_job: bool,
 
     /// When to warn before closing a pane, tab, workspace, or window.
     #[serde(default, rename = "warn-before-terminating-shell")]
@@ -74,19 +88,50 @@ pub struct SystemConfig {
     /// Allow the application to send native notifications.
     #[serde(default = "default_bool_true", rename = "send-system-notifications")]
     pub send_system_notifications: bool,
+
+    #[serde(default, rename = "proxy")]
+    pub proxy: ProxyMode,
+
+    /// `host:port`, optionally with a scheme and `user:password@`. Used by
+    /// the HTTP and SOCKS modes; empty falls back to the system proxy.
+    #[serde(default, rename = "proxy-url")]
+    pub proxy_url: String,
 }
 
 impl Default for SystemConfig {
     fn default() -> Self {
         Self {
             restore_last_session_when_opening: true,
-            manage_subprocess_job: false,
             warn_before_terminating_shell: WarnBeforeTerminatingShell::default(),
             confirm_before_closing_workspace: true,
             prioritize_ui_threads: false,
             newline_shortcut: NewlineShortcut::default(),
             open_in_best_workspace: true,
             send_system_notifications: true,
+            proxy: ProxyMode::default(),
+            proxy_url: String::new(),
+        }
+    }
+}
+
+impl From<ProxyMode> for &'static str {
+    fn from(value: ProxyMode) -> Self {
+        match value {
+            ProxyMode::Off => "off",
+            ProxyMode::System => "system",
+            ProxyMode::Http => "http",
+            ProxyMode::Socks => "socks",
+        }
+    }
+}
+
+impl From<&str> for ProxyMode {
+    fn from(value: &str) -> Self {
+        match value {
+            "off" => Self::Off,
+            "http" => Self::Http,
+            "socks" => Self::Socks,
+            _ => Self::System,
         }
     }
 }

@@ -966,16 +966,34 @@ impl Platform for WindowsPlatform {
             if credentials.is_null() {
                 Ok(None)
             } else {
-                let username: String = unsafe { (*credentials).UserName.to_string()? };
-                let credential_blob = unsafe {
-                    std::slice::from_raw_parts(
-                        (*credentials).CredentialBlob,
-                        (*credentials).CredentialBlobSize as usize,
-                    )
+                // Copy everything out before freeing so a malformed UserName
+                // cannot return early and leak the CredReadW allocation.
+                // Any local process can write a generic credential under this
+                // target name, so UserName and CredentialBlob may be null.
+                // Reading a null UserName or building a slice from a null blob
+                // pointer is undefined behavior even when the length is zero.
+                let credential = unsafe { &*credentials };
+                let username = if credential.UserName.is_null() {
+                    Ok(String::new())
+                } else {
+                    unsafe { credential.UserName.to_string() }
                 };
-                let password = credential_blob.to_vec();
+                let result = username.map(|username| {
+                    let credential_blob = if credential.CredentialBlob.is_null() {
+                        Vec::new()
+                    } else {
+                        unsafe {
+                            std::slice::from_raw_parts(
+                                credential.CredentialBlob,
+                                credential.CredentialBlobSize as usize,
+                            )
+                        }
+                        .to_vec()
+                    };
+                    (username, credential_blob)
+                });
                 unsafe { CredFree(credentials as *const _ as _) };
-                Ok(Some((username, password)))
+                Ok(Some(result?))
             }
         })
     }

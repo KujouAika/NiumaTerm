@@ -1277,3 +1277,151 @@ float4 fill_color(Background background,
 
   return color;
 }
+
+// Backdrop blur. The renderer copies the frame painted so far, reduces the copy
+// to a quarter resolution, runs two separable Gaussian passes over it, and
+// composites the result back into the region's rounded shape.
+
+// Averaging gamma-encoded colors darkens them, so the reduced copies hold
+// decoded values; the composite pass re-encodes once.
+float3 backdrop_decode(float3 color) {
+  return pow(abs(color), 2.2);
+}
+
+float3 backdrop_encode(float3 color) {
+  return pow(abs(color), 1.0 / 2.2);
+}
+
+// Truncating the kernel at three deviations drops under half a percent of its
+// weight, which is below one step of 8-bit output. The cap bounds the worst
+// case cost of a very large radius rather than the visible quality.
+constant int BACKDROP_BLUR_MAX_TAPS = 64;
+
+// Floor for the coverage divisions. A pixel below it contributes a weight small
+// enough that whatever color the division recovers is scaled back out of the
+// result, so the value only has to keep the division finite.
+constant float BACKDROP_MIN_COVERAGE = 1e-4;
+
+constexpr sampler backdrop_sampler(mag_filter::linear, min_filter::linear,
+                                   address::clamp_to_edge);
+
+struct BackdropPassVertexOutput {
+  float4 position [[position]];
+};
+
+// The offscreen blur targets are smaller than the frame, so these passes place
+// their quad against the target's own size rather than the viewport's.
+vertex BackdropPassVertexOutput backdrop_pass_vertex(
+    uint unit_vertex_id [[vertex_id]],
+    constant float2 *unit_vertices [[buffer(BackdropBlurInputIndex_Vertices)]],
+    constant BackdropBlurPass *pass [[buffer(BackdropBlurInputIndex_Params)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  float2 position =
+      unit_vertex * float2(pass->bounds.size.width, pass->bounds.size.height) +
+      float2(pass->bounds.origin.x, pass->bounds.origin.y);
+  float2 target_size = float2(pass->target_size[0], pass->target_size[1]);
+  float2 device_position =
+      position / target_size * float2(2., -2.) + float2(-1., 1.);
+  return BackdropPassVertexOutput{float4(device_position, 0., 1.)};
+}
+
+// Four bilinear taps average a source_scale-wide block, so the reduction to the
+// blur resolution band-limits the image instead of point-sampling it into
+// shimmer as the scene underneath scrolls. Taps stay inside the blurred
+// region: the frame stores premultiplied color, so a neighbour on a more
+// transparent surface reads as near black and would darken the region's rim.
+fragment float4 backdrop_downsample_fragment(
+    BackdropPassVertexOutput input [[stage_in]],
+    constant BackdropBlurPass *pass [[buffer(BackdropBlurInputIndex_Params)]],
+    texture2d<float> source [[texture(BackdropBlurInputIndex_Source)]]) {
+  float2 source_size = float2(pass->source_size[0], pass->source_size[1]);
+  float2 source_min = float2(pass->source_min[0], pass->source_min[1]);
+  float2 source_max = float2(pass->source_max[0], pass->source_max[1]);
+  float2 center = input.position.xy * pass->source_scale;
+  float offset = pass->source_scale * 0.25;
+
+  float4 total = float4(0.);
+  for (int i = 0; i < 4; i++) {
+    float2 tap = center + float2((i & 1) == 0 ? -offset : offset,
+                                 i < 2 ? -offset : offset);
+    tap = clamp(tap, source_min, source_max);
+    float4 sampled = source.sample(backdrop_sampler, tap / source_size);
+    float3 color = sampled.rgb / max(sampled.a, BACKDROP_MIN_COVERAGE);
+    total += float4(backdrop_decode(color) * sampled.a, sampled.a);
+  }
+  return total * 0.25;
+}
+
+fragment float4 backdrop_blur_fragment(
+    BackdropPassVertexOutput input [[stage_in]],
+    constant BackdropBlurPass *pass [[buffer(BackdropBlurInputIndex_Params)]],
+    texture2d<float> source [[texture(BackdropBlurInputIndex_Source)]]) {
+  float2 source_size = float2(pass->source_size[0], pass->source_size[1]);
+  float2 source_min = float2(pass->source_min[0], pass->source_min[1]);
+  float2 source_max = float2(pass->source_max[0], pass->source_max[1]);
+  float2 direction = float2(pass->direction[0], pass->direction[1]);
+  float sigma = max(pass->sigma, 1e-4);
+  int radius = min(int(ceil(sigma * 3.0)), BACKDROP_BLUR_MAX_TAPS);
+
+  float4 total = float4(0.);
+  float weight_total = 0.;
+  for (int i = -radius; i <= radius; i++) {
+    float weight = gaussian(float(i), sigma);
+    // Clamping extends the border pixels outward, so the kernel reaching past
+    // the sampling window repeats its edge instead of pulling in unwritten
+    // texels.
+    float2 tap = clamp(input.position.xy + direction * float(i), source_min,
+                       source_max);
+    total += weight * source.sample(backdrop_sampler, tap / source_size);
+    weight_total += weight;
+  }
+  return total / weight_total;
+}
+
+struct BackdropCompositeVertexOutput {
+  float4 position [[position]];
+  float clip_distance [[clip_distance]][4];
+};
+
+struct BackdropCompositeFragmentInput {
+  float4 position [[position]];
+};
+
+vertex BackdropCompositeVertexOutput backdrop_composite_vertex(
+    uint unit_vertex_id [[vertex_id]],
+    constant float2 *unit_vertices [[buffer(BackdropBlurInputIndex_Vertices)]],
+    constant BackdropBlurSprite *sprite [[buffer(BackdropBlurInputIndex_Params)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(BackdropBlurInputIndex_ViewportSize)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  float4 device_position =
+      to_device_position(unit_vertex, sprite->bounds, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, sprite->bounds,
+                                                 sprite->content_mask.bounds);
+  return BackdropCompositeVertexOutput{
+      device_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+}
+
+// The alpha written here is coverage, not the backdrop's own opacity: the blend
+// state keeps the destination alpha channel, so a translucent window keeps
+// compositing against the desktop exactly as it did before the blur.
+//
+// The color is scaled by that coverage and the blend state multiplies it by the
+// destination's own alpha, which puts the result back into the frame's
+// premultiplied form at whatever transparency the region already had.
+fragment float4 backdrop_composite_fragment(
+    BackdropCompositeFragmentInput input [[stage_in]],
+    constant BackdropBlurSprite *sprite [[buffer(BackdropBlurInputIndex_Params)]],
+    texture2d<float> source [[texture(BackdropBlurInputIndex_Source)]]) {
+  float2 source_size = float2(sprite->source_size[0], sprite->source_size[1]);
+  float2 tap = clamp(input.position.xy / sprite->source_scale, float2(0.5),
+                     source_size - 0.5);
+  float4 blurred = source.sample(backdrop_sampler, tap / source_size);
+  float3 color =
+      backdrop_encode(blurred.rgb / max(blurred.a, BACKDROP_MIN_COVERAGE));
+  float distance =
+      quad_sdf(input.position.xy, sprite->bounds, sprite->corner_radii);
+  float coverage = sprite->opacity * saturate(0.5 - distance);
+  return float4(color * coverage, coverage);
+}

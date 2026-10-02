@@ -1,9 +1,11 @@
 //! Provider launch rules independent of application configuration storage.
 
-use nmt_profile::{AgentProfile, AgentProfileKind, AgentProfileLauncher};
+use nmt_profile::{AgentKind, AgentProfile, AgentProfileLauncher};
 
-use crate::session::AgentKind;
-use crate::{CodexProviderConfig, LaunchConfig, dsh};
+use crate::claude_code::stream_json::PERMISSION_OPTIONS;
+use crate::codex::ProviderConfig;
+use crate::codex::app_server::{APPROVAL_OPTIONS, SANDBOX_OPTIONS};
+use crate::{LaunchConfig, dsh};
 
 pub const ANTHROPIC_MODEL_ENV: &str = "ANTHROPIC_MODEL";
 pub const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
@@ -30,6 +32,11 @@ pub const ANTHROPIC_SUB_MODEL_ENVS: [&str; 3] = [
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 ];
 
+/// Prefix of every provider id [`codex_provider_id`] generates, which tells
+/// the threads of custom-endpoint profiles apart from those Codex ran against
+/// a provider of its own.
+pub(crate) const CODEX_PROVIDER_PREFIX: &str = "niumaterm-";
+
 /// A deterministic provider id keeps Codex history scoped to the profile
 /// without exposing display names as config keys. Profile names are already
 /// unique and act as the identity for restored tabs and remembered settings.
@@ -43,7 +50,7 @@ fn codex_provider_id(profile_name: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
 
-    format!("niumaterm-{hash:016x}")
+    format!("{CODEX_PROVIDER_PREFIX}{hash:016x}")
 }
 
 fn codex_credential_env(provider_id: &str) -> String {
@@ -73,7 +80,7 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
 
     let model = (!profile.model.trim().is_empty()).then(|| profile.model.trim().to_string());
 
-    let codex_provider_id = (profile.kind == AgentProfileKind::Codex
+    let codex_provider_id = (profile.kind == AgentKind::Codex
         && profile.use_custom_endpoint
         && !profile.api_base_url.trim().is_empty())
     .then(|| codex_provider_id(&profile.name));
@@ -85,9 +92,9 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
         // provider entry rather than an environment variable; that entry is
         // built from the same field further down.
         let base_url_env = match profile.kind {
-            AgentProfileKind::Claude => Some("ANTHROPIC_BASE_URL"),
-            AgentProfileKind::DeepSeek => Some(DEEPSEEK_BASE_URL_ENV),
-            AgentProfileKind::Codex => None,
+            AgentKind::Claude => Some("ANTHROPIC_BASE_URL"),
+            AgentKind::DeepSeek => Some(DEEPSEEK_BASE_URL_ENV),
+            AgentKind::Codex => None,
         };
 
         let api_base_url = profile.api_base_url.trim();
@@ -102,18 +109,18 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
 
         if !api_key.is_empty() {
             let key_env = match profile.kind {
-                AgentProfileKind::Claude => "ANTHROPIC_API_KEY",
-                AgentProfileKind::Codex => codex_credential_env
+                AgentKind::Claude => "ANTHROPIC_API_KEY",
+                AgentKind::Codex => codex_credential_env
                     .as_deref()
                     .unwrap_or(OPENAI_API_KEY_ENV),
-                AgentProfileKind::DeepSeek => DEEPSEEK_API_KEY_ENV,
+                AgentKind::DeepSeek => DEEPSEEK_API_KEY_ENV,
             };
 
             env.push((key_env.to_string(), api_key.to_string()));
         }
     }
 
-    if profile.kind == AgentProfileKind::Claude
+    if profile.kind == AgentKind::Claude
         && let Some(model) = model.as_ref()
     {
         env.push((ANTHROPIC_MODEL_ENV.to_string(), model.clone()));
@@ -149,7 +156,7 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
     let api_key_env =
         codex_credential_env.filter(|name| launch_env_value_from_entries(&env, name).is_some());
 
-    let codex_provider = codex_provider_id.map(|id| CodexProviderConfig {
+    let codex_provider = codex_provider_id.map(|id| ProviderConfig {
         id,
         name: if profile.name.trim().is_empty() {
             "NiumaTerm custom endpoint".to_string()
@@ -165,11 +172,11 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
     // their configured executable even if a hand-edited file names a package
     // launcher that their adapter does not support.
     let (executable, executable_args) = match (profile.kind, profile.launcher) {
-        (AgentProfileKind::DeepSeek, AgentProfileLauncher::Npx) => (
+        (AgentKind::DeepSeek, AgentProfileLauncher::Npx) => (
             dsh::NPX_EXECUTABLE.to_string(),
             dsh::NPX_ARGUMENTS.map(str::to_string).to_vec(),
         ),
-        (AgentProfileKind::DeepSeek, AgentProfileLauncher::PnpmDlx) => (
+        (AgentKind::DeepSeek, AgentProfileLauncher::PnpmDlx) => (
             dsh::PNPM_DLX_EXECUTABLE.to_string(),
             dsh::PNPM_DLX_ARGUMENTS.map(str::to_string).to_vec(),
         ),
@@ -185,9 +192,14 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
         provider: codex_provider,
         // Only the harness keeps a provider catalog to declare a model in, and
         // only a model this profile names can be declared in it.
-        declares_image_input: profile.kind == AgentProfileKind::DeepSeek
+        declares_image_input: profile.kind == AgentKind::DeepSeek
             && profile.vision_model
             && !profile.model.trim().is_empty(),
+        // A profile names no composition; the pane supplies the one the user
+        // last picked when it starts a conversation.
+        agent_preset: None,
+        approval: profile_approval(profile),
+        sandbox: profile_sandbox(profile),
     }
 }
 
@@ -207,6 +219,38 @@ fn profile_effort(profile: &AgentProfile) -> Option<String> {
     let effort = profile.effort.trim();
 
     (!effort.is_empty() && effort != "default").then(|| effort.to_string())
+}
+
+/// The approval setting this profile pins, or `None` when it leaves the
+/// choice to the harness and the remembered pick. Claude Code's permission
+/// modes and Codex's approval policies share the field but not their values,
+/// so a value outside this kind's list (left over from a kind switch or a
+/// hand edit) pins nothing rather than reaching a harness that would refuse
+/// it. `default` is the picker's own label for "no choice".
+fn profile_approval(profile: &AgentProfile) -> Option<String> {
+    let options: &[&str] = match profile.kind {
+        AgentKind::Claude => &PERMISSION_OPTIONS,
+        AgentKind::Codex => &APPROVAL_OPTIONS,
+        AgentKind::DeepSeek => &[],
+    };
+
+    pinned_value(&profile.approval, options)
+}
+
+/// The sandbox policy this profile pins. Only Codex has one.
+fn profile_sandbox(profile: &AgentProfile) -> Option<String> {
+    let options: Vec<&str> = match profile.kind {
+        AgentKind::Codex => SANDBOX_OPTIONS.iter().map(|(value, _)| *value).collect(),
+        AgentKind::Claude | AgentKind::DeepSeek => Vec::new(),
+    };
+
+    pinned_value(&profile.sandbox, &options)
+}
+
+fn pinned_value(value: &str, options: &[&str]) -> Option<String> {
+    let value = value.trim();
+
+    (value != "default" && options.contains(&value)).then(|| value.to_string())
 }
 
 pub fn launch_model(kind: AgentKind, launch: LaunchConfig) -> Option<String> {

@@ -86,6 +86,10 @@ impl<S> Tab<S> {
         self.user_title.as_deref()
     }
 
+    pub fn terminal_title(&self) -> Option<&str> {
+        self.terminal_title.as_deref()
+    }
+
     pub fn exited(&self) -> bool {
         self.exited
     }
@@ -138,6 +142,11 @@ impl<S> TabManager<S> {
         id
     }
 
+    /// Append a tab without switching to it.
+    pub fn append_tab(&mut self, surface: S, id: TabId, default_title: String) {
+        self.tabs.push(Tab::new(surface, id, default_title));
+    }
+
     /// Close the tab with `id`, returning its surface so the caller can drop it
     /// (releasing the PTY/IO thread). Refuses the last tab (`None`). After closing
     /// the active tab the active falls to the right neighbor, or the left when
@@ -160,11 +169,39 @@ impl<S> TabManager<S> {
         tab.title() != previous
     }
 
+    /// Replace the title a tab falls back to when neither the user nor its
+    /// content names it, for a tab whose surface was relaunched as something
+    /// its original default no longer describes.
+    pub fn set_default_title(&mut self, id: TabId, title: String) -> bool {
+        let Some(tab) = self.tabs.find_mut(id) else {
+            return false;
+        };
+
+        let previous = tab.title().to_string();
+
+        tab.default_title = title;
+
+        tab.title() != previous
+    }
+
     /// Set the user-authored title, which takes precedence over OSC updates.
     pub fn rename(&mut self, id: TabId, title: String) {
         if let Some(tab) = self.tabs.find_mut(id) {
             tab.user_title = Some(title);
         }
+    }
+
+    /// Drop the user-authored title; returns whether the shown title changed.
+    pub fn clear_rename(&mut self, id: TabId) -> bool {
+        let Some(tab) = self.tabs.find_mut(id) else {
+            return false;
+        };
+
+        let previous = tab.title().to_string();
+
+        tab.user_title = None;
+
+        tab.title() != previous
     }
 
     /// Mark a tab's process as exited (read-only). Ignored if the id is gone.

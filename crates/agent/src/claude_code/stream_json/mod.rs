@@ -12,19 +12,17 @@
 //! switching into `bypassPermissions` mode).
 
 mod control;
-mod launch;
 mod parse;
 mod transcript;
 
 #[cfg(test)]
 mod tests;
 
-use std::env;
-#[cfg(all(test, windows))]
-use std::fs;
+use std::future::Future;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{env, fs};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -39,44 +37,31 @@ use crate::chat::{
     SendOutcome, SlashCommandArguments, SlashCommandInfo, SlashCommandOutcome,
     SlashCommandRunPolicy, SlashCommandSource, ThreadSettings,
 };
+use crate::claude_code::config_home;
 use crate::claude_code::sessions::progress::{PROGRESS_METHOD, ProgressMonitor, ProgressSnapshot};
 use crate::claude_code::sessions::{RestoredTask, load_child_transcript};
-use crate::claude_code::shell_output::shell_items;
 use crate::claude_code::stream_json::control::{
     ControlState, PendingApproval, PendingControlOperation, PendingQuestions,
     merge_question_answers, parse_questions,
 };
-#[cfg(test)]
-use crate::claude_code::stream_json::control::{
-    fail_pending_control_operations, resolve_pending_control_operation,
-};
-#[cfg(test)]
-use crate::claude_code::stream_json::launch::{ANTHROPIC_MODEL_ENV, FILE_CHECKPOINTING_ENV};
-use crate::claude_code::stream_json::launch::{
-    configured_permission_mode, enable_file_checkpointing, file_rewind_request,
-    initial_ready_model, launch_model,
-};
-#[cfg(test)]
-use crate::claude_code::stream_json::parse::parse_claude_usage;
 use crate::claude_code::stream_json::parse::{
     approval_description, claude_result_error, compaction_progress, initialize_command_catalog,
-    legacy_command_catalog, parse_models, slash_command_text, ui_owns_slash_command,
+    parse_models, parse_slash_commands, slash_command_text, ui_owns_slash_command,
+    user_prompt_text,
 };
 #[cfg(test)]
 use crate::claude_code::stream_json::parse::{
-    context_window_usage, parse_slash_commands, update_claude_output,
+    context_window_usage, parse_claude_usage, update_claude_output,
 };
 use crate::claude_code::stream_json::transcript::TranscriptState;
 #[cfg(test)]
-use crate::claude_code::stream_json::transcript::{TurnOutputUsage, window_from_composition};
-use crate::claude_code::tasks::ClaudeTasks;
-#[cfg(test)]
-use crate::claude_code::tool_items::{edit_diff, input_detail, tool_item};
+use crate::claude_code::stream_json::transcript::TurnOutputUsage;
+use crate::claude_code::tasks::{ClaudeTasks, shell_items};
 use crate::claude_code::workflows::{ClaudeWorkflowSource, ClaudeWorkflows};
-use crate::deadline_timer::DeadlineTimer;
 use crate::launcher::AgentCli;
-use crate::request_policy::RequestClass;
+use crate::session::{TranscriptLoad, TranscriptRead};
 use crate::subprocess::JsonLineProcess;
+use crate::subprocess::requests::{DeadlineTimer, RequestClass};
 use crate::workflow::{WorkflowRefreshRequest, WorkflowRefreshResult, WorkflowRun, WorkflowSource};
 use crate::workspace::AgentWorkspace;
 
@@ -111,13 +96,6 @@ fn session_title_description(description: &str) -> String {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TurnState {
-    Idle,
-    Pending,
-    Running,
-}
-
 pub struct Session {
     process: JsonLineProcess,
     transcript: TranscriptState,
@@ -128,11 +106,7 @@ pub struct Session {
     /// needs to `--resume` this conversation.
     session_id: Option<String>,
 
-    /// A locally sent turn becomes running when the first output arrives;
-    /// the CLI announces completion but has no explicit start notification.
-    turn: TurnState,
-
-    accepted_identity: Option<String>,
+    turn: TurnTracker,
 
     /// Model and permission selections sent to the backend. Effort changes
     /// additionally need ordered confirmation and are owned by control state.
@@ -197,6 +171,17 @@ impl Session {
                 arguments: SlashCommandArguments::Freeform,
                 run_policy: SlashCommandRunPolicy::QueueUntilIdle,
             },
+            // The CLI's own `/btw` runs in its terminal UI and is missing from
+            // the catalog it reports to stream-json clients; the request
+            // behind it is reachable, so the adapter offers the command.
+            SlashCommandInfo {
+                name: "side".into(),
+                description: "Ask a side question without interrupting the conversation".into(),
+                argument_hint: Some("<question>".into()),
+                source: SlashCommandSource::Adapter,
+                arguments: SlashCommandArguments::Freeform,
+                run_policy: SlashCommandRunPolicy::Immediate,
+            },
         ]
     }
 
@@ -232,16 +217,14 @@ impl Session {
         let deliver = Arc::new(deliver);
 
         let progress_monitor =
-            ProgressMonitor::new(workspace.primary().map(str::to_owned), deliver.clone())
-                .map_err(|error| format!("could not start Claude progress reader: {error}"))?;
+            ProgressMonitor::new(workspace.primary().map(str::to_owned), deliver.clone());
 
         let stop_progress = progress_monitor.stop_on_exit();
         let timer_delivery = Arc::clone(&deliver);
 
         let timer = DeadlineTimer::new(move || {
             timer_delivery(json!({"method": TIMEOUT_METHOD}));
-        })
-        .map_err(|error| format!("could not start Claude deadline timer: {error}"))?;
+        });
 
         let stop = timer.handle();
 
@@ -268,10 +251,11 @@ impl Session {
             // same cwd's history, so it is immediately valid for local
             // checkpoint lookup; a later init can still confirm or replace it.
             session_id: resume,
-            turn: TurnState::Idle,
-            accepted_identity: None,
+            turn: TurnTracker::default(),
             applied_model: initial_model,
-            applied_permission: None,
+            // A pinned mode rides the launch flag, so the CLI already runs
+            // under it and a later pick compares against it.
+            applied_permission: launch.approval.clone(),
             active_slash_command: None,
             structured_commands_published: false,
             compacting: false,
@@ -296,9 +280,11 @@ impl Session {
             },
         }))?;
 
-        session.control.record_admitted(
+        session.control.admit(
             INIT_REQUEST_ID.to_string(),
             RequestClass::Query,
+            None,
+            PendingControlOperation::Init,
             Instant::now(),
         );
 
@@ -306,13 +292,17 @@ impl Session {
     }
 
     pub fn has_active_operation(&self) -> bool {
-        self.turn != TurnState::Idle || self.control.has_active_request() || self.compacting
+        !self.turn.is_idle() || self.control.has_active_request() || self.compacting
     }
 
-    /// Request EOF shutdown and wait for the launcher plus every contained
-    /// descendant. Forced termination is used only after an explicit user
-    /// choice to interrupt active work.
-    pub fn shutdown(&mut self, timeout: Duration, force: bool) -> Result<(), String> {
+    /// Request EOF shutdown; the returned future waits for the launcher plus
+    /// every contained descendant. Forced termination is used only after an
+    /// explicit user choice to interrupt active work.
+    pub fn shutdown(
+        &mut self,
+        timeout: Duration,
+        force: bool,
+    ) -> impl Future<Output = Result<(), String>> + Send + use<> {
         if force {
             // Forced closure retires requests before EOF can drain queued
             // side effects. Graceful shutdown still drains accepted input.
@@ -356,58 +346,25 @@ impl Session {
         let tasks_changed = self.tasks.observe(&message);
         let workflows_changed = self.workflows.observe(&message);
 
-        // A message written while a turn was still running is queued by the
-        // CLI and then run as a turn of its own, opened with no send from this
-        // side. Model output is the only announcement that turn makes, so it
-        // has to be adopted here; otherwise it is never reported as started,
-        // and everything it produces is filed under the turn that preceded it.
-        let started = match self.turn {
-            TurnState::Idle if carries_model_output(&message) => {
-                self.accepted_identity = None;
+        let turn = self.turn.observe(&message);
 
-                self.transcript.begin_turn();
+        if turn.adopted {
+            self.transcript.begin_turn();
+        }
 
-                true
-            }
-            TurnState::Pending => true,
-            TurnState::Idle | TurnState::Running => false,
-        };
-
-        if started {
-            self.turn = TurnState::Running;
-
+        if turn.started {
             events.push(Event::TurnStarted);
         }
 
-        if self.turn != TurnState::Idle
-            && self.accepted_identity.is_none()
-            && message["parent_tool_use_id"].is_null()
-        {
-            let provider_id = match message["type"].as_str() {
-                Some("stream_event") if message["event"]["type"] == "message_start" => {
-                    message["event"]["message"]["id"].as_str()
-                }
-                Some("assistant") => message["message"]["id"].as_str(),
-                Some("result") if message["is_error"].as_bool() == Some(false) => {
-                    message["uuid"].as_str()
-                }
-                _ => None,
-            };
-
-            if let Some(id) = provider_id.filter(|id| !id.is_empty()) {
-                let id = format!("response:{id}");
-
-                self.accepted_identity = Some(id.clone());
-
-                events.push(Event::ProviderTurnAccepted { id });
-            }
+        if let Some(id) = turn.accepted {
+            events.push(Event::ProviderTurnAccepted { id });
         }
 
         match message["type"].as_str() {
             Some("system") => events.extend(self.on_system(&message)),
             Some("stream_event") => events.extend(self.transcript.on_stream_event(&message)),
             Some("assistant") => events.extend(self.transcript.on_assistant(&message)),
-            Some("user") => events.extend(self.transcript.on_tool_results(&message)),
+            Some("user") => events.extend(self.transcript.on_user_message(&message)),
             Some("result") => events.extend(self.on_result(&message)),
             Some("control_request") => events.extend(self.on_control_request(&message)),
             Some("control_response") => events.extend(self.on_control_response(&message)),
@@ -447,7 +404,7 @@ impl Session {
     /// CLI, so they are set once per change instead of per turn).
     /// Send a user message carrying `images`, which the CLI takes inline as
     /// content blocks beside the text; it has no path input.
-    pub fn send_user_message(
+    pub(crate) fn send_user_message(
         &mut self,
         text: &str,
         settings: &ThreadSettings,
@@ -536,12 +493,13 @@ impl Session {
         };
 
         for id in control_ids {
-            self.control
-                .record_admitted(id.clone(), RequestClass::Mutation, Instant::now());
-
-            self.control.attach_input(&id, ticket.clone());
-
-            self.control.track(id, PendingControlOperation::Other);
+            self.control.admit(
+                id,
+                RequestClass::Mutation,
+                Some(ticket.clone()),
+                PendingControlOperation::Other,
+                Instant::now(),
+            );
         }
 
         if settings.model.is_some() {
@@ -556,16 +514,13 @@ impl Session {
             self.control.record_effort(request_id, effort);
         }
 
-        if self.turn != TurnState::Idle {
-            SendOutcome::Steered
-        } else {
-            self.turn = TurnState::Pending;
-            self.accepted_identity = None;
-
-            self.transcript.begin_turn();
-
-            SendOutcome::StartedTurn
+        if !self.turn.begin_message_turn() {
+            return SendOutcome::Steered;
         }
+
+        self.transcript.begin_turn();
+
+        SendOutcome::StartedTurn
     }
 
     /// Send a provider command through Claude's stream-json command path.
@@ -582,7 +537,7 @@ impl Session {
             return SlashCommandOutcome::NotReady;
         }
 
-        if self.turn != TurnState::Idle {
+        if !self.turn.is_idle() {
             return SlashCommandOutcome::Rejected {
                 message: "Claude is already running a turn.".to_string(),
             };
@@ -599,7 +554,7 @@ impl Session {
             };
         }
 
-        self.turn = TurnState::Pending;
+        self.turn.begin_command_turn();
 
         self.transcript.begin_turn();
 
@@ -627,14 +582,11 @@ impl Session {
             return false;
         }
 
-        let Ok(request_id) = self.send_control(json!({"subtype": "get_context_usage"})) else {
-            return false;
-        };
-
-        self.control
-            .track(request_id, PendingControlOperation::ContextComposition);
-
-        true
+        self.send_control(
+            json!({"subtype": "get_context_usage"}),
+            PendingControlOperation::ContextComposition,
+        )
+        .is_ok()
     }
 
     /// Ask the CLI to name this conversation. The CLI summarizes `description`
@@ -666,18 +618,15 @@ impl Session {
             return false;
         }
 
-        let Ok(request_id) = self.send_control(json!({
-            "subtype": "generate_session_title",
-            "description": description,
-            "persist": true,
-        })) else {
-            return false;
-        };
-
-        self.control
-            .track(request_id, PendingControlOperation::SessionTitle);
-
-        true
+        self.send_control(
+            json!({
+                "subtype": "generate_session_title",
+                "description": description,
+                "persist": true,
+            }),
+            PendingControlOperation::SessionTitle,
+        )
+        .is_ok()
     }
 
     /// Give the conversation the name the user typed. The CLI records it with
@@ -696,7 +645,10 @@ impl Session {
         }
 
         if self
-            .send_control(json!({"subtype": "rename_session", "title": title}))
+            .send_control(
+                json!({"subtype": "rename_session", "title": title}),
+                PendingControlOperation::Other,
+            )
             .is_err()
         {
             return false;
@@ -707,12 +659,68 @@ impl Session {
         true
     }
 
+    /// Ask a question about the conversation without adding to it. The CLI
+    /// answers from the live context, including a turn still running, in one
+    /// response with no tool execution, so the question needs no idle session
+    /// and cannot change the workspace. The CLI keeps no side history of its
+    /// own for this client: `history` carries the earlier answered exchanges,
+    /// oldest first, so a follow-up can refer back to them.
+    ///
+    /// Returns the request id the answer arrives under as
+    /// [`Event::SideQuestionAnswered`].
+    pub(crate) fn ask_side_question(
+        &mut self,
+        question: &str,
+        history: &[(&str, &str)],
+    ) -> Result<String, String> {
+        if !self.ready || !self.process.has_stdin() {
+            return Err("Claude is not ready".into());
+        }
+
+        let mut request = json!({"subtype": "side_question", "question": question});
+
+        if !history.is_empty() {
+            request["history"] = history
+                .iter()
+                .map(|(question, response)| json!({"question": question, "response": response}))
+                .collect();
+        }
+
+        self.control.check_connected()?;
+
+        let (request_id, message) = self.control.request(request);
+
+        let ticket = self
+            .process
+            .write_tracked(vec![message])
+            .map_err(|error| error.to_string())?;
+
+        // An answer is a model call over the whole context, so it gets the
+        // long deadline; the short query deadline is sized for local reads.
+        self.control.admit(
+            request_id.clone(),
+            RequestClass::Mutation,
+            Some(ticket),
+            PendingControlOperation::SideQuestion(request_id.clone()),
+            Instant::now(),
+        );
+
+        Ok(request_id)
+    }
+
+    /// Stop the model call behind side question `id`. The CLI settles a
+    /// cancelled question with an error response, which is left pending here
+    /// so that response still clears it.
+    pub(crate) fn cancel_side_question(&mut self, id: &str) {
+        let _ = self.try_send(json!({"type": "control_cancel_request", "request_id": id}));
+    }
+
     pub(crate) fn rewind_files(&mut self, user_message_id: &str) -> SlashCommandOutcome {
         if !self.ready || !self.process.has_stdin() {
             return SlashCommandOutcome::NotReady;
         }
 
-        if self.turn != TurnState::Idle || self.control.pending_approval.is_some() {
+        if !self.turn.is_idle() || self.control.pending_approval.is_some() {
             return SlashCommandOutcome::Rejected {
                 message: "Claude must be idle before restoring files.".to_string(),
             };
@@ -724,15 +732,13 @@ impl Session {
             };
         }
 
-        let request_id = match self.send_control(file_rewind_request(user_message_id)) {
-            Ok(id) => id,
-            Err(message) => return SlashCommandOutcome::Rejected { message },
-        };
-
-        self.control
-            .track(request_id, PendingControlOperation::FileRewind);
-
-        SlashCommandOutcome::Accepted
+        match self.send_control(
+            json!({"subtype": "rewind_files", "user_message_id": user_message_id}),
+            PendingControlOperation::FileRewind,
+        ) {
+            Ok(_) => SlashCommandOutcome::Accepted,
+            Err(message) => SlashCommandOutcome::Rejected { message },
+        }
     }
 
     /// Resolve operations that can no longer receive a control response after
@@ -757,29 +763,37 @@ impl Session {
         &self,
         tool_use_id: &str,
         cwd: Option<&str>,
-    ) -> Vec<Event> {
+    ) -> TranscriptLoad {
+        let key = BackgroundTaskKey::claude_code(tool_use_id);
+
         // A background shell keeps its content in an output file rather than
-        // in a child session, so it answers from the reducer and never looks
-        // for a transcript that does not exist.
+        // in a child session, so it is read from there and never looks for a
+        // transcript that does not exist.
         if let Some(detail) = self.tasks.shell_detail(tool_use_id) {
-            return vec![Event::BackgroundTaskTranscript {
-                key: BackgroundTaskKey::claude_code(tool_use_id),
-                update: BackgroundTaskTranscriptUpdate::loaded(shell_items(&detail)),
-            }];
+            return TranscriptLoad::Read(TranscriptRead::new(move || {
+                vec![Event::BackgroundTaskTranscript {
+                    key,
+                    update: BackgroundTaskTranscriptUpdate::loaded(shell_items(&detail)),
+                }]
+            }));
         }
 
-        let Some(session_id) = self.session_id.as_deref() else {
-            return Vec::new();
+        let Some(session_id) = self.session_id.clone() else {
+            return TranscriptLoad::Events(Vec::new());
         };
 
-        let Some(items) = load_child_transcript(cwd, session_id, tool_use_id) else {
-            return Vec::new();
-        };
+        let cwd = cwd.map(str::to_owned);
+        let tool_use_id = tool_use_id.to_owned();
 
-        vec![Event::BackgroundTaskTranscript {
-            key: BackgroundTaskKey::claude_code(tool_use_id),
-            update: BackgroundTaskTranscriptUpdate::loaded(items),
-        }]
+        TranscriptLoad::Read(TranscriptRead::new(move || {
+            load_child_transcript(cwd.as_deref(), &session_id, &tool_use_id)
+                .map(|items| Event::BackgroundTaskTranscript {
+                    key,
+                    update: BackgroundTaskTranscriptUpdate::loaded(items),
+                })
+                .into_iter()
+                .collect()
+        }))
     }
 
     pub fn finish_task_restoration(
@@ -810,17 +824,22 @@ impl Session {
     pub(crate) fn poll_timeouts(&mut self, now: Instant) -> Vec<Event> {
         let mut events = Vec::new();
 
-        for (id, class, ticket) in self.control.expired(now) {
-            let cancelled = ticket.as_ref().is_some_and(|ticket| ticket.cancel());
+        for expired in self.control.expired(now) {
+            let cancelled = expired.input.as_ref().is_some_and(|ticket| ticket.cancel());
 
             let message = if cancelled {
                 "Claude request expired before writing and was cancelled; it was not sent."
                     .to_string()
             } else {
-                class.timeout_message("Claude")
+                expired.class.timeout_message("Claude")
             };
 
-            if cancelled && ticket.as_ref().is_some_and(|ticket| ticket.is_batch()) {
+            if cancelled
+                && expired
+                    .input
+                    .as_ref()
+                    .is_some_and(|ticket| ticket.is_batch())
+            {
                 self.process.abort();
 
                 events.extend(self.control.close(&message));
@@ -830,7 +849,7 @@ impl Session {
                 break;
             }
 
-            if id == INIT_REQUEST_ID {
+            if expired.operation == PendingControlOperation::Init {
                 events.extend(self.control.close(&message));
 
                 events.push(Event::Error {
@@ -841,7 +860,7 @@ impl Session {
                 break;
             }
 
-            if !cancelled && let Some(effort_events) = self.control.expire_effort(&id) {
+            if !cancelled && let Some(effort_events) = self.control.expire_effort(&expired.id) {
                 events.extend(effort_events);
 
                 events.push(Event::Error {
@@ -852,18 +871,7 @@ impl Session {
                 continue;
             }
 
-            let result = self.on_control_response(
-                &json!({"response": {"request_id": id, "subtype": "error", "error": message}}),
-            );
-
-            if result.is_empty() {
-                events.push(Event::Error {
-                    message,
-                    fatal: false,
-                });
-            } else {
-                events.extend(result);
-            }
+            events.extend(self.control.fail_expired(expired, &message));
         }
 
         events
@@ -871,7 +879,8 @@ impl Session {
 
     pub(crate) fn on_exit(&mut self) -> Vec<Event> {
         self.ready = false;
-        self.turn = TurnState::Idle;
+
+        self.turn.exit();
 
         let message = "Claude exited before the control request completed.";
 
@@ -899,7 +908,11 @@ impl Session {
 
     /// Interrupt the running turn (the Esc/Ctrl-C equivalent).
     pub fn interrupt(&mut self) -> bool {
-        self.send_control(json!({"subtype": "interrupt"})).is_ok()
+        self.send_control(
+            json!({"subtype": "interrupt"}),
+            PendingControlOperation::Other,
+        )
+        .is_ok()
     }
 
     /// Stop one child agent, leaving this session's own turn running. Returns
@@ -914,8 +927,11 @@ impl Session {
             return false;
         };
 
-        self.send_control(json!({"subtype": "stop_task", "task_id": task_id}))
-            .is_ok()
+        self.send_control(
+            json!({"subtype": "stop_task", "task_id": task_id}),
+            PendingControlOperation::Other,
+        )
+        .is_ok()
     }
 
     /// The CLI's session id, known immediately for a resumed process and
@@ -1056,18 +1072,19 @@ impl Session {
 
     /// Fold one run's refresh back in. The transcript travels as its own event
     /// because it is read only while someone has that agent open.
-    pub fn apply_workflow_refresh(&mut self, result: WorkflowRefreshResult) -> Vec<Event> {
+    pub fn apply_workflow_refresh(&mut self, mut result: WorkflowRefreshResult) -> Vec<Event> {
         let mut events = Vec::new();
 
-        let task_id = result.task_id;
+        let task_id = result.task_id.clone();
+        let transcript = result.transcript.take();
 
-        if self.workflows.apply_refresh(&task_id, result.refresh)
+        if self.workflows.apply_refresh(result)
             && let Some(snapshot) = self.workflows.snapshot()
         {
             events.push(Event::Workflows(snapshot));
         }
 
-        if let Some(transcript) = result.transcript {
+        if let Some(transcript) = transcript {
             events.push(Event::WorkflowAgentTranscript {
                 task_id,
                 agent_id: transcript.agent_id,
@@ -1090,7 +1107,11 @@ impl Session {
             .unwrap_or_default()
     }
 
-    fn send_control(&mut self, request: Value) -> Result<String, String> {
+    fn send_control(
+        &mut self,
+        request: Value,
+        operation: PendingControlOperation,
+    ) -> Result<String, String> {
         let class = match request["subtype"].as_str() {
             Some("get_context_usage") => RequestClass::Query,
             Some("interrupt" | "stop_task") => RequestClass::Control,
@@ -1106,13 +1127,13 @@ impl Session {
             .write_tracked(vec![message])
             .map_err(|error| error.to_string())?;
 
-        self.control
-            .record_admitted(request_id.clone(), class, Instant::now());
-
-        self.control.attach_input(&request_id, ticket);
-
-        self.control
-            .track(request_id.clone(), PendingControlOperation::Other);
+        self.control.admit(
+            request_id.clone(),
+            class,
+            Some(ticket),
+            operation,
+            Instant::now(),
+        );
 
         Ok(request_id)
     }
@@ -1187,10 +1208,9 @@ impl Session {
 
         // Older Claude versions only reveal this string catalog when the
         // first turn opens. It must not erase richer initialize metadata.
-        if let Some(commands) = legacy_command_catalog(
-            self.structured_commands_published,
-            &message["slash_commands"],
-        ) {
+        if !self.structured_commands_published {
+            let commands = parse_slash_commands(&message["slash_commands"]);
+
             events.push(Event::Commands(commands));
         }
 
@@ -1204,7 +1224,7 @@ impl Session {
     }
 
     fn on_result(&mut self, message: &Value) -> Vec<Event> {
-        self.turn = TurnState::Idle;
+        let accepted = self.turn.finish();
 
         let mut events = self.control.finish_turn();
 
@@ -1226,7 +1246,10 @@ impl Session {
                     Some(message) => SlashCommandOutcome::Rejected {
                         message: message.clone(),
                     },
-                    None => SlashCommandOutcome::Completed { message: None },
+                    None => SlashCommandOutcome::Completed {
+                        message: None,
+                        approval: None,
+                    },
                 },
             });
         }
@@ -1237,7 +1260,7 @@ impl Session {
             error: error.clone(),
         });
 
-        if let Some(id) = self.accepted_identity.take() {
+        if let Some(id) = accepted {
             events.push(Event::ProviderTurnFinished { id, error });
         }
 
@@ -1343,10 +1366,6 @@ impl Session {
     fn on_control_response(&mut self, message: &Value) -> Vec<Event> {
         let response = &message["response"];
 
-        if let Some(id) = response["request_id"].as_str() {
-            self.control.complete(id);
-        }
-
         if response["request_id"].as_str() != Some(INIT_REQUEST_ID) {
             let Some(event) = self.control.resolve(response) else {
                 return Vec::new();
@@ -1361,33 +1380,44 @@ impl Session {
             return vec![event];
         }
 
+        self.control.complete(INIT_REQUEST_ID);
+
         if response["subtype"].as_str() == Some("error") {
             let error = response["error"]
                 .as_str()
                 .unwrap_or("unknown Claude control error")
                 .to_string();
 
+            // A failed initialize means the CLI rejected this client.
             return vec![Event::Error {
                 message: error,
-                // A failed initialize means the CLI rejected this client.
-                fatal: response["request_id"].as_str() == Some(INIT_REQUEST_ID),
+                fatal: true,
             }];
         }
 
         // The initialize response arrives before any turn and carries the
         // model catalog, so the pickers show real values immediately. It
-        // does NOT report the session's current permission mode, and the CLI
-        // resolves its startup mode from user config — so the initial value
-        // comes from the same config file (`permissions.defaultMode`); the
-        // first turn's `init` message then confirms or corrects it. A model
+        // does NOT report the session's current permission mode. A mode
+        // passed as a launch flag is the one the CLI runs under; otherwise
+        // the CLI resolves its startup mode from user config, so the initial
+        // value comes from the same config file (`permissions.defaultMode`).
+        // The first turn's `init` message then confirms or corrects it. A model
         // resolved at spawn reaches the CLI as `--model`, so it is already
         // applied here; a launch that named none starts on the catalog's
         // "default" entry.
-        if response["request_id"].as_str() == Some(INIT_REQUEST_ID) && !self.ready {
-            let permission =
-                Some(configured_permission_mode().unwrap_or_else(|| "default".to_string()));
+        if !self.ready {
+            let permission = Some(
+                self.applied_permission
+                    .clone()
+                    .or_else(configured_permission_mode)
+                    .unwrap_or_else(|| "default".to_string()),
+            );
 
-            let model = initial_ready_model(self.applied_model.as_deref());
+            let model = self
+                .applied_model
+                .as_deref()
+                .unwrap_or("default")
+                .to_string();
 
             self.ready = true;
             self.applied_model = Some(model.clone());
@@ -1422,6 +1452,32 @@ impl Session {
     }
 }
 
+const ANTHROPIC_MODEL_ENV: &str = "ANTHROPIC_MODEL";
+const FILE_CHECKPOINTING_ENV: &str = "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING";
+
+/// The model the CLI must start on. `ANTHROPIC_MODEL` comes first because it
+/// is exported into the child environment and would win there anyway; the
+/// launch config's own field carries the model the tab asked for otherwise.
+fn launch_model(launch: &LaunchConfig) -> Option<String> {
+    // Command environment overrides are last-value-wins, so the adapter must
+    // resolve duplicate entries the same way as the spawned Claude process.
+    launch
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case(ANTHROPIC_MODEL_ENV))
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            launch
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned)
+        })
+}
+
 /// Assemble the CLI invocation for one conversation. Kept apart from the spawn
 /// so the exact argument boundaries can be inspected without starting a
 /// process: a path pushed as its own argument is never re-parsed, which is what
@@ -1444,12 +1500,13 @@ fn claude_command(
         "--permission-prompt-tool",
         "stdio",
         "--allow-dangerously-skip-permissions",
+        "--replay-user-messages",
     ]);
 
     // File snapshots are opt-in for stream-json SDK clients. This is
     // applied after profile overrides so every NiumaTerm Claude session
     // can create checkpoints for subsequent `/rewind` operations.
-    enable_file_checkpointing(&mut command);
+    command.env(FILE_CHECKPOINTING_ENV, "true");
 
     // Recent models omit checklist tools unless the client opts in. Keep an
     // explicit profile or inherited choice while enabling progress by default.
@@ -1474,6 +1531,13 @@ fn claude_command(
     // conversation.
     if let Some(effort) = &launch.effort {
         command.args(["--effort", effort]);
+    }
+
+    // A mode given at launch holds from the first turn. Switching after the
+    // handshake would leave the CLI on its configured mode until the first
+    // message carries a `set_permission_mode` request.
+    if let Some(mode) = &launch.approval {
+        command.args(["--permission-mode", mode]);
     }
 
     // The CLI resolves the model once during its handshake and builds the
@@ -1506,6 +1570,163 @@ fn claude_command(
     }
 
     command
+}
+
+/// The permission mode the CLI will start in, from its user `settings.json`
+/// (`permissions.defaultMode`). The protocol has no way to query the mode
+/// before the first turn, so this mirrors the CLI's own config resolution;
+/// project-level overrides are not consulted (rare, and the first turn's
+/// `init` message corrects any mismatch).
+fn configured_permission_mode() -> Option<String> {
+    let path = config_home()?.join("settings.json");
+    let settings: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+
+    settings["permissions"]["defaultMode"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+// Where the CLI is in a turn, as far as its output lines say.
+//
+// The CLI announces a turn's completion with a `result` line but has no start
+// notification, so a sent turn is pending until its first output arrives, and
+// a turn the CLI opens on its own is only visible through that output.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TurnState {
+    Idle,
+    Pending,
+    Running,
+}
+
+/// The running turn and the provider identity it was accepted under.
+struct TurnTracker {
+    state: TurnState,
+    accepted: Option<String>,
+}
+
+/// What one CLI line said about the turn.
+struct TurnObservation {
+    /// The line opened the turn, which has not been reported as started yet.
+    started: bool,
+
+    /// The turn it opened was queued by the CLI rather than sent from this
+    /// side, so nothing has begun its transcript.
+    adopted: bool,
+
+    /// The provider identity the turn was accepted under, first stated by
+    /// this line.
+    accepted: Option<String>,
+}
+
+impl Default for TurnTracker {
+    fn default() -> Self {
+        Self {
+            state: TurnState::Idle,
+            accepted: None,
+        }
+    }
+}
+
+impl TurnTracker {
+    fn is_idle(&self) -> bool {
+        self.state == TurnState::Idle
+    }
+
+    #[cfg(all(test, windows))]
+    fn state(&self) -> TurnState {
+        self.state
+    }
+
+    /// Read one line from the CLI.
+    ///
+    /// The CLI may consume an extra prompt in the active turn or start another
+    /// turn for it. An echoed prompt can precede that next turn's model output,
+    /// so it must open the transcript before the prompt is published.
+    fn observe(&mut self, message: &Value) -> TurnObservation {
+        let adopted = self.state == TurnState::Idle
+            && (carries_model_output(message) || user_prompt_text(message).is_some());
+
+        if adopted {
+            self.accepted = None;
+        }
+
+        let started = adopted || self.state == TurnState::Pending;
+
+        if started {
+            self.state = TurnState::Running;
+        }
+
+        TurnObservation {
+            started,
+            adopted,
+            accepted: self.accept(message),
+        }
+    }
+
+    /// The provider identity of the turn, when `message` is the first line of
+    /// it to state one. Child-agent lines carry their own identities, so only
+    /// the parent's own lines count.
+    fn accept(&mut self, message: &Value) -> Option<String> {
+        if self.state == TurnState::Idle
+            || self.accepted.is_some()
+            || !message["parent_tool_use_id"].is_null()
+        {
+            return None;
+        }
+
+        let provider_id = match message["type"].as_str() {
+            Some("stream_event") if message["event"]["type"] == "message_start" => {
+                message["event"]["message"]["id"].as_str()
+            }
+            Some("assistant") => message["message"]["id"].as_str(),
+            Some("result") if message["is_error"].as_bool() == Some(false) => {
+                message["uuid"].as_str()
+            }
+            _ => None,
+        }?;
+
+        if provider_id.is_empty() {
+            return None;
+        }
+
+        let id = format!("response:{provider_id}");
+
+        self.accepted = Some(id.clone());
+
+        Some(id)
+    }
+
+    /// Open a turn for a user message just written. Returns `false` when a
+    /// turn is already running, which the message then steers instead.
+    fn begin_message_turn(&mut self) -> bool {
+        if !self.is_idle() {
+            return false;
+        }
+
+        self.state = TurnState::Pending;
+        self.accepted = None;
+
+        true
+    }
+
+    /// Open a turn for a slash command just written. Only called while idle.
+    fn begin_command_turn(&mut self) {
+        self.state = TurnState::Pending;
+    }
+
+    /// Close the turn on its `result` line, returning the identity it was
+    /// accepted under.
+    fn finish(&mut self) -> Option<String> {
+        self.state = TurnState::Idle;
+
+        self.accepted.take()
+    }
+
+    /// Close the turn because the process exited.
+    fn exit(&mut self) {
+        self.state = TurnState::Idle;
+    }
 }
 
 /// Whether a line is model output, which the CLI only emits inside a turn.

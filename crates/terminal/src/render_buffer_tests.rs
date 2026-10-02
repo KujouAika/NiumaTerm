@@ -1,0 +1,235 @@
+use crate::ghostty::GhosttyTerminal;
+use crate::grid::{Column, Line, Pos, StyleFlags, Wide};
+use crate::render_buffer::*;
+
+#[test]
+fn populates_text_styles_and_cursor() {
+    let mut engine = GhosttyTerminal::new(20, 2, 100).unwrap();
+
+    engine.write_vt(b"\x1b[1mhi\x1b[0m");
+
+    let mut buf = RenderBuffer::new(20, 2);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert_eq!(buf.cell(0, 0).c(), 'h');
+    assert_eq!(buf.cell(1, 0).c(), 'i');
+    assert!(
+        buf.style(buf.cell(0, 0).style_id())
+            .flags
+            .contains(StyleFlags::BOLD)
+    );
+    assert_eq!(buf.cursor(), Pos::new(Line(0), Column(2)));
+}
+
+#[test]
+fn reused_captures_replace_metadata_and_revisions_together() {
+    let mut engine = GhosttyTerminal::new(20, 2, 100).unwrap();
+    let mut buffer = RenderBuffer::new(20, 2);
+
+    engine.write_vt(b"\x1b]0;first\x07one");
+
+    engine.snapshot_into(&mut buffer, 7, 2).unwrap();
+
+    assert_eq!((buffer.revision(), buffer.theme_revision()), (7, 2));
+    assert_eq!(buffer.title(), "first");
+    assert_eq!(buffer.viewport_top(), Some(0));
+
+    engine.write_vt(b"\x1b]0;second\x07\rTWO");
+
+    engine.snapshot_into(&mut buffer, 9, 3).unwrap();
+
+    assert_eq!((buffer.revision(), buffer.theme_revision()), (9, 3));
+    assert_eq!(buffer.title(), "second");
+    assert_eq!(buffer.cell(0, 0).c(), 'T');
+}
+
+#[test]
+fn wide_char_marks_spacer() {
+    let mut engine = GhosttyTerminal::new(8, 1, 100).unwrap();
+
+    engine.write_vt("中A".as_bytes());
+
+    let mut buf = RenderBuffer::new(8, 1);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert_eq!(buf.cell(0, 0).wide(), Wide::Wide);
+    assert_eq!(buf.cell(1, 0).wide(), Wide::Spacer);
+    assert_eq!(buf.cell(2, 0).c(), 'A');
+}
+
+#[test]
+fn captured_style_id_resolves_bold_text() {
+    let mut engine = GhosttyTerminal::new(8, 1, 100).unwrap();
+
+    engine.write_vt(b"\x1b[1mB\x1b[0m");
+
+    let mut buf = RenderBuffer::new(8, 1);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    let sid = buf.cell(0, 0).style_id();
+
+    assert!(buf.style(sid).flags.contains(StyleFlags::BOLD));
+}
+
+/// A base codepoint plus a combining mark is preserved as a full
+/// grapheme cluster — base in the `Square`, trailing codepoints in `extras`.
+#[test]
+fn grapheme_cluster_fidelity() {
+    let mut engine = GhosttyTerminal::new(8, 1, 100).unwrap();
+
+    // `e` + U+0301 (combining acute accent) → one grapheme cell.
+    engine.write_vt("e\u{0301}".as_bytes());
+
+    let mut buf = RenderBuffer::new(8, 1);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    let sq = buf.cell(0, 0);
+
+    assert_eq!(sq.c(), 'e', "base codepoint preserved");
+
+    let id = sq.extras_id().expect("combining mark must allocate extras");
+    let extras = buf.extras().get(&id).expect("extras entry present");
+
+    assert!(
+        extras.zerowidth.contains(&'\u{0301}'),
+        "trailing combining codepoint preserved, got {:?}",
+        extras.zerowidth
+    );
+}
+
+/// The buffer captures the engine's per-row soft-wrap flag so line
+/// selection follows it). A soft-wrapped row reports `true`; a hard-ended
+/// (newline-terminated) row reports `false`.
+#[test]
+fn captures_softwrap() {
+    let mut engine = GhosttyTerminal::new(8, 3, 100).unwrap();
+
+    // 13 chars on an 8-wide terminal → row 0 fills and soft-wraps into row 1.
+    engine.write_vt(b"aaaaaaaaaabbb");
+
+    let mut buf = RenderBuffer::new(8, 3);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert!(buf.row_wrapped(0), "row 0 soft-wraps into row 1");
+    assert!(!buf.row_wrapped(1), "row 1 is the (hard) end of the line");
+
+    // A hard newline does NOT set the wrap flag.
+    let mut engine2 = GhosttyTerminal::new(8, 3, 100).unwrap();
+
+    engine2.write_vt(b"ab\r\ncd");
+
+    let mut buf2 = RenderBuffer::new(8, 3);
+
+    engine2.snapshot_into(&mut buf2, 0, 0).unwrap();
+
+    assert!(!buf2.row_wrapped(0), "row 0 ends with a hard newline");
+}
+
+/// The buffer follows the engine viewport on resize.
+#[test]
+fn buffer_resize_follows_engine() {
+    let mut engine = GhosttyTerminal::new(20, 4, 100).unwrap();
+
+    engine.write_vt(b"hello");
+
+    let mut buf = RenderBuffer::new(20, 4);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert_eq!((buf.cols(), buf.rows()), (20, 4));
+    assert_eq!(buf.grid().len(), 4);
+
+    let before_resize = buf.row_versions().to_vec();
+
+    engine.resize(10, 2, 8, 16).unwrap();
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert_eq!((buf.cols(), buf.rows()), (10, 2));
+    assert_eq!(buf.grid().len(), 2);
+
+    for row in buf.grid() {
+        assert_eq!(row.inner.len(), 10, "no stale trailing columns");
+    }
+
+    assert_eq!(buf.row_versions().len(), 2);
+    assert!(
+        buf.row_versions()
+            .iter()
+            .zip(before_resize)
+            .all(|(current, previous)| *current != previous),
+        "resize versions every remaining visible row"
+    );
+}
+
+#[test]
+fn row_versions_follow_and_consume_render_damage() {
+    let mut engine = GhosttyTerminal::new(8, 3, 100).unwrap();
+    let mut buf = RenderBuffer::new(8, 3);
+
+    engine.write_vt(b"\x1b[2;1H");
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    let initial = buf.row_versions().to_vec();
+
+    assert!(initial.iter().all(|version| *version != 0));
+    assert!(initial.windows(2).all(|pair| pair[0] == pair[1]));
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert_eq!(buf.row_versions(), initial, "clean capture keeps versions");
+
+    engine.write_vt(b"X");
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    let partial = buf.row_versions().to_vec();
+
+    assert_eq!(partial[0], initial[0]);
+    assert_ne!(partial[1], initial[1]);
+    assert_eq!(partial[2], initial[2]);
+
+    engine.set_colors([1, 2, 3], [4, 5, 6], [7, 8, 9], &[[0; 3]; 256]);
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    assert!(
+        buf.row_versions()
+            .iter()
+            .zip(&partial)
+            .all(|(current, previous)| current != previous),
+        "global color damage versions every row"
+    );
+}
+
+#[test]
+fn row_versions_accumulate_across_skipped_publications() {
+    let mut engine = GhosttyTerminal::new(8, 3, 100).unwrap();
+    let mut buf = RenderBuffer::new(8, 3);
+
+    engine.write_vt(b"\x1b[2;1H");
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    let initial = buf.row_versions().to_vec();
+
+    engine.write_vt(b"A");
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    engine.write_vt(b"\x1b[3;1HB");
+
+    engine.snapshot_into(&mut buf, 0, 0).unwrap();
+
+    let latest = buf.row_versions();
+
+    assert_eq!(latest[0], initial[0]);
+    assert_ne!(latest[1], initial[1]);
+    assert_ne!(latest[2], initial[2]);
+}

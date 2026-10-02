@@ -1,47 +1,29 @@
 use std::io::Cursor;
-
 use std::path::{Path, PathBuf};
-
 use std::sync::Arc;
-
 use std::sync::atomic::{AtomicU64, Ordering};
-
 use std::time::SystemTime;
-
 use std::{env, fs, process};
 
 use gpui::{Entity, Image, ImageFormat, TestAppContext, VisualTestContext, WindowHandle};
-
 use image_rs::{DynamicImage, ImageFormat as EncodedImageFormat, RgbaImage};
-
 use nmt_agent::AgentWorkspace;
-
 use nmt_agent::chat::{SendOutcome, SessionSummary, SlashCommandOutcome};
-
 use nmt_agent::codex::app_server;
-
 use nmt_agent::input_history::AgentInputHistory as InputHistoryService;
-
 use nmt_agent::session::lifecycle::StartOutcome;
-
 use nmt_agent::transcript::TextField;
-
-use nmt_config::profile::{AgentProfile, AgentProfileKind};
+use nmt_config::profile::AgentProfile;
 
 use crate::agent_tab::input_history::{
     AgentInputHistory, InputHistoryAction, InputHistoryDirection, InputHistoryNavigation,
     InputHistoryScope,
 };
-
 use crate::agent_tab::session::{Backend, TestBackend};
-
 use crate::agent_tab::settings::AgentSettings;
-
 use crate::agent_tab::tests::deliver_session_event;
-
 use crate::agent_tab::{
-    AgentKind, AgentPane, AgentThreadDefaults, PaletteControl, RecentSessionsMode,
-    replace_input_with_history,
+    AgentKind, AgentPane, PaletteControl, RecentSessionsMode, replace_input_with_history,
 };
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -102,7 +84,7 @@ fn open_test_pane(
 
     let profile = AgentProfile {
         name: "Input History Test".into(),
-        kind: AgentProfileKind::Codex,
+        kind: AgentKind::Codex,
         executable: directory
             .path()
             .join("missing-agent.exe")
@@ -120,8 +102,6 @@ fn open_test_pane(
         gpui_component::init(cx);
 
         cx.set_global(AgentSettings::default());
-
-        cx.set_global(AgentThreadDefaults::default());
 
         cx.set_global(AgentInputHistory(InputHistoryService::open(history_path)));
 
@@ -326,6 +306,7 @@ fn pane_navigation_keeps_palette_and_recent_sessions_ahead_of_history(cx: &mut T
                 cwd: None,
                 last_active: SystemTime::now(),
                 snippet: None,
+                origin: None,
             }];
 
             pane.handle_palette_control(PaletteControl::Previous, window, cx);
@@ -362,10 +343,10 @@ fn accepted_new_turn_and_steering_record_only_typed_input(cx: &mut TestAppContex
 
     cx.update(|window, cx| {
         pane.update(cx, |pane, cx| {
-            let epoch = pane.session.borrow_mut().runtime.begin_start();
+            let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
             assert!(matches!(
-                pane.session.borrow_mut().runtime.install(
+                pane.session.borrow_mut().runtime_mut().install(
                     epoch,
                     Ok(Backend::Test(TestBackend::new(
                         [
@@ -380,7 +361,7 @@ fn accepted_new_turn_and_steering_record_only_typed_input(cx: &mut TestAppContex
                 StartOutcome::Installed
             ));
 
-            pane.session.borrow_mut().runtime.ready();
+            pane.session.borrow_mut().runtime_mut().ready();
 
             pane.input.update(cx, |input, cx| {
                 input.set_value("  start the turn  ", window, cx)
@@ -416,10 +397,10 @@ fn slash_history_requires_a_successful_action(cx: &mut TestAppContext) {
 
     cx.update(|window, cx| {
         pane.update(cx, |pane, cx| {
-            let epoch = pane.session.borrow_mut().runtime.begin_start();
+            let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
             assert!(matches!(
-                pane.session.borrow_mut().runtime.install(
+                pane.session.borrow_mut().runtime_mut().install(
                     epoch,
                     Ok(Backend::Test(TestBackend::new(
                         [],
@@ -430,17 +411,17 @@ fn slash_history_requires_a_successful_action(cx: &mut TestAppContext) {
                 StartOutcome::Installed
             ));
 
-            pane.session.borrow_mut().runtime.ready();
+            pane.session.borrow_mut().runtime_mut().ready();
 
             pane.input
                 .update(cx, |input, cx| input.set_value("/compact", window, cx));
 
             pane.submit_current_slash(window, cx);
 
-            let epoch = pane.session.borrow_mut().runtime.begin_start();
+            let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
             assert!(matches!(
-                pane.session.borrow_mut().runtime.install(
+                pane.session.borrow_mut().runtime_mut().install(
                     epoch,
                     Ok(Backend::Test(TestBackend::new(
                         [],
@@ -453,9 +434,9 @@ fn slash_history_requires_a_successful_action(cx: &mut TestAppContext) {
                 StartOutcome::Installed
             ));
 
-            pane.session.borrow_mut().runtime.ready();
+            pane.session.borrow_mut().runtime_mut().ready();
 
-            pane.session.borrow_mut().commands.awaiting_turn = false;
+            pane.session.borrow_mut().commands_mut().awaiting_turn = false;
 
             pane.input
                 .update(cx, |input, cx| input.set_value("/review", window, cx));
@@ -502,10 +483,10 @@ fn rejected_submission_preserves_draft_images_and_unnamed_state(cx: &mut TestApp
 
     cx.update(|window, cx| {
         pane.update(cx, |pane, cx| {
-            let epoch = pane.session.borrow_mut().runtime.begin_start();
+            let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
             assert!(matches!(
-                pane.session.borrow_mut().runtime.install(
+                pane.session.borrow_mut().runtime_mut().install(
                     epoch,
                     Ok(Backend::Test(TestBackend::new(
                         [SendOutcome::Rejected {
@@ -518,9 +499,9 @@ fn rejected_submission_preserves_draft_images_and_unnamed_state(cx: &mut TestApp
                 StartOutcome::Installed
             ));
 
-            pane.session.borrow_mut().runtime.ready();
+            pane.session.borrow_mut().runtime_mut().ready();
 
-            pane.session.borrow_mut().naming.named = false;
+            pane.session.borrow_mut().naming_mut().named = false;
 
             pane.input.update(cx, |input, cx| {
                 input.set_value("keep this draft", window, cx)
@@ -537,7 +518,7 @@ fn rejected_submission_preserves_draft_images_and_unnamed_state(cx: &mut TestApp
 
             assert_eq!(pane.input.read(cx).text().to_string(), draft);
             assert_eq!(pane.attachments.images().iter().count(), 1);
-            assert!(!pane.session.borrow().naming.named);
+            assert!(!pane.session.borrow_mut().naming_mut().named);
             assert!(
                 cx.global::<AgentInputHistory>()
                     .0
@@ -557,11 +538,11 @@ fn unavailable_session_keeps_input_without_recording(cx: &mut TestAppContext) {
 
     cx.update(|window, cx| {
         pane.update(cx, |pane, cx| {
-            pane.session.borrow_mut().runtime.retire();
+            pane.session.borrow_mut().runtime_mut().retire();
 
             pane.session
                 .borrow_mut()
-                .runtime
+                .runtime_mut()
                 .begin_conversation_change();
 
             pane.input
@@ -694,7 +675,7 @@ fn interruption_restores_only_unanswered_input_and_preserves_new_drafts(cx: &mut
 
         let turn = view_cx.update(|window, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 let mut backend = TestBackend::new(
                     [SendOutcome::StartedTurn],
@@ -707,12 +688,12 @@ fn interruption_restores_only_unanswered_input_and_preserves_new_drafts(cx: &mut
                 assert!(matches!(
                     pane.session
                         .borrow_mut()
-                        .runtime
+                        .runtime_mut()
                         .install(epoch, Ok(Backend::Test(backend))),
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 pane.attachments.add_annotation("quoted answer".into());
 
@@ -722,7 +703,7 @@ fn interruption_restores_only_unanswered_input_and_preserves_new_drafts(cx: &mut
 
                 pane.send_user_message(window, cx);
 
-                let turn = pane.session.borrow().delivery.turn();
+                let turn = pane.session.borrow().turn();
 
                 pane.start_item(
                     Item::AgentMessage {
@@ -747,13 +728,13 @@ fn interruption_restores_only_unanswered_input_and_preserves_new_drafts(cx: &mut
                 if visible {
                     assert_eq!(input, "new draft");
                     assert!(pane.attachments.annotations().is_empty());
-                    assert!(pane.session.borrow().delivery.is_active());
+                    assert!(pane.session.borrow().delivery().is_active());
                 } else {
                     assert!(input.contains("original draft"));
                     assert!(input.ends_with("new draft"));
                     assert_eq!(pane.attachments.annotations(), ["quoted answer"]);
                     assert!(!pane.transcript.read(cx).is_working());
-                    assert!(!pane.session.borrow().delivery.is_active());
+                    assert!(!pane.session.borrow().delivery().is_active());
                 }
 
                 assert_eq!(
@@ -774,10 +755,7 @@ fn interruption_restores_only_unanswered_input_and_preserves_new_drafts(cx: &mut
         view_cx.read(|cx| {
             let pane = pane.read(cx);
 
-            assert_eq!(
-                pane.session.borrow().delivery.turn(),
-                turn + u64::from(!visible)
-            );
+            assert_eq!(pane.session.borrow().turn(), turn + u64::from(!visible));
             assert!(pane.transcript.read(cx).is_working());
         });
     }

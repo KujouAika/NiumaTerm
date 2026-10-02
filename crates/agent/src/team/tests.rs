@@ -1,15 +1,15 @@
 use crate::AgentWorkspace;
 use crate::chat::ThreadSettings;
 use crate::session::AgentKind;
-use crate::team::budget::{Budget, BudgetError, TurnPurpose};
 use crate::team::discussion::{
     Arrangement, ArrangementState, DiscussionError, DiscussionMode, DiscussionState, PauseReason,
     PublicSnapshot, Stage, StageKind,
 };
-use crate::team::identity::{
-    AttemptId, InteractionId, MessageId, OperationId, OwnershipGeneration, StageId,
+use crate::team::member::{MemberConfig, ProfileReference};
+use crate::team::model::{
+    AttemptId, Author, ContextError, ContextLimits, MessageId, OperationId, PublicMessage,
+    Publication, SourceFragment, StageId, Summary, SummaryId, UserInput,
 };
-use crate::team::member::{HistoryScope, MemberConfig, ProfileReference};
 use crate::team::room::{MemberError, Room};
 
 pub(super) fn config(name: &str, root: &str) -> MemberConfig {
@@ -26,7 +26,6 @@ pub(super) fn config(name: &str, root: &str) -> MemberConfig {
             ..ThreadSettings::default()
         },
         role: String::new(),
-        history: HistoryScope::CompletedPublic,
     }
 }
 
@@ -43,10 +42,7 @@ fn shared_profile_members_keep_independent_conversations_settings_and_roots() {
     settings.model = Some("another-model".into());
     settings.sandbox = Some("workspace-write".into());
 
-    room.set_member_settings(alice, OwnershipGeneration::default(), settings)
-        .unwrap();
-
-    room.members[0].coverage.messages.insert(MessageId::new());
+    room.set_member_settings(alice, settings).unwrap();
 
     assert_ne!(alice, bob);
     assert_eq!(room.member(bob).unwrap(), &original);
@@ -62,7 +58,7 @@ fn shared_profile_members_keep_independent_conversations_settings_and_roots() {
 }
 
 #[test]
-fn duplicate_names_and_stale_settings_leave_member_state_unchanged() {
+fn duplicate_names_leave_member_state_unchanged() {
     let mut room = Room::new(AgentWorkspace::default());
 
     let alice = room.add_member(config("Alice", "C:/a")).unwrap();
@@ -80,14 +76,6 @@ fn duplicate_names_and_stale_settings_leave_member_state_unchanged() {
     assert_eq!(
         room.rename_member(alice, "\n"),
         Err(MemberError::InvalidName)
-    );
-    assert_eq!(
-        room.set_member_settings(
-            alice,
-            OwnershipGeneration::default().next().unwrap(),
-            ThreadSettings::default()
-        ),
-        Err(MemberError::StaleOwner)
     );
     assert_eq!(room, before);
 
@@ -115,12 +103,6 @@ fn mode_changes_preserve_checkpoints_budget_and_independent_pause_reasons() {
     let run = &mut room.discussions[0];
     let attempt = AttemptId::new();
 
-    run.budget
-        .reserve(&[(attempt, TurnPurpose::Response)])
-        .unwrap();
-
-    run.budget.charge(attempt).unwrap();
-
     run.stages.push(Stage {
         decision: None,
         id: StageId::new(),
@@ -142,7 +124,7 @@ fn mode_changes_preserve_checkpoints_budget_and_independent_pause_reasons() {
 
     let stages = run.stages.clone();
     let budget = run.budget.clone();
-    let question = PauseReason::Interaction(InteractionId::new());
+    let question = PauseReason::Interaction(bob);
     let update = PauseReason::Maintenance("codex-installation".into());
 
     run.pause(question.clone());
@@ -157,7 +139,7 @@ fn mode_changes_preserve_checkpoints_budget_and_independent_pause_reasons() {
     assert!(run.pauses().contains(&PauseReason::ModeChange));
     assert_eq!(run.state(), DiscussionState::Paused);
     assert_eq!(run.stages(), stages);
-    assert_eq!(run.budget(), &budget);
+    assert_eq!(run.budget, budget);
     assert_eq!(run.participants(), &[alice, bob]);
     assert_eq!(run.mode(), DiscussionMode::Moderated { moderator: bob });
     assert!(matches!(
@@ -176,60 +158,239 @@ fn mode_changes_preserve_checkpoints_budget_and_independent_pause_reasons() {
     assert_eq!(room.discussions()[0].participants(), &[alice, bob]);
 }
 
+fn message(text: &str) -> PublicMessage {
+    PublicMessage {
+        id: MessageId::new(),
+        author: Author::User,
+        publication: Publication::UserInput,
+        text: text.into(),
+        replies_to: Vec::new(),
+    }
+}
+
 #[test]
-fn stage_reservations_are_atomic_and_keep_the_report_turn() {
-    let mut budget = Budget::discussion();
+fn partial_summary_does_not_hide_an_uncovered_tail() {
+    let mut room = Room::new(AgentWorkspace::default());
 
-    let initial: Vec<_> = (0..10)
-        .map(|_| (AttemptId::new(), TurnPurpose::Response))
-        .collect();
+    let alice = room.add_member(config("Alice", "C:/a")).unwrap();
+    let source = message("First half. Second half.");
+    let source_id = source.id;
+    let length = source.text.len();
 
-    budget.reserve(&initial).unwrap();
+    room.messages.push(source);
 
-    let before = budget.clone();
+    let first = Summary {
+        id: SummaryId::new(),
+        version: 1,
+        owner: alice,
+        sources: vec![source_id],
+        fragments: vec![SourceFragment {
+            source: source_id,
+            start: 0,
+            end: 12,
+        }],
+        prior_summaries: Vec::new(),
+        goals: "First half summary".into(),
+        constraints: String::new(),
+        agreements: String::new(),
+        disagreements: Vec::new(),
+    };
 
-    let group = [
-        (AttemptId::new(), TurnPurpose::Summary),
-        (AttemptId::new(), TurnPurpose::Moderation),
-    ];
+    room.summaries.push(first.clone());
 
-    assert_eq!(budget.reserve(&group), Err(BudgetError::InsufficientTurns));
-    assert_eq!(budget, before);
+    let limits = ContextLimits {
+        max_bytes: 10_000,
+        recent_messages: 0,
+    };
 
-    budget.reserve(&group[..1]).unwrap();
+    let partial = room
+        .prepare_context(
+            alice,
+            &room.public_snapshot(),
+            &UserInput::default(),
+            &limits,
+        )
+        .unwrap();
 
-    assert_eq!(
-        budget.reserve(&group[1..]),
-        Err(BudgetError::InsufficientTurns)
+    assert!(partial.text.contains("Second half."));
+    assert!(partial.coverage.messages.contains(&source_id));
+
+    room.summaries.push(Summary {
+        id: SummaryId::new(),
+        fragments: vec![SourceFragment {
+            source: source_id,
+            start: 12,
+            end: length,
+        }],
+        goals: "Second half summary".into(),
+        ..first
+    });
+
+    let complete = room
+        .prepare_context(
+            alice,
+            &room.public_snapshot(),
+            &UserInput::default(),
+            &limits,
+        )
+        .unwrap();
+
+    assert!(!complete.coverage.messages.contains(&source_id));
+    assert_eq!(complete.coverage.summaries.len(), 2);
+    assert!(complete.text.contains("First half summary"));
+    assert!(complete.text.contains("Second half summary"));
+}
+
+#[test]
+fn stage_snapshots_and_coverage_keep_late_replies_without_same_stage_leakage() {
+    let mut room = Room::new(AgentWorkspace::default());
+
+    let alice = room.add_member(config("Alice", "C:/a")).unwrap();
+    let bob = room.add_member(config("Bob", "C:/b")).unwrap();
+    let request = message("Original objective");
+
+    room.messages.push(request.clone());
+
+    let boundary = room.public_snapshot();
+
+    room.messages.push(message("Alice completed later"));
+
+    let late_id = room.messages[1].id;
+
+    room.messages.push(message("Bob completed first"));
+
+    let accepted_id = room.messages[2].id;
+
+    // Bob's own reply is context he already has.
+    room.messages[2].author = Author::Member {
+        id: bob,
+        name: "Bob".into(),
+    };
+
+    let input = UserInput {
+        text: "Respond to peers".into(),
+        ..UserInput::default()
+    };
+
+    let limits = ContextLimits {
+        max_bytes: 10_000,
+        recent_messages: 8,
+    };
+
+    let same_stage = room
+        .prepare_context(bob, &boundary, &input, &limits)
+        .unwrap();
+
+    assert!(same_stage.text.contains("Original objective"));
+    assert!(!same_stage.text.contains("Alice completed later"));
+
+    let next_stage = room
+        .prepare_context(bob, &room.public_snapshot(), &input, &limits)
+        .unwrap();
+
+    assert!(next_stage.coverage.messages.contains(&late_id));
+    assert!(!next_stage.coverage.messages.contains(&accepted_id));
+    assert!(next_stage.text.contains("Alice completed later"));
+    assert!(!next_stage.text.contains("Bob completed first"));
+    assert!(room.coverage(alice).messages.is_empty());
+    assert_eq!(input.text, "Respond to peers");
+}
+
+#[test]
+fn summary_scope_cannot_include_omitted_sources_and_disabling_requires_originals() {
+    let mut room = Room::new(AgentWorkspace::default());
+
+    let alice = room.add_member(config("Alice", "C:/a")).unwrap();
+    let omitted = message("Omitted topic");
+    let selected = message("Selected topic");
+
+    room.messages.extend([omitted.clone(), selected.clone()]);
+
+    let summary = Summary {
+        fragments: Vec::new(),
+        id: SummaryId::new(),
+        version: 1,
+        owner: alice,
+        sources: vec![omitted.id, selected.id],
+        prior_summaries: Vec::new(),
+        goals: "Both topics".into(),
+        constraints: String::new(),
+        agreements: String::new(),
+        disagreements: Vec::new(),
+    };
+
+    room.summaries.push(summary.clone());
+
+    let limits = ContextLimits {
+        max_bytes: 10_000,
+        recent_messages: 0,
+    };
+
+    let prepared = room
+        .prepare_context(
+            alice,
+            &PublicSnapshot {
+                messages: vec![selected.id],
+                summaries: vec![summary.id],
+            },
+            &UserInput::default(),
+            &limits,
+        )
+        .unwrap();
+
+    assert!(prepared.text.contains("Selected topic"));
+    assert!(!prepared.text.contains("Both topics"));
+    assert!(!prepared.text.contains("Omitted topic"));
+
+    room.controls.automatic_summaries = false;
+
+    let prepared = room
+        .prepare_context(
+            alice,
+            &room.public_snapshot(),
+            &UserInput::default(),
+            &limits,
+        )
+        .unwrap();
+
+    assert!(prepared.text.contains("Omitted topic"));
+    assert!(!prepared.text.contains("Both topics"));
+    assert_eq!(room.summaries[0], summary);
+}
+
+#[test]
+fn oversized_public_context_is_rejected_without_truncating_sources() {
+    let mut room = Room::new(AgentWorkspace::default());
+
+    let alice = room.add_member(config("Alice", "C:/a")).unwrap();
+    let original = message(&"Résumé 😀 ".repeat(1000));
+
+    room.messages.push(original.clone());
+
+    let limits = ContextLimits {
+        max_bytes: 2048,
+        recent_messages: 0,
+    };
+
+    let result = room.prepare_context(
+        alice,
+        &room.public_snapshot(),
+        &UserInput::default(),
+        &limits,
     );
 
-    let report = AttemptId::new();
+    assert!(matches!(result, Err(ContextError::SummaryUnavailable)));
+    assert_eq!(room.messages[0].text, original.text);
 
-    budget.reserve(&[(report, TurnPurpose::Report)]).unwrap();
+    room.controls.automatic_summaries = false;
 
-    budget.charge(report).unwrap();
-
-    assert_eq!(
-        budget.cancel_unsent(report),
-        Err(BudgetError::AlreadyDispatched)
-    );
-
-    budget.cancel_unsent(group[0].0).unwrap();
-
-    assert_eq!(
-        budget.reserve(&group[1..]),
-        Err(BudgetError::InsufficientTurns)
-    );
-
-    budget.add_turns(1).unwrap();
-
-    budget.reserve(&group[1..]).unwrap();
-
-    let charged = budget.clone();
-
-    assert_eq!(
-        budget.reserve(&[group[1]]),
-        Err(BudgetError::DuplicateAttempt)
-    );
-    assert_eq!(budget, charged);
+    assert!(matches!(
+        room.prepare_context(
+            alice,
+            &room.public_snapshot(),
+            &UserInput::default(),
+            &limits
+        ),
+        Err(ContextError::SelectRange)
+    ));
 }

@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.4.0"
+version = "1.6.7"
 publish = false
 authors = ["f32y <nyhvec@gmail.com>"]
 edition = "2024"
@@ -18,15 +18,19 @@ members = [
     "crates/platform",
     "crates/profiling",
     "crates/profile",
-    "crates/remote_net",
     "crates/shell_extension",
     "crates/terminal",
     "crates/tree_sitter_bundle",
-    "crates/sparkle",
+    "crates/updater",
+    "crates/remote_core",
+    "crates/remote",
+    "crates/mobile",
+    "crates/net",
 
     "third_party/libghostty-vt-sys",
 
     "tools/readability",
+    "tools/uniffi_bindgen",
 
     # GPUI fork
     "third_party/gpui/collections",
@@ -63,6 +67,17 @@ default-members = [
     "crates/tree_sitter_bundle",
 ]
 
+[workspace.lints.cargo]
+non_kebab_case_bins = "allow"
+# Much of the dependency table mirrors the vendored GPUI stack, including
+# platform backends (Wayland, X11, Redox) that no member builds, so dozens of
+# entries trip this lint on every build and bury the warnings that matter.
+unused_workspace_dependencies = "allow"
+# Vendored manifests keep their upstream shape, so each resync does not have
+# to reapply local edits for a lints table or an explicit readme field.
+missing_lints_inheritance = "allow"
+manual_readme = "allow"
+
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(enable_profiling)"] }
 
@@ -77,29 +92,56 @@ disallowed_types = "deny"
 [workspace.dependencies]
 nmt_agent = { path = "crates/agent" }
 nmt_version = { path = "crates/version" }
-# Only the app enables configuration file storage and profile credentials.
-nmt_config = { path = "crates/config", default-features = false }
+nmt_config = { path = "crates/config" }
 nmt_input = { path = "crates/input" }
 libghostty-vt-sys = { path = "third_party/libghostty-vt-sys" }
 nmt_platform = { path = "crates/platform" }
 nmt_profiling = { path = "crates/profiling" }
 nmt_profile = { path = "crates/profile" }
-nmt_remote_net = { path = "crates/remote_net" }
 nmt_terminal = { path = "crates/terminal" }
-nmt_sparkle = { path = "crates/sparkle" }
+nmt_updater = { path = "crates/updater" }
+nmt_remote_core = { path = "crates/remote_core" }
+nmt_remote = { path = "crates/remote" }
+nmt_net = { path = "crates/net" }
 
 # Agent profile credential encryption. The aes-gcm `getrandom` default
 # feature provides the operating-system random source used for nonces.
 # base64 is declared in the GPUI Component section below.
 aes-gcm = "0.10"
 
-# Remote session wire protocol
-base32 = "0.5"
-postcard = { version = "1", features = ["use-std"] }
+# Agent hook token: hex spelling for random bytes and constant-time
+# comparison of the token a hook presents.
+hex = "0.4"
+subtle = "2.6"
+
 sha2 = "0.10"
-snow = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-util = "0.7"
+# Proxy support for the application's own requests: hyper-util reads the
+# system proxy settings reqwest already uses, and tokio-socks dials SOCKS5
+# for the relay WebSocket, which reqwest does not carry.
+hyper-util = "0.1.20"
+tokio-socks = "0.5"
+
+# Remote sessions: Noise handshakes and transport encryption, and the PAKE
+# that turns a short pairing code into a key no offline search can recover.
+snow = "0.10"
+# Seals push notification text for one phone; the same AEAD Noise runs,
+# already in the dependency tree through snow.
+chacha20poly1305 = "0.10"
+spake2 = "0.4"
+# LAN discovery of hosts (DNS-SD), which mobile platforms browse natively.
+mdns-sd = "0.21"
+# Interface enumeration for the LAN addresses a host shows and puts in
+# pairing links; the same version DNS-SD already links.
+if-addrs = "0.15"
+# The macOS login Keychain, which holds the key that seals remote-session
+# secrets at rest.
+security-framework = "3.7"
+# The pairing link as a QR code a phone scans. Without default features it
+# only computes the module grid; the settings page paints it.
+qrcode = { version = "0.14", default-features = false }
 
 # GPUI fork
 collections = { path = "third_party/gpui/collections" }
@@ -210,13 +252,9 @@ anyhow = "1.0.103"
 async-channel = "2.5.0"
 async-task = "4.7.1"
 backtrace = "0.3.76"
-block = "0.1.6"
 cbindgen = { version = "0.29.4", default-features = false }
 chrono = { version = "0.4.45", features = ["serde"] }
-cocoa = "=0.26.1"
-cocoa-foundation = "=0.2.1"
 core-foundation-sys = "0.8.7"
-core-video = { version = "0.6.1", features = ["metal"] }
 cosmic-text = "0.19.0"
 ctor = "1.0.12"
 derive_more = { version = "2.1.1", features = [
@@ -246,9 +284,49 @@ itertools = "0.15.0"
 log = { version = "0.4.33", features = ["kv_unstable_serde", "serde"] }
 lyon = "1.0.19"
 mach2 = "0.6.0"
-metal = "0.33.0"
 num_cpus = "1.17.0"
-objc2-metal = "0.3.2"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-metal",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVMetalTexture",
+    "CVMetalTextureCache",
+    "CVPixelBuffer",
+    "CVReturn",
+] }
+objc2-metal = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "MTLAllocation",
+    "MTLBlitCommandEncoder",
+    "MTLBuffer",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLLibrary",
+    "MTLPixelFormat",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "MTLRenderPipeline",
+    "MTLResource",
+    "MTLTexture",
+    "MTLTypes",
+] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-metal",
+    "CALayer",
+    "CAMetalLayer",
+] }
 parking = "2.2.1"
 pathfinder_geometry = "0.5.1"
 pin-project = "1.1.13"
@@ -270,6 +348,7 @@ stacksafe = "1.0.2"
 strum = { version = "0.28.0", features = ["derive"] }
 syn = { version = "2.0.118", features = ["full", "extra-traits", "visit-mut"] }
 thiserror = "2.0.18"
+uniffi = "0.32"
 uuid = { version = "1.23.4", features = ["v4", "v5", "v7", "serde"] }
 waker-fn = "1.2.0"
 web-time = "1.1.0"
@@ -337,23 +416,13 @@ smol_str = "0.3.6"
 futures = "0.3.32"
 env_logger = "0.11.11"
 bitflags = "2.13.0"
-iovec = "0.1.4"
 tracing = { version = "0.1.44", default-features = false, features = ["log"] }
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter", "chrono"] }
 tracing-appender = "0.2.5"
-# The blocking core of tokio-tungstenite, already in the tree through it. The
-# agent adapters run on reader threads rather than an async runtime, so they
-# take the synchronous client and stay consistent with that shape. Only the
-# client handshake is needed; the sockets it opens are loopback, so none of the
-# TLS backends are.
-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
-objc = "0.2"
 memmap2 = "0.9.11"
 url = "2.5.8"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 dashmap = "6.1.1"
-flate2 = "1.1.9"
-lazy_static = "1.5.0"
 ahash = { version = "0.8.12", features = ["no-rng"] }
 approx = "0.5.1"
 bindgen = "0.72.1"
@@ -373,7 +442,6 @@ core-foundation = "0.10.1"
 core-graphics = "0.24"
 core-text = "21"
 cpal = "0.18.1"
-cursor-icon = { version = "1.2.0", default-features = false }
 deflate = "1.0.0"
 dirs = "6.0.0"
 dpi = "0.1.2"
@@ -394,12 +462,10 @@ image = { version = "0.25.10", default-features = false, features = [
 ] }
 lru = "0.18.0"
 memchr = { version = "2.8.2", default-features = false }
-mio = { version = "1.2.1", features = ["os-poll", "os-ext", "net"] }
-miow = "0.6.1"
 notify = "8.2.0"
 notify-rust = "4"
 num-traits = "0.2.19"
-objc2 = { version = "0.6.4", features = ["relax-sign-encoding"] }
+objc2 = { version = "0.6.4", features = ["relax-sign-encoding", "relax-void-encoding"] }
 objc2-app-kit = { version = "0.3.2", features = [
     "NSAppearance",
     "NSApplication",
@@ -474,7 +540,6 @@ percent-encoding = "2.3.2"
 phf = "0.14.0"
 png = "0.18.1"
 pretty_assertions = "1.4.1"
-rapidhash = { version = "4.4.2", default-features = false }
 redox_syscall = "0.9.0"
 resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
 rustix = { version = "1.1.4", default-features = false, features = [
@@ -487,7 +552,6 @@ sctk = { version = "0.20.0", package = "smithay-client-toolkit", default-feature
     "calloop",
 ] }
 sctk-adwaita = { version = "0.11.0", default-features = false }
-signal-hook = "0.4.4"
 skrifa = "0.43.2"
 slab = "0.4.12"
 softbuffer = { version = "0.4.8", default-features = false, features = [
@@ -632,6 +696,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_TextServices",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_RestartManager",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
 ] }
 winres = "0.1.12"
 wyhash = "0.6.0"

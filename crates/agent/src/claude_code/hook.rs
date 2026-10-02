@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::hook_store::{self, HookRegistration};
-use crate::{AgentEvent, AgentEventInput, AgentEventKind, HookInstallStatus};
+use crate::claude_code::config_home;
+use crate::event::AgentEventInput;
+use crate::hook_store::HookRegistration;
+use crate::{AgentEvent, AgentEventKind, HookInstallStatus};
 
 /// Every hook event the adapter normalizes. Keep in sync with the `normalize`
 /// match below.
@@ -96,13 +98,10 @@ pub(crate) fn normalize(
     .ok()
 }
 
-/// `~/.claude/settings.json`, the user-scope Claude Code configuration.
+/// `settings.json` in Claude Code's configuration home, the user-scope
+/// configuration.
 pub fn settings_path() -> Option<PathBuf> {
-    Some(
-        hook_store::home_dir()?
-            .join(".claude")
-            .join("settings.json"),
-    )
+    Some(config_home()?.join("settings.json"))
 }
 
 const REGISTRATION: HookRegistration = HookRegistration {

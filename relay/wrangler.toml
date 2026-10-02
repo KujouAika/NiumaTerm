@@ -1,0 +1,40 @@
+# NiumaTerm remote-session relay. Each user deploys their own copy to their
+# own Cloudflare account; the project runs none. See relay/README.md.
+#
+# The relay forwards opaque, end-to-end encrypted frames between a host and
+# its paired clients. It holds no keys that can read them.
+name = "niumaterm-relay"
+main = "src/index.ts"
+compatibility_date = "2026-07-29"
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+# One HostRoom per host id pairs the host's sockets with its clients'.
+# One PairingDirectory per user maps short-lived pairing slots to host ids.
+# One UserQuota per user counts that user's client connections.
+[durable_objects]
+bindings = [
+  { name = "HOST_ROOM", class_name = "HostRoom" },
+  { name = "DIRECTORY", class_name = "PairingDirectory" },
+  { name = "PUSH_GATEWAY", class_name = "PushGateway" },
+  { name = "USER_QUOTA", class_name = "UserQuota" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HostRoom", "PairingDirectory"]
+
+# One PushGateway signs and sends every push; see src/push.ts.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PushGateway"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["UserQuota"]
+
+# ACCESS_KEYS is a secret: `wrangler secret put ACCESS_KEYS`. It lists each
+# user with the SHA-256 of their access key, and every socket presents one of
+# those keys, so a stranger who learns the URL cannot use the relay.

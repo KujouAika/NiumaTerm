@@ -1,4 +1,3 @@
-pub use crate::windows::process_exit::wait_for_exit;
 pub use crate::windows::readiness::SoftReady;
 pub use crate::windows::shell_integration::{
     is_shell_integration_registered, register_shell_integration, set_system_notification_enabled,
@@ -12,57 +11,61 @@ pub(crate) use crate::windows::powershell::{
 
 pub mod data_protection;
 pub mod environment;
-pub mod file_version;
 pub mod filesystem;
 pub mod ipc;
 pub mod powershell;
 pub mod process;
-pub mod restart_manager;
-pub mod self_update;
-pub mod shell_extension;
 pub mod window;
 
-pub(crate) mod library;
-
 #[cfg(feature = "clipboard")]
-mod clipboard;
+pub(crate) mod clipboard;
+pub(crate) mod library;
 
 mod child;
 mod conpty;
 mod notifier;
 mod pipes;
-mod process_exit;
 mod readiness;
+mod registered_wait;
 mod shell_integration;
-mod spsc;
 
 #[cfg(test)]
 mod tests;
 
 use std::ffi::OsStr;
+use std::future::Future;
 use std::iter::{self, once};
 use std::os::windows::ffi::OsStrExt;
-use std::sync::mpsc::TryRecvError;
-use std::{io, sync};
+use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context, Poll as TaskPoll, ready};
+use std::{io, mem};
+
+use tokio::task::{JoinHandle, spawn_blocking};
 
 use crate::windows::child::ChildExitWatcher;
 use crate::windows::conpty::Conpty as Backend;
-use crate::windows::pipes::{EventedAnonRead as ReadPipe, EventedAnonWrite as WritePipe};
+use crate::windows::pipes::{ConinPipe as WritePipe, ConoutPipe as ReadPipe};
 use crate::windows::process::{KillOnCloseJob, ProcessTree};
-use crate::{
-    EventedPty, Interest, Poll, ProcessReadWrite, PtyOptions, Token, Waker, Winsize, WinsizeBuilder,
-};
+use crate::{AsyncPty, PtyOptions, WinsizeBuilder};
 
 pub struct Pty {
-    // Backend is required to be the first field, to ensure correct drop order. Dropping
-    // `conout` before `backend` will cause a deadlock (with Conpty).
-    backend: Backend,
+    // Declared first so an unawaited drop starts the console close before the
+    // output pipe closes; the host's final writes then fail instead of waiting.
+    console: Console,
     conout: ReadPipe,
     conin: WritePipe,
-    read_token: Token,
-    write_token: Token,
-    child_event_token: Token,
     child_watcher: ChildExitWatcher,
+}
+
+/// Who holds the console: this value, a blocking resize, or the close started
+/// by `poll_shutdown`. A resize and a close never run at the same time, and no
+/// command can reach the console while another process owns it.
+enum Console {
+    Owned(Backend),
+    Resizing(JoinHandle<Backend>),
+    Closing(Pin<Box<dyn Future<Output = ()> + Send>>),
+    Closed,
 }
 
 /// Create a ConPTY shell with child-only environment overrides.
@@ -77,140 +80,117 @@ pub fn create_managed_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, io::E
 
 impl Pty {
     fn new(
-        backend: impl Into<Backend>,
-        conout: impl Into<ReadPipe>,
-        conin: impl Into<WritePipe>,
+        backend: Backend,
+        conout: ReadPipe,
+        conin: WritePipe,
         child_watcher: ChildExitWatcher,
     ) -> Self {
         Self {
-            backend: backend.into(),
-            conout: conout.into(),
-            conin: conin.into(),
-            read_token: Token(0),
-            write_token: Token(0),
-            child_event_token: Token(0),
+            console: Console::Owned(backend),
+            conout,
+            conin,
             child_watcher,
         }
     }
 
     pub fn process_tree(&self) -> Option<ProcessTree> {
-        self.backend.process_tree()
+        match &self.console {
+            Console::Owned(backend) => backend.process_tree(),
+            Console::Resizing(_) | Console::Closing(_) | Console::Closed => None,
+        }
+    }
+
+    /// Reports whether a child exit has been observed without waiting.
+    pub fn child_exited(&self) -> bool {
+        self.child_watcher.exited()
+    }
+
+    /// Take the console back from a running resize once it finishes.
+    fn poll_resize_completion(&mut self, cx: &mut Context<'_>) -> TaskPoll<io::Result<()>> {
+        let Console::Resizing(task) = &mut self.console else {
+            return TaskPoll::Ready(Ok(()));
+        };
+
+        match ready!(Pin::new(task).poll(cx)) {
+            Ok(backend) => {
+                self.console = Console::Owned(backend);
+
+                TaskPoll::Ready(Ok(()))
+            }
+            Err(error) => {
+                // The task dropped the console with its panic; the close it
+                // started on drop is all the teardown left to run.
+                self.console = Console::Closed;
+
+                TaskPoll::Ready(Err(io::Error::other(error)))
+            }
+        }
     }
 }
 
-impl ProcessReadWrite for Pty {
-    type Reader = ReadPipe;
+impl AsyncPty for Pty {
+    fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> TaskPoll<io::Result<usize>> {
+        self.conout.poll_read(cx, buf)
+    }
 
-    type Writer = WritePipe;
+    fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> TaskPoll<io::Result<usize>> {
+        self.conin.poll_write(cx, buf)
+    }
 
-    #[inline]
-    fn register(
+    fn poll_flush(&mut self, cx: &mut Context<'_>) -> TaskPoll<io::Result<()>> {
+        self.conin.poll_flush(cx)
+    }
+
+    fn poll_exit(&mut self, cx: &mut Context<'_>) -> TaskPoll<()> {
+        self.child_watcher.poll_exit(cx)
+    }
+
+    fn poll_resize(
         &mut self,
-        _poll: &Poll,
-        token: &mut dyn Iterator<Item = Token>,
-        _interest: Interest,
-        waker: &sync::Arc<Waker>,
-    ) -> io::Result<()> {
-        self.read_token = token.next().unwrap();
-        self.write_token = token.next().unwrap();
-        self.child_event_token = token.next().unwrap();
+        cx: &mut Context<'_>,
+        size: WinsizeBuilder,
+    ) -> TaskPoll<io::Result<()>> {
+        match mem::replace(&mut self.console, Console::Closed) {
+            Console::Owned(mut backend) => {
+                // The native control call can wait for the console host.
+                // Transfer ownership while it runs so output reads keep
+                // draining and no borrowed console handle can outlive its
+                // owner on cancellation.
+                self.console = Console::Resizing(spawn_blocking(move || {
+                    backend.set_winsize((&size).into());
 
-        // ConPTY anon pipes have no real OS readiness source; the worker threads and
-        // the child-exit callback signal the loop through this `Waker` instead.
-        self.conout.soft().set_waker(waker.clone());
+                    backend
+                }));
+            }
+            // The caller repolls one request until it completes, so `size` is
+            // the change already running.
+            Console::Resizing(task) => self.console = Console::Resizing(task),
+            closed => {
+                self.console = closed;
 
-        self.conin.soft().set_waker(waker.clone());
-
-        self.child_watcher.set_waker(waker.clone());
-
-        Ok(())
-    }
-
-    #[inline]
-    fn reregister(&mut self, _poll: &Poll, _interest: Interest) -> io::Result<()> {
-        // Nothing to re-arm: the per-source soft-ready flags are level-like and the
-        // worker threads keep them current. Write interest is implicit — the
-        // conin flag is set whenever the buffer has space.
-        Ok(())
-    }
-
-    #[inline]
-    fn deregister(&mut self, _poll: &Poll) -> io::Result<()> {
-        // No real OS sources were registered (the `Waker` is owned by the loop).
-        Ok(())
-    }
-
-    #[inline]
-    fn reader(&mut self) -> &mut Self::Reader {
-        &mut self.conout
-    }
-
-    #[inline]
-    fn read_token(&self) -> Token {
-        self.read_token
-    }
-
-    #[inline]
-    fn writer(&mut self) -> &mut Self::Writer {
-        &mut self.conin
-    }
-
-    #[inline]
-    fn write_token(&self) -> Token {
-        self.write_token
-    }
-
-    #[inline]
-    fn drain_ready(&self) -> Vec<Token> {
-        let mut ready = Vec::with_capacity(3);
-
-        if self.conout.soft().is_ready() {
-            ready.push(self.read_token);
+                return TaskPoll::Ready(Err(io::Error::other("console is closed")));
+            }
         }
 
-        if self.conin.soft().is_ready() {
-            ready.push(self.write_token);
+        self.poll_resize_completion(cx)
+    }
+
+    fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> TaskPoll<io::Result<()>> {
+        // A running resize owns the console; the close needs it back first.
+        ready!(self.poll_resize_completion(cx))?;
+
+        self.console = match mem::replace(&mut self.console, Console::Closed) {
+            Console::Owned(backend) => Console::Closing(Box::pin(backend.close())),
+            other => other,
+        };
+
+        if let Console::Closing(closing) = &mut self.console {
+            ready!(closing.as_mut().poll(cx));
+
+            self.console = Console::Closed;
         }
 
-        if self.child_watcher.soft().is_ready() {
-            ready.push(self.child_event_token);
-        }
-
-        ready
-    }
-
-    #[inline]
-    fn has_ready(&self) -> bool {
-        // Only sources with *unconsumed work* may force a zero-timeout spin: buffered
-        // read data (conout) and a pending child-exit. Writability (conin) is excluded
-        // on purpose — its flag is level-set to "buffer has space", which is true in
-        // steady state, so including it would keep `has_ready()` permanently true and
-        // make the event loop never block (100% CPU busy-spin). The write side is
-        // re-armed by the worker's clear->set edge waker when the buffer drains, so it
-        // does not need this spin path.
-        self.conout.soft().is_ready() || self.child_watcher.soft().is_ready()
-    }
-
-    #[inline]
-    fn set_winsize(&mut self, winsize_builder: WinsizeBuilder) -> Result<(), io::Error> {
-        let winsize: Winsize = (&winsize_builder).into();
-
-        self.backend.set_winsize(winsize);
-
-        Ok(())
-    }
-}
-
-impl EventedPty for Pty {
-    fn child_event_token(&self) -> Token {
-        self.child_event_token
-    }
-
-    fn child_exited(&mut self) -> bool {
-        match self.child_watcher.event_rx().try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => true,
-            Err(TryRecvError::Empty) => false,
-        }
+        TaskPoll::Ready(Ok(()))
     }
 }
 
@@ -221,8 +201,16 @@ fn command_line(shell: &str, args: &[String]) -> String {
         shell
     };
 
+    // Without arguments the setting may be a whole legacy command line, which
+    // must pass through as written. A value that names an existing file is a
+    // bare program path, and left unquoted a space in it would make
+    // CreateProcessW try each space-separated prefix as a program first.
     if args.is_empty() {
-        return shell.to_string();
+        return if Path::new(shell).is_file() {
+            quote_command_arg(shell)
+        } else {
+            shell.to_string()
+        };
     }
 
     let mut out = quote_command_arg(shell);

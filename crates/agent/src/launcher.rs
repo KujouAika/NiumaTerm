@@ -5,22 +5,23 @@
 mod launcher_tests;
 
 use std::cmp::Reverse;
-use std::collections::VecDeque;
-use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
-use std::{env, fmt, io, thread};
+use std::process::{Command, ExitStatus};
+use std::time::Duration;
+use std::{env, fmt, io};
 
 use nmt_platform::environment::override_value;
 use nmt_platform::process::{
-    KillOnCloseJob, decode_child_output, hidden_cmd_command, launch_env_var,
+    KillOnCloseJob, PipedChild, decode_child_output, hidden_cmd_command, launch_env_var,
+    spawn_piped,
 };
+use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use crate::LaunchConfig;
-
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// A configured executable plus its effective environment. All logical CLI
 /// arguments remain separate even though `cmd.exe` is used for Windows
@@ -67,6 +68,9 @@ impl AgentCli {
         }
     }
 
+    /// A launcher for tests, which name an executable directly rather than
+    /// through a profile.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         executable: impl Into<String>,
         environment: impl IntoIterator<Item = (String, String)>,
@@ -159,11 +163,8 @@ impl AgentCli {
             .min(output_limit.max(1))
     }
 
-    fn redact_capped(&self, bytes: &[u8], output_limit: usize) -> (String, bool) {
-        let redacted = self.redact(&decode_child_output(bytes));
-        let truncated = redacted.len() > output_limit;
-
-        (utf8_suffix(&redacted, output_limit), truncated)
+    fn redact_capped(&self, bytes: &[u8], output_limit: usize) -> String {
+        utf8_suffix(&self.redact(&decode_child_output(bytes)), output_limit)
     }
 }
 
@@ -183,19 +184,10 @@ impl ProcessLimits {
     }
 }
 
-impl Default for ProcessLimits {
-    fn default() -> Self {
-        Self::new(Duration::from_secs(20), 128 * 1024)
-    }
-}
-
 pub(crate) struct ProcessOutput {
     pub status: ExitStatus,
     pub stdout: String,
     pub stderr: String,
-    pub stdout_truncated: bool,
-    pub stderr_truncated: bool,
-    pub elapsed: Duration,
     raw_stdout: SensitiveOutput,
 }
 
@@ -214,9 +206,6 @@ impl fmt::Debug for ProcessOutput {
             .field("status", &self.status)
             .field("stdout", &self.stdout)
             .field("stderr", &self.stderr)
-            .field("stdout_truncated", &self.stdout_truncated)
-            .field("stderr_truncated", &self.stderr_truncated)
-            .field("elapsed", &self.elapsed)
             .field("raw_stdout", &self.raw_stdout)
             .finish()
     }
@@ -252,49 +241,34 @@ impl ProcessOutput {
             raw_stdout: SensitiveOutput(stdout.clone()),
             stdout,
             stderr,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            elapsed: Duration::ZERO,
         }
     }
 }
 
-#[derive(Debug)]
+/// Only the timeout is told apart by callers: it is the one outcome where
+/// the child may still have done its work, so the update path reports it
+/// as its own kind. Every other failure is a message.
+#[derive(Debug, Error)]
 pub(crate) enum ProcessError {
-    Spawn(String),
-    Containment(String),
-    Wait(String),
+    #[error("{0}")]
+    Failed(String),
+    #[error("command timed out after {}s{}", after.as_secs(), diagnostic_suffix(diagnostic))]
     TimedOut { after: Duration, diagnostic: String },
-    Reader(String),
 }
 
-impl fmt::Display for ProcessError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Spawn(message)
-            | Self::Containment(message)
-            | Self::Wait(message)
-            | Self::Reader(message) => formatter.write_str(message),
-            Self::TimedOut { after, diagnostic } => {
-                write!(formatter, "command timed out after {}s", after.as_secs())?;
-
-                if !diagnostic.is_empty() {
-                    write!(formatter, ": {diagnostic}")?;
-                }
-
-                Ok(())
-            }
-        }
+fn diagnostic_suffix(diagnostic: &str) -> String {
+    if diagnostic.is_empty() {
+        String::new()
+    } else {
+        format!(": {diagnostic}")
     }
 }
 
-impl Error for ProcessError {}
-
-/// Run a configured launcher with bounded time and output. Reader threads keep
+/// Run a configured launcher with bounded time and output. Reader tasks keep
 /// draining after their retained suffix is full so a verbose child cannot
 /// deadlock on a pipe; the Job Object kills the complete owned process tree on
 /// timeout or early error.
-pub(crate) fn run_bounded<I, S>(
+pub(crate) async fn run_bounded<I, S>(
     launcher: &AgentCli,
     arguments: I,
     limits: ProcessLimits,
@@ -303,27 +277,23 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let started = Instant::now();
-
-    let mut command = launcher.command(arguments);
-
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command.spawn().map_err(|error| {
-        ProcessError::Spawn(format!(
+    let PipedChild {
+        mut child,
+        stdin,
+        stdout,
+        stderr,
+    } = spawn_piped(launcher.command(arguments)).map_err(|error| {
+        ProcessError::Failed(format!(
             "could not run configured launcher `{}`: {error}",
             launcher.executable()
         ))
     })?;
 
-    let job = KillOnCloseJob::attach_or_kill(&mut child)
-        .map_err(|error| ProcessError::Containment(error.to_string()))?;
+    // Maintenance commands take no input; closing it lets a prompt fail fast.
+    drop(stdin);
 
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
+    let job = KillOnCloseJob::attach_spawned_or_kill(&mut child)
+        .map_err(|error| ProcessError::Failed(error.to_string()))?;
 
     // Retain enough additional bytes to recognize a secret that straddles the
     // public output boundary, then redact before applying the configured cap.
@@ -334,67 +304,49 @@ where
     let stdout_reader = spawn_bounded_reader(stdout, capture_limit);
     let stderr_reader = spawn_bounded_reader(stderr, capture_limit);
 
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < limits.timeout => thread::sleep(POLL_INTERVAL),
-            Ok(None) => {
-                drop(job);
+    let waited = timeout(limits.timeout, child.wait()).await;
 
-                let _ = child.wait();
-                let stdout = join_reader(stdout_reader)?;
-                let stderr = join_reader(stderr_reader)?;
+    // Descendants can hold the pipes open after the root exits, and a root
+    // that outlived its timeout is still running. Dropping the job ends both,
+    // so the readers are joined only afterwards.
+    drop(job);
 
-                let raw_diagnostic = if stderr.bytes.is_empty() {
-                    decode_child_output(&stdout.bytes)
-                } else {
-                    decode_child_output(&stderr.bytes)
-                };
+    if waited.is_err() {
+        let _ = child.wait().await;
+    }
 
-                let diagnostic = launcher.redact(&raw_diagnostic);
+    let stdout = join_reader(stdout_reader).await?;
+    let stderr = join_reader(stderr_reader).await?;
 
-                return Err(ProcessError::TimedOut {
-                    after: limits.timeout,
-                    diagnostic: diagnostic.trim().chars().take(4_096).collect(),
-                });
-            }
-            Err(error) => {
-                drop(job);
+    let status = match waited {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            return Err(ProcessError::Failed(format!(
+                "could not observe configured launcher exit: {error}"
+            )));
+        }
+        Err(_) => {
+            let raw_diagnostic = if stderr.is_empty() {
+                decode_child_output(&stdout)
+            } else {
+                decode_child_output(&stderr)
+            };
 
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
+            let diagnostic = launcher.redact(&raw_diagnostic);
 
-                return Err(ProcessError::Wait(format!(
-                    "could not observe configured launcher exit: {error}"
-                )));
-            }
+            return Err(ProcessError::TimedOut {
+                after: limits.timeout,
+                diagnostic: diagnostic.trim().chars().take(4_096).collect(),
+            });
         }
     };
 
-    drop(job);
-
-    let stdout = join_reader(stdout_reader)?;
-    let stderr = join_reader(stderr_reader)?;
-    let raw_stdout = utf8_suffix(&decode_child_output(&stdout.bytes), limits.max_output_bytes);
-
-    let (stdout_text, stdout_redaction_truncated) =
-        launcher.redact_capped(&stdout.bytes, limits.max_output_bytes);
-
-    let (stderr_text, stderr_redaction_truncated) =
-        launcher.redact_capped(&stderr.bytes, limits.max_output_bytes);
+    let raw_stdout = utf8_suffix(&decode_child_output(&stdout), limits.max_output_bytes);
 
     Ok(ProcessOutput {
         status,
-        stdout: stdout_text,
-        stderr: stderr_text,
-        stdout_truncated: stdout.truncated
-            || stdout.bytes.len() > limits.max_output_bytes
-            || stdout_redaction_truncated,
-        stderr_truncated: stderr.truncated
-            || stderr.bytes.len() > limits.max_output_bytes
-            || stderr_redaction_truncated,
-        elapsed: started.elapsed(),
+        stdout: launcher.redact_capped(&stdout, limits.max_output_bytes),
+        stderr: launcher.redact_capped(&stderr, limits.max_output_bytes),
         raw_stdout: SensitiveOutput(raw_stdout),
     })
 }
@@ -413,56 +365,38 @@ fn utf8_suffix(value: &str, max_bytes: usize) -> String {
     value[start..].to_string()
 }
 
-struct BoundedBytes {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
+/// Drain `reader` to the end, keeping only its last `limit` bytes.
 fn spawn_bounded_reader(
-    mut reader: impl io::Read + Send + 'static,
+    mut reader: impl AsyncRead + Unpin + Send + 'static,
     limit: usize,
-) -> thread::JoinHandle<io::Result<BoundedBytes>> {
-    thread::spawn(move || {
-        let mut retained = VecDeque::with_capacity(limit.min(64 * 1024));
+) -> JoinHandle<io::Result<Vec<u8>>> {
+    nmt_platform::runtime().spawn(async move {
+        let mut retained = Vec::with_capacity(limit.min(64 * 1024));
         let mut buffer = [0_u8; 8 * 1024];
-        let mut truncated = false;
 
         loop {
-            let read = reader.read(&mut buffer)?;
+            let read = reader.read(&mut buffer).await?;
 
             if read == 0 {
                 break;
             }
 
-            for byte in &buffer[..read] {
-                if retained.len() == limit {
-                    retained.pop_front();
+            retained.extend_from_slice(&buffer[..read]);
 
-                    truncated = true;
-                }
-
-                if limit > 0 {
-                    retained.push_back(*byte);
-                } else {
-                    truncated = true;
-                }
+            if retained.len() > limit {
+                retained.drain(..retained.len() - limit);
             }
         }
 
-        Ok(BoundedBytes {
-            bytes: retained.into(),
-            truncated,
-        })
+        Ok(retained)
     })
 }
 
-fn join_reader(
-    reader: thread::JoinHandle<io::Result<BoundedBytes>>,
-) -> Result<BoundedBytes, ProcessError> {
+async fn join_reader(reader: JoinHandle<io::Result<Vec<u8>>>) -> Result<Vec<u8>, ProcessError> {
     reader
-        .join()
-        .map_err(|_| ProcessError::Reader("configured launcher output reader panicked".into()))?
-        .map_err(|error| ProcessError::Reader(format!("could not read launcher output: {error}")))
+        .await
+        .map_err(|_| ProcessError::Failed("configured launcher output reader panicked".into()))?
+        .map_err(|error| ProcessError::Failed(format!("could not read launcher output: {error}")))
 }
 
 fn redact_common_credentials(text: &str) -> String {

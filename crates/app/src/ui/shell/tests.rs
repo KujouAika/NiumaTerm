@@ -1,22 +1,20 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use app::agent_tab::AgentKind;
 use app::agent_tab::settings::AgentSettings;
 use app::agent_tab::team::{TeamPane, TeamRuntime};
-use gpui::{AppContext as _, Bounds, Pixels, TestAppContext};
+use gpui::{AnyWindowHandle, AppContext as _, EmptyView, TestAppContext, WeakEntity};
 use gpui_component::input::InputState;
 use nmt_agent::AgentWorkspace;
 use nmt_agent::team::session::TeamSession;
-use nmt_config::local_state::TabState;
+use nmt_config::local_state::{
+    SessionState, TabFold, TabState, WindowLocalState, WindowState, WorkspaceState,
+};
 use tempfile::tempdir;
 
-use crate::ui::shell::{
-    InlineRename, InlineRenameStyle, MACOS_TITLE_BAR_TRAILING_INSET, TAB_STRIP_MIN_WIDTH,
-    TabSurface, should_confirm_close, title_bar_git_summary, title_bar_leading_region,
-    title_bar_trailing_region,
-};
-use crate::window::MIN_WINDOW_WIDTH;
+use crate::ui::shell::close_confirm::should_confirm_close;
+use crate::ui::shell::{InlineRename, InlineRenameStyle, TabSurface, WindowRegistry};
 
 struct InlineRenameProbe {
     input: gpui::Entity<InputState>,
@@ -64,7 +62,7 @@ fn disabling_agent_team_releases_the_runtime_and_keeps_the_saved_room(cx: &mut T
     let cx = cx.add_empty_window();
 
     let (runtime, room_id) = cx.update(|window, cx| {
-        let runtime = TeamRuntime::create(directory.path(), AgentWorkspace::default(), cx).unwrap();
+        let runtime = TeamRuntime::create(directory.path(), AgentWorkspace::default(), cx);
         let room_id = runtime.read(cx).room().id();
         let weak = runtime.downgrade();
         let pane = cx.new(|cx| TeamPane::new(runtime, window, cx));
@@ -86,7 +84,10 @@ fn disabling_agent_team_releases_the_runtime_and_keeps_the_saved_room(cx: &mut T
 
     assert!(runtime.upgrade().is_none());
 
-    let (restored, _) = TeamSession::open(directory.path(), room_id).unwrap();
+    cx.update(|_, _| {});
+    cx.run_until_parked();
+
+    let restored = TeamSession::open(directory.path(), room_id).unwrap();
 
     assert_eq!(restored.store().room().id(), room_id);
 }
@@ -168,208 +169,177 @@ fn inline_rename_routes_escape_to_cancellation(cx: &mut TestAppContext) {
     assert!(cancelled.get());
 }
 
-#[test]
-fn right_side_views_share_one_area() {
-    use crate::ui::right_panel::{RightPanelKind, RightPanelSelection};
-
-    let mut selection = RightPanelSelection::new();
-
-    assert!(selection.select(RightPanelKind::BackgroundTasks));
-    assert!(selection.shows(RightPanelKind::BackgroundTasks));
-    assert!(selection.select(RightPanelKind::Workflows));
-    assert!(selection.shows(RightPanelKind::Workflows));
-    assert!(!selection.shows(RightPanelKind::BackgroundTasks));
-    assert!(!selection.select(RightPanelKind::Workflows));
-    assert!(!selection.shows(RightPanelKind::Workflows));
-}
-
-/// Bounds captured from a laid-out title bar, keyed by group name.
-type TitleBarProbe = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
-
-/// Replica of the shell's title bar: the same three groups around the same
-/// `TitleBar` and `TabBar` components, with enough tabs to overflow any test
-/// window. `left_width` stands in for the sidebar-aligned block, whose width
-/// the user controls by dragging the sidebar edge.
-struct TitleBarProbeView(TitleBarProbe, f32);
-
-impl gpui::Render for TitleBarProbeView {
-    fn render(
-        &mut self,
-        _: &mut gpui::Window,
-        _: &mut gpui::Context<Self>,
-    ) -> impl gpui::IntoElement {
-        use gpui::prelude::*;
-        use gpui::{div, px};
-        use gpui_component::tab::{Tab, TabBar, TabVariant};
-        use gpui_component::{ElementExt as _, IconName, Sizable as _, TitleBar, h_flex};
-
-        use crate::ui::composition::{toolbar_button, toolbar_toggle};
-
-        let rec = |name: &'static str, probe: TitleBarProbe| {
-            move |bounds: Bounds<Pixels>, _: &mut gpui::Window, _: &mut gpui::App| {
-                probe.borrow_mut().push((name, bounds));
-            }
-        };
-
-        let probe = self.0.clone();
-
-        let tab_bar = TabBar::new("probe-tabs")
-            .with_variant(TabVariant::Modern)
-            .large()
-            .w_full()
-            .min_w_0()
-            .selected_index(0)
-            .children(
-                (0..12).map(|i| Tab::new().child(div().w(px(160.)).child(format!("tab {i}")))),
-            );
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .on_prepaint(rec("root", probe.clone()))
-            .child(
-                TitleBar::new()
-                    .child(
-                        title_bar_leading_region(self.1)
-                            .on_prepaint(rec("left", probe.clone()))
-                            .children((0..4usize).map(|index| {
-                                div().flex_none().child(
-                                    toolbar_button(("leading", index)).icon(IconName::Settings),
-                                )
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(TAB_STRIP_MIN_WIDTH))
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .on_prepaint(rec("tabs", probe.clone()))
-                            .child(tab_bar),
-                    )
-                    .child(
-                        title_bar_git_summary().child(
-                            h_flex()
-                                .px_2()
-                                .gap_1()
-                                .text_sm()
-                                .child("+1234")
-                                .child("-5678"),
-                        ),
-                    )
-                    .child(
-                        title_bar_trailing_region()
-                            .on_prepaint(rec("right", probe.clone()))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .child(toolbar_toggle("git").icon(IconName::GitBranch)),
-                            )
-                            .child(
-                                div().flex_none().child(
-                                    toolbar_toggle("workflows").icon(IconName::Bot).child("2"),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .child(toolbar_toggle("tasks").icon(IconName::Bot).child("2")),
-                            ),
-                    ),
-            )
-            .child(div().flex_1())
+fn window_state() -> WindowState {
+    WindowState {
+        x: 1.0,
+        y: 2.0,
+        width: 800.0,
+        height: 600.0,
+        maximized: false,
     }
 }
 
-/// More tabs than fit must squeeze the tab strip, never carry the right-hand
-/// controls off the window: the strip scrolls horizontally, the controls do
-/// not move out of reach. The widest sidebar-aligned block is used because it
-/// is the layout's worst case.
+fn session_state() -> SessionState {
+    SessionState {
+        active_workspace: 0,
+        workspaces: vec![WorkspaceState {
+            name: "Workspace 1".into(),
+            cwd: Some("C:/Projects/example".into()),
+            additional_cwds: Vec::new(),
+            pinned: false,
+            active_tab: 0,
+            tab_fold: TabFold::All,
+            tabs: vec![TabState {
+                name: None,
+                user_named: false,
+                shell: Some("pwsh.exe".into()),
+                args: vec!["-NoLogo".into()],
+                cwd: Some("C:/Projects/example/repo".into()),
+                agent: None,
+                agent_profile: None,
+                team_room: None,
+                git_cwd: None,
+                title: None,
+                agent_conversation: None,
+                remote_host: None,
+                remote_session: None,
+                shared_agent: None,
+                shared_terminal: None,
+                agent_settings: None,
+                panes: None,
+                grid_size: None,
+            }],
+        }],
+    }
+}
+
+fn remembered() -> WindowLocalState {
+    WindowLocalState {
+        window: Some(window_state()),
+        session: Some(session_state()),
+        sidebar_width: Some(220.0),
+    }
+}
+
+fn register_window(
+    cx: &mut TestAppContext,
+    registry: &mut WindowRegistry,
+    state: WindowLocalState,
+) -> AnyWindowHandle {
+    let handle = cx.add_window(|_, _| EmptyView).into();
+
+    registry.register(handle, WeakEntity::new_invalid(), state);
+
+    handle
+}
+
 #[gpui::test]
-fn title_bar_controls_stay_inside_a_narrow_window(cx: &mut TestAppContext) {
-    use gpui::{VisualTestContext, px, size};
+fn closed_windows_leave_no_dispatch_targets_and_only_last_state_is_saved(cx: &mut TestAppContext) {
+    let mut registry = WindowRegistry::default();
 
-    use crate::ui::workspace_sidebar::MAX_WIDTH;
+    let first = register_window(cx, &mut registry, remembered());
+    let second = register_window(cx, &mut registry, remembered());
 
-    cx.update(gpui_component::init);
+    registry.get_mut(second.window_id()).unwrap().sidebar_width = Some(300.0);
 
-    let trailing_inset = if cfg!(target_os = "macos") {
-        MACOS_TITLE_BAR_TRAILING_INSET
-    } else {
-        0.0
+    assert!(registry.close(first.window_id()));
+    assert!(registry.get(first.window_id()).is_none());
+    assert_eq!(registry.windows().len(), 1);
+    assert_eq!(
+        registry
+            .prioritized(Some(first.window_id()))
+            .next()
+            .unwrap()
+            .handle,
+        second
+    );
+
+    assert!(registry.close(second.window_id()));
+    assert!(!registry.close(first.window_id()));
+    assert!(registry.windows().is_empty());
+    assert_eq!(
+        registry.states().cloned().collect::<Vec<_>>(),
+        vec![WindowLocalState {
+            sidebar_width: Some(300.0),
+            ..remembered()
+        }]
+    );
+
+    cx.update(|cx| {
+        cx.set_global(registry);
+
+        assert!(!WindowRegistry::dispatch(cx, |_, _, _| {
+            panic!("closed windows must not receive events");
+        }));
+    });
+}
+
+#[gpui::test]
+fn reopening_replaces_retained_state_without_saving_a_duplicate(cx: &mut TestAppContext) {
+    let mut registry = WindowRegistry::default();
+
+    let first = register_window(cx, &mut registry, remembered());
+
+    registry.close(first.window_id());
+
+    let restored = registry.take_last_closed().unwrap();
+
+    assert_eq!(restored, remembered());
+    assert!(registry.take_last_closed().is_none());
+
+    let reopened = register_window(cx, &mut registry, restored);
+
+    assert_eq!(registry.states().count(), 1);
+
+    registry.close(reopened.window_id());
+
+    let fresh = WindowLocalState {
+        sidebar_width: Some(350.0),
+        ..WindowLocalState::default()
     };
 
-    let probe: TitleBarProbe = Default::default();
+    let replacement = register_window(cx, &mut registry, fresh.clone());
 
-    let handle = cx.add_window({
-        let probe = probe.clone();
-
-        move |_, _| TitleBarProbeView(probe, MAX_WIDTH)
-    });
-
-    let mut cx = VisualTestContext::from_window(handle.into(), cx);
-
-    // Also reserve the Windows caption controls and title bar padding:
-    // 640 - 3 * 46 - 8 leaves 494 pixels for application content.
-    for width in [1200.0f32, 900.0, 700.0, MIN_WINDOW_WIDTH, 494.0] {
-        probe.borrow_mut().clear();
-
-        cx.simulate_resize(size(px(width), px(800.)));
-
-        cx.run_until_parked();
-
-        cx.refresh().unwrap();
-
-        cx.run_until_parked();
-
-        let captured = probe.borrow().clone();
-
-        let group = |name: &str| {
-            captured
-                .iter()
-                .find(|(key, _)| *key == name)
-                .unwrap_or_else(|| panic!("{name} was not laid out at width {width}"))
-                .1
-        };
-
-        let right = group("right");
-        let right_edge: f32 = (right.origin.x + right.size.width).into();
-
-        assert!(
-            right_edge <= width - trailing_inset,
-            "at window width {width} the right-hand controls end at {right_edge}, inside the reserved edge inset of {trailing_inset}",
-        );
-
-        let tabs = group("tabs");
-        let tab_width: f32 = tabs.size.width.into();
-
-        assert!(
-            tab_width >= TAB_STRIP_MIN_WIDTH,
-            "at window width {width} the tab strip collapsed to {}",
-            tab_width,
-        );
-    }
+    assert!(registry.take_last_closed().is_none());
+    assert_eq!(registry.windows()[0].handle, replacement);
+    assert_eq!(registry.states().cloned().collect::<Vec<_>>(), vec![fresh]);
 }
 
-/// Shared by the ready-tab and busy-tab jumps: each click walks to the next
-/// marked tab and wraps, so a set of them is visited in order rather than the
-/// same one being reopened.
-#[test]
-fn marked_tab_search_wraps_past_the_active_tab() {
-    use crate::ui::shell::next_marked_position;
+#[gpui::test]
+fn dispatch_can_close_windows_and_stops_at_first_accepted_target(cx: &mut TestAppContext) {
+    let mut registry = WindowRegistry::default();
 
-    let marks = [true, false, true, false];
+    let windows: Vec<_> = (0..3)
+        .map(|_| register_window(cx, &mut registry, remembered()))
+        .collect();
 
-    assert_eq!(next_marked_position(&marks, 0), Some(2));
-    assert_eq!(next_marked_position(&marks, 2), Some(0));
-    assert_eq!(next_marked_position(&marks, 3), Some(0));
+    assert_eq!(
+        registry
+            .prioritized(Some(windows[0].window_id()))
+            .map(|entry| entry.handle)
+            .collect::<Vec<_>>(),
+        vec![windows[0], windows[2], windows[1]]
+    );
 
-    // The active tab is the last slot visited, so its own mark still counts
-    // when nothing else carries one.
-    assert_eq!(next_marked_position(&[true], 0), Some(0));
+    cx.update(|cx| {
+        cx.set_global(registry);
 
-    assert_eq!(next_marked_position(&[false, false], 0), None);
-    assert_eq!(next_marked_position(&[], 0), None);
+        let mut visited = Vec::new();
+
+        let accepted = WindowRegistry::dispatch(cx, |handle, _, cx| {
+            visited.push(handle);
+
+            cx.global_mut::<WindowRegistry>().close(handle.window_id());
+
+            handle == windows[1]
+        });
+
+        assert!(accepted);
+        assert_eq!(visited, windows[..2]);
+        assert_eq!(
+            cx.global::<WindowRegistry>().windows()[0].handle,
+            windows[2]
+        );
+        assert_eq!(cx.global::<WindowRegistry>().states().count(), 1);
+    });
 }

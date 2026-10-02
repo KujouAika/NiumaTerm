@@ -1,5 +1,6 @@
 pub mod app_server;
 pub mod hook;
+pub mod rollouts;
 pub mod update;
 pub mod usage_fetcher;
 

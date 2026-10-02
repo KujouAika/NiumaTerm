@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext, Bounds, Entity, EntityInputHandler, KeyDownEvent, KeyUpEvent, Keystroke,
-    ListAlignment, Modifiers, TestAppContext, VisualTestContext, point, px, size,
+    ListAlignment, Modifiers, TestAppContext, VisualTestContext, div, point, px, size,
 };
 use nmt_agent::AgentRoute;
 use nmt_config::local_state::TabState;
@@ -11,9 +11,7 @@ use nmt_config::local_state::TabState;
 use crate::terminal_tab::metrics::CellMetrics;
 use crate::terminal_tab::pane_model::test_session::{assert_input, controller};
 use crate::terminal_tab::view::list_state::BlockListState;
-use crate::terminal_tab::view::{
-    AgentInterrupted, PaneIdentity, TerminalGridResized, TerminalPane,
-};
+use crate::terminal_tab::view::{AgentInterrupted, PaneIdentity, TerminalPane};
 use crate::terminal_tab::wake::wake_channel;
 
 fn pane(cx: &mut VisualTestContext) -> Entity<TerminalPane> {
@@ -26,30 +24,28 @@ fn pane(cx: &mut VisualTestContext) -> Entity<TerminalPane> {
             profile_name: "Test".into(),
             restorable: TabState::default(),
             agent_route: AgentRoute::parse("test-input").unwrap(),
+            remote: None,
+            remote_created: None,
         },
         model,
         content_bounds: None,
         wake: wake_channel().0,
         image_releases_attached: false,
         block_list: BlockListState::new(ListAlignment::Top),
+        host_share: None,
+        host_control: None,
+        close_tab: None,
+        sheet_focus: cx.focus_handle(),
+        sheet_shown: false,
     })
 }
 
 #[gpui::test]
-fn layout_saves_the_accepted_grid_and_emits_only_on_resize(cx: &mut TestAppContext) {
+fn layout_saves_the_accepted_grid(cx: &mut TestAppContext) {
     let cx = cx.add_empty_window();
     let pane = pane(cx);
-    let changes = Rc::new(Cell::new(0));
-    let observed = changes.clone();
 
-    cx.update(|_, cx| {
-        cx.subscribe(&pane, move |_, _: &TerminalGridResized, _| {
-            observed.set(observed.get() + 1);
-        })
-        .detach();
-    });
-
-    for (cols, rows, expected_changes) in [(40, 6, 0), (132, 43, 1), (132, 43, 1)] {
+    for (cols, rows) in [(40, 6), (132, 43), (132, 43)] {
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
                 pane.set_content_bounds(
@@ -67,10 +63,6 @@ fn layout_saves_the_accepted_grid_and_emits_only_on_resize(cx: &mut TestAppConte
                 assert_eq!(pane.tab_state().grid_size, Some((cols, rows)));
             });
         });
-
-        cx.run_until_parked();
-
-        assert_eq!(changes.get(), expected_changes);
     }
 }
 
@@ -90,7 +82,6 @@ fn restored_grid_reaches_the_shell_before_its_first_output(cx: &mut TestAppConte
             improve_powershell_compatibility: true,
             input_style: Default::default(),
             cursor_shape: Default::default(),
-            manage_subprocess_job: false,
             command_blocks: false,
             smooth_wheel: false,
             scroll_to_bottom_when_typing: true,
@@ -99,7 +90,6 @@ fn restored_grid_reaches_the_shell_before_its_first_output(cx: &mut TestAppConte
             font_size: 14.0,
             line_height: 1.2,
             background_opacity: 1.0,
-            corner_radius: px(0.0),
             font_fallbacks: Default::default(),
         });
     });
@@ -282,8 +272,6 @@ fn typing_respects_scroll_setting_for_key_and_ime_input(cx: &mut TestAppContext)
                     pane.model.settings.scroll_to_bottom_when_typing = scroll_when_typing;
                     pane.model.block_list.scrollbar = (24.0, 120.0);
 
-                    pane.model.update_viewport();
-
                     if ime {
                         pane.replace_text_in_range(None, "text", window, cx);
                     } else {
@@ -302,7 +290,7 @@ fn typing_respects_scroll_setting_for_key_and_ime_input(cx: &mut TestAppContext)
                         );
                     }
 
-                    assert_eq!(pane.model.viewport.is_scrolled(), !scroll_when_typing);
+                    assert_eq!(pane.model.viewport().is_scrolled(), !scroll_when_typing);
                 })
             });
         }
@@ -314,11 +302,51 @@ fn typing_respects_scroll_setting_for_key_and_ime_input(cx: &mut TestAppContext)
 
             pane.model.block_list.scrollbar = (24.0, 120.0);
 
-            pane.model.update_viewport();
-
             pane.replace_text_in_range(None, "rejected", window, cx);
 
-            assert!(pane.model.viewport.is_scrolled());
+            assert!(pane.model.viewport().is_scrolled());
         })
     });
+}
+
+/// The block list keeps a scroll handler in state the pane owns. A strong
+/// pane handle in it would keep a closed tab's pane, session, and shell
+/// alive, so a pane that rendered its block list must still be released.
+#[gpui::test]
+fn a_rendered_block_list_does_not_keep_its_pane_alive(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    let pane = pane(cx);
+
+    // Elements live in a per-frame arena; building the list inside a draw
+    // releases it the way a real frame does.
+    cx.draw(
+        point(px(0.0), px(0.0)),
+        size(px(800.0), px(400.0)),
+        |_, cx| {
+            pane.update(cx, |pane, cx| {
+                let frame = pane.model.begin_frame();
+
+                let cell = CellMetrics {
+                    width_px: 8.0,
+                    height_px: 18.0,
+                };
+
+                let element = pane.render_block_list_content(&frame, cell, 400.0, cx);
+
+                assert!(element.is_some());
+                assert!(pane.block_list.scroll_handler_set);
+            });
+
+            div()
+        },
+    );
+
+    let weak = pane.downgrade();
+
+    drop(pane);
+
+    // Released entities are freed when an update's effects flush.
+    cx.update(|_, _| {});
+
+    weak.assert_released();
 }

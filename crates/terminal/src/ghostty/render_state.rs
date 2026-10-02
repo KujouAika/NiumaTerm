@@ -2,7 +2,6 @@ use std::ptr;
 
 #[cfg(test)]
 use libghostty_vt_sys::Result as VtResult;
-
 use libghostty_vt_sys::{
     ColorRgb as VtColorRgb, RenderState as VtRenderState,
     RenderStateCursorVisualStyle as VtRenderStateCursorVisualStyle,
@@ -16,13 +15,11 @@ use libghostty_vt_sys::{
     ghostty_render_state_row_set, ghostty_render_state_set, ghostty_render_state_update,
     ghostty_terminal_get,
 };
-
 #[cfg(test)]
 use libghostty_vt_sys::{
     Row as VtRow, RowData as VtRowData, RowSemanticPrompt as VtRowSemanticPrompt, ghostty_row_get,
 };
-
-use crate::ansi;
+use nmt_config::CursorShape;
 
 use crate::ghostty::{Error, Result, SnapshotColors, SnapshotCursor};
 
@@ -242,10 +239,10 @@ impl RenderStateReader {
         })?;
 
         let shape = match style {
-            VtRenderStateCursorVisualStyle::BAR => ansi::CursorShape::Beam,
-            VtRenderStateCursorVisualStyle::UNDERLINE => ansi::CursorShape::Underline,
+            VtRenderStateCursorVisualStyle::BAR => CursorShape::Beam,
+            VtRenderStateCursorVisualStyle::UNDERLINE => CursorShape::Underline,
             // BLOCK and BLOCK_HOLLOW → Block (terminal renders hollow from focus state).
-            _ => ansi::CursorShape::Block,
+            _ => CursorShape::Block,
         };
 
         let mut has_viewport = false;

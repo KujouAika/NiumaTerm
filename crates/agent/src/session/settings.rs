@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod settings_tests;
+
 use std::mem::take;
 
 use crate::chat::{AgentPreset, ApprovalPreset, ModelInfo, ThreadSettings};
 use crate::session::capabilities::AgentCapabilities as _;
 use crate::session::restore::SettingsSeed;
-use crate::session::{AgentKind, Backend};
+use crate::session::{AgentKind, Backend, SettingsOutcome};
 
 #[derive(Default)]
 pub struct ConversationSettings {
@@ -31,53 +34,37 @@ pub struct ConversationSettings {
     /// itself.
     pub approval_presets: Vec<ApprovalPreset>,
 
-    /// Agent compositions this deployment offers, and the one this
-    /// conversation was built from. Empty where the deployment composes none,
-    /// which is a picker with nothing to choose between rather than an
-    /// unsupported one.
+    /// Agent compositions this deployment offers; the one this conversation
+    /// was built from is `settings.agent_preset`. Empty where the deployment
+    /// composes none, which is a picker with nothing to choose between rather
+    /// than an unsupported one.
     pub agent_presets: Vec<AgentPreset>,
-
-    pub agent_preset: Option<String>,
 }
 
-/// Fold the thread's reported settings together with what the pane
-/// remembered. `startup_model` and `startup_effort` come from the launch
-/// profile and are applied last, so a profile that pins one of them wins over
-/// both the remembered pick and whatever the agent reported.
-pub fn resolve_ready_settings(
-    mut next: ThreadSettings,
-    local: Option<&ThreadSettings>,
-    use_all_local: bool,
-    use_local_reviewer: bool,
-    startup_model: Option<&str>,
-    startup_effort: Option<&str>,
-) -> ThreadSettings {
-    if use_all_local && let Some(local) = local {
-        next = ThreadSettings {
-            model: local.model.clone().or(next.model),
-            approval: local.approval.clone().or(next.approval),
-            approvals_reviewer: local.approvals_reviewer.clone().or(next.approvals_reviewer),
-            sandbox: local.sandbox.clone().or(next.sandbox),
-            effort: local.effort.clone().or(next.effort),
-            tier: local.tier.clone().or(next.tier),
-        };
-    }
+/// The controls a launch profile forces on every conversation it starts.
+/// Each `None` leaves that control to the harness and the remembered pick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfilePins {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub approval: Option<String>,
+    pub sandbox: Option<String>,
+}
 
-    if use_local_reviewer
-        && let Some(reviewer) = local.and_then(|local| local.approvals_reviewer.clone())
-    {
-        next.approvals_reviewer = Some(reviewer);
+/// Overlay remembered controls on what a Ready reported: each remembered
+/// pick wins where one exists. A remembered composition already travelled
+/// with the creation request, and the harness refuses to recompose a
+/// conversation, so the reported one is kept.
+fn overlay_remembered(next: ThreadSettings, local: &ThreadSettings) -> ThreadSettings {
+    ThreadSettings {
+        model: local.model.clone().or(next.model),
+        approval: local.approval.clone().or(next.approval),
+        approvals_reviewer: local.approvals_reviewer.clone().or(next.approvals_reviewer),
+        sandbox: local.sandbox.clone().or(next.sandbox),
+        effort: local.effort.clone().or(next.effort),
+        tier: local.tier.clone().or(next.tier),
+        agent_preset: next.agent_preset,
     }
-
-    if let Some(model) = startup_model {
-        next.model = Some(model.to_string());
-    }
-
-    if let Some(effort) = startup_effort {
-        next.effort = Some(effort.to_string());
-    }
-
-    next
 }
 
 impl ConversationSettings {
@@ -86,12 +73,22 @@ impl ConversationSettings {
         kind: AgentKind,
         settings: ThreadSettings,
         stored: Option<&ThreadSettings>,
-        startup_model: Option<&str>,
-        startup_effort: Option<&str>,
+        pins: &ProfilePins,
     ) {
         let effort = settings.effort.clone().or(self.settings.effort.clone());
 
-        let mut next = ThreadSettings { effort, ..settings };
+        // The composition is reported by its own event rather than with the
+        // other controls, so a Ready that carries none keeps the one known.
+        let agent_preset = settings
+            .agent_preset
+            .clone()
+            .or(self.settings.agent_preset.clone());
+
+        let mut next = ThreadSettings {
+            effort,
+            agent_preset,
+            ..settings
+        };
 
         // Fresh conversations, and resumes into a harness that does not
         // replay its own controls, seed all remembered picks. Where
@@ -112,26 +109,48 @@ impl ConversationSettings {
             stored
         };
 
-        let startup_model = seed_thread_defaults.then_some(startup_model).flatten();
-        let startup_effort = seed_thread_defaults.then_some(startup_effort).flatten();
+        if (seed_thread_defaults || preserve_current)
+            && let Some(local) = local
+        {
+            next = overlay_remembered(next, local);
+        }
 
-        next = resolve_ready_settings(
-            next,
-            local,
-            seed_thread_defaults || preserve_current,
-            seed_approval_reviewer,
-            startup_model,
-            startup_effort,
-        );
+        if seed_approval_reviewer
+            && let Some(reviewer) = local.and_then(|local| local.approvals_reviewer.clone())
+        {
+            next.approvals_reviewer = Some(reviewer);
+        }
+
+        // A launch profile's pins outrank both the thread and the remembered
+        // picks, but only when the defaults are seeded.
+        if seed_thread_defaults {
+            let pinned = [
+                (&pins.model, &mut next.model),
+                (&pins.effort, &mut next.effort),
+                (&pins.approval, &mut next.approval),
+                (&pins.sandbox, &mut next.sandbox),
+            ];
+
+            for (pin, slot) in pinned {
+                if pin.is_some() {
+                    slot.clone_from(pin);
+                }
+            }
+        }
 
         if let Some(restored) = self.restore_on_ready.take() {
-            next = resolve_ready_settings(next, Some(&restored), true, false, None, None);
+            next = overlay_remembered(next, &restored);
         }
 
         self.settings = next;
     }
 
-    pub(crate) fn apply_model(&mut self, session: &mut Backend) -> Option<Result<(), String>> {
+    /// Hand the model and effort picks to the session when they differ from
+    /// what it runs under. A request the harness answered, either way, makes
+    /// the session's selection the authority, so a refusal puts the pickers
+    /// back. A pick still waiting for its answer, or one that rides the next
+    /// submission, leaves them as chosen.
+    pub(crate) fn apply_model(&mut self, session: &mut Backend) -> Option<SettingsOutcome> {
         let model = self.settings.model.as_deref()?;
 
         let effort = (session.selection().0 == Some(model))
@@ -143,10 +162,39 @@ impl ConversationSettings {
         }
 
         let outcome = session.select_model(model, effort);
-        let (model, effort) = session.selection();
 
-        self.settings.model = model.map(str::to_owned);
-        self.settings.effort = effort.map(str::to_owned);
+        match outcome {
+            SettingsOutcome::Effective | SettingsOutcome::Refused { .. } => {
+                let (model, effort) = session.selection();
+
+                self.settings.model = model.map(str::to_owned);
+                self.settings.effort = effort.map(str::to_owned);
+            }
+            SettingsOutcome::Requested | SettingsOutcome::RidesNextSubmission => {}
+        }
+
+        Some(outcome)
+    }
+
+    /// Send the approval the picker shows when it differs from the one the
+    /// session reported. Only a remembered or restored pick can make them
+    /// differ, and a refusal puts the picker back on what the session runs.
+    pub(crate) fn apply_approval(
+        &mut self,
+        session: &mut Backend,
+        reported: Option<String>,
+    ) -> Option<SettingsOutcome> {
+        let approval = self.settings.approval.clone()?;
+
+        if reported.as_deref() == Some(approval.as_str()) {
+            return None;
+        }
+
+        let outcome = session.select_approval(&approval);
+
+        if matches!(outcome, SettingsOutcome::Refused { .. }) {
+            self.settings.approval = reported;
+        }
 
         Some(outcome)
     }
@@ -175,45 +223,5 @@ impl ConversationSettings {
         }
 
         self.settings.model = Some(model);
-    }
-}
-
-#[derive(Default)]
-pub struct RememberedSettings(HashMap<String, ThreadSettings>);
-
-impl RememberedSettings {
-    pub fn from_entries(entries: impl IntoIterator<Item = (String, ThreadSettings)>) -> Self {
-        Self(entries.into_iter().collect())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &ThreadSettings)> {
-        self.0.iter()
-    }
-
-    pub fn get(&self, kind: AgentKind, profile_name: &str) -> Option<&ThreadSettings> {
-        self.0
-            .get(Self::key(kind, profile_name))
-            .or_else(|| self.0.get(kind.into()))
-    }
-
-    pub fn remember(
-        &mut self,
-        kind: AgentKind,
-        profile_name: &str,
-        settings: ThreadSettings,
-    ) -> String {
-        let key = Self::key(kind, profile_name).to_owned();
-
-        self.0.insert(key.clone(), settings);
-
-        key
-    }
-
-    fn key(kind: AgentKind, profile_name: &str) -> &str {
-        if profile_name.trim().is_empty() {
-            kind.into()
-        } else {
-            profile_name
-        }
     }
 }

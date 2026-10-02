@@ -8,11 +8,12 @@
 
 #![cfg(windows)]
 
-use std::io::Read;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::future::poll_fn;
+use std::time::Duration;
 
-use nmt_platform::{ProcessReadWrite, PtyOptions, create_pty_with_env};
+use nmt_platform::{AsyncPty, PtyOptions, create_pty_with_env};
+use tokio::runtime::Builder;
+use tokio::time::timeout;
 
 /// Minimal base64 (standard alphabet, padded) so the test needs no crates.
 fn b64(input: &[u8]) -> String {
@@ -67,6 +68,10 @@ fn drive_conpty_with_title(script: &str, title: Option<&str>) -> Vec<u8> {
     let encoded = b64(&utf16le(script));
     let cmdline = format!("powershell -NoProfile -NonInteractive -EncodedCommand {encoded}");
 
+    // Declared before the PTY so the PTY's IOCP registration is released
+    // while its runtime is still alive.
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+
     let mut pty = create_pty_with_env(PtyOptions {
         shell: &cmdline,
         args: &[],
@@ -79,37 +84,35 @@ fn drive_conpty_with_title(script: &str, title: Option<&str>) -> Vec<u8> {
     })
     .expect("failed to create ConPTY");
 
-    let mut collected: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 4096];
+    runtime.block_on(async {
+        let mut collected: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
 
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let marker = b"MARKER_DONE";
+        let marker = b"MARKER_DONE";
 
-    loop {
-        if Instant::now() > deadline {
-            break;
-        }
-
-        match pty.reader().read(&mut buf) {
-            Ok(0) => thread::sleep(Duration::from_millis(20)),
-            Ok(n) => {
+        let _ = timeout(Duration::from_secs(8), async {
+            while let Ok(n) = poll_fn(|cx| pty.poll_read(cx, &mut buf)).await {
                 collected.extend_from_slice(&buf[..n]);
 
                 if find_subslice(&collected, marker).is_some() {
-                    thread::sleep(Duration::from_millis(50));
-
-                    if let Ok(n2) = pty.reader().read(&mut buf) {
-                        collected.extend_from_slice(&buf[..n2]);
+                    // Keep output that trails the marker in a nearby completion.
+                    if let Ok(Ok(n)) = timeout(
+                        Duration::from_millis(50),
+                        poll_fn(|cx| pty.poll_read(cx, &mut buf)),
+                    )
+                    .await
+                    {
+                        collected.extend_from_slice(&buf[..n]);
                     }
 
                     break;
                 }
             }
-            Err(_) => break,
-        }
-    }
+        })
+        .await;
 
-    collected
+        collected
+    })
 }
 
 #[test]

@@ -34,15 +34,16 @@ mod platform;
 mod window;
 mod window_appearance;
 
-use cocoa::{
-    base::{id, nil},
-    foundation::{NSAutoreleasePool, NSNotFound, NSString, NSUInteger},
+use objc2::{
+    Encode, Encoding, RefEncode, msg_send,
+    rc::Retained,
+    runtime::{AnyObject, Bool},
 };
-
-use objc::runtime::{BOOL, NO, YES};
+use objc2_foundation::{NSNotFound, NSString};
 use std::{
     ffi::{CStr, c_char},
     ops::Range,
+    ptr,
 };
 
 pub(crate) use dispatcher::*;
@@ -57,13 +58,24 @@ pub(crate) use text_system::*;
 
 pub use platform::MacPlatform;
 
+/// Untyped Objective-C object pointer.
+///
+/// Most of the AppKit glue talks to objects through dynamically registered
+/// subclasses and raw ivars, so a nullable untyped pointer matches how those
+/// objects are passed around better than the typed `Retained` wrappers.
+#[allow(non_camel_case_types)]
+pub(crate) type id = *mut AnyObject;
+
+#[allow(non_upper_case_globals)]
+pub(crate) const nil: id = ptr::null_mut();
+
 trait BoolExt {
-    fn to_objc(self) -> BOOL;
+    fn to_objc(self) -> Bool;
 }
 
 impl BoolExt for bool {
-    fn to_objc(self) -> BOOL {
-        if self { YES } else { NO }
+    fn to_objc(self) -> Bool {
+        Bool::new(self)
     }
 }
 
@@ -74,11 +86,11 @@ trait NSStringExt {
 impl NSStringExt for id {
     unsafe fn to_str(&self) -> &str {
         unsafe {
-            let cstr = self.UTF8String();
+            let cstr: *const c_char = msg_send![*self, UTF8String];
             if cstr.is_null() {
                 ""
             } else {
-                CStr::from_ptr(cstr as *mut c_char).to_str().unwrap()
+                CStr::from_ptr(cstr).to_str().unwrap()
             }
         }
     }
@@ -87,26 +99,26 @@ impl NSStringExt for id {
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct NSRange {
-    pub location: NSUInteger,
-    pub length: NSUInteger,
+    pub location: usize,
+    pub length: usize,
 }
 
 impl NSRange {
     fn invalid() -> Self {
         Self {
-            location: NSNotFound as NSUInteger,
+            location: NSNotFound as usize,
             length: 0,
         }
     }
 
     fn is_valid(&self) -> bool {
-        self.location != NSNotFound as NSUInteger
+        self.location != NSNotFound as usize
     }
 
     fn to_range(self) -> Option<Range<usize>> {
         if self.is_valid() {
-            let start = self.location as usize;
-            let end = start + self.length as usize;
+            let start = self.location;
+            let end = start + self.length;
             Some(start..end)
         } else {
             None
@@ -117,25 +129,24 @@ impl NSRange {
 impl From<Range<usize>> for NSRange {
     fn from(range: Range<usize>) -> Self {
         NSRange {
-            location: range.start as NSUInteger,
-            length: range.len() as NSUInteger,
+            location: range.start,
+            length: range.len(),
         }
     }
 }
 
-unsafe impl objc::Encode for NSRange {
-    fn encode() -> objc::Encoding {
-        let encoding = format!(
-            "{{NSRange={}{}}}",
-            NSUInteger::encode().as_str(),
-            NSUInteger::encode().as_str()
-        );
-        unsafe { objc::Encoding::from_str(&encoding) }
-    }
+// Matches the `{_NSRange=QQ}` encoding AppKit reports for `NSRange`
+// parameters, so debug-build message verification accepts this local type.
+unsafe impl Encode for NSRange {
+    const ENCODING: Encoding = Encoding::Struct("_NSRange", &[usize::ENCODING, usize::ENCODING]);
 }
 
-/// Allow NSString::alloc use here because it sets autorelease
-#[allow(clippy::disallowed_methods)]
+unsafe impl RefEncode for NSRange {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+}
+
+/// Returns an autoreleased `NSString`; callers must be inside an autorelease
+/// pool, which AppKit callbacks and the run loop always provide.
 unsafe fn ns_string(string: &str) -> id {
-    unsafe { NSString::alloc(nil).init_str(string).autorelease() }
+    Retained::autorelease_ptr(NSString::from_str(string)).cast()
 }

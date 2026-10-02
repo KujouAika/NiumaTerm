@@ -1,7 +1,8 @@
 use serde_json::Value;
 
 use crate::codex::app_server::FIRST_TURN_RPC_ID;
-use crate::subprocess::pending_requests::PendingRequests;
+use crate::codex::app_server::protocol::CodexCommand;
+use crate::subprocess::requests::PendingRequests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum QueryKind {
@@ -12,6 +13,10 @@ pub(super) enum QueryKind {
     Checkpoints,
     Fork,
     Goal(u64),
+    /// The fork that opens a side conversation.
+    SideFork,
+    /// The boundary written into a side conversation before it is ready.
+    SideBoundary,
 }
 
 impl QueryKind {
@@ -26,7 +31,8 @@ pub(super) enum ControlOperation {
     Query(QueryKind),
     Other,
     ThreadRequest,
-    Command(String),
+    Steer { next_turn_params: Value },
+    Command(CodexCommand),
     ThreadName,
 }
 
@@ -90,6 +96,14 @@ impl ControlState {
             .operations
             .values()
             .any(|operation| matches!(operation, ControlOperation::Command(_)))
+    }
+
+    pub(super) fn cancel_steering_retries(&mut self) {
+        for operation in self.pending.operations.values_mut() {
+            if matches!(operation, ControlOperation::Steer { .. }) {
+                *operation = ControlOperation::ThreadRequest;
+            }
+        }
     }
 
     pub(super) fn reset_thread(&mut self) {

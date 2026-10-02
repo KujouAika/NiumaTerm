@@ -11,7 +11,7 @@ use nmt_platform::filesystem::path_identity;
 use crate::chat::{ReplayTurn, SessionSummary};
 use crate::claude_code::sessions;
 use crate::session::lifecycle::{SessionRuntime, Status};
-use crate::session::{AgentKind, RecoveryIdentity};
+use crate::session::{AgentKind, RecoveryIdentity, ResumeOutcome};
 
 /// Only controls absent from the provider's resumed settings are seeded locally.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,9 +50,16 @@ pub struct ReplayRead {
     identity: RecoveryIdentity,
 }
 
+/// A conversation read from disk for a restore: its turns, and the name its
+/// transcript records for it.
+pub struct LoadedReplay {
+    pub turns: Vec<ReplayTurn>,
+    pub title: Option<String>,
+}
+
 impl ReplayRead {
     /// Synchronous disk work; the caller chooses its background executor.
-    pub fn load(&self) -> Result<Vec<ReplayTurn>, String> {
+    pub fn load(&self) -> Result<LoadedReplay, String> {
         sessions::try_load_replay(self.cwd.as_deref(), &self.identity.id)
     }
 }
@@ -79,7 +86,7 @@ pub enum ReadyAction {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum ReplayAction {
+pub(crate) enum ReplayAction {
     Ignore,
     Append,
     Replace,
@@ -108,6 +115,13 @@ enum PendingRestore {
 pub struct ConversationRestore {
     generation: u64,
     pending: Option<PendingRestore>,
+
+    /// Name of the conversation the latest restore switches to, as the
+    /// history list showed it. Most harnesses report no name on resume, so
+    /// this is what names the tab once the switch lands. Every successful
+    /// restore passes through `begin`, which replaces it, so a failed
+    /// restore's name never reaches a later one.
+    title: Option<String>,
 }
 
 impl ConversationRestore {
@@ -131,17 +145,22 @@ impl ConversationRestore {
 
         let previous = runtime.begin_conversation_change();
 
-        match kind {
-            AgentKind::Codex | AgentKind::DeepSeek => {
-                if !runtime
-                    .backend_mut()
-                    .is_some_and(|backend| backend.resume_thread(&summary.id))
-                {
-                    runtime.conversation_change_rejected(previous);
+        self.title = Some(summary.title.trim())
+            .filter(|title| !title.is_empty())
+            .map(str::to_owned);
 
-                    return ResumeStart::Rejected;
-                }
+        let outcome = match runtime.backend_mut() {
+            Some(backend) => backend.resume_thread(&summary.id),
+            None => ResumeOutcome::without_session(kind),
+        };
 
+        match outcome {
+            ResumeOutcome::Rejected => {
+                runtime.conversation_change_rejected(previous);
+
+                ResumeStart::Rejected
+            }
+            ResumeOutcome::SwitchedInPlace => {
                 self.pending = Some(PendingRestore::AwaitingReplay {
                     epoch: runtime.epoch(),
                     previous,
@@ -149,7 +168,7 @@ impl ConversationRestore {
 
                 ResumeStart::Requested
             }
-            AgentKind::Claude => {
+            ResumeOutcome::NeedsReplayRead => {
                 self.generation = self
                     .generation
                     .checked_add(1)
@@ -172,12 +191,12 @@ impl ConversationRestore {
         }
     }
 
-    pub fn loaded(
+    pub(crate) fn loaded(
         &mut self,
         runtime: &mut SessionRuntime,
         request: ReplayRead,
         cwd: Option<&str>,
-        replay: Result<Vec<ReplayTurn>, String>,
+        replay: Result<LoadedReplay, String>,
     ) -> ReplayLoaded {
         let Some(PendingRestore::Reading {
             request: active,
@@ -207,9 +226,13 @@ impl ConversationRestore {
 
         match replay {
             Ok(replay) => {
+                // A restore that names no conversation, such as a tab
+                // reopening on launch, takes the name its transcript records.
+                self.title = self.title.take().or(replay.title);
+
                 self.pending = Some(PendingRestore::Prepared {
                     identity: request.identity.clone(),
-                    replay,
+                    replay: replay.turns,
                 });
 
                 ReplayLoaded::Restart(request.identity)
@@ -254,7 +277,7 @@ impl ConversationRestore {
         }
     }
 
-    pub fn replayed(&mut self, epoch: u64) -> ReplayAction {
+    pub(crate) fn replayed(&mut self, epoch: u64) -> ReplayAction {
         match &self.pending {
             None => ReplayAction::Append,
             Some(PendingRestore::AwaitingReplay { epoch: active, .. }) if *active == epoch => {
@@ -291,7 +314,13 @@ impl ConversationRestore {
         true
     }
 
-    pub fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         self.pending = None;
+    }
+
+    /// The restored conversation's name, released once its replay replaced
+    /// the conversation.
+    pub(crate) fn take_title(&mut self) -> Option<String> {
+        self.title.take()
     }
 }

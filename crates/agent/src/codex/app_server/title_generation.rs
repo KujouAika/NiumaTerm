@@ -3,19 +3,18 @@
 mod title_generation_tests;
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::time::{Instant, timeout_at};
 
-use crate::chat::Event;
+use crate::codex::app_server::ThreadProfile;
 use crate::codex::app_server::host::{CodexHost, HOST_EXIT_METHOD, RegistrationId};
-use crate::codex::app_server::protocol::{thread_name_request, thread_start_params};
-use crate::codex::app_server::{Session, ThreadProfile};
+use crate::codex::app_server::protocol::thread_start_params;
+use crate::session::naming::provisional_title;
 use crate::workspace::AgentWorkspace;
 
-const PROVISIONAL_TITLE_CHARS: usize = 60;
 const GENERATED_TITLE_CHARS: usize = 36;
 const TITLE_PROMPT_CHARS: usize = 2_000;
 const DEFAULT_TITLE_MODEL: &str = "gpt-5.6-luna";
@@ -30,20 +29,20 @@ pub(super) const TITLE_GENERATION_RESULT_METHOD: &str = "nmt/codexTitleGeneratio
 
 type Delivery = Arc<dyn Fn(Value) + Send + Sync>;
 
-struct TitleGenerationRequest {
-    generation_id: u64,
-    root_thread_id: String,
-    provisional_title: String,
-    prompt: String,
-    profile: ThreadProfile,
-    workspace: AgentWorkspace,
+pub(super) struct TitleGenerationRequest {
+    pub(super) generation_id: u64,
+    pub(super) root_thread_id: String,
+    pub(super) provisional_title: String,
+    pub(super) prompt: String,
+    pub(super) profile: ThreadProfile,
+    pub(super) workspace: AgentWorkspace,
 }
 
 pub(super) struct TitleGenerationHandle {
     pub(super) generation_id: u64,
     pub(super) root_thread_id: String,
     pub(super) provisional_title: String,
-    cancel_tx: Sender<Value>,
+    cancel_tx: UnboundedSender<Value>,
 }
 
 impl TitleGenerationHandle {
@@ -81,149 +80,41 @@ impl TitleGenerationResult {
     }
 }
 
-impl Session {
-    /// A user-authored name invalidates any generated replacement before the
-    /// provider write is queued, so a late worker result cannot rename it.
-    pub(crate) fn rename_thread(&mut self, name: &str) -> bool {
-        self.cancel_title_generation();
-
-        let Some(thread_id) = self.conversation.thread_id.clone() else {
-            return false;
-        };
-
-        let name = name.trim();
-
-        if name.is_empty() {
-            return false;
-        }
-
-        let rpc_id = self.alloc_rpc_id();
-
-        self.try_send(thread_name_request(rpc_id, &thread_id, name))
-            .is_ok()
-    }
-
-    pub(crate) fn cancel_title_generation(&mut self) {
-        if let Some(generation) = self.title_generation.take() {
-            generation.cancel();
-        }
-    }
-
-    pub(super) fn begin_title_generation(&mut self, prompt: &str, provisional_title: &str) {
-        self.cancel_title_generation();
-
-        let (Some(host), Some(root_thread_id)) =
-            (self.host.as_ref(), self.conversation.thread_id.clone())
-        else {
-            self.queue_thread_name(provisional_title);
-
-            return;
-        };
-
-        self.next_title_generation_id = self.next_title_generation_id.wrapping_add(1).max(1);
-
-        let generation_id = self.next_title_generation_id;
-
-        match start_title_generation(
-            Arc::clone(host),
-            Arc::clone(&self.deliver),
-            TitleGenerationRequest {
-                generation_id,
-                root_thread_id,
-                provisional_title: provisional_title.to_string(),
-                prompt: prompt.to_string(),
-                profile: self.thread_profile.clone(),
-                workspace: self.workspace.clone(),
-            },
-        ) {
-            Ok(generation) => self.title_generation = Some(generation),
-            Err(_) => self.queue_thread_name(provisional_title),
-        }
-    }
-
-    pub(super) fn apply_title_generation_result(&mut self, params: &Value) -> Vec<Event> {
-        let Some(result) = parse_title_generation_result(TITLE_GENERATION_RESULT_METHOD, params)
-        else {
-            return Vec::new();
-        };
-
-        let matches_active = self
-            .title_generation
-            .as_ref()
-            .is_some_and(|active| active.accepts(&result, self.conversation.thread_id.as_deref()));
-
-        if !matches_active {
-            return Vec::new();
-        }
-
-        self.title_generation.take();
-
-        let title = result.resolved_title().to_string();
-
-        self.queue_thread_name(&title);
-
-        vec![Event::TitleUpdated(title)]
-    }
-
-    fn queue_thread_name(&mut self, name: &str) {
-        let Some(thread_id) = self.conversation.thread_id.clone() else {
-            return;
-        };
-
-        // Keep later writes queued even while an earlier name is pending: a
-        // user rename that follows a generated name must be the final request
-        // the server applies.
-        let rpc_id = self.alloc_rpc_id();
-
-        self.send(thread_name_request(rpc_id, &thread_id, name));
-    }
-}
-
-fn start_title_generation(
+/// Cancellation arrives as a message rather than by aborting the task, so the
+/// cleanup that interrupts the title turn and detaches the registration runs.
+pub(super) fn start_title_generation(
     host: Arc<CodexHost>,
     deliver: Delivery,
     request: TitleGenerationRequest,
-) -> Result<TitleGenerationHandle, String> {
-    let (tx, rx) = mpsc::channel();
+) -> TitleGenerationHandle {
+    let (tx, rx) = unbounded_channel();
     let callback_tx = tx.clone();
 
     let registration_id = host.register(move |message| {
         let _ = callback_tx.send(message);
     });
 
-    let worker_host = Arc::clone(&host);
     let generation_id = request.generation_id;
     let root_thread_id = request.root_thread_id.clone();
     let provisional_title = request.provisional_title.clone();
 
-    let spawn = thread::Builder::new()
-        .name("codex-title".to_string())
-        .spawn(move || {
-            run_title_generation(worker_host, registration_id, rx, deliver, request);
-        });
+    nmt_platform::runtime().spawn(run_title_generation(
+        host,
+        registration_id,
+        rx,
+        deliver,
+        request,
+    ));
 
-    if let Err(error) = spawn {
-        host.detach(registration_id);
-
-        return Err(format!("Could not start Codex title generation: {error}"));
-    }
-
-    Ok(TitleGenerationHandle {
+    TitleGenerationHandle {
         generation_id,
         root_thread_id,
         provisional_title,
         cancel_tx: tx,
-    })
+    }
 }
 
-pub(super) fn parse_title_generation_result(
-    method: &str,
-    params: &Value,
-) -> Option<TitleGenerationResult> {
-    if method != TITLE_GENERATION_RESULT_METHOD {
-        return None;
-    }
-
+pub(super) fn parse_title_generation_result(params: &Value) -> Option<TitleGenerationResult> {
     Some(TitleGenerationResult {
         generation_id: params["generationId"].as_u64()?,
         root_thread_id: params["rootThreadId"].as_str()?.to_string(),
@@ -232,10 +123,10 @@ pub(super) fn parse_title_generation_result(
     })
 }
 
-fn run_title_generation(
+async fn run_title_generation(
     host: Arc<CodexHost>,
     registration_id: RegistrationId,
-    rx: Receiver<Value>,
+    mut rx: UnboundedReceiver<Value>,
     deliver: Delivery,
     request: TitleGenerationRequest,
 ) {
@@ -263,12 +154,7 @@ fn run_title_generation(
         )
         .is_ok()
     {
-        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-            let message = match rx.recv_timeout(remaining) {
-                Ok(message) => message,
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
-            };
-
+        while let Ok(Some(message)) = timeout_at(deadline, rx.recv()).await {
             if message["method"].as_str() == Some(TITLE_GENERATION_CANCEL_METHOD) {
                 cancelled = true;
 
@@ -425,15 +311,7 @@ fn finish_title_thread(
 /// leave the conversation unnamed because they describe an operation rather
 /// than the subject the user wants to discuss.
 pub(crate) fn provisional_title_from_prompt(prompt: &str) -> Option<String> {
-    let first_line = prompt.lines().find(|line| !line.trim().is_empty())?.trim();
-
-    if first_line.starts_with('/') {
-        return None;
-    }
-
-    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    truncate_with_ellipsis(&normalized, PROVISIONAL_TITLE_CHARS)
+    provisional_title(prompt, None)
 }
 
 pub(super) fn title_thread_start_request(
@@ -541,26 +419,4 @@ fn title_prompt(prompt: &str) -> String {
         &prompt,
     ]
     .join("\n")
-}
-
-fn truncate_with_ellipsis(text: &str, limit: usize) -> Option<String> {
-    let count = text.chars().count();
-
-    if count == 0 {
-        return None;
-    }
-
-    if count <= limit {
-        return Some(text.to_string());
-    }
-
-    let mut truncated: String = text.chars().take(limit.saturating_sub(1)).collect();
-
-    while truncated.ends_with(char::is_whitespace) {
-        truncated.pop();
-    }
-
-    truncated.push('…');
-
-    Some(truncated)
 }

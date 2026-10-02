@@ -26,6 +26,11 @@ impl<T: HasId> ActiveList<T> {
         }
     }
 
+    /// Append an element behind the active one, which stays active.
+    pub fn push(&mut self, item: T) {
+        self.items.push(item);
+    }
+
     /// Append an element and make it active.
     pub fn push_active(&mut self, item: T) {
         self.items.push(item);

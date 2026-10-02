@@ -1,85 +1,9 @@
 use nmt_agent::background_task::{
-    BackgroundTaskDiscoveryState, BackgroundTaskKey, BackgroundTaskRegistry,
-    BackgroundTaskSnapshot, BackgroundTaskState, BackgroundTaskUpdate,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskRegistry, BackgroundTaskState,
+    BackgroundTaskUpdate,
 };
 
-use nmt_agent::chat::ThreadSettings;
-
-use nmt_agent::session::ConversationTitleRequest;
-
-use nmt_agent::session::children::scoped_background_tasks;
-
-use nmt_agent::session::naming::conversation_title_request as build_title_request;
-
-use nmt_agent::session::settings::resolve_ready_settings;
-
-use crate::agent_tab::session::{directories_match, directory_label};
-
-use crate::agent_tab::{AgentKind, tab_title_from_prompt};
-
-fn snapshot_for(parent: BackgroundTaskKey) -> BackgroundTaskSnapshot {
-    let mut registry = BackgroundTaskRegistry::new(parent);
-
-    registry.apply(
-        BackgroundTaskKey::codex("child-1"),
-        BackgroundTaskUpdate::state(BackgroundTaskState::Working),
-    );
-
-    registry.snapshot()
-}
-
-#[test]
-fn a_snapshot_is_shown_only_for_the_session_it_describes() {
-    let codex = BackgroundTaskKey::codex("thread-a");
-    let snapshot = snapshot_for(codex.clone());
-
-    assert!(scoped_background_tasks(Some(&codex), Some(&snapshot)).is_some());
-    assert!(
-        scoped_background_tasks(Some(&BackgroundTaskKey::codex("thread-b")), Some(&snapshot))
-            .is_none()
-    );
-    assert!(
-        scoped_background_tasks(
-            Some(&BackgroundTaskKey::claude_code("thread-a")),
-            Some(&snapshot)
-        )
-        .is_none(),
-        "a Claude session must not adopt a Codex thread's rows"
-    );
-    assert!(
-        scoped_background_tasks(None, Some(&snapshot)).is_none(),
-        "an unsupported or not-yet-started pane shows no rows"
-    );
-}
-
-#[test]
-fn a_later_snapshot_replaces_the_previous_one_and_carries_its_activity() {
-    let parent = BackgroundTaskKey::claude_code("session-1");
-
-    let mut registry = BackgroundTaskRegistry::new(parent.clone());
-
-    registry.apply(
-        BackgroundTaskKey::claude_code("task-1"),
-        BackgroundTaskUpdate::state(BackgroundTaskState::Working),
-    );
-
-    let first = registry.snapshot();
-
-    registry.apply(
-        BackgroundTaskKey::claude_code("task-1"),
-        BackgroundTaskUpdate::state(BackgroundTaskState::Done),
-    );
-
-    let second = registry.snapshot();
-
-    assert_eq!(first.active_count(), 1);
-    assert_eq!(second.active_count(), 0);
-    assert!(second.activity > first.activity);
-    assert_eq!(
-        scoped_background_tasks(Some(&parent), Some(&second)),
-        Some(&second)
-    );
-}
+use crate::agent_tab::session::directories_match;
 
 #[test]
 fn a_failed_refresh_reports_unavailable_without_dropping_known_rows() {
@@ -92,7 +16,7 @@ fn a_failed_refresh_reports_unavailable_without_dropping_known_rows() {
         BackgroundTaskUpdate::state(BackgroundTaskState::Working),
     );
 
-    registry.set_discovery(BackgroundTaskDiscoveryState::Unavailable {
+    registry.set_discovery(BackgroundTaskLoadState::Unavailable {
         message: "thread/list failed".into(),
     });
 
@@ -102,182 +26,8 @@ fn a_failed_refresh_reports_unavailable_without_dropping_known_rows() {
     assert_eq!(snapshot.active_count(), 1);
     assert!(matches!(
         snapshot.discovery,
-        BackgroundTaskDiscoveryState::Unavailable { .. }
+        BackgroundTaskLoadState::Unavailable { .. }
     ));
-}
-
-#[test]
-fn resumed_codex_thread_uses_only_the_locally_remembered_reviewer() {
-    let backend = ThreadSettings {
-        model: Some("thread-model".into()),
-        approval: Some("never".into()),
-        approvals_reviewer: Some("user".into()),
-        sandbox: Some("readOnly".into()),
-        effort: Some("low".into()),
-        tier: Some("priority".into()),
-    };
-
-    let stored = ThreadSettings {
-        model: Some("local-model".into()),
-        approval: Some("on-request".into()),
-        approvals_reviewer: Some("auto_review".into()),
-        sandbox: Some("workspaceWrite".into()),
-        effort: Some("high".into()),
-        tier: None,
-    };
-
-    assert_eq!(
-        resolve_ready_settings(backend, Some(&stored), false, true, None, None),
-        ThreadSettings {
-            model: Some("thread-model".into()),
-            approval: Some("never".into()),
-            approvals_reviewer: Some("auto_review".into()),
-            sandbox: Some("readOnly".into()),
-            effort: Some("low".into()),
-            tier: Some("priority".into()),
-        }
-    );
-}
-
-#[test]
-fn claude_profile_and_local_settings_survive_later_ready_events() {
-    let backend = ThreadSettings {
-        model: Some("agent-model".into()),
-        approval: Some("default".into()),
-        effort: None,
-        ..ThreadSettings::default()
-    };
-
-    let local = ThreadSettings {
-        model: Some("remembered-model".into()),
-        approval: Some("auto".into()),
-        effort: Some("high".into()),
-        ..ThreadSettings::default()
-    };
-
-    let initial = resolve_ready_settings(
-        backend.clone(),
-        Some(&local),
-        true,
-        false,
-        Some("profile-model"),
-        None,
-    );
-
-    assert_eq!(initial.model.as_deref(), Some("profile-model"));
-    assert_eq!(initial.approval.as_deref(), Some("auto"));
-    assert_eq!(initial.effort.as_deref(), Some("high"));
-    assert_eq!(
-        resolve_ready_settings(backend, Some(&initial), true, false, None, None),
-        initial
-    );
-}
-
-#[test]
-fn a_pinned_profile_effort_outranks_the_thread_and_the_remembered_pick() {
-    let backend = ThreadSettings {
-        effort: Some("low".into()),
-        ..ThreadSettings::default()
-    };
-
-    let local = ThreadSettings {
-        effort: Some("medium".into()),
-        ..ThreadSettings::default()
-    };
-
-    let resolved = resolve_ready_settings(backend, Some(&local), true, false, None, Some("max"));
-
-    assert_eq!(resolved.effort.as_deref(), Some("max"));
-}
-
-#[test]
-fn no_pinned_effort_leaves_the_remembered_pick_in_place() {
-    let backend = ThreadSettings {
-        effort: Some("low".into()),
-        ..ThreadSettings::default()
-    };
-
-    let local = ThreadSettings {
-        effort: Some("medium".into()),
-        ..ThreadSettings::default()
-    };
-
-    let resolved = resolve_ready_settings(backend, Some(&local), true, false, None, None);
-
-    assert_eq!(resolved.effort.as_deref(), Some("medium"));
-}
-
-#[test]
-fn a_prompt_names_its_tab_by_its_first_real_line() {
-    assert_eq!(
-        tab_title_from_prompt(
-            "
-  Fix the flaky auth test
-and the retry loop"
-        ),
-        Some("Fix the flaky auth test".to_string())
-    );
-
-    // A slash command instructs the CLI instead of stating a subject, and the
-    // settings controls send some of them for the user.
-    assert_eq!(tab_title_from_prompt("/effort high"), None);
-    assert_eq!(tab_title_from_prompt("   \n\t "), None);
-
-    let long = "x".repeat(200);
-
-    assert_eq!(
-        tab_title_from_prompt(&long).map(|t| t.chars().count()),
-        Some(60)
-    );
-}
-
-#[test]
-fn title_requests_keep_each_provider_semantics() {
-    let codex = conversation_title_request(
-        AgentKind::Codex,
-        "  Inspect title generation\n and its fallback  ",
-    )
-    .unwrap();
-
-    assert_eq!(
-        codex.provisional_title,
-        "Inspect title generation and its fallback"
-    );
-
-    let claude = conversation_title_request(
-        AgentKind::Claude,
-        "  Inspect title generation\n and its fallback  ",
-    )
-    .unwrap();
-
-    assert_eq!(
-        claude.provisional_title,
-        "Inspect title generation and its fallback"
-    );
-    assert!(conversation_title_request(AgentKind::Codex, "/effort high").is_none());
-    assert!(conversation_title_request(AgentKind::Claude, "/effort high").is_none());
-}
-
-#[test]
-fn claude_provisional_titles_match_the_desktop_projection() {
-    assert_eq!(
-        conversation_title_request(
-            AgentKind::Claude,
-            "  one two\nthree four five six seven eight  "
-        )
-        .as_ref()
-        .map(|request| request.provisional_title.as_str()),
-        Some("one two three four five six")
-    );
-
-    let long_word = "界".repeat(80);
-
-    let title = conversation_title_request(AgentKind::Claude, &long_word)
-        .unwrap()
-        .provisional_title;
-
-    assert_eq!(title.chars().count(), 60);
-    assert!(title.ends_with('…'));
 }
 
 #[test]
@@ -309,16 +59,6 @@ fn recorded_unix_directories_preserve_case_and_backslashes() {
     assert!(directories_match(None, Some("/work/Foo")));
 }
 
-#[test]
-fn a_directory_reads_as_its_last_two_components() {
-    assert_eq!(
-        directory_label(r"C:\Workspace\NiumaTerm"),
-        "Workspace/NiumaTerm"
-    );
-    assert_eq!(directory_label("/home/u/projects/app/"), "projects/app");
-    assert_eq!(directory_label("C:/only"), "C:/only");
-}
-
 mod conversation_title_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -329,16 +69,16 @@ mod conversation_title_tests {
     use nmt_agent::AgentWorkspace;
     use nmt_agent::chat::{SendOutcome, SlashCommandOutcome};
     use nmt_agent::session::lifecycle::StartOutcome;
-    use nmt_config::profile::{AgentProfile, AgentProfileKind};
+    use nmt_config::profile::{AgentKind, AgentProfile};
 
     use crate::agent_tab::session::{Backend, RecoveryIdentity, Status, TestBackend};
     use crate::agent_tab::settings::AgentSettings;
     use crate::agent_tab::tests::deliver_session_event;
-    use crate::agent_tab::{AgentKind, AgentPane, AgentPaneEvent, AgentThreadDefaults};
+    use crate::agent_tab::{AgentPane, AgentPaneEvent};
 
     fn open_pane(
         cx: &mut TestAppContext,
-        kind: AgentProfileKind,
+        kind: AgentKind,
         resume: Option<RecoveryIdentity>,
     ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
         let profile = AgentProfile {
@@ -355,8 +95,6 @@ mod conversation_title_tests {
             gpui_component::init(cx);
 
             cx.set_global(AgentSettings::default());
-
-            cx.set_global(AgentThreadDefaults::default());
 
             cx.open_window(Default::default(), |window, cx| {
                 let agent = cx.new(|cx| {
@@ -375,7 +113,7 @@ mod conversation_title_tests {
 
     #[gpui::test]
     fn command_catalog_rebuilds_when_the_cached_language_changes(cx: &mut TestAppContext) {
-        let (pane, _) = open_pane(cx, AgentProfileKind::Codex, None);
+        let (pane, _) = open_pane(cx, AgentKind::Codex, None);
 
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
@@ -398,17 +136,80 @@ mod conversation_title_tests {
     }
 
     #[gpui::test]
+    fn discovery_cache_drops_commands_and_skills_from_a_retired_session(cx: &mut TestAppContext) {
+        use nmt_agent::chat::{
+            Event, SkillCatalog, SlashCommandArguments, SlashCommandInfo, SlashCommandRunPolicy,
+            SlashCommandSource,
+        };
+
+        let (pane, _) = open_pane(cx, AgentKind::Codex, None);
+
+        deliver_session_event(
+            &pane,
+            Event::Commands(vec![SlashCommandInfo {
+                name: "old-provider-command".into(),
+                description: "A command from the previous session".into(),
+                argument_hint: None,
+                source: SlashCommandSource::Provider,
+                arguments: SlashCommandArguments::None,
+                run_policy: SlashCommandRunPolicy::Immediate,
+            }]),
+            cx,
+        );
+
+        deliver_session_event(
+            &pane,
+            Event::Skills(SkillCatalog {
+                skills: Vec::new(),
+                errors: vec!["previous discovery error".into()],
+            }),
+            cx,
+        );
+
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                let before = pane.command_catalog(cx);
+
+                assert!(
+                    before
+                        .iter()
+                        .any(|command| command.name == "old-provider-command")
+                );
+                assert_eq!(
+                    pane.skill_palette_model("").note.as_deref(),
+                    Some("previous discovery error")
+                );
+
+                pane.session.borrow_mut().starting(None);
+
+                let after = pane.command_catalog(cx);
+
+                assert!(
+                    !after
+                        .iter()
+                        .any(|command| command.name == "old-provider-command")
+                );
+                assert!(!Rc::ptr_eq(&before, &after));
+                assert_eq!(
+                    pane.skill_palette_model("").note.as_deref(),
+                    Some(&*rust_i18n::t!("agent-composer-skill-discovery-loading"))
+                );
+            })
+        });
+    }
+
+    #[gpui::test]
     fn output_failure_retires_backend_and_marks_session_exited(cx: &mut TestAppContext) {
-        let (pane, window) = open_pane(cx, AgentProfileKind::Codex, None);
+        let (pane, window) = open_pane(cx, AgentKind::Codex, None);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [],
@@ -419,12 +220,12 @@ mod conversation_title_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.turn_started();
+                pane.session.borrow_mut().runtime_mut().turn_started();
 
                 pane.stop_for_output_failure("Output limit reached".into(), cx);
 
-                assert!(pane.session.borrow().runtime.backend().is_none());
-                assert_eq!(pane.session.borrow().runtime.status(), Status::Exited);
+                assert!(pane.session.borrow().runtime().backend().is_none());
+                assert_eq!(pane.session.borrow().runtime().status(), Status::Exited);
             });
         });
     }
@@ -435,7 +236,7 @@ mod conversation_title_tests {
 
         use crate::agent_tab::profile::AgentKind;
 
-        let (pane, window) = open_pane(cx, AgentProfileKind::Codex, None);
+        let (pane, window) = open_pane(cx, AgentKind::Codex, None);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -446,12 +247,12 @@ mod conversation_title_tests {
 
                 backend.rename_outcome = RenameOutcome::Rejected;
 
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
                     pane.session
                         .borrow_mut()
-                        .runtime
+                        .runtime_mut()
                         .install(epoch, Ok(Backend::Test(backend))),
                     StartOutcome::Installed
                 ));
@@ -461,20 +262,20 @@ mod conversation_title_tests {
                 pane.rename_session("latest");
 
                 assert_eq!(
-                    pane.session.borrow().naming.pending.as_deref(),
+                    pane.session.borrow_mut().naming_mut().pending.as_deref(),
                     Some("latest")
                 );
 
-                pane.sync_pending_rename();
+                pane.session.borrow_mut().sync_pending_rename();
 
                 assert_eq!(
-                    pane.session.borrow().naming.pending.as_deref(),
+                    pane.session.borrow_mut().naming_mut().pending.as_deref(),
                     Some("latest")
                 );
 
                 let mut state = pane.session.borrow_mut();
 
-                let Some(Backend::Test(backend)) = state.runtime.backend_mut() else {
+                let Some(Backend::Test(backend)) = state.runtime_mut().backend_mut() else {
                     panic!("expected test backend");
                 };
 
@@ -482,13 +283,13 @@ mod conversation_title_tests {
 
                 drop(state);
 
-                pane.sync_pending_rename();
+                pane.session.borrow_mut().sync_pending_rename();
 
-                assert!(pane.session.borrow().naming.pending.is_none());
+                assert!(pane.session.borrow_mut().naming_mut().pending.is_none());
 
                 let mut state = pane.session.borrow_mut();
 
-                let Some(Backend::Test(backend)) = state.runtime.backend_mut() else {
+                let Some(Backend::Test(backend)) = state.runtime_mut().backend_mut() else {
                     panic!("expected test backend");
                 };
 
@@ -498,7 +299,7 @@ mod conversation_title_tests {
 
                 pane.rename_session("local only");
 
-                assert!(pane.session.borrow().naming.pending.is_none());
+                assert!(pane.session.borrow_mut().naming_mut().pending.is_none());
             });
         });
     }
@@ -525,16 +326,16 @@ mod conversation_title_tests {
     fn rejected_control_replies_keep_interaction_cards(cx: &mut TestAppContext) {
         use nmt_agent::chat::{Event, Question, QuestionInput, QuestionMode, QuestionRequest};
 
-        let (pane, window) = open_pane(cx, AgentProfileKind::Codex, None);
+        let (pane, window) = open_pane(cx, AgentKind::Codex, None);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [],
@@ -545,13 +346,7 @@ mod conversation_title_tests {
                     StartOutcome::Installed
                 ));
 
-                {
-                    let mut guard = pane.session.borrow_mut();
-
-                    let state = &mut *guard;
-
-                    state.input.restore(&mut state.runtime)
-                };
+                pane.session.borrow_mut().restore_questions();
             })
         });
 
@@ -567,7 +362,7 @@ mod conversation_title_tests {
             pane.update(cx, |pane, cx| {
                 pane.respond_approval("accept", cx);
 
-                assert!(pane.session.borrow().input.approval().is_some());
+                assert!(pane.session.borrow().input().approval().is_some());
             })
         });
 
@@ -575,12 +370,12 @@ mod conversation_title_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 pane.restore_question_drafts();
 
                 if let Some(Backend::Test(backend)) =
-                    pane.session.borrow_mut().runtime.backend_mut()
+                    pane.session.borrow_mut().runtime_mut().backend_mut()
                 {
                     backend.input_result = Err("The question response could not be queued.".into());
                 }
@@ -611,7 +406,7 @@ mod conversation_title_tests {
 
                 let question = pane
                     .prompts
-                    .questions(&state.input)
+                    .questions(state.input())
                     .expect("rejected answer remains visible");
 
                 assert!(question.error().is_some());
@@ -621,7 +416,7 @@ mod conversation_title_tests {
 
     #[gpui::test]
     fn accepted_codex_prompt_publishes_a_provisional_title(cx: &mut TestAppContext) {
-        let (pane, window) = open_pane(cx, AgentProfileKind::Codex, None);
+        let (pane, window) = open_pane(cx, AgentKind::Codex, None);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -629,10 +424,10 @@ mod conversation_title_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [SendOutcome::StartedTurn],
@@ -643,7 +438,7 @@ mod conversation_title_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 assert!(pane.send_text_inner(
                     "  Inspect title generation\n and its fallback  ".into(),
@@ -651,7 +446,7 @@ mod conversation_title_tests {
                     None,
                     cx
                 ));
-                assert!(pane.session.borrow().naming.named);
+                assert!(pane.session.borrow_mut().naming_mut().named);
             });
         });
 
@@ -667,7 +462,7 @@ mod conversation_title_tests {
     fn accepted_claude_prompt_publishes_one_provisional_title(cx: &mut TestAppContext) {
         // Starting the test fixture as Codex avoids a real Claude subprocess;
         // the installed test backend below owns all message behavior.
-        let (pane, window) = open_pane(cx, AgentProfileKind::Codex, None);
+        let (pane, window) = open_pane(cx, AgentKind::Codex, None);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -680,10 +475,12 @@ mod conversation_title_tests {
                     .unwrap()
                     .update(cx, |host, _| host.kind = AgentKind::Claude);
 
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                pane.session.borrow_mut().set_kind(AgentKind::Claude);
+
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [SendOutcome::StartedTurn, SendOutcome::Steered],
@@ -694,7 +491,7 @@ mod conversation_title_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 assert!(pane.send_text_inner(
                     "one two three four five six seven eight".into(),
@@ -702,7 +499,7 @@ mod conversation_title_tests {
                     None,
                     cx
                 ));
-                assert!(pane.session.borrow().naming.named);
+                assert!(pane.session.borrow_mut().naming_mut().named);
                 assert!(pane.send_text_inner(
                     "a later prompt cannot rename this".into(),
                     None,
@@ -721,7 +518,7 @@ mod conversation_title_tests {
     fn resumed_claude_prompt_does_not_enter_first_prompt_naming(cx: &mut TestAppContext) {
         let (pane, window) = open_pane(
             cx,
-            AgentProfileKind::Codex,
+            AgentKind::Codex,
             Some(RecoveryIdentity::new(
                 AgentKind::Codex,
                 "resumed-conversation",
@@ -734,17 +531,19 @@ mod conversation_title_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                assert!(pane.session.borrow().naming.named);
+                assert!(pane.session.borrow_mut().naming_mut().named);
 
                 pane.host
                     .upgrade()
                     .unwrap()
                     .update(cx, |host, _| host.kind = AgentKind::Claude);
 
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                pane.session.borrow_mut().set_kind(AgentKind::Claude);
+
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [SendOutcome::StartedTurn],
@@ -755,7 +554,7 @@ mod conversation_title_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 assert!(pane.send_text_inner(
                     "follow up on the restored session".into(),
@@ -783,16 +582,16 @@ mod queued_prompt_placement_tests {
         Event as SessionEvent, Item as SessionItem, QueuedPrompt, SendOutcome, SlashCommandOutcome,
     };
     use nmt_agent::session::lifecycle::StartOutcome;
-    use nmt_config::profile::{AgentProfile, AgentProfileKind};
+    use nmt_config::profile::{AgentKind, AgentProfile};
 
+    use crate::agent_tab::AgentPane;
     use crate::agent_tab::session::{Backend, Status, TestBackend};
     use crate::agent_tab::settings::AgentSettings;
     use crate::agent_tab::tests::deliver_session_event;
-    use crate::agent_tab::{AgentPane, AgentThreadDefaults};
 
     fn open_pane(
         cx: &mut TestAppContext,
-        kind: AgentProfileKind,
+        kind: AgentKind,
     ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
         let profile = AgentProfile {
             name: "Queued Prompt Test".into(),
@@ -808,8 +607,6 @@ mod queued_prompt_placement_tests {
             gpui_component::init(cx);
 
             cx.set_global(AgentSettings::default());
-
-            cx.set_global(AgentThreadDefaults::default());
 
             cx.open_window(Default::default(), |window, cx| {
                 let agent =
@@ -847,16 +644,16 @@ mod queued_prompt_placement_tests {
     fn a_pending_command_starts_working_on_its_turn_event_once(cx: &mut TestAppContext) {
         // Codex initialization stays on the test executor; Claude would start
         // a real stdout reader before the test backend replaces it.
-        let (pane, window) = open_pane(cx, AgentProfileKind::Codex);
+        let (pane, window) = open_pane(cx, AgentKind::Codex);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
         let previous_turn = cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [],
@@ -867,11 +664,11 @@ mod queued_prompt_placement_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
-                pane.session.borrow_mut().commands.awaiting_turn = true;
+                pane.session.borrow_mut().commands_mut().awaiting_turn = true;
 
-                let previous_turn = pane.session.borrow().delivery.turn();
+                let previous_turn = pane.session.borrow().turn();
 
                 assert!(!pane.transcript.read(cx).is_working());
 
@@ -883,9 +680,9 @@ mod queued_prompt_placement_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                assert!(!pane.session.borrow().commands.awaiting_turn);
-                assert_eq!(pane.session.borrow().delivery.turn(), previous_turn + 1);
-                assert_eq!(pane.session.borrow().runtime.status(), Status::Running);
+                assert!(!pane.session.borrow_mut().commands_mut().awaiting_turn);
+                assert_eq!(pane.session.borrow().turn(), previous_turn + 1);
+                assert_eq!(pane.session.borrow().runtime().status(), Status::Running);
                 assert!(pane.transcript.read(cx).is_working());
             })
         });
@@ -895,7 +692,7 @@ mod queued_prompt_placement_tests {
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
                 assert_eq!(
-                    pane.session.borrow().delivery.turn(),
+                    pane.session.borrow().turn(),
                     previous_turn + 1,
                     "a repeated event must not open another turn"
                 );
@@ -905,16 +702,16 @@ mod queued_prompt_placement_tests {
 
     #[gpui::test]
     fn a_queued_prompt_heads_the_turn_opened_for_it(cx: &mut TestAppContext) {
-        let (pane, window) = open_pane(cx, AgentProfileKind::Claude);
+        let (pane, window) = open_pane(cx, AgentKind::Claude);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [SendOutcome::StartedTurn, SendOutcome::Steered],
@@ -925,7 +722,7 @@ mod queued_prompt_placement_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 assert!(pane.send_text_inner("open the turn".into(), None, None, cx));
             })
@@ -935,7 +732,7 @@ mod queued_prompt_placement_tests {
 
         let first_turn = cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let first_turn = pane.session.borrow().delivery.turn();
+                let first_turn = pane.session.borrow().turn();
 
                 assert!(pane.send_text_inner("queued behind it".into(), None, None, cx));
 
@@ -968,14 +765,22 @@ mod queued_prompt_placement_tests {
         // The CLI answers the held prompt in a turn nothing here sent.
         deliver_session_event(&pane, SessionEvent::TurnStarted, &cx);
 
+        deliver_session_event(
+            &pane,
+            SessionEvent::ItemStarted(SessionItem::UserMessage {
+                text: Some("queued behind it".into()),
+            }),
+            &cx,
+        );
+
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
                 assert_eq!(
-                    pane.session.borrow().delivery.turn(),
+                    pane.session.borrow().turn(),
                     first_turn + 1,
                     "that turn is numbered"
                 );
-                assert_eq!(pane.session.borrow().runtime.status(), Status::Running);
+                assert_eq!(pane.session.borrow().runtime().status(), Status::Running);
                 assert!(pane.transcript.read(cx).is_working());
                 assert_eq!(
                     user_rows(pane, cx),
@@ -995,16 +800,16 @@ mod queued_prompt_placement_tests {
     /// as well would show the same message twice for that whole window.
     #[gpui::test]
     fn a_pending_inbox_omits_the_prompt_its_send_already_drew(cx: &mut TestAppContext) {
-        let (pane, window) = open_pane(cx, AgentProfileKind::DeepSeek);
+        let (pane, window) = open_pane(cx, AgentKind::DeepSeek);
 
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
         let text = cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [SendOutcome::StartedTurn],
@@ -1015,7 +820,7 @@ mod queued_prompt_placement_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 let text = "Reply with exactly: ok".to_string();
 
@@ -1041,7 +846,7 @@ mod queued_prompt_placement_tests {
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
                 assert!(
-                    pane.session.borrow().delivery.pending().is_empty(),
+                    pane.session.borrow().queued_prompts().is_empty(),
                     "a prompt already in the transcript is not also waiting"
                 );
             })
@@ -1066,7 +871,7 @@ mod queued_prompt_placement_tests {
                     vec![(1, text)],
                     "the message appears once, in the turn it opened"
                 );
-                assert!(pane.session.borrow().delivery.pending().is_empty());
+                assert!(pane.session.borrow().queued_prompts().is_empty());
             })
         });
     }
@@ -1076,18 +881,18 @@ mod turn_error_tests {
     use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
     use nmt_agent::AgentWorkspace;
     use nmt_agent::chat::{Event as SessionEvent, Item as SessionItem};
-    use nmt_config::profile::{AgentProfile, AgentProfileKind};
+    use nmt_config::profile::{AgentKind, AgentProfile};
 
+    use crate::agent_tab::AgentPane;
     use crate::agent_tab::settings::AgentSettings;
     use crate::agent_tab::tests::deliver_session_event;
-    use crate::agent_tab::{AgentPane, AgentThreadDefaults};
 
     fn open_pane(
         cx: &mut TestAppContext,
     ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
         let profile = AgentProfile {
             name: "Turn Error Test".into(),
-            kind: AgentProfileKind::Codex,
+            kind: AgentKind::Codex,
             executable: "missing-codex.exe".into(),
             ..AgentProfile::default()
         };
@@ -1098,8 +903,6 @@ mod turn_error_tests {
             gpui_component::init(cx);
 
             cx.set_global(AgentSettings::default());
-
-            cx.set_global(AgentThreadDefaults::default());
 
             cx.open_window(Default::default(), |window, cx| {
                 let agent =
@@ -1182,17 +985,17 @@ mod session_replacement_tests {
     use nmt_agent::AgentWorkspace;
     use nmt_agent::chat::{SendOutcome, SlashCommandOutcome};
     use nmt_agent::session::lifecycle::StartOutcome;
-    use nmt_config::profile::{AgentProfile, AgentProfileKind};
+    use nmt_config::profile::{AgentKind, AgentProfile};
 
+    use crate::agent_tab::AgentPane;
     use crate::agent_tab::session::{Backend, TestBackend};
     use crate::agent_tab::settings::AgentSettings;
-    use crate::agent_tab::{AgentPane, AgentThreadDefaults};
 
     #[gpui::test]
     fn a_reset_holds_its_old_session_until_the_replacement_is_installed(cx: &mut TestAppContext) {
         let profile = AgentProfile {
             name: "Session Replacement Test".into(),
-            kind: AgentProfileKind::DeepSeek,
+            kind: AgentKind::DeepSeek,
             // The replacement start never reaches a process: the spawn runs on
             // the background executor, which this test does not run.
             executable: "missing-agent.exe".into(),
@@ -1205,8 +1008,6 @@ mod session_replacement_tests {
             gpui_component::init(cx);
 
             cx.set_global(AgentSettings::default());
-
-            cx.set_global(AgentThreadDefaults::default());
 
             cx.open_window(Default::default(), |window, cx| {
                 let agent =
@@ -1227,10 +1028,10 @@ mod session_replacement_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, cx| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(
                             TestBackend::new(
@@ -1244,12 +1045,12 @@ mod session_replacement_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
 
                 pane.reset_conversation(cx);
 
                 assert!(
-                    pane.session.borrow().runtime.backend().is_none(),
+                    pane.session.borrow().runtime().backend().is_none(),
                     "the pane sends nowhere"
                 );
                 assert!(
@@ -1266,18 +1067,18 @@ mod shared_host_recovery_tests {
     use nmt_agent::AgentWorkspace;
     use nmt_agent::chat::{Event as SessionEvent, SendOutcome, SlashCommandOutcome};
     use nmt_agent::session::lifecycle::StartOutcome;
-    use nmt_config::profile::{AgentProfile, AgentProfileKind};
+    use nmt_config::profile::{AgentKind, AgentProfile};
 
+    use crate::agent_tab::AgentPane;
     use crate::agent_tab::session::{Backend, Status, TestBackend, UpdateSuspension};
     use crate::agent_tab::settings::AgentSettings;
     use crate::agent_tab::tests::deliver_session_event;
-    use crate::agent_tab::{AgentKind, AgentPane, AgentThreadDefaults};
 
     #[gpui::test]
     fn a_host_exit_retains_the_thread_for_retry(cx: &mut TestAppContext) {
         let profile = AgentProfile {
             name: "Codex Recovery Test".into(),
-            kind: AgentProfileKind::Codex,
+            kind: AgentKind::Codex,
             executable: "missing-codex.exe".into(),
             ..AgentProfile::default()
         };
@@ -1288,8 +1089,6 @@ mod shared_host_recovery_tests {
             gpui_component::init(cx);
 
             cx.set_global(AgentSettings::default());
-
-            cx.set_global(AgentThreadDefaults::default());
 
             cx.open_window(Default::default(), |window, cx| {
                 let agent =
@@ -1308,10 +1107,10 @@ mod shared_host_recovery_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(
                             TestBackend::new(
@@ -1325,7 +1124,7 @@ mod shared_host_recovery_tests {
                     StartOutcome::Installed
                 ));
 
-                pane.session.borrow_mut().runtime.ready();
+                pane.session.borrow_mut().runtime_mut().ready();
             })
         });
 
@@ -1339,16 +1138,16 @@ mod shared_host_recovery_tests {
 
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
-                assert_eq!(pane.session.borrow().runtime.status(), Status::Exited);
+                assert_eq!(pane.session.borrow().runtime().status(), Status::Exited);
                 assert!(matches!(
-                    pane.session.borrow().runtime.update_suspension(),
+                    pane.session.borrow().runtime().update_suspension(),
                     Some(UpdateSuspension::Failed(_))
                 ));
 
                 let state = pane.session.borrow();
 
                 let snapshot = state
-                    .runtime
+                    .runtime()
                     .last_recovery_snapshot()
                     .expect("recovery snapshot");
 
@@ -1360,7 +1159,7 @@ mod shared_host_recovery_tests {
                         .map(|identity| identity.id.as_str()),
                     Some("thread-recovery")
                 );
-                assert!(pane.session.borrow().runtime.backend().is_some());
+                assert!(pane.session.borrow().runtime().backend().is_some());
             })
         });
     }
@@ -1377,19 +1176,19 @@ mod command_catalog_cache_tests {
         SlashCommandOutcome, SlashCommandRunPolicy, SlashCommandSource,
     };
     use nmt_agent::session::lifecycle::StartOutcome;
-    use nmt_config::profile::{AgentProfile, AgentProfileKind};
+    use nmt_config::profile::{AgentKind, AgentProfile};
 
+    use crate::agent_tab::AgentPane;
     use crate::agent_tab::session::{Backend, TestBackend};
     use crate::agent_tab::settings::AgentSettings;
     use crate::agent_tab::tests::deliver_session_event;
-    use crate::agent_tab::{AgentPane, AgentThreadDefaults};
 
     fn open_pane(
         cx: &mut TestAppContext,
     ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
         let profile = AgentProfile {
             name: "Catalog Cache Test".into(),
-            kind: AgentProfileKind::Codex,
+            kind: AgentKind::Codex,
             // Never spawned: the test publishes discovery results by hand.
             executable: "missing-agent.exe".into(),
             ..AgentProfile::default()
@@ -1401,8 +1200,6 @@ mod command_catalog_cache_tests {
             gpui_component::init(cx);
 
             cx.set_global(AgentSettings::default());
-
-            cx.set_global(AgentThreadDefaults::default());
 
             cx.open_window(Default::default(), |window, cx| {
                 let agent =
@@ -1446,10 +1243,10 @@ mod command_catalog_cache_tests {
         // assertions run.
         cx.update(|_, cx| {
             pane.update(cx, |pane, _| {
-                let epoch = pane.session.borrow_mut().runtime.begin_start();
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
                 assert!(matches!(
-                    pane.session.borrow_mut().runtime.install(
+                    pane.session.borrow_mut().runtime_mut().install(
                         epoch,
                         Ok(Backend::Test(TestBackend::new(
                             [SendOutcome::StartedTurn],
@@ -1503,6 +1300,246 @@ mod command_catalog_cache_tests {
     }
 }
 
-fn conversation_title_request(kind: AgentKind, text: &str) -> Option<ConversationTitleRequest> {
-    build_title_request(kind, text, tab_title_from_prompt)
+/// A failed start set aside for a blank tab leaves the harness down until
+/// the user sends something, and what was typed goes out once the harness
+/// launched for it is ready.
+mod failed_start_tests {
+    use std::path::PathBuf;
+    use std::{env, fs, process};
+
+    use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
+    use nmt_agent::AgentWorkspace;
+    use nmt_agent::chat::{Event, SendOutcome, SlashCommandOutcome, ThreadSettings};
+    use nmt_agent::input_history::AgentInputHistory as InputHistoryService;
+    use nmt_agent::session::lifecycle::{StartOutcome, Status};
+    use nmt_config::profile::{AgentKind, AgentProfile};
+
+    use crate::agent_tab::input_history::AgentInputHistory;
+    use crate::agent_tab::session::{Backend, TestBackend};
+    use crate::agent_tab::settings::AgentSettings;
+    use crate::agent_tab::tests::deliver_session_event;
+    use crate::agent_tab::{AgentPane, RecentSessionsMode};
+
+    fn history_path() -> PathBuf {
+        env::temp_dir().join(format!("nmt-failed-start-history-{}.json", process::id()))
+    }
+
+    fn open_pane(
+        cx: &mut TestAppContext,
+    ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
+        let profile = AgentProfile {
+            name: "Failed Start Test".into(),
+            kind: AgentKind::Codex,
+            // Every launch is superseded by one the test installs by hand.
+            executable: "missing-agent.exe".into(),
+            ..AgentProfile::default()
+        };
+
+        let mut pane = None;
+
+        let window = cx.update(|cx| {
+            gpui_component::init(cx);
+
+            cx.set_global(AgentSettings::default());
+
+            // A sent message is recorded in the input history.
+            cx.set_global(AgentInputHistory(InputHistoryService::open(history_path())));
+
+            cx.open_window(Default::default(), |window, cx| {
+                let agent =
+                    cx.new(|cx| AgentPane::new(profile, AgentWorkspace::default(), window, cx));
+
+                pane = Some(agent.clone());
+
+                cx.new(|cx| gpui_component::Root::new(agent, window, cx))
+            })
+            .expect("open Agent test window")
+        });
+
+        (pane.expect("create Agent pane"), window)
+    }
+
+    #[gpui::test]
+    fn blank_tab_after_failed_start_launches_on_send(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.install_started_session(Err("codex missing".into()), epoch, "Codex", cx);
+
+                assert!(!pane.transcript.read(cx).is_empty(), "failure row shown");
+
+                pane.return_to_blank_tab(cx);
+            });
+        });
+
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                assert!(pane.transcript.read(cx).is_empty());
+                assert!(pane.history_ui.mode == RecentSessionsMode::Automatic);
+                assert!(pane.launch_deferred());
+
+                pane.input
+                    .update(cx, |input, cx| input.set_value("hello", window, cx));
+
+                pane.send_user_message_now(window, cx);
+
+                assert_eq!(pane.session.borrow().runtime().status(), Status::Starting);
+                assert!(pane.send_on_ready);
+                assert!(!pane.shows_start_overlay(), "held message shows in place");
+                assert_eq!(pane.input.read(cx).text().len(), 0, "message left composer");
+                assert_eq!(
+                    pane.held_draft.as_ref().map(|draft| draft.text.as_str()),
+                    Some("hello")
+                );
+
+                // Stands in for the launch the send asked for.
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
+
+                assert!(matches!(
+                    pane.session.borrow_mut().runtime_mut().install(
+                        epoch,
+                        Ok(Backend::Test(TestBackend::new(
+                            [SendOutcome::StartedTurn],
+                            SlashCommandOutcome::Accepted,
+                            Vec::new(),
+                        )))
+                    ),
+                    StartOutcome::Installed
+                ));
+            });
+        });
+
+        deliver_session_event(&pane, Event::Ready(ThreadSettings::default()), &cx);
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.send_held_input(window, cx);
+
+                assert!(!pane.send_on_ready);
+                assert!(pane.held_draft.is_none());
+                assert_eq!(pane.input.read(cx).text().len(), 0, "held input sent");
+            });
+        });
+
+        cx.run_until_parked();
+
+        let history = history_path();
+
+        let _ = fs::remove_file(history.with_extension("json.lock"));
+        let _ = fs::remove_file(history);
+    }
+
+    #[gpui::test]
+    fn deferred_tab_shows_no_start_until_input(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                // Stands in for a tab created without a launch: a start epoch
+                // that no harness answers.
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.defer_launch(cx);
+
+                assert!(pane.launch_deferred());
+                assert!(!pane.shows_start_overlay());
+
+                pane.input
+                    .update(cx, |input, cx| input.set_value("/status", window, cx));
+
+                pane.send_user_message_now(window, cx);
+
+                assert!(!pane.launch_deferred());
+                assert!(!pane.shows_start_overlay());
+                assert!(pane.send_on_ready);
+                assert!(pane.held_draft.is_none(), "a command stays in the composer");
+                assert_eq!(pane.input.read(cx).text().to_string(), "/status");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn failed_launch_returns_held_message_to_composer(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.defer_launch(cx);
+
+                pane.input
+                    .update(cx, |input, cx| input.set_value("hello", window, cx));
+
+                pane.send_user_message_now(window, cx);
+
+                assert!(pane.held_draft.is_some());
+
+                // A second submit while the first still waits is not a
+                // second message.
+                pane.send_user_message_now(window, cx);
+
+                assert!(pane.send_on_ready);
+
+                // Stands in for the launch the send asked for, failing.
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.install_started_session(Err("codex missing".into()), epoch, "Codex", cx);
+
+                pane.send_held_input(window, cx);
+
+                assert!(!pane.send_on_ready);
+                assert!(pane.held_draft.is_none());
+                assert_eq!(pane.input.read(cx).text().to_string(), "hello");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deferred_tab_shows_last_reported_controls(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        deliver_session_event(
+            &pane,
+            Event::Ready(ThreadSettings {
+                model: Some("reported-model".into()),
+                effort: Some("high".into()),
+                ..ThreadSettings::default()
+            }),
+            &cx,
+        );
+
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                // A tab on the same profile that never launched starts with
+                // empty controls.
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.session.borrow_mut().controls.settings = ThreadSettings::default();
+
+                pane.defer_launch(cx);
+
+                let session = pane.session.borrow();
+
+                assert_eq!(
+                    session.controls.settings.model.as_deref(),
+                    Some("reported-model")
+                );
+                assert_eq!(session.controls.settings.effort.as_deref(), Some("high"));
+            });
+        });
+    }
 }

@@ -35,10 +35,6 @@ pub struct Capabilities {
     /// instead of arriving over the protocol.
     pub filesystem_session_history: bool,
 
-    /// A message can carry images beside its text. A harness without this
-    /// refuses a pasted image rather than attaching one it cannot deliver.
-    pub image_input: bool,
-
     /// The launch fixes the model for the whole session because the system
     /// prompt is built from it, so a pick has to be resolved before spawning
     /// rather than sent as a later setting change.
@@ -71,20 +67,20 @@ pub struct Capabilities {
     /// them mention a phrase, which is what `/find` offers.
     pub session_search: bool,
 
-    /// The model pick is its own request the harness answers immediately, so a
-    /// remembered pick seeded into the picker has to be pushed to reach the
-    /// session at all. Where the pick instead rides the launch or the next
-    /// turn, seeding the picker is the whole of applying it.
-    pub model_selection_is_a_request: bool,
-
     /// Whether the harness can use every workspace directory or only the
     /// primary one. A harness that cannot take the whole set must say so in
     /// the tab rather than quietly working against one directory, and must
     /// never be widened to a common ancestor to look like one that can.
     pub multi_root_access: MultiRootAccess,
 
-    /// Accepted approvals remain pending until the harness confirms resolution.
-    pub async_approval_resolution: bool,
+    /// A question about the conversation can be answered beside it, from its
+    /// live context and without adding a turn, which is what `/side` offers.
+    pub side_questions: bool,
+
+    /// The conversation can be forked into a separate ephemeral thread that
+    /// runs beside it with its own turns, tools, and settings, which is what
+    /// `/side` opens where side questions are not answered in place.
+    pub side_threads: bool,
 }
 
 const CODEX: Capabilities = Capabilities {
@@ -94,16 +90,15 @@ const CODEX: Capabilities = Capabilities {
     async_command_discovery: false,
     repeats_ready_during_init: false,
     filesystem_session_history: false,
-    image_input: true,
     model_baked_into_launch: false,
     session_scoped_approval: true,
     slash_skills_are_prompts: false,
     session_fork: true,
     session_rename: false,
     session_search: false,
-    model_selection_is_a_request: false,
     multi_root_access: MultiRootAccess::Full,
-    async_approval_resolution: false,
+    side_questions: false,
+    side_threads: true,
 };
 
 const CLAUDE: Capabilities = Capabilities {
@@ -113,16 +108,15 @@ const CLAUDE: Capabilities = Capabilities {
     async_command_discovery: true,
     repeats_ready_during_init: true,
     filesystem_session_history: true,
-    image_input: true,
     model_baked_into_launch: true,
     session_scoped_approval: true,
     slash_skills_are_prompts: false,
     session_fork: false,
     session_rename: false,
     session_search: false,
-    model_selection_is_a_request: false,
     multi_root_access: MultiRootAccess::Full,
-    async_approval_resolution: false,
+    side_questions: true,
+    side_threads: false,
 };
 
 /// `skill_references` is false because the harness has no structured skill
@@ -136,14 +130,12 @@ const DEEPSEEK: Capabilities = Capabilities {
     async_command_discovery: true,
     repeats_ready_during_init: false,
     filesystem_session_history: false,
-    image_input: true,
     model_baked_into_launch: false,
     session_scoped_approval: false,
     slash_skills_are_prompts: true,
     session_fork: true,
     session_rename: true,
     session_search: true,
-    model_selection_is_a_request: true,
     // The installed Harness resolves one workspace root per session and its
     // workspace-write policy has no additional writable roots, so a
     // multi-directory workspace reduces to its primary directory and the tab
@@ -151,7 +143,8 @@ const DEEPSEEK: Capabilities = Capabilities {
     // publishes a per-session multi-root policy this becomes `Full` and the
     // adapter passes every selected root.
     multi_root_access: MultiRootAccess::PrimaryOnly,
-    async_approval_resolution: true,
+    side_questions: false,
+    side_threads: false,
 };
 
 pub trait AgentCapabilities {

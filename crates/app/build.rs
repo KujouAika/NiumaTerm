@@ -6,7 +6,7 @@ use winres::WindowsResource;
 fn main() {
     // The translation macro reads these files during expansion, so catalog
     // edits must regenerate the embedded translations even without Rust edits.
-    println!("cargo:rerun-if-changed=locales");
+    println!("cargo:rerun-if-changed=../../assets/i18n");
 
     let version = nmt_version::emit();
 
@@ -45,7 +45,7 @@ fn main() {
 ///
 /// Two locations, tried in this order. A packaged application keeps the
 /// framework in `Contents/Frameworks` beside `Contents/MacOS`. A binary run
-/// straight out of `target/` has no bundle around it, and `nmt_sparkle`'s build
+/// straight out of `target/` has no bundle around it, and `nmt_updater`'s build
 /// script leaves a copy next to the executable for exactly that case; without
 /// the second entry a development build would fail to launch rather than fail
 /// to update.

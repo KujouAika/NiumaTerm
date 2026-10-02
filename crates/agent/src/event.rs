@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use subtle::ConstantTimeEq as _;
 
 use crate::AgentRoute;
 use crate::claude_code::hook::normalize as normalize_claude;
 use crate::codex::hook::normalize as normalize_codex;
+use crate::json::collapse;
 use crate::process::AGENT_HOOK_PROTOCOL_VERSION;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,7 +58,7 @@ impl RawAgentHookMessage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentOwner {
+pub(crate) struct AgentOwner {
     pub agent: String,
     pub session_id: String,
     pub turn_id: String,
@@ -75,7 +77,7 @@ pub struct AgentEvent {
 
 /// Untrusted fields supplied by a Hook transport. Successful validation is the
 /// only way to construct a reducer event from process-boundary input.
-pub struct AgentEventInput<'a> {
+pub(crate) struct AgentEventInput<'a> {
     pub route: &'a str,
     pub token: &'a str,
     pub version: u32,
@@ -98,7 +100,7 @@ pub enum AgentValidationError {
 }
 
 impl AgentEvent {
-    pub fn validate(
+    pub(crate) fn validate(
         input: AgentEventInput<'_>,
         expected_token: &str,
     ) -> Result<Self, AgentValidationError> {
@@ -106,7 +108,9 @@ impl AgentEvent {
             return Err(AgentValidationError::UnsupportedVersion);
         }
 
-        if expected_token.is_empty() || !constant_time_eq(input.token, expected_token) {
+        if expected_token.is_empty()
+            || !bool::from(input.token.as_bytes().ct_eq(expected_token.as_bytes()))
+        {
             return Err(AgentValidationError::InvalidToken);
         }
 
@@ -168,45 +172,25 @@ pub(super) fn validate_identity(
     }
 }
 
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    let left = left.as_bytes();
-    let right = right.as_bytes();
-
-    let mut different = left.len() ^ right.len();
-
-    let length = left.len().max(right.len());
-
-    for index in 0..length {
-        let byte_diff: usize =
-            (*left.get(index).unwrap_or(&0) ^ *right.get(index).unwrap_or(&0)).into();
-
-        different |= byte_diff;
-    }
-
-    different == 0
-}
-
 pub fn normalize_title(value: &str) -> String {
-    normalize_presentation(value, MAX_TITLE_CHARS, false)
+    collapse(value, MAX_TITLE_CHARS)
 }
 
+/// A notification body keeps its line breaks, normalized to `\n`, and
+/// otherwise collapses like a title.
 pub fn normalize_body(value: &str) -> String {
-    normalize_presentation(value, MAX_BODY_CHARS, true)
-}
-
-fn normalize_presentation(value: &str, max_chars: usize, preserve_newlines: bool) -> String {
     let mut normalized = String::new();
     let mut last_was_space = false;
     let mut chars = value.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        let ch = if preserve_newlines && ch == '\r' {
+        let ch = if ch == '\r' {
             if chars.peek() == Some(&'\n') {
                 chars.next();
             }
 
             '\n'
-        } else if preserve_newlines && ch == '\n' {
+        } else if ch == '\n' {
             '\n'
         } else if ch.is_control() {
             ' '
@@ -227,7 +211,7 @@ fn normalize_presentation(value: &str, max_chars: usize, preserve_newlines: bool
         }
     }
 
-    normalized.trim().chars().take(max_chars).collect()
+    normalized.trim().chars().take(MAX_BODY_CHARS).collect()
 }
 
 pub(super) const MAX_ROUTE_BYTES: usize = 128;

@@ -91,7 +91,6 @@ pub struct AgentNotification {
     pub route: AgentRoute,
     pub title: String,
     pub body: String,
-    pub order: u64,
     pub read: bool,
     pub native_tag: String,
     pub native_group: String,
@@ -117,14 +116,12 @@ impl MonitorMutation {
 pub struct AgentProjection {
     pub status: AgentRuntimeStatus,
     pub unread_count: usize,
-    pub latest_unread_text: Option<String>,
 }
 
 pub struct AgentMonitor {
     process_instance: String,
     panes: HashMap<AgentRoute, AgentPaneState>,
     notifications: HashMap<AgentRoute, AgentNotification>,
-    next_notification_order: u64,
 }
 
 impl AgentMonitor {
@@ -133,7 +130,6 @@ impl AgentMonitor {
             process_instance: process_instance.into(),
             panes: HashMap::new(),
             notifications: HashMap::new(),
-            next_notification_order: 0,
         }
     }
 
@@ -230,15 +226,9 @@ impl AgentMonitor {
                 mutation
             }
             AgentEventKind::ToolStarted | AgentEventKind::ToolFinished => {
-                let Some(owner) = event.owner() else {
+                let Some((state, _)) = self.current_turn(&route, &event) else {
                     return MonitorMutation::default();
                 };
-
-                let state = self.panes.get_mut(&route).expect("live route");
-
-                if state.current_owner.as_ref() != Some(&owner) {
-                    return MonitorMutation::default();
-                }
 
                 state.has_work_evidence = true;
                 state.pending_completion = None;
@@ -251,13 +241,11 @@ impl AgentMonitor {
                 }
             }
             AgentEventKind::PermissionRequested => {
-                let Some(owner) = event.owner() else {
+                let Some((state, _)) = self.current_turn(&route, &event) else {
                     return MonitorMutation::default();
                 };
 
-                let state = self.panes.get_mut(&route).expect("live route");
-
-                if state.current_owner.as_ref() != Some(&owner) || !state.has_work_evidence {
+                if !state.has_work_evidence {
                     return MonitorMutation::default();
                 }
 
@@ -272,16 +260,11 @@ impl AgentMonitor {
                 mutation
             }
             AgentEventKind::Stopped => {
-                let Some(owner) = event.owner() else {
+                let Some((state, owner)) = self.current_turn(&route, &event) else {
                     return MonitorMutation::default();
                 };
 
-                let state = self.panes.get_mut(&route).expect("live route");
-
-                if state.current_owner.as_ref() != Some(&owner)
-                    || !state.has_work_evidence
-                    || state.status == AgentRuntimeStatus::Idle
-                {
+                if !state.has_work_evidence || state.status == AgentRuntimeStatus::Idle {
                     return MonitorMutation::default();
                 }
 
@@ -304,57 +287,65 @@ impl AgentMonitor {
         }
     }
 
+    /// The pane state and turn owner when `event` belongs to the turn the
+    /// pane is on. Hook events from an earlier turn can arrive after the next
+    /// one started, and they must not touch the newer turn's state.
+    fn current_turn(
+        &mut self,
+        route: &AgentRoute,
+        event: &AgentEvent,
+    ) -> Option<(&mut AgentPaneState, AgentOwner)> {
+        let owner = event.owner()?;
+        let state = self.panes.get_mut(route).expect("live route");
+
+        (state.current_owner.as_ref() == Some(&owner)).then_some((state, owner))
+    }
+
     pub fn process_due(&mut self, now: Instant) -> MonitorMutation {
         let routes: Vec<_> = self.panes.keys().cloned().collect();
 
         let mut result = MonitorMutation::default();
 
         for route in routes {
-            let completion = self
-                .panes
-                .get(&route)
-                .and_then(|state| state.pending_completion.clone())
-                .filter(|pending| pending.deadline <= now);
+            let state = self.panes.get_mut(&route).expect("route still registered");
 
-            if let Some(pending) = completion {
-                let commit = self.panes.get(&route).is_some_and(|state| {
-                    state.current_owner.as_ref() == Some(&pending.owner)
-                        && state.turn_generation == pending.turn_generation
-                        && state.has_work_evidence
-                        && state.status != AgentRuntimeStatus::Idle
-                });
+            let due = state
+                .pending_completion
+                .take_if(|pending| pending.deadline <= now);
 
-                let state = self.panes.get_mut(&route).expect("route still registered");
+            // A completion is committed only for the turn that scheduled it;
+            // one left behind by an interrupted or superseded turn is dropped.
+            let completed = due.filter(|pending| {
+                state.current_owner.as_ref() == Some(&pending.owner)
+                    && state.turn_generation == pending.turn_generation
+                    && state.has_work_evidence
+                    && state.status != AgentRuntimeStatus::Idle
+            });
 
-                state.pending_completion = None;
+            let mut status_changed = false;
 
-                if commit {
-                    state.has_work_evidence = false;
+            if completed.is_some() {
+                state.has_work_evidence = false;
 
-                    let status_changed = state.set_status(AgentRuntimeStatus::Idle, now);
-
-                    let mut mutation =
-                        self.create_notification(&route, pending.title, pending.body);
-
-                    mutation.visible_changed |= status_changed;
-
-                    result.merge(mutation);
-                }
+                status_changed = state.set_status(AgentRuntimeStatus::Idle, now);
             }
 
-            let stale = self
-                .panes
-                .get(&route)
-                .and_then(AgentPaneState::active_state_deadline)
-                .is_some_and(|deadline| deadline <= now);
-
-            if stale {
-                let state = self.panes.get_mut(&route).expect("route still registered");
-
+            if state
+                .active_state_deadline()
+                .is_some_and(|deadline| deadline <= now)
+            {
                 state.pending_completion = None;
                 state.has_work_evidence = false;
 
                 result.visible_changed |= state.set_status(AgentRuntimeStatus::Idle, now);
+            }
+
+            if let Some(pending) = completed {
+                let mut mutation = self.create_notification(&route, pending.title, pending.body);
+
+                mutation.visible_changed |= status_changed;
+
+                result.merge(mutation);
             }
         }
 
@@ -433,32 +424,20 @@ impl AgentMonitor {
     pub fn project<'a>(&self, routes: impl IntoIterator<Item = &'a AgentRoute>) -> AgentProjection {
         let mut status = AgentRuntimeStatus::Idle;
         let mut unread_count = 0;
-        let mut latest: Option<&AgentNotification> = None;
 
         for route in routes {
             if let Some(state) = self.panes.get(route) {
                 status = higher_status(status, state.status);
             }
 
-            if let Some(notification) = self.notifications.get(route).filter(|n| !n.read) {
+            if self.notifications.get(route).is_some_and(|n| !n.read) {
                 unread_count += 1;
-
-                if latest.is_none_or(|current| notification.order > current.order) {
-                    latest = Some(notification);
-                }
             }
         }
 
         AgentProjection {
             status,
             unread_count,
-            latest_unread_text: latest.map(|notification| {
-                if notification.body.is_empty() {
-                    notification.title.clone()
-                } else {
-                    notification.body.clone()
-                }
-            }),
         }
     }
 
@@ -471,7 +450,6 @@ impl AgentMonitor {
         let state = self.panes.get_mut(route).expect("live route");
 
         state.notification_generation = state.notification_generation.wrapping_add(1).max(1);
-        self.next_notification_order = self.next_notification_order.wrapping_add(1).max(1);
 
         // Process-global on purpose, despite making the reducer impure: the
         // native_tag derived from it keys Windows toast replacement, and tags
@@ -489,7 +467,6 @@ impl AgentMonitor {
             route: route.clone(),
             title,
             body,
-            order: self.next_notification_order,
             read: false,
             native_tag: format!("{process_order:016x}"),
             native_group: "NiumaTerm".into(),
@@ -528,13 +505,6 @@ fn higher_status(left: AgentRuntimeStatus, right: AgentRuntimeStatus) -> AgentRu
     } else {
         left
     }
-}
-
-pub fn request_native_delivery(
-    exact_visible_route: Option<&AgentRoute>,
-    notification_route: &AgentRoute,
-) -> bool {
-    exact_visible_route != Some(notification_route)
 }
 
 pub const COMPLETION_QUIET_WINDOW: Duration = Duration::from_millis(1_500);

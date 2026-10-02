@@ -1,29 +1,21 @@
-#[cfg(feature = "application")]
 pub use nmt_profile as profile;
 
-#[cfg(feature = "application")]
 pub use crate::application::*;
 
 pub mod agent;
 pub mod appearance;
-#[cfg(feature = "application")]
 pub mod builtin_themes;
 pub mod colors;
 pub mod defaults;
-#[cfg(feature = "application")]
 pub mod local_state;
-
-pub mod remote_session;
+pub mod remote;
 pub mod system;
 pub mod terminal;
-#[cfg(feature = "application")]
 pub mod theme;
 pub mod theme_catalog;
 pub mod update;
 
-#[cfg(feature = "application")]
 mod application;
-#[cfg(feature = "application")]
 mod persistence;
 
 use std::sync::{OnceLock, RwLock};
@@ -32,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::colors::Colors;
 
-/// Cursor shape. Lives here (not in `nmt_terminal::ansi`) because it is a config
-/// value `terminal` deserializes; `terminal` re-exports it as `ansi::CursorShape`.
+/// Cursor shape. Lives in the config crate because it is a deserialized config
+/// value; the terminal and app crates use it directly from here.
 #[derive(Default, Clone, Serialize, Deserialize, Copy, Debug, Eq, PartialEq)]
 pub enum CursorShape {
     /// Cursor is a block like `▒`.
@@ -109,11 +101,14 @@ impl From<char> for CursorShape {
     }
 }
 
+/// Reads the names written by the `&'static str` conversion, which are also
+/// the serde aliases, so a value round-trips through either.
 impl From<&str> for CursorShape {
     fn from(value: &str) -> Self {
         match value {
-            "line" => CursorShape::Beam,
+            "line" | "beam" => CursorShape::Beam,
             "underline" => CursorShape::Underline,
+            "hidden" => CursorShape::Hidden,
             _ => CursorShape::Block,
         }
     }

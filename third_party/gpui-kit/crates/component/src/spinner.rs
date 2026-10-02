@@ -13,6 +13,7 @@ pub struct Spinner {
     speed: Duration,
     easing: Box<dyn Fn(f32) -> f32>,
     color: Option<Hsla>,
+    max_fps: Option<f32>,
 }
 
 impl Spinner {
@@ -24,6 +25,7 @@ impl Spinner {
             easing: Box::new(ease_in_out),
             icon: Icon::new(IconName::Loader),
             color: None,
+            max_fps: None,
         }
     }
 
@@ -48,6 +50,14 @@ impl Spinner {
         self.easing = Box::new(easing);
         self
     }
+
+    /// Cap how often the spinner re-renders. Each re-render redraws the view
+    /// that hosts the spinner, so a small icon inside a large view otherwise
+    /// rebuilds that whole view on every display refresh.
+    pub fn max_fps(mut self, max_fps: f32) -> Self {
+        self.max_fps = Some(max_fps);
+        self
+    }
 }
 
 impl Sizable for Spinner {
@@ -66,7 +76,13 @@ impl RenderOnce for Spinner {
                     .when_some(self.color, |this, color| this.text_color(color))
                     .with_animation(
                         "circle",
-                        Animation::new(self.speed).repeat().with_easing(self.easing),
+                        match self.max_fps {
+                            Some(max_fps) => Animation::new(self.speed)
+                                .repeat()
+                                .with_easing(self.easing)
+                                .with_max_fps(max_fps),
+                            None => Animation::new(self.speed).repeat().with_easing(self.easing),
+                        },
                         |this, delta| this.transform(Transformation::rotate(percentage(delta))),
                     ),
             )

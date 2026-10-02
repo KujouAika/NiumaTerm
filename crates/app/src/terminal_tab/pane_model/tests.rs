@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use futures::executor::block_on;
 use nmt_config::appearance::InputStyle;
 use nmt_input::keyboard::ModifiersState;
@@ -14,6 +12,7 @@ use nmt_terminal::session::{
 use crate::terminal_tab::block_list::FrozenView;
 use crate::terminal_tab::block_list::live::LiveItemState;
 use crate::terminal_tab::block_list::reconcile::BlockListRenderMetrics;
+use crate::terminal_tab::layout::frame_content_rows;
 use crate::terminal_tab::metrics::CellMetrics;
 use crate::terminal_tab::pane_model::frame_record::FrameRecord;
 use crate::terminal_tab::pane_model::key_action::{KeyOutcome, TextInput};
@@ -23,6 +22,70 @@ use crate::terminal_tab::pane_model::scroll::ScrollOutcome;
 use crate::terminal_tab::pane_model::selection_geometry::selection_drag_started;
 use crate::terminal_tab::pane_model::test_session::{TestClipboard, assert_input, controller};
 use crate::terminal_tab::pane_model::viewport::{LocalPoint, Viewport};
+
+#[test]
+fn progress_repaint_keeps_live_height_and_scroll_extent() {
+    let mut output: Vec<u8> = (0..12)
+        .flat_map(|index| format!("Compiling package-{index}\r\n").into_bytes())
+        .collect();
+
+    let mut previous_extent = None;
+    let mut previous_lines = None;
+
+    for update in [
+        &b"\x1b]9;4;1;40\x1b\\Building [====>] 4/10\r"[..],
+        &b"\r\x1b[2K"[..],
+        &b"Building [=====>] 5/10\r"[..],
+    ] {
+        output.extend_from_slice(update);
+
+        let (mut model, _) = controller(&output, true);
+
+        let frame = model.frame_cache.current().unwrap();
+        let cell = model.cell_metrics.unwrap();
+
+        assert!(frame.cursor().is_none(), "progress keeps the cursor hidden");
+        assert_eq!(
+            frame_content_rows(&frame),
+            6,
+            "erasing the progress row must not shrink the live item"
+        );
+
+        model
+            .prepare_block_list(&frame, cell, 108.0, ListPosition::default())
+            .unwrap();
+
+        let extent = model.block_list.scrollbar.1;
+
+        let lines: Vec<_> = frame.lines()[..5]
+            .iter()
+            .map(|line| line.text().to_string())
+            .collect();
+
+        if let Some(previous) = previous_extent.replace(extent) {
+            assert_eq!(extent, previous, "tail following must keep its position");
+        }
+
+        if let Some(previous) = previous_lines.replace(lines.clone()) {
+            assert_eq!(lines, previous, "progress updates preserve compiled rows");
+        }
+    }
+
+    output.extend_from_slice(b"\x1b]9;4;0;\x1b\\\x1b[2J\x1b[HPrompt>");
+
+    let (model, _) = controller(&output, true);
+    let frame = model.frame_cache.current().unwrap();
+
+    assert!(
+        frame.cursor().is_some(),
+        "completed progress restores the cursor"
+    );
+    assert_eq!(
+        frame_content_rows(&frame),
+        1,
+        "a later clear must still shrink the live item to its current content"
+    );
+}
 
 #[test]
 fn terminal_requested_keyboard_modes_drive_keys_and_ime_commits() {
@@ -83,6 +146,23 @@ fn terminal_requested_keyboard_modes_drive_keys_and_ime_commits() {
     assert!(matches!(model.send_key(&key), KeyOutcome::Written));
 
     assert_input(&input, b"\x1b[99;5u\x1b[99;5:3u");
+}
+
+/// A program's OSC 52 copy reaches the desktop clipboard when the host
+/// events are drained on the UI thread, never from the PTY task.
+#[test]
+fn a_program_clipboard_write_lands_when_host_events_drain() {
+    let (mut model, _input) = controller(b"\x1b]52;c;aGVsbG8=\x07", false);
+
+    let clipboard = TestClipboard::default();
+
+    model.clipboard = Box::new(clipboard.clone());
+
+    assert!(clipboard.text.lock().is_none());
+
+    model.drain_host_events();
+
+    assert_eq!(clipboard.text.lock().as_deref(), Some("hello"));
 }
 
 #[test]
@@ -203,19 +283,15 @@ fn pending_repaint_retains_shared_grid_coordinates_and_coalesces_wakes() {
 
     model.settings.input_style = InputStyle::FixedBottom;
 
-    model.update_viewport();
-
     let cell = model.cell_metrics.unwrap();
-    let offsets = model.viewport.row_offsets();
 
-    assert_eq!(offsets.as_ref(), &[90.0; 6]);
+    assert_eq!(model.viewport().bottom_slack(), 90.0);
     assert!(model.invalidate());
     assert!(!model.invalidate());
-    assert!(Arc::ptr_eq(&offsets, &model.viewport.row_offsets()));
-    assert_eq!(model.viewport.cursor_y(0, cell.height_px), offsets[0]);
+    assert_eq!(model.viewport().cursor_y(0, cell.height_px), 90.0);
     assert_eq!(
         model
-            .viewport
+            .viewport()
             .cell_at(LocalPoint { x: 32.0, y: 90.0 }, cell)
             .0,
         SurfaceCell { col: 4, row: 0 }
@@ -224,7 +300,7 @@ fn pending_repaint_retains_shared_grid_coordinates_and_coalesces_wakes() {
 
     model.begin_frame();
 
-    assert_eq!(model.viewport.row_offsets(), offsets);
+    assert_eq!(model.viewport().bottom_slack(), 90.0);
     assert!(model.invalidate());
 }
 
@@ -242,7 +318,7 @@ fn block_frame_reset_discards_visible_records_and_retains_live_origin() {
 
     assert!(model.frozen.row_top(3, 0).is_none());
     assert!(model.frozen.separators().is_empty());
-    assert_eq!(model.viewport.cursor_y(0, 18.0), 90.0);
+    assert_eq!(model.viewport().cursor_y(0, 18.0), 90.0);
 
     let tail = FrozenView {
         active_top: 54.0,
@@ -258,7 +334,7 @@ fn block_frame_reset_discards_visible_records_and_retains_live_origin() {
 
     model.record_frame(FrameRecord::from_live_view(&tail, &layout, -18.0));
 
-    assert_eq!(model.viewport.cursor_y(0, 18.0), 36.0);
+    assert_eq!(model.viewport().cursor_y(0, 18.0), 36.0);
 
     let chrome = &model.frozen.chrome()[0];
 
@@ -270,7 +346,7 @@ fn block_frame_reset_discards_visible_records_and_retains_live_origin() {
     model.begin_block_list_frame();
 
     assert!(model.frozen.chrome().is_empty());
-    assert_eq!(model.viewport.cursor_y(0, 18.0), 90.0);
+    assert_eq!(model.viewport().cursor_y(0, 18.0), 90.0);
 }
 
 #[test]
@@ -303,7 +379,7 @@ fn both_viewports_map_pointer_cursor_and_thumb_consistently() {
                 offset: 10,
                 len: 20,
             },
-            row_offsets: vec![36.0; 4].into(),
+            bottom_slack: 36.0,
         },
         Viewport::BlockList {
             scroll_px: 10.0,
@@ -352,8 +428,6 @@ fn frozen_selection_obeys_mouse_reporting_and_drag_threshold() {
         model.frozen.push_row(0.0, 0, 0, 40);
 
         model.frozen.push_row(18.0, 0, 1, 40);
-
-        model.update_viewport();
 
         assert!(matches!(
             (
@@ -425,8 +499,6 @@ fn key_outcomes_distinguish_accepted_input_from_read_only_rejection() {
 
     model.block_list.scrollbar = (24.0, 120.0);
 
-    model.update_viewport();
-
     assert!(matches!(
         model.send_key(&TerminalKey {
             key: "escape",
@@ -438,14 +510,14 @@ fn key_outcomes_distinguish_accepted_input_from_read_only_rejection() {
         KeyOutcome::Written
     ));
     assert!(
-        model.viewport.is_scrolled(),
+        model.viewport().is_scrolled(),
         "the host chooses when accepted input scrolls the view"
     );
     assert!(matches!(
         model.scroll_to_latest(),
         ScrollOutcome::List(ListOp::ScrollToEnd)
     ));
-    assert!(!model.viewport.is_scrolled());
+    assert!(!model.viewport().is_scrolled());
     assert!(matches!(model.scroll_to_latest(), ScrollOutcome::Ignored));
 
     model.source.session.mark_read_only();
@@ -514,75 +586,6 @@ fn list_mirror_plans_growth_eviction_remeasurement_and_scroll() {
 }
 
 #[test]
-fn presentation_modules_do_not_import_host_services() {
-    use std::fs;
-    use std::path::Path;
-
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/terminal_tab");
-
-    let mut pending: Vec<_> = [
-        "pane_model",
-        "block_list",
-        "frame",
-        "frame_source",
-        "wake.rs",
-        "dirty.rs",
-        "layout.rs",
-        "scrollbar/geometry.rs",
-    ]
-    .into_iter()
-    .map(|path| root.join(path))
-    .collect();
-
-    while let Some(path) = pending.pop() {
-        assert!(
-            path.exists(),
-            "missing presentation source: {}",
-            path.display()
-        );
-
-        if path.is_dir() {
-            pending.extend(
-                fs::read_dir(&path)
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path()),
-            );
-
-            continue;
-        }
-
-        let name = path.file_name().unwrap().to_string_lossy();
-
-        if !name.ends_with(".rs") || name.contains("test") || name.contains("profile") {
-            continue;
-        }
-
-        let text = fs::read_to_string(&path).unwrap();
-
-        for line in text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.starts_with("//"))
-        {
-            if path == root.join("frame/line.rs") && line == "use gpui::SharedString;" {
-                continue;
-            }
-
-            assert!(
-                !line.contains("gpui::")
-                    && !line.contains("gpui_component")
-                    && !line.contains("crate::terminal_tab::view")
-                    && !line.contains("crate::terminal_tab::paint")
-                    && !line.contains("rust_i18n::")
-                    && !line.contains("active_colors"),
-                "host dependency in {}: {line}",
-                path.display()
-            );
-        }
-    }
-}
-
-#[test]
 fn end_scrolls_history_but_modified_end_and_alternate_screen_reach_the_pty() {
     for (vt, function, modifiers, scrolls) in [
         (&b""[..], false, ModifiersState::empty(), true),
@@ -593,8 +596,6 @@ fn end_scrolls_history_but_modified_end_and_alternate_screen_reach_the_pty() {
         let (mut model, _) = controller(vt, true);
 
         model.block_list.scrollbar = (24.0, 120.0);
-
-        model.update_viewport();
 
         let outcome = model.key_down(&TerminalKey {
             key: "end",
@@ -689,8 +690,6 @@ fn scrollbar_grab_preserves_offset_and_track_click_centers_the_thumb() {
     model.content_size.1 = 100.0;
     model.block_list.scrollbar = (0.0, 100.0);
 
-    model.update_viewport();
-
     assert!(matches!(
         model.scrollbar_mouse_down(LocalPoint { x: 0.0, y: 20.0 }, 0.0, 0.5),
         ScrollOutcome::Ignored
@@ -705,6 +704,7 @@ fn scrollbar_grab_preserves_offset_and_track_click_centers_the_thumb() {
     let release = model.mouse_up(left_press(LocalPoint { x: 0.0, y: 40.0 }));
 
     assert!(release.scrollbar_released);
+    assert!(matches!(release.outcome, MouseOutcome::Ignored));
     assert!(!model.scrollbar.is_dragging());
     assert!(
         !model

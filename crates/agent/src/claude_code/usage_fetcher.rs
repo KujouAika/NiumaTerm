@@ -5,26 +5,26 @@
 #[path = "usage_fetcher_tests.rs"]
 mod usage_fetcher_tests;
 
-use std::ffi::OsStr;
-use std::fs::File;
-use std::io::{ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
-use std::{env, fmt, thread};
+use std::future::poll_fn;
+use std::io::{self, ErrorKind};
+use std::path::PathBuf;
+use std::time::Duration;
+use std::{env, fmt};
 
+use futures::FutureExt as _;
+use nmt_net::http_client;
 use nmt_platform::process::launch_env_var;
-#[cfg(not(windows))]
-use nmt_platform::shell::default_shell;
-use nmt_platform::{EventedPty as _, ProcessReadWrite as _, PtyOptions};
-use reqwest::StatusCode;
-use reqwest::blocking::Client;
+use nmt_platform::{AsyncPty, PtyOptions};
+use reqwest::{Response, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::fs::File;
+use tokio::io::{AsyncRead, AsyncReadExt as _};
+use tokio::time::{Instant, timeout_at};
 
-use crate::hook_store::home_dir;
+use crate::claude_code::config_home;
 use crate::usage::{
-    FIVE_HOUR_WINDOW_MINUTES, UsageSnapshot, UsageWindow, WEEKLY_WINDOW_MINUTES,
+    FIVE_HOUR_WINDOW_MINUTES, FetchCancellation, UsageSnapshot, UsageWindow, WEEKLY_WINDOW_MINUTES,
     parse_timestamp_millis,
 };
 
@@ -33,7 +33,6 @@ const CLI_FETCH_TIMEOUT: Duration = Duration::from_secs(25);
 const CLI_STARTUP_DELAY: Duration = Duration::from_secs(2);
 const CLI_SETTLE_DELAY: Duration = Duration::from_secs(2);
 const CLI_ENTER_INTERVAL: Duration = Duration::from_millis(800);
-const CLI_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_OUTPUT_BYTES: u64 = 128 * 1024;
 const MAX_CLI_OUTPUT_BYTES: usize = 100 * 1024;
 const MAX_CREDENTIALS_BYTES: u64 = 128 * 1024;
@@ -144,12 +143,14 @@ struct OAuthUsageWindow {
     resets_at: Option<Value>,
 }
 
-pub fn fetch_with_cancel(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchError> {
-    let result = match fetch_via_oauth(cancelled) {
-        Ok(usage) => Ok(supplement_from_cli(usage, cancelled)),
+pub async fn fetch_with_cancel(
+    cancellation: &FetchCancellation,
+) -> Result<UsageSnapshot, UsageFetchError> {
+    let result = match fetch_via_oauth(cancellation).await {
+        Ok(usage) => Ok(supplement_from_cli(usage, cancellation).await),
         Err(OAuthFetchError::Cancelled) => Err(UsageFetchError::Cancelled),
         Err(OAuthFetchError::Final(error)) => Err(UsageFetchError::Failed(error)),
-        Err(OAuthFetchError::Fallback(oauth_error)) => match fetch_via_cli(cancelled) {
+        Err(OAuthFetchError::Fallback(oauth_error)) => match fetch_via_cli(cancellation).await {
             Ok(usage) => Ok(usage),
             // Only the OAuth path's own diagnosis is worth pairing with the CLI
             // fallback's; a cancellation says nothing about either.
@@ -164,17 +165,7 @@ pub fn fetch_with_cancel(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageF
 }
 
 fn oauth_credentials_path() -> Option<PathBuf> {
-    let config_dir = env::var_os("CLAUDE_CONFIG_DIR");
-
-    credentials_path(config_dir.as_deref(), home_dir().as_deref())
-}
-
-fn credentials_path(config_dir: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    config_dir
-        .filter(|path| !path.is_empty())
-        .map(Into::into)
-        .or_else(|| home.map(|path| path.join(".claude")))
-        .map(|path| path.join(".credentials.json"))
+    Some(config_home()?.join(".credentials.json"))
 }
 
 fn parse_oauth_token(bytes: &[u8]) -> Result<String, String> {
@@ -189,21 +180,20 @@ fn parse_oauth_token(bytes: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "Claude OAuth access token unavailable".to_string())
 }
 
-fn read_oauth_token() -> Result<String, String> {
+async fn read_oauth_token() -> Result<String, String> {
     // Claude Code's Windows subscription login is persisted in its config
     // directory. Environment API keys are intentionally excluded because the
     // OAuth usage endpoint rejects them even though they authenticate API calls.
     let path = oauth_credentials_path()
         .ok_or_else(|| "Claude credentials directory unavailable".to_string())?;
 
-    let file = File::open(path).map_err(|_| "Claude OAuth credentials unavailable".to_string())?;
-    let bytes = read_bounded_bytes(file, MAX_CREDENTIALS_BYTES, "Claude credentials")?;
+    let file = File::open(path)
+        .await
+        .map_err(|_| "Claude OAuth credentials unavailable".to_string())?;
+
+    let bytes = read_bounded_bytes(file, MAX_CREDENTIALS_BYTES, "Claude credentials").await?;
 
     parse_oauth_token(&bytes)
-}
-
-fn oauth_status_allows_cli_fallback(status: StatusCode) -> bool {
-    status == StatusCode::UNAUTHORIZED || status.is_server_error()
 }
 
 fn parse_oauth_usage(bytes: &[u8]) -> Result<UsageSnapshot, String> {
@@ -234,46 +224,49 @@ fn parse_oauth_usage(bytes: &[u8]) -> Result<UsageSnapshot, String> {
 fn oauth_window(window: Option<&OAuthUsageWindow>, window_minutes: u32) -> Option<UsageWindow> {
     let window = window?;
 
-    let mut usage = UsageWindow::new(remaining_percentage(Some(window))?, window_minutes);
+    let mut usage = UsageWindow::new(remaining_percentage(window)?, window_minutes);
 
     usage.resets_at = window.resets_at.as_ref().and_then(parse_timestamp_millis);
 
     Some(usage)
 }
 
-fn remaining_percentage(window: Option<&OAuthUsageWindow>) -> Option<u8> {
-    let window = window?;
+fn remaining_percentage(window: &OAuthUsageWindow) -> Option<u8> {
     let used = window.utilization.or(window.used_percentage)?;
 
     used.is_finite()
         .then(|| (100.0 - used.clamp(0.0, 100.0)).round() as u8)
 }
 
-fn fetch_via_oauth(cancelled: &AtomicBool) -> Result<UsageSnapshot, OAuthFetchError> {
-    if cancelled.load(Ordering::Relaxed) {
-        return Err(OAuthFetchError::Cancelled);
-    }
+async fn fetch_via_oauth(
+    cancellation: &FetchCancellation,
+) -> Result<UsageSnapshot, OAuthFetchError> {
+    cancellation
+        .run_until_cancelled(request_oauth_usage())
+        .await
+        .unwrap_or(Err(OAuthFetchError::Cancelled))
+}
 
-    let token = read_oauth_token().map_err(OAuthFetchError::Fallback)?;
+async fn request_oauth_usage() -> Result<UsageSnapshot, OAuthFetchError> {
+    let token = read_oauth_token()
+        .await
+        .map_err(OAuthFetchError::Fallback)?;
 
-    let client = Client::builder()
+    let client = http_client()
         .timeout(OAUTH_FETCH_TIMEOUT)
         .build()
         .map_err(|_| {
             OAuthFetchError::Fallback("could not initialize Claude OAuth client".to_string())
         })?;
 
-    let mut response = client
+    let response = client
         .get(OAUTH_USAGE_URL)
         .bearer_auth(token)
         .header("anthropic-beta", OAUTH_BETA_HEADER)
         .header("User-Agent", CLAUDE_CODE_USER_AGENT)
         .send()
+        .await
         .map_err(|_| OAuthFetchError::Fallback("Claude OAuth usage request failed".to_string()))?;
-
-    if cancelled.load(Ordering::Relaxed) {
-        return Err(OAuthFetchError::Cancelled);
-    }
 
     let status = response.status();
 
@@ -283,23 +276,20 @@ fn fetch_via_oauth(cancelled: &AtomicBool) -> Result<UsageSnapshot, OAuthFetchEr
             status.as_u16()
         );
 
-        return Err(if oauth_status_allows_cli_fallback(status) {
-            OAuthFetchError::Fallback(message)
-        } else {
-            OAuthFetchError::Final(message)
-        });
+        // An expired login or a server fault can still be answered by the
+        // CLI; any other refusal would be refused there too.
+        return Err(
+            if status == StatusCode::UNAUTHORIZED || status.is_server_error() {
+                OAuthFetchError::Fallback(message)
+            } else {
+                OAuthFetchError::Final(message)
+            },
+        );
     }
 
-    let bytes = read_bounded_bytes(
-        &mut response,
-        MAX_OUTPUT_BYTES,
-        "Claude OAuth usage response",
-    )
-    .map_err(OAuthFetchError::Fallback)?;
-
-    if cancelled.load(Ordering::Relaxed) {
-        return Err(OAuthFetchError::Cancelled);
-    }
+    let bytes = read_bounded_response(response, MAX_OUTPUT_BYTES, "Claude OAuth usage response")
+        .await
+        .map_err(OAuthFetchError::Fallback)?;
 
     parse_oauth_usage(&bytes).map_err(OAuthFetchError::Fallback)
 }
@@ -317,22 +307,28 @@ fn fetch_via_oauth(cancelled: &AtomicBool) -> Result<UsageSnapshot, OAuthFetchEr
 ///
 /// The panel costs an interactive Claude process, so this is worth its price
 /// only because a subscription's Fable allowance has no other source.
-fn supplement_from_cli(usage: UsageSnapshot, cancelled: &AtomicBool) -> UsageSnapshot {
+async fn supplement_from_cli(
+    usage: UsageSnapshot,
+    cancellation: &FetchCancellation,
+) -> UsageSnapshot {
     if usage.fable_weekly.is_some() || (usage.five_hour.is_none() && usage.weekly.is_none()) {
         return usage;
     }
 
-    match fetch_via_cli(cancelled) {
+    match fetch_via_cli(cancellation).await {
         Ok(panel) => usage.filled_from(&panel),
         Err(_) => usage,
     }
 }
 
-fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchError> {
-    if cancelled.load(Ordering::Relaxed) {
-        return Err(UsageFetchError::Cancelled);
-    }
+async fn fetch_via_cli(cancellation: &FetchCancellation) -> Result<UsageSnapshot, UsageFetchError> {
+    cancellation
+        .run_until_cancelled(read_usage_panel())
+        .await
+        .unwrap_or(Err(UsageFetchError::Cancelled))
+}
 
+async fn read_usage_panel() -> Result<UsageSnapshot, UsageFetchError> {
     let working_directory = Some(env::temp_dir().to_string_lossy().into_owned());
 
     let mut environment_overrides = vec![("TERM".to_string(), "xterm-256color".to_string())];
@@ -375,15 +371,23 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
     let mut settle_at = None;
 
     loop {
-        if cancelled.load(Ordering::Relaxed) {
-            return Err(UsageFetchError::Cancelled);
-        }
+        // Sleep until new output or the next scheduled step, whichever is first.
+        let next_step = [
+            (!usage_sent).then_some(started_at + CLI_STARTUP_DELAY),
+            next_enter_at.filter(|_| settle_at.is_none()),
+            settle_at,
+            Some(deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(deadline);
 
-        let pipe_closed = drain_pty_output(&mut pty, &mut output)?;
+        let pipe_closed = drain_pty_output(&mut pty, &mut output, next_step).await?;
         let now = Instant::now();
 
         if !usage_sent && now.duration_since(started_at) >= CLI_STARTUP_DELAY {
-            write_pty(&mut pty, b"/usage\r", "Claude usage command")?;
+            write_pty(&mut pty, b"/usage\r", "Claude usage command").await?;
 
             usage_sent = true;
             next_enter_at = Some(now + CLI_ENTER_INTERVAL);
@@ -397,7 +401,8 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
                 &mut pty,
                 TRUST_PROMPT_ANSWER,
                 "Claude trust prompt response",
-            )?;
+            )
+            .await?;
 
             trust_accepted = true;
         }
@@ -406,7 +411,7 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
             && !palette_confirmed
             && (lower.contains("show plan") || lower.contains("usage limits"))
         {
-            write_pty(&mut pty, b"\r", "Claude usage palette response")?;
+            write_pty(&mut pty, b"\r", "Claude usage palette response").await?;
 
             palette_confirmed = true;
         }
@@ -422,7 +427,7 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
             && now >= next_enter
             && settle_at.is_none()
         {
-            write_pty(&mut pty, b"\r", "Claude usage panel advance")?;
+            write_pty(&mut pty, b"\r", "Claude usage panel advance").await?;
 
             next_enter_at = Some(now + CLI_ENTER_INTERVAL);
         }
@@ -444,8 +449,6 @@ fn fetch_via_cli(cancelled: &AtomicBool) -> Result<UsageSnapshot, UsageFetchErro
                 )
             });
         }
-
-        thread::sleep(CLI_POLL_INTERVAL);
     }
 }
 
@@ -462,21 +465,35 @@ fn is_trust_prompt(panel: &str) -> bool {
         .any(|marker| condensed.contains(marker))
 }
 
-fn drain_pty_output(pty: &mut nmt_platform::Pty, output: &mut Vec<u8>) -> Result<bool, String> {
+/// Wait until output arrives or `until` passes, then take whatever else is
+/// already buffered. Reports whether the session's output closed.
+async fn drain_pty_output(
+    pty: &mut nmt_platform::Pty,
+    output: &mut Vec<u8>,
+    until: Instant,
+) -> Result<bool, String> {
     let mut buffer = [0u8; 8 * 1024];
 
+    let Ok(mut read) = timeout_at(until, poll_fn(|cx| pty.poll_read(cx, &mut buffer))).await else {
+        return Ok(false);
+    };
+
     loop {
-        match pty.reader().read(&mut buffer) {
+        match read {
             Ok(0) => return Ok(false),
-            Ok(read) => append_bounded(output, &buffer[..read], MAX_CLI_OUTPUT_BYTES),
-            // A Unix PTY is read without blocking, so an empty one answers
-            // with `EAGAIN` rather than a zero-length read. The panel takes
-            // seconds to render and is polled the whole time, so most of these
-            // reads find nothing yet; the caller's next pass will look again.
-            Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(false),
-            Err(err) if err.kind() == ErrorKind::BrokenPipe => return Ok(true),
+            Ok(count) => append_bounded(output, &buffer[..count], MAX_CLI_OUTPUT_BYTES),
+            Err(err) if err.kind() == ErrorKind::BrokenPipe => {
+                return Ok(true);
+            }
             Err(err) => return Err(format!("failed to read Claude usage panel: {err}")),
         }
+
+        // Only output that is already here; the next pass waits for more.
+        let Some(next) = poll_fn(|cx| pty.poll_read(cx, &mut buffer)).now_or_never() else {
+            return Ok(false);
+        };
+
+        read = next;
     }
 }
 
@@ -501,10 +518,28 @@ fn append_bounded(output: &mut Vec<u8>, bytes: &[u8], max_bytes: usize) {
     output.extend_from_slice(bytes);
 }
 
-fn write_pty(pty: &mut nmt_platform::Pty, bytes: &[u8], description: &str) -> Result<(), String> {
-    pty.writer()
-        .write_all(bytes)
-        .map_err(|err| format!("failed to write {description}: {err}"))
+async fn write_pty(
+    pty: &mut nmt_platform::Pty,
+    bytes: &[u8],
+    description: &str,
+) -> Result<(), String> {
+    let mut rest = bytes;
+
+    while !rest.is_empty() {
+        let written = poll_fn(|cx| pty.poll_write(cx, rest))
+            .await
+            .map_err(|err| format!("failed to write {description}: {err}"))?;
+
+        if written == 0 {
+            let err = io::Error::from(ErrorKind::WriteZero);
+
+            return Err(format!("failed to write {description}: {err}"));
+        }
+
+        rest = &rest[written..];
+    }
+
+    Ok(())
 }
 
 fn parse_output(output: &str) -> Result<UsageSnapshot, String> {
@@ -706,17 +741,39 @@ fn strip_terminal_sequences(input: &str) -> String {
     output
 }
 
-fn read_bounded_bytes(
-    mut reader: impl Read,
+async fn read_bounded_response(
+    mut response: Response,
+    max_bytes: u64,
+    description: &str,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("failed to read {description}: {err}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+
+        if bytes.len() as u64 > max_bytes {
+            return Err(format!("{description} exceeded {max_bytes} bytes"));
+        }
+    }
+
+    Ok(bytes)
+}
+
+async fn read_bounded_bytes(
+    reader: impl AsyncRead + Unpin,
     max_bytes: u64,
     description: &str,
 ) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
 
     reader
-        .by_ref()
         .take(max_bytes + 1)
         .read_to_end(&mut bytes)
+        .await
         .map_err(|err| format!("failed to read {description}: {err}"))?;
 
     if bytes.len() as u64 > max_bytes {

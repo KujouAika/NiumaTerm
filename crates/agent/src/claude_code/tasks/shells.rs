@@ -4,11 +4,15 @@
 //! is written to, so what is kept for it is the command line, that file, and
 //! whether the row is a shell at all.
 
-use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 
+use indexmap::IndexMap;
 use serde_json::Value;
 
-use crate::claude_code::tasks::ShellMeta;
+use crate::background_task::BackgroundTaskState;
+use crate::chat::Item;
+use crate::claude_code::tasks::ShellDetail;
 use crate::claude_code::tasks::records::result_content;
 use crate::json::text_field;
 
@@ -30,6 +34,18 @@ pub(super) fn handoff_output_file(text: &str, task_id: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_owned())
 }
 
+/// What one shell's records have said about it so far. No single record
+/// carries all of it: the command comes from the `Bash` block, the description
+/// and tool-use id from `task_started`, and the output file from whichever of
+/// the handoff result and the completion notification arrives first.
+#[derive(Default)]
+pub(super) struct ShellMeta {
+    pub(super) tool_use_id: Option<String>,
+    pub(super) description: Option<String>,
+    pub(super) command: Option<String>,
+    pub(super) output_file: Option<String>,
+}
+
 /// What the stream has said about each background shell, and the `Bash`
 /// commands the shell rows are built from. Both tables are bounded the same
 /// way and cleared together, because a command with no shell to attach to is
@@ -40,24 +56,18 @@ pub(super) struct ShellIndex {
     /// carry at once, keyed by task id. Recorded for every registered shell,
     /// including foreground ones, because a command the CLI moves to the
     /// background later announces only its task id when it does.
-    shell_meta: HashMap<String, ShellMeta>,
-
-    shell_meta_order: VecDeque<String>,
+    shell_meta: IndexMap<String, ShellMeta>,
 
     /// Command text of recent `Bash` tool calls, keyed by tool-use id. The
     /// task records name the shell's description but never its command, so the
     /// launching block is where a row's command comes from.
-    bash_commands: HashMap<String, String>,
-
-    bash_command_order: VecDeque<String>,
+    bash_commands: IndexMap<String, String>,
 }
 
 impl ShellIndex {
     pub(super) fn clear(&mut self) {
         self.shell_meta.clear();
-        self.shell_meta_order.clear();
         self.bash_commands.clear();
-        self.bash_command_order.clear();
     }
 
     /// What one shell's records have said about it so far, for a caller that
@@ -85,7 +95,7 @@ impl ShellIndex {
             .cloned();
 
         let description = text_field(record, &["description"]);
-        let meta = self.shell_meta.entry(task_id.to_owned()).or_default();
+        let meta = &mut self.shell_meta[task_id];
 
         if tool_use_id.is_some() {
             meta.tool_use_id = tool_use_id;
@@ -147,34 +157,86 @@ impl ShellIndex {
             return;
         };
 
-        if !self.bash_commands.contains_key(tool_use_id) {
-            if self.bash_command_order.len() >= MAX_SHELL_META
-                && let Some(oldest) = self.bash_command_order.pop_front()
-            {
-                self.bash_commands.remove(&oldest);
-            }
-
-            self.bash_command_order.push_back(tool_use_id.to_owned());
+        if !self.bash_commands.contains_key(tool_use_id)
+            && self.bash_commands.len() >= MAX_SHELL_META
+        {
+            self.bash_commands.shift_remove_index(0);
         }
 
         self.bash_commands.insert(tool_use_id.to_owned(), command);
     }
 
+    /// Make room for `task_id`'s metadata, evicting the oldest shell when the
+    /// table is full. An empty entry reads the same as a missing one.
     pub(super) fn reserve_shell_meta(&mut self, task_id: &str) {
         if self.shell_meta.contains_key(task_id) {
             return;
         }
 
-        if self.shell_meta_order.len() >= MAX_SHELL_META
-            && let Some(oldest) = self.shell_meta_order.pop_front()
-        {
-            self.shell_meta.remove(&oldest);
+        if self.shell_meta.len() >= MAX_SHELL_META {
+            self.shell_meta.shift_remove_index(0);
         }
 
-        self.shell_meta_order.push_back(task_id.to_owned());
+        self.shell_meta
+            .insert(task_id.to_owned(), ShellMeta::default());
     }
 
     pub(super) fn shell_command(&self, canonical: &str) -> Option<String> {
         self.shell_meta.get(canonical)?.command.clone()
     }
+}
+
+// Rendering one background shell as the single transcript item its detail
+// view shows.
+//
+// A backgrounded command holds no conversation. Everything it produced goes
+// to a file the CLI names when it hands the command off, so the detail is one
+// command card whose output is read back from that file each time the view
+// asks for it. Re-reading is what makes a still-running command grow on
+// screen: the file is appended to while the command runs, and the transcript
+// update replaces the card only when the text actually differs.
+
+/// How much of the output file to show. A background command can be a server
+/// or a watch loop that never stops writing, and the end is the part worth
+/// reading, so an oversized file is shown from its tail.
+pub(super) const MAX_OUTPUT_BYTES: u64 = 256 * 1024;
+
+/// The one item a background shell's detail view renders.
+pub(crate) fn shell_items(detail: &ShellDetail) -> Vec<Item> {
+    let status = match detail.state {
+        BackgroundTaskState::Failed => "failed",
+        state if state.is_terminal() => "completed",
+        _ => "inProgress",
+    };
+
+    vec![Item::CommandExecution {
+        id: detail.id.clone(),
+        command: detail.command.clone().unwrap_or_default(),
+        purpose: detail.description.clone(),
+        aggregated_output: detail.output_file.as_deref().and_then(read_tail),
+        status: Some(status.to_string()),
+        exit_code: None,
+    }]
+}
+
+/// The last [`MAX_OUTPUT_BYTES`] of a file, decoded leniently. Command output
+/// is whatever bytes the program wrote, which is not guaranteed to be UTF-8 and
+/// is cut mid-character by the tail bound either way, so invalid sequences are
+/// replaced rather than failing the read.
+fn read_tail(path: &str) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+
+    let len = file.metadata().ok()?.len();
+
+    if len > MAX_OUTPUT_BYTES {
+        file.seek(SeekFrom::Start(len - MAX_OUTPUT_BYTES)).ok()?;
+    }
+
+    let mut bytes = Vec::new();
+
+    file.read_to_end(&mut bytes).ok()?;
+
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+
+    (!text.trim().is_empty()).then_some(text)
 }

@@ -1,91 +1,55 @@
 #![cfg(unix)]
-pub use crate::unix::process_exit::wait_for_exit;
-
 pub use crate::unix::shell_integration::{
     is_shell_integration_registered, register_shell_integration, set_system_notification_enabled,
     shell_integration_dll_mismatched, system_notification_enabled, unregister_shell_integration,
 };
 
 pub(crate) use crate::unix::hook_command::{build_hook_command, hook_command_contains};
-
 pub(crate) use crate::unix::notifier::{remove, show};
-
 pub(crate) use crate::unix::shell::{default_shell, prompt_integration};
 
 pub mod environment;
-
 pub mod filesystem;
-
 pub mod ipc;
-
 pub mod process;
-
 pub mod shell;
-
 pub mod window;
 
-pub(crate) mod library;
-
-pub(crate) mod hook_command;
-
 #[cfg(feature = "clipboard")]
-mod clipboard;
-
-mod process_exit;
-
-mod shell_integration;
+pub(crate) mod clipboard;
+pub(crate) mod hook_command;
+pub(crate) mod library;
 
 #[cfg(target_os = "macos")]
 mod macos;
-
 mod notifier;
+mod shell_integration;
 
-mod signals;
-
-use std::ffi::{CStr, CString, OsStr};
-
+use std::cell::Cell;
+use std::ffi::CStr;
 use std::fs::File;
-
-use std::io::Error;
-
+use std::io::{Error, Read, Write};
 use std::mem::MaybeUninit;
-
 use std::ops::Deref;
-
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-
+use std::os::fd::{AsFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
-
-use std::path::{Path, PathBuf};
-
-use std::process::{Child as ChildProcess, Command, Stdio};
-
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::{Child as ChildProcess, Command};
 use std::sync::Arc;
-
-use std::{env, error, io, ptr, str};
+use std::task::{Context, Poll as TaskPoll, ready};
+use std::{env, io, ptr, str};
 
 use dirs::home_dir;
-
-use mio::event::Event;
-
-use mio::unix::SourceFd;
-
-use mio::{Interest, Poll, Token, Waker};
-
-use signal_hook::consts as sigconsts;
-
+use tokio::io::unix::AsyncFd;
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tracing::info;
 
-use crate::unix::hook_command::single_quoted;
-
 #[cfg(target_os = "macos")]
-use crate::unix::macos::*;
-
+use crate::unix::hook_command::single_quoted;
 use crate::unix::process::{KillOnCloseJob, ProcessTree};
-
-use crate::unix::signals::Signals;
-
-use crate::{APP_ID, EventedPty, ProcessReadWrite, PtyOptions, Winsize, WinsizeBuilder};
+use crate::{APP_ID, AsyncPty, PtyOptions, Winsize, WinsizeBuilder};
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 const TIOCSWINSZ: libc::c_ulong = 0x5414;
@@ -96,18 +60,11 @@ const TIOCSWINSZ: libc::c_int = 0x5414;
 #[cfg(target_os = "freebsd")]
 const TIOCSWINSZ: libc::c_ulong = 0x80087467;
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const TIOCSWINSZ: libc::c_ulong = 2148037735;
 
 #[link(name = "util")]
 unsafe extern "C" {
-    fn forkpty(
-        main: *mut libc::c_int,
-        name: *mut libc::c_char,
-        termp: *const libc::termios,
-        winsize: *const Winsize,
-    ) -> libc::pid_t;
-
     fn openpty(
         main: *mut libc::c_int,
         child: *mut libc::c_int,
@@ -117,38 +74,16 @@ unsafe extern "C" {
     ) -> libc::pid_t;
 
     fn waitpid(pid: libc::pid_t, status: *mut libc::c_int, options: libc::c_int) -> libc::pid_t;
-
-    fn ptsname(fd: *mut libc::c_int) -> *mut libc::c_char;
-}
-
-#[cfg(target_os = "macos")]
-fn default_shell_command(shell: &str) {
-    let command_shell_string = CString::new(shell).unwrap();
-    let command_pointer = command_shell_string.as_ptr();
-    let args = CString::new("--login").unwrap();
-    let args_pointer = args.as_ptr();
-
-    unsafe {
-        libc::execvp(command_pointer, vec![args_pointer].as_ptr());
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_shell_command(shell: &str) {
-    let command_shell_string = CString::new(shell).unwrap();
-    let command_pointer = command_shell_string.as_ptr();
-
-    unsafe {
-        libc::execvp(command_pointer, vec![command_pointer, ptr::null()].as_ptr());
-    }
 }
 
 pub struct Pty {
     pub child: Child,
     file: File,
-    token: Token,
-    signals_token: Token,
-    signals: Signals,
+    async_file: AsyncFd<OwnedFd>,
+
+    /// Process-wide SIGCHLD deliveries, observed from creation onward so an
+    /// exit before the first poll is still found by `waitpid`.
+    child_signals: Signal,
 
     /// Present only for a managed PTY. Dropping it signals the shell's
     /// process group, which ends the descendants a bare `SIGHUP` to the shell
@@ -161,6 +96,11 @@ impl Pty {
     /// manage its child's descendants.
     pub fn process_tree(&self) -> Option<ProcessTree> {
         self.job.as_ref().map(KillOnCloseJob::process_tree)
+    }
+
+    /// Reports whether a child exit has been observed without waiting.
+    pub fn child_exited(&mut self) -> bool {
+        matches!(self.child.waitpid(), Ok(Some(..)))
     }
 }
 
@@ -203,87 +143,6 @@ impl io::Read for Pty {
             n if n >= 0 => Ok(n as usize),
             _ => Err(io::Error::last_os_error()),
         }
-    }
-}
-
-impl ProcessReadWrite for Pty {
-    fn read_closed(&self, event: &Event) -> bool {
-        event.is_read_closed()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn is_hangup_error(&self, error: &io::Error) -> bool {
-        error.raw_os_error() == Some(libc::EIO)
-    }
-
-    type Reader = File;
-
-    type Writer = File;
-
-    #[inline]
-    fn reader(&mut self) -> &mut File {
-        &mut self.file
-    }
-
-    #[inline]
-    fn read_token(&self) -> Token {
-        self.token
-    }
-
-    #[inline]
-    fn writer(&mut self) -> &mut File {
-        &mut self.file
-    }
-
-    #[inline]
-    fn write_token(&self) -> Token {
-        self.token
-    }
-
-    #[inline]
-    fn set_winsize(&mut self, winsize: WinsizeBuilder) -> Result<(), io::Error> {
-        self.child.set_winsize(winsize)
-    }
-
-    #[inline]
-    fn register(
-        &mut self,
-        poll: &Poll,
-        token: &mut dyn Iterator<Item = Token>,
-        interest: Interest,
-        _waker: &Arc<Waker>,
-    ) -> io::Result<()> {
-        // The pty fd is a real OS readiness source; no `Waker` needed on Unix.
-        self.token = token.next().unwrap();
-
-        poll.registry()
-            .register(&mut SourceFd(&self.file.as_raw_fd()), self.token, interest)?;
-
-        self.signals_token = token.next().unwrap();
-
-        poll.registry()
-            .register(&mut self.signals, self.signals_token, Interest::READABLE)
-    }
-
-    fn reregister(&mut self, poll: &Poll, interest: Interest) -> io::Result<()> {
-        poll.registry()
-            .reregister(&mut SourceFd(&self.file.as_raw_fd()), self.token, interest)?;
-
-        poll.registry()
-            .reregister(&mut self.signals, self.signals_token, Interest::READABLE)
-    }
-
-    fn deregister(&mut self, poll: &Poll) -> io::Result<()> {
-        poll.registry()
-            .deregister(&mut SourceFd(&self.file.as_raw_fd()))?;
-
-        poll.registry().deregister(&mut self.signals)
-    }
-
-    #[inline]
-    fn drain_ready(&self) -> Vec<Token> {
-        // Unix has real OS readiness; the soft-ready set is Windows-only.
-        Vec::new()
     }
 }
 
@@ -357,7 +216,7 @@ pub fn terminfo_exists(terminfo: &str) -> bool {
     false
 }
 
-pub fn create_termp(utf8: bool) -> libc::termios {
+fn create_termp() -> libc::termios {
     // musl libc does not provide c_ispeed and c_ospeed fields in struct termios.
     #[cfg(target_os = "linux")]
     let mut term = libc::termios {
@@ -384,7 +243,7 @@ pub fn create_termp(utf8: bool) -> libc::termios {
         c_line: 0,
     };
 
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
     let mut term = libc::termios {
         c_iflag: libc::ICRNL | libc::IXON | libc::IXANY | libc::IMAXBEL | libc::BRKINT,
         c_oflag: libc::OPOST | libc::ONLCR,
@@ -402,12 +261,11 @@ pub fn create_termp(utf8: bool) -> libc::termios {
         c_ospeed: Default::default(),
     };
 
+    // The PTY always carries UTF-8: the engine decodes it and every shell
+    // launched through it is given a UTF-8 locale.
     #[cfg(not(target_os = "freebsd"))]
     {
-        // Enable utf8 support if requested
-        if utf8 {
-            term.c_iflag |= libc::IUTF8;
-        }
+        term.c_iflag |= libc::IUTF8;
     }
 
     // Set supported terminal characters
@@ -428,7 +286,7 @@ pub fn create_termp(utf8: bool) -> libc::termios {
     term.c_cc[libc::VMIN] = 1;
     term.c_cc[libc::VTIME] = 0;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     {
         term.c_cc[libc::VDSUSP] = 25;
         term.c_cc[libc::VSTATUS] = 20;
@@ -543,7 +401,7 @@ fn queue_bootstrap(main: libc::c_int, child: libc::c_int, bootstrap: &str) -> Re
 
     // Hand the session the echo it expects, now that the one write that had to
     // stay invisible is already in the queue.
-    let restored = create_termp(true);
+    let restored = create_termp();
 
     // SAFETY: `child` is the pty's terminal side, open for the whole call.
     if unsafe { libc::tcsetattr(child, libc::TCSANOW, &restored) } != 0 {
@@ -568,10 +426,10 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
 
     let (width, height) = (UNKNOWN_PIXEL_SIZE, UNKNOWN_PIXEL_SIZE);
 
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "freebsd")))]
     let mut take_controlling_terminal = true;
 
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
     let take_controlling_terminal = true;
 
     let mut main: libc::c_int = 0;
@@ -584,7 +442,7 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
         ws_ypixel: height as libc::c_ushort,
     };
 
-    let mut term = create_termp(true);
+    let mut term = create_termp();
 
     if bootstrap.is_some() {
         term.c_lflag &= !libc::ECHO;
@@ -696,14 +554,11 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
                 "--host".to_string(),
                 "--watch-bus".to_string(),
                 "--env=COLORTERM=truecolor".to_string(),
-                "--env=TERM=rio".to_string(),
+                format!("--env=TERM={}", terminal_type()),
             ];
 
             if let Some(directory) = working_directory {
-                with_args.push(format!(
-                    "--directory={}",
-                    path::Path::new(directory).display()
-                ));
+                with_args.push(format!("--directory={}", Path::new(directory).display()));
             }
 
             let output = Command::new("flatpak-spawn")
@@ -764,31 +619,29 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
         builder.current_dir(dir);
     }
 
-    // Prepare signal handling before spawning child.
-    let signals = Signals::new([sigconsts::SIGCHLD]).expect("error preparing signal handling");
-
     match builder.spawn() {
         Ok(child_process) => {
             unsafe {
                 set_nonblocking(main);
             }
 
-            let ptsname: String = tty_ptsname(main).unwrap_or_else(|_| "".to_string());
-
             let child_unix = Child {
                 id: Arc::new(main),
-                ptsname,
                 pid: Arc::new(child_process.id().try_into().unwrap()),
                 process: Some(child_process),
+                reaped: Cell::new(None),
             };
+
+            let file = unsafe { File::from_raw_fd(main) };
+
+            let (async_file, child_signals) = register_with_runtime(&file)?;
 
             Ok(Pty {
                 child: child_unix,
-                file: unsafe { File::from_raw_fd(main) },
-                token: Token(0),
-                signals,
-                signals_token: Token(0),
+                file,
                 job: None,
+                async_file,
+                child_signals,
             })
         }
         Err(err) => Err(Error::new(
@@ -843,100 +696,6 @@ unsafe fn prepare_pty_child(
 ///
 /// Creates a pseudoterminal using fork.
 ///
-/// The [`create_pty`] creates a pseudoterminal with similar behavior as tty,
-/// which is a command in Unix and Unix-like operating systems to print the file name of the
-/// terminal connected to standard input. tty stands for TeleTYpewriter.
-///
-/// It returns two [`Pty`] along with respective process name [`String`] and process id (`libc::pid_`)
-///
-#[expect(dead_code)]
-fn create_pty_with_fork(
-    shell: &str,
-    columns: u16,
-    rows: u16,
-    width: u16,
-    height: u16,
-) -> Result<Pty, Error> {
-    let mut main = 0;
-
-    let winsize = Winsize {
-        ws_row: rows as libc::c_ushort,
-        ws_col: columns as libc::c_ushort,
-        ws_xpixel: width as libc::c_ushort,
-        ws_ypixel: height as libc::c_ushort,
-    };
-
-    let term = create_termp(true);
-
-    let mut shell_program = shell;
-
-    let user = match ShellUser::from_env() {
-        Ok(data) => data,
-        Err(..) => ShellUser {
-            shell: shell.to_string(),
-            ..Default::default()
-        },
-    };
-
-    if shell.is_empty() {
-        info!("shell configuration is empty, will retrieve from env");
-        shell_program = &user.shell;
-    }
-
-    info!("fork {:?}", shell_program);
-
-    match unsafe {
-        forkpty(
-            &mut main as *mut _,
-            ptr::null_mut(),
-            &term as *const libc::termios,
-            &winsize as *const _,
-        )
-    } {
-        0 => {
-            default_shell_command(shell_program);
-
-            Err(Error::other(format!(
-                "forkpty has reach unreachable with {shell_program}"
-            )))
-        }
-        id if id > 0 => {
-            // TODO: Currently we fork the process and don't wait to know if led to failure
-            // Whenever it happens it will just simply shut down the teletyperwriter
-            // In the future add an option to check before release the method
-            let ptsname: String = tty_ptsname(main).unwrap_or_else(|_| "".to_string());
-
-            let child = Child {
-                id: Arc::new(main),
-                ptsname,
-                pid: Arc::new(id),
-                process: None,
-            };
-
-            unsafe {
-                set_nonblocking(main);
-            }
-
-            let signals =
-                Signals::new([sigconsts::SIGCHLD]).expect("error preparing signal handling");
-
-            Ok(Pty {
-                child,
-                signals,
-                file: unsafe { File::from_raw_fd(main) },
-                token: Token(0),
-                signals_token: Token(0),
-                // `forkpty` leaves no `std::process::Child` to attach to, so
-                // this path never manages the descendant tree.
-                job: None,
-            })
-        }
-        _ => Err(Error::other(format!(
-            "forkpty failed using {shell_program}"
-        ))),
-    }
-}
-
 /// Really only needed on BSD, but should be fine elsewhere.
 fn set_controlling_terminal(fd: libc::c_int) -> Result<(), Error> {
     let res = unsafe {
@@ -969,10 +728,12 @@ unsafe fn set_nonblocking(fd: libc::c_int) {
 pub struct Child {
     pub id: Arc<libc::c_int>,
     pub pid: Arc<libc::pid_t>,
-    #[allow(dead_code)]
-    ptsname: String,
-    #[allow(dead_code)]
     process: Option<ChildProcess>,
+
+    /// The exit status once `waitpid` reaped the child. From then on the pid
+    /// can name an unrelated process, so it is neither waited on nor
+    /// signalled again.
+    reaped: Cell<Option<i32>>,
 }
 
 impl Child {
@@ -1005,6 +766,10 @@ impl Child {
     /// Return the child’s exit status if it has already exited. If the child is still running, return Ok(None).
     /// https://linux.die.net/man/2/waitpid
     pub fn waitpid(&self) -> Result<Option<i32>, String> {
+        if let Some(status) = self.reaped.get() {
+            return Ok(Some(status));
+        }
+
         let mut status = 0 as libc::c_int;
 
         // If WNOHANG was specified in options and there were no children in a waitable state, then waitid() returns 0 immediately and the state of the siginfo_t structure pointed to by infop is unspecified. To distinguish this case from that where a child was in a waitable state, zero out the si_pid field before the call and check for a nonzero value in this field after the call returns.
@@ -1018,14 +783,9 @@ impl Child {
             return Ok(None);
         }
 
-        Ok(Some(status))
-    }
-}
+        self.reaped.set(Some(status));
 
-#[expect(dead_code)]
-fn kill_pid(pid: i32) {
-    unsafe {
-        libc::kill(pid, libc::SIGHUP);
+        Ok(Some(status))
     }
 }
 
@@ -1039,50 +799,78 @@ impl Deref for Child {
 
 impl Drop for Child {
     fn drop(&mut self) {
+        if self.reaped.get().is_some() {
+            return;
+        }
+
         unsafe {
             libc::kill(*self.pid, libc::SIGHUP);
         }
     }
 }
 
-#[expect(dead_code)]
-fn command_per_pid(pid: libc::pid_t) -> String {
-    let current_process_name = Command::new("ps")
-        .arg("-p")
-        .arg(format!("{pid:}"))
-        .arg("-o")
-        .arg("comm=")
-        .output()
-        .expect("failed to execute process")
-        .stdout;
+/// Associate the PTY descriptor and SIGCHLD with the shared runtime. Creation
+/// runs on whichever thread opens the tab, so the runtime context is entered
+/// here; entering only sets a thread-local and keeps creation synchronous.
+fn register_with_runtime(file: &File) -> io::Result<(AsyncFd<OwnedFd>, Signal)> {
+    let _runtime = crate::runtime().enter();
 
-    str::from_utf8(&current_process_name)
-        .unwrap_or("")
-        .to_string()
+    Ok((
+        AsyncFd::new(file.as_fd().try_clone_to_owned()?)?,
+        signal(SignalKind::child())?,
+    ))
 }
 
-impl EventedPty for Pty {
-    #[inline]
-    fn child_exited(&mut self) -> bool {
-        self.signals.pending().next().is_some_and(|signal| {
-            if signal != sigconsts::SIGCHLD {
-                return false;
-            }
+impl AsyncPty for Pty {
+    fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> TaskPoll<io::Result<usize>> {
+        loop {
+            let mut ready = ready!(self.async_file.poll_read_ready_mut(cx))?;
 
-            match self.child.waitpid() {
-                Err(_e) => {
-                    // std::process::exit(1);
-                    false
+            match ready.try_io(|_| self.file.read(buf)) {
+                Ok(Ok(0)) => return TaskPoll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+                // Linux reports a hung-up PTY with `EIO`; callers only need to
+                // know the child side is gone.
+                Ok(Err(error)) if error.raw_os_error() == Some(libc::EIO) => {
+                    return TaskPoll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
                 }
-                Ok(None) => false,
-                Ok(Some(..)) => true,
+                Ok(result) => return TaskPoll::Ready(result),
+                Err(_) => continue,
             }
-        })
+        }
     }
 
-    #[inline]
-    fn child_event_token(&self) -> Token {
-        self.signals_token
+    fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> TaskPoll<io::Result<usize>> {
+        loop {
+            let mut ready = ready!(self.async_file.poll_write_ready_mut(cx))?;
+
+            match ready.try_io(|_| self.file.write(buf)) {
+                Ok(result) => return TaskPoll::Ready(result),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn poll_exit(&mut self, cx: &mut Context<'_>) -> TaskPoll<()> {
+        loop {
+            // The signal stream exists before this check, so an exit that
+            // precedes it is found by waitpid and a later one is delivered.
+            // SIGCHLD also reports other children, so each delivery rechecks.
+            if self.child_exited() {
+                return TaskPoll::Ready(());
+            }
+
+            if ready!(self.child_signals.poll_recv(cx)).is_none() {
+                return TaskPoll::Ready(());
+            }
+        }
+    }
+
+    fn poll_resize(
+        &mut self,
+        _cx: &mut Context<'_>,
+        size: WinsizeBuilder,
+    ) -> TaskPoll<io::Result<()>> {
+        TaskPoll::Ready(self.child.set_winsize(size))
     }
 }
 
@@ -1136,117 +924,4 @@ fn get_pw_entry(buf: &mut [i8; 1024]) -> Result<Passwd<'_>, Error> {
         dir: unsafe { CStr::from_ptr(entry.pw_dir).to_str().unwrap() },
         shell: unsafe { CStr::from_ptr(entry.pw_shell).to_str().unwrap() },
     })
-}
-
-/// Unsafe
-/// Return tty pts name [`String`]
-///
-/// # Safety
-///
-/// This function is unsafe because it contains the usage of `libc::ptsname`
-/// from libc that's naturally unsafe.
-pub fn tty_ptsname(fd: libc::c_int) -> Result<String, String> {
-    let c_str: &CStr = unsafe {
-        let name_ptr = ptsname(fd as *mut _);
-
-        CStr::from_ptr(name_ptr)
-    };
-
-    let str_slice: &str = c_str.to_str().unwrap();
-    let str_buf: String = str_slice.to_owned();
-
-    Ok(str_buf)
-}
-
-pub fn foreground_process_name(main_fd: RawFd, shell_pid: u32) -> String {
-    let mut pid = unsafe { libc::tcgetpgrp(main_fd) };
-
-    if pid < 0 {
-        pid = shell_pid as libc::pid_t;
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
-    let comm_path = format!("/proc/{pid}/comm");
-
-    #[cfg(target_os = "freebsd")]
-    let comm_path = format!("/compat/linux/proc/{pid}/comm");
-
-    #[cfg(not(target_os = "macos"))]
-    let name = match fs::read(comm_path) {
-        Ok(comm_str) => String::from_utf8_lossy(&comm_str)
-            .trim_end()
-            .parse()
-            .unwrap_or_default(),
-        Err(..) => "".into(),
-    };
-
-    #[cfg(target_os = "macos")]
-    let name = macos_process_name(pid);
-
-    name
-}
-
-pub fn foreground_process_path(
-    main_fd: RawFd,
-    shell_pid: u32,
-) -> Result<PathBuf, Box<dyn error::Error>> {
-    let mut pid = unsafe { libc::tcgetpgrp(main_fd) };
-
-    if pid < 0 {
-        pid = shell_pid as libc::pid_t;
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
-    let link_path = format!("/proc/{pid}/cwd");
-
-    #[cfg(target_os = "freebsd")]
-    let link_path = format!("/compat/linux/proc/{pid}/cwd");
-
-    #[cfg(not(target_os = "macos"))]
-    let cwd = fs::read_link(link_path)?;
-
-    #[cfg(target_os = "macos")]
-    let cwd = macos_cwd(pid)?;
-
-    Ok(cwd)
-}
-
-/// Start a new process in the background.
-#[expect(dead_code)]
-fn spawn_daemon<I, S>(program: &str, args: I, main_fd: RawFd, shell_pid: u32) -> io::Result<()>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr>,
-{
-    let mut command = Command::new(program);
-
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    if let Ok(cwd) = foreground_process_path(main_fd, shell_pid) {
-        command.current_dir(cwd);
-    }
-
-    unsafe {
-        command
-            .pre_exec(|| {
-                match libc::fork() {
-                    -1 => return Err(io::Error::last_os_error()),
-                    0 => (),
-                    _ => libc::_exit(0),
-                }
-
-                if libc::setsid() == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-
-                Ok(())
-            })
-            .spawn()?
-            .wait()
-            .map(|_| ())
-    }
 }

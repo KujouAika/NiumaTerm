@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::background_task::{
-    BackgroundTaskKey, BackgroundTaskSnapshot, BackgroundTaskTranscriptState,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskSnapshot,
     BackgroundTaskTranscriptUpdate, MAX_TRANSCRIPT_ITEMS,
 };
 use crate::session::{AgentKind, RecoveryIdentity};
@@ -15,7 +15,7 @@ use crate::transcript::conversation::ConversationState;
 
 /// Child-agent activity the provider adapter reports for this conversation.
 #[derive(Default)]
-pub struct ChildAgents {
+pub(crate) struct ChildAgents {
     /// Latest child-agent snapshot published by the provider adapter. The
     /// adapter owns child lifecycle; the pane keeps only this replacement
     /// copy so the right-side view never maintains a second mutable registry.
@@ -32,23 +32,77 @@ pub struct ChildAgents {
     pub restored_session: Option<String>,
 }
 
-/// Show a task snapshot only against the parent session it was produced for.
-/// Provider adapters publish snapshots asynchronously, so a snapshot can still
-/// be held when the pane has already moved to another session or has no
-/// session id yet; in both cases the view must render nothing rather than
-/// another conversation's children.
-pub fn scoped_background_tasks<'a>(
-    parent: Option<&BackgroundTaskKey>,
-    snapshot: Option<&'a BackgroundTaskSnapshot>,
-) -> Option<&'a BackgroundTaskSnapshot> {
-    let parent = parent?;
-    let snapshot = snapshot?;
-
-    (&snapshot.parent_session == parent).then_some(snapshot)
-}
-
 impl ChildAgents {
-    pub fn claim_restore(&mut self, session_id: &str) -> bool {
+    /// The held snapshot, when it was produced for `parent`. Provider adapters
+    /// publish snapshots asynchronously, so a snapshot can still be held after
+    /// the pane has moved to another session or before it has a session id;
+    /// both cases render nothing so another conversation's children stay out.
+    pub(crate) fn scoped(
+        &self,
+        parent: Option<&BackgroundTaskKey>,
+    ) -> Option<&BackgroundTaskSnapshot> {
+        let parent = parent?;
+        let snapshot = self.background_tasks.as_ref()?;
+
+        (&snapshot.parent_session == parent).then_some(snapshot)
+    }
+
+    /// Child `key`'s conversation, withheld with the snapshot when that
+    /// snapshot belongs to a session other than `parent`.
+    pub fn transcript(
+        &self,
+        parent: Option<&BackgroundTaskKey>,
+        key: &BackgroundTaskKey,
+    ) -> Option<&ChildTranscript> {
+        self.scoped(parent)?;
+
+        self.transcripts.get(key)
+    }
+
+    /// The children `parent` shows, and how many of them are still active.
+    pub(crate) fn activity(&self, parent: Option<&BackgroundTaskKey>) -> (usize, usize) {
+        self.scoped(parent)
+            .map_or((0, 0), |tasks| (tasks.tasks.len(), tasks.active_count()))
+    }
+
+    /// Take a replacement snapshot, reporting whether the activity `parent`
+    /// shows changed. The chrome shows those counts, so it is told on a
+    /// change rather than on every republished snapshot.
+    pub(crate) fn set_snapshot(
+        &mut self,
+        parent: Option<&BackgroundTaskKey>,
+        snapshot: BackgroundTaskSnapshot,
+    ) -> bool {
+        let before = self.activity(parent);
+
+        self.background_tasks = Some(snapshot);
+
+        self.activity(parent) != before
+    }
+
+    /// Apply `update` to child `key`'s conversation, starting one for a child
+    /// not seen before. Returns whether the conversation changed.
+    pub(crate) fn apply_transcript(
+        &mut self,
+        key: BackgroundTaskKey,
+        update: BackgroundTaskTranscriptUpdate,
+    ) -> bool {
+        self.transcripts.entry(key).or_default().apply(update)
+    }
+
+    /// Drop the snapshot and every child conversation. Readers may still
+    /// hold a child's shared conversation, so each is emptied in place too.
+    pub(crate) fn clear(&mut self) {
+        self.background_tasks = None;
+
+        for child in self.transcripts.values() {
+            child.conversation.borrow_mut().clear();
+        }
+
+        self.transcripts.clear();
+    }
+
+    pub(crate) fn claim_restore(&mut self, session_id: &str) -> bool {
         if self.restored_session.as_deref() == Some(session_id) {
             return false;
         }
@@ -62,7 +116,7 @@ impl ChildAgents {
         Some(match identity.kind {
             AgentKind::Codex => BackgroundTaskKey::codex(identity.id),
             AgentKind::Claude => BackgroundTaskKey::claude_code(identity.id),
-            AgentKind::DeepSeek => return None,
+            AgentKind::DeepSeek => BackgroundTaskKey::deepseek(identity.id),
         })
     }
 }
@@ -71,12 +125,12 @@ impl ChildAgents {
 #[derive(Default)]
 pub struct ChildTranscript {
     pub conversation: Rc<RefCell<ConversationState>>,
-    state: BackgroundTaskTranscriptState,
+    state: BackgroundTaskLoadState,
     dropped: usize,
 }
 
 impl ChildTranscript {
-    pub fn state(&self) -> &BackgroundTaskTranscriptState {
+    pub fn state(&self) -> &BackgroundTaskLoadState {
         &self.state
     }
 

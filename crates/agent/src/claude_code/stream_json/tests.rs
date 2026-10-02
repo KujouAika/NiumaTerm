@@ -2,11 +2,11 @@
 use std::thread;
 use std::time::Instant;
 
-use crate::chat::{ContextComposition, Item, TokenUsageBreakdown};
+use crate::chat::{ContextComposition, Item, QuestionInput, TokenUsageBreakdown};
 use crate::claude_code::stream_json::*;
-use crate::request_policy::RequestClass;
+use crate::session::input::QuestionDraft;
 use crate::subprocess::InputTicket;
-use crate::subprocess::pending_requests::PendingRequests;
+use crate::subprocess::requests::RequestClass;
 use crate::workspace::AgentWorkspace;
 
 #[test]
@@ -37,11 +37,7 @@ fn retiring_control_state_cancels_pending_writes_but_preserves_cleanup() {
             PendingControlOperation::Other,
         ),
     ] {
-        state.record_admitted(id.into(), class, Instant::now());
-
-        state.attach_input(id, ticket);
-
-        state.track(id.into(), operation);
+        state.admit(id.into(), class, Some(ticket), operation, Instant::now());
     }
 
     state.cancel_generated_title();
@@ -64,24 +60,29 @@ fn retiring_control_state_cancels_pending_writes_but_preserves_cleanup() {
 fn request_deadlines_wake_without_output_and_release_the_delivery_on_close() {
     use std::sync::mpsc::{RecvTimeoutError, channel};
 
-    use crate::deadline_timer::DeadlineTimer;
+    use crate::subprocess::requests::DeadlineTimer;
 
     let (tx, rx) = channel();
 
     let mut state = ControlState::default();
 
-    state.set_timer(
-        DeadlineTimer::new(move || {
-            let _ = tx.send(());
-        })
-        .unwrap(),
+    state.set_timer(DeadlineTimer::new(move || {
+        let _ = tx.send(());
+    }));
+
+    state.admit(
+        "slow".into(),
+        RequestClass::Mutation,
+        None,
+        PendingControlOperation::Other,
+        Instant::now(),
     );
 
-    state.record_admitted("slow".into(), RequestClass::Mutation, Instant::now());
-
-    state.record_admitted(
+    state.admit(
         "due".into(),
         RequestClass::Query,
+        None,
+        PendingControlOperation::Other,
         Instant::now() - Duration::from_secs(31),
     );
 
@@ -90,7 +91,7 @@ fn request_deadlines_wake_without_output_and_release_the_delivery_on_close() {
     let expired = state.expired(Instant::now());
 
     assert_eq!(expired.len(), 1);
-    assert_eq!(expired[0].0, "due");
+    assert_eq!(expired[0].id, "due");
 
     state.complete("slow");
 
@@ -157,9 +158,11 @@ fn a_blocked_stdout_delivery_does_not_block_request_deadlines() {
 
     reading.recv_timeout(Duration::from_secs(3)).unwrap();
 
-    session.control.record_admitted(
+    session.control.admit(
         "overdue".into(),
         RequestClass::Query,
+        None,
+        PendingControlOperation::Other,
         Instant::now() - Duration::from_secs(31),
     );
 
@@ -184,17 +187,25 @@ fn large_pending_control_sets_keep_independent_deadlines() {
     for index in 0..2048 {
         state.check_connected().unwrap();
 
-        state.record_admitted(index.to_string(), RequestClass::Query, now);
-
-        state.track(index.to_string(), PendingControlOperation::Other);
+        state.admit(
+            index.to_string(),
+            RequestClass::Query,
+            None,
+            PendingControlOperation::Other,
+            now,
+        );
     }
 
     for index in 2048..2064 {
         state.check_connected().unwrap();
 
-        state.record_admitted(index.to_string(), RequestClass::Control, now);
-
-        state.track(index.to_string(), PendingControlOperation::Other);
+        state.admit(
+            index.to_string(),
+            RequestClass::Control,
+            None,
+            PendingControlOperation::Other,
+            now,
+        );
     }
 
     assert!(state.check_connected().is_ok());
@@ -204,10 +215,8 @@ fn large_pending_control_sets_keep_independent_deadlines() {
 
     assert_eq!(expired.len(), 16);
 
-    for (id, class, _) in expired {
-        assert_eq!(class, RequestClass::Control);
-
-        state.resolve(&json!({"request_id": id, "subtype": "error", "error": class.timeout_message("Claude")}));
+    for expired in expired {
+        assert_eq!(expired.class, RequestClass::Control);
     }
 
     assert!(state.check_connected().is_ok());
@@ -235,7 +244,13 @@ fn control_cancellation_matches_prompt_ids_and_close_settles_once() {
 
     let (id, _) = control.request(json!({"subtype": "rewind_files"}));
 
-    control.track(id.clone(), PendingControlOperation::FileRewind);
+    control.admit(
+        id.clone(),
+        RequestClass::Mutation,
+        None,
+        PendingControlOperation::FileRewind,
+        Instant::now(),
+    );
 
     assert!(control.cancel_prompt("unknown").is_empty());
     assert_eq!(
@@ -277,7 +292,13 @@ fn turn_completion_preserves_session_requests_and_retires_prompts() {
 
     let (id, _) = control.request(json!({"subtype": "generate_session_title"}));
 
-    control.track(id.clone(), PendingControlOperation::SessionTitle);
+    control.admit(
+        id.clone(),
+        RequestClass::Mutation,
+        None,
+        PendingControlOperation::SessionTitle,
+        Instant::now(),
+    );
 
     assert_eq!(
         control.finish_turn(),
@@ -294,6 +315,66 @@ fn turn_completion_preserves_session_requests_and_retires_prompts() {
         Some(Event::TitleUpdated("Session title".into()))
     );
     assert!(!control.has_active_request());
+}
+
+#[test]
+fn side_questions_settle_by_request_id_without_holding_the_session() {
+    let mut control = ControlState::default();
+
+    let ask = |control: &mut ControlState| {
+        let (id, _) = control.request(json!({"subtype": "side_question"}));
+
+        control.admit(
+            id.clone(),
+            RequestClass::Mutation,
+            None,
+            PendingControlOperation::SideQuestion(id.clone()),
+            Instant::now(),
+        );
+
+        id
+    };
+
+    let answered = ask(&mut control);
+    let silent = ask(&mut control);
+    let cancelled = ask(&mut control);
+    let orphaned = ask(&mut control);
+
+    // An open side question must not block turns, restores, or shutdown.
+    assert!(!control.has_active_request());
+
+    assert_eq!(
+        control.resolve(&json!({
+            "request_id": answered, "subtype": "success",
+            "response": {"response": " PELICAN \n", "synthetic": false},
+        })),
+        Some(Event::SideQuestionAnswered {
+            id: answered,
+            answer: Ok("PELICAN".into()),
+        })
+    );
+    assert!(matches!(
+        control.resolve(&json!({
+            "request_id": silent, "subtype": "success", "response": {"response": null},
+        })),
+        Some(Event::SideQuestionAnswered { answer: Err(_), .. })
+    ));
+    assert_eq!(
+        control.resolve(&json!({
+            "request_id": cancelled, "subtype": "error", "error": "Side question cancelled",
+        })),
+        Some(Event::SideQuestionAnswered {
+            id: cancelled,
+            answer: Err("Side question cancelled".into()),
+        })
+    );
+    assert_eq!(
+        control.close("Claude exited"),
+        vec![Event::SideQuestionAnswered {
+            id: orphaned,
+            answer: Err("Claude exited".into()),
+        }]
+    );
 }
 
 #[cfg(windows)]
@@ -393,7 +474,8 @@ fn acceptance_uses_one_root_provider_identity_per_turn() {
         Session::spawn(&launch, &AgentWorkspace::default(), None, |_| {}, |_| {}).unwrap();
 
     session.ready = true;
-    session.turn = TurnState::Pending;
+
+    assert!(session.turn.begin_message_turn());
 
     let child = json!({"type":"stream_event", "parent_tool_use_id":"child", "event":{"type":"message_start", "message":{"id":"child-response"}}});
 
@@ -427,7 +509,9 @@ fn acceptance_uses_one_root_provider_identity_per_turn() {
         |event| matches!(event, Event::ProviderTurnAccepted { id } if id == "response:api-next")
     ));
 
-    session.shutdown(Duration::from_secs(2), true).unwrap();
+    nmt_platform::runtime()
+        .block_on(session.shutdown(Duration::from_secs(2), true))
+        .unwrap();
 }
 
 #[cfg(windows)]
@@ -463,7 +547,13 @@ fn control_responses_do_not_fall_through_or_revive_cancelled_titles() {
     ] {
         let (id, _) = session.control.request(json!({}));
 
-        session.control.track(id.clone(), operation);
+        session.control.admit(
+            id.clone(),
+            RequestClass::Mutation,
+            None,
+            operation,
+            Instant::now(),
+        );
 
         let response = json!({"type": "control_response", "response": {"request_id": id, "subtype": "error", "error": "unsupported"}});
 
@@ -473,9 +563,13 @@ fn control_responses_do_not_fall_through_or_revive_cancelled_titles() {
 
     let (id, _) = session.control.request(json!({}));
 
-    session
-        .control
-        .track(id.clone(), PendingControlOperation::Other);
+    session.control.admit(
+        id.clone(),
+        RequestClass::Mutation,
+        None,
+        PendingControlOperation::Other,
+        Instant::now(),
+    );
 
     let response = json!({"type": "control_response", "response": {"request_id": id, "subtype": "error", "error": "denied"}});
 
@@ -487,19 +581,13 @@ fn control_responses_do_not_fall_through_or_revive_cancelled_titles() {
 
     let ticket = InputTicket::queued_for_test(false);
 
-    session.control.record_admitted(
+    session.control.admit(
         "queued-restore".into(),
         RequestClass::Mutation,
+        Some(ticket.clone()),
+        PendingControlOperation::FileRewind,
         Instant::now(),
     );
-
-    session
-        .control
-        .attach_input("queued-restore", ticket.clone());
-
-    session
-        .control
-        .track("queued-restore".into(), PendingControlOperation::FileRewind);
 
     session.control.complete(INIT_REQUEST_ID);
 
@@ -510,9 +598,13 @@ fn control_responses_do_not_fall_through_or_revive_cancelled_titles() {
 
     let (id, _) = session.control.request(json!({}));
 
-    session
-        .control
-        .track(id.clone(), PendingControlOperation::SessionTitle);
+    session.control.admit(
+        id.clone(),
+        RequestClass::Mutation,
+        None,
+        PendingControlOperation::SessionTitle,
+        Instant::now(),
+    );
 
     session
         .control
@@ -536,26 +628,25 @@ fn control_responses_do_not_fall_through_or_revive_cancelled_titles() {
 
     session.control.complete(INIT_REQUEST_ID);
 
-    session.control.track(
-        "restore-timeout".into(),
-        PendingControlOperation::FileRewind,
-    );
-
-    session.control.record_admitted(
+    session.control.admit(
         "restore-timeout".into(),
         RequestClass::Mutation,
+        None,
+        PendingControlOperation::FileRewind,
+        Instant::now(),
+    );
+
+    session.control.admit(
+        "effort-timeout".into(),
+        RequestClass::Mutation,
+        None,
+        PendingControlOperation::Other,
         Instant::now(),
     );
 
     session
         .control
         .record_effort("effort-timeout".into(), "high".into());
-
-    session.control.record_admitted(
-        "effort-timeout".into(),
-        RequestClass::Mutation,
-        Instant::now(),
-    );
 
     let timeout_events = session.poll_timeouts(Instant::now() + Duration::from_secs(301));
 
@@ -576,9 +667,8 @@ fn control_responses_do_not_fall_through_or_revive_cancelled_titles() {
 
     session.compacting = true;
 
-    session
-        .process
-        .shutdown(Duration::from_secs(1), true)
+    nmt_platform::runtime()
+        .block_on(session.process.shutdown(Duration::from_secs(1), true))
         .unwrap();
 
     session.control.pending_approval = Some(PendingApproval {
@@ -685,12 +775,84 @@ fn transcript_state_isolates_children_and_tool_results() {
 
     let result = json!({"message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]}});
 
-    assert!(other.on_tool_results(&result).is_empty());
+    assert!(other.on_user_message(&result).is_empty());
     assert!(matches!(
-        parent.on_tool_results(&result).as_slice(),
+        parent.on_user_message(&result).as_slice(),
         [Event::ItemCompleted(_)]
     ));
-    assert!(parent.on_tool_results(&result).is_empty());
+    assert!(parent.on_user_message(&result).is_empty());
+}
+
+#[test]
+fn consumed_steering_is_acknowledged_before_the_current_turn_finishes() {
+    use crate::session::AgentKind;
+    use crate::session::delivery::MessageDelivery;
+
+    let mut transcript = TranscriptState::default();
+    let mut delivery = MessageDelivery::new(AgentKind::Claude);
+
+    delivery.submit(SendOutcome::StartedTurn, "first".into(), || None);
+    delivery.submit(SendOutcome::Steered, "queued".into(), || None);
+
+    let echoed = json!({
+        "type": "user", "parent_tool_use_id": null,
+        "message": {"role": "user", "content": [{"type": "text", "text": "queued"}]},
+    });
+
+    for event in transcript.on_user_message(&echoed) {
+        if let Event::ItemStarted(Item::UserMessage { text: Some(text) }) = event {
+            assert_eq!(delivery.echoed(&text).as_deref(), Some("queued"));
+        }
+    }
+
+    assert!(
+        delivery.pending().is_empty(),
+        "consumed steering must leave the queue"
+    );
+    assert!(delivery.is_active());
+}
+
+#[test]
+fn a_queued_prompt_echo_opens_the_next_turn_before_model_output() {
+    let mut turn = TurnTracker::default();
+
+    let echo = json!({"type": "user", "isReplay": true,
+        "message": {"content": "queued"}, "parent_tool_use_id": null});
+
+    assert!(turn.begin_message_turn());
+
+    turn.observe(&json!({"type": "assistant"}));
+
+    assert!(!turn.observe(&echo).started);
+
+    turn.finish();
+
+    let observed = turn.observe(&echo);
+
+    assert!(observed.started);
+    assert!(observed.adopted);
+    assert!(!turn.observe(&json!({"type": "assistant"})).started);
+
+    turn.finish();
+
+    for ignored in [
+        json!({"type": "user", "parent_tool_use_id": "child", "message": {"content": "queued"}}),
+        json!({"type": "user", "isSynthetic": true, "message": {"content": "queued"}}),
+        json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "queued"}]}}),
+    ] {
+        assert!(!turn.observe(&ignored).started);
+        assert!(
+            TranscriptState::default()
+                .on_user_message(&ignored)
+                .is_empty()
+        );
+    }
+
+    assert!(
+        launch_arguments(&AgentWorkspace::default(), None)
+            .iter()
+            .any(|argument| argument == "--replay-user-messages")
+    );
 }
 
 #[test]
@@ -705,15 +867,6 @@ fn turn_output_usage_accumulates_model_responses() {
     usage.reset();
 
     assert_eq!(usage.update_response(9), 9);
-}
-
-#[test]
-fn title_descriptions_are_trimmed_and_unicode_safe() {
-    let input = format!("  {}界  ", "界".repeat(SESSION_TITLE_DESCRIPTION_CHARS));
-    let description = session_title_description(&input);
-
-    assert_eq!(description.chars().count(), SESSION_TITLE_DESCRIPTION_CHARS);
-    assert!(description.chars().all(|character| character == '界'));
 }
 
 #[test]
@@ -791,41 +944,6 @@ fn post_compaction_total_clears_category_detail() {
     assert_eq!(snapshot.cumulative, None);
 }
 
-#[test]
-fn every_claude_process_enables_sdk_file_checkpointing() {
-    let mut command = Command::new("claude");
-
-    command.env(FILE_CHECKPOINTING_ENV, "false");
-
-    enable_file_checkpointing(&mut command);
-
-    let value = command
-        .get_envs()
-        .find(|(name, _)| *name == FILE_CHECKPOINTING_ENV)
-        .and_then(|(_, value)| value)
-        .and_then(|value| value.to_str());
-
-    assert_eq!(value, Some("true"));
-}
-
-#[test]
-fn rewind_is_an_idle_ui_command_not_a_provider_slash_turn() {
-    let commands = Session::adapter_commands();
-
-    let rewind = commands
-        .iter()
-        .find(|command| command.name == "rewind")
-        .expect("Claude rewind metadata");
-
-    assert_eq!(rewind.source, SlashCommandSource::Adapter);
-    assert_eq!(rewind.arguments, SlashCommandArguments::None);
-    assert_eq!(rewind.run_policy, SlashCommandRunPolicy::IdleOnly);
-    assert!(ui_owns_slash_command("rewind"));
-    assert!(ui_owns_slash_command("/ReWiNd"));
-    assert!(ui_owns_slash_command("/resume"));
-    assert!(!ui_owns_slash_command("compact"));
-}
-
 #[cfg(windows)]
 #[test]
 fn pending_queries_do_not_block_an_atomic_settings_and_prompt_batch() {
@@ -884,23 +1002,27 @@ fn pending_queries_do_not_block_an_atomic_settings_and_prompt_batch() {
     for index in 0..256 {
         let id = format!("pending-{index}");
 
-        session
-            .control
-            .record_admitted(id.clone(), RequestClass::Query, now);
-
-        session.control.track(id, PendingControlOperation::Other);
+        session.control.admit(
+            id,
+            RequestClass::Query,
+            None,
+            PendingControlOperation::Other,
+            now,
+        );
     }
 
     assert_eq!(
         session.send_user_message("queued prompt", &settings, &[]),
         SendOutcome::StartedTurn
     );
-    assert_eq!(session.turn, TurnState::Pending);
+    assert_eq!(session.turn.state(), TurnState::Pending);
     assert_eq!(session.applied_model.as_deref(), Some("test-model"));
     assert_eq!(session.applied_permission.as_deref(), Some("plan"));
     assert_eq!(session.control.effort(), Some("high"));
 
-    session.shutdown(Duration::from_secs(5), false).unwrap();
+    nmt_platform::runtime()
+        .block_on(session.shutdown(Duration::from_secs(5), false))
+        .unwrap();
 
     let lines: Vec<Value> = fs::read_to_string(&log)
         .unwrap()
@@ -1052,39 +1174,34 @@ fn resumed_session_id_is_available_before_the_first_init_event() {
     assert_eq!(published_id, Some(resume_id));
 }
 
-#[test]
-fn file_rewind_request_matches_the_sdk_control_shape() {
-    assert_eq!(
-        file_rewind_request("user-message-1"),
-        json!({
-            "subtype": "rewind_files",
-            "user_message_id": "user-message-1",
-        })
+fn pending_control(id: &str, operation: PendingControlOperation) -> ControlState {
+    let mut control = ControlState::default();
+
+    control.admit(
+        id.to_string(),
+        RequestClass::Mutation,
+        None,
+        operation,
+        Instant::now(),
     );
+
+    control
 }
 
 #[test]
 fn file_rewind_control_response_is_correlated_by_request_id() {
-    let mut pending = PendingRequests::new(1);
-
-    pending.track("nmt-7".to_string(), PendingControlOperation::FileRewind);
+    let mut control = pending_control("nmt-7", PendingControlOperation::FileRewind);
 
     assert_eq!(
-        resolve_pending_control_operation(
-            &mut pending,
-            &json!({"request_id": "other", "subtype": "success"})
-        ),
+        control.resolve(&json!({"request_id": "other", "subtype": "success"})),
         None
     );
-    assert!(pending.operations.contains_key("nmt-7"));
+    assert!(control.contains(&PendingControlOperation::FileRewind));
     assert_eq!(
-        resolve_pending_control_operation(
-            &mut pending,
-            &json!({"request_id": "nmt-7", "subtype": "success"})
-        ),
+        control.resolve(&json!({"request_id": "nmt-7", "subtype": "success"})),
         Some(Event::FileRewindCompleted { error: None })
     );
-    assert!(pending.operations.is_empty());
+    assert!(!control.contains(&PendingControlOperation::FileRewind));
 }
 
 #[test]
@@ -1093,12 +1210,10 @@ fn file_rewind_rejection_and_malformed_responses_are_nonfatal_results() {
         ("error", "checkpoint expired"),
         (
             "unexpected",
-            "Claude returned a malformed file restore response.",
+            "Claude returned a malformed control response.",
         ),
     ] {
-        let mut pending = PendingRequests::new(1);
-
-        pending.track("nmt-8".to_string(), PendingControlOperation::FileRewind);
+        let mut control = pending_control("nmt-8", PendingControlOperation::FileRewind);
 
         let response = if subtype == "error" {
             json!({
@@ -1111,128 +1226,26 @@ fn file_rewind_rejection_and_malformed_responses_are_nonfatal_results() {
         };
 
         assert_eq!(
-            resolve_pending_control_operation(&mut pending, &response),
+            control.resolve(&response),
             Some(Event::FileRewindCompleted {
                 error: Some(expected.to_string()),
             })
         );
-        assert!(pending.operations.is_empty());
+        assert!(!control.contains(&PendingControlOperation::FileRewind));
     }
 }
 
 #[test]
 fn process_exit_fails_and_clears_pending_file_rewinds() {
-    let mut pending = PendingRequests::new(1);
-
-    pending.track("nmt-9".to_string(), PendingControlOperation::FileRewind);
+    let mut control = pending_control("nmt-9", PendingControlOperation::FileRewind);
 
     assert_eq!(
-        fail_pending_control_operations(pending.close(), "Claude exited."),
+        control.close("Claude exited."),
         vec![Event::FileRewindCompleted {
             error: Some("Claude exited.".into()),
         }]
     );
-    assert!(pending.operations.is_empty());
-}
-
-#[test]
-fn content_bearing_inputs_seed_the_card_detail() {
-    let todos = input_detail(
-        "TodoWrite",
-        &json!({"todos": [
-            {"content": "done thing", "status": "completed"},
-            {"content": "next thing", "status": "pending"},
-        ]}),
-    );
-
-    assert_eq!(todos.as_deref(), Some("- [x] done thing\n- [ ] next thing"));
-
-    let plan = input_detail("ExitPlanMode", &json!({"plan": "1. do it"}));
-
-    assert_eq!(plan.as_deref(), Some("1. do it"));
-
-    assert_eq!(input_detail("Grep", &json!({"pattern": "x"})), None);
-}
-
-#[test]
-fn a_todo_card_counts_back_out_as_a_task_tally() {
-    let todos = tool_item(
-        "t1",
-        "TodoWrite",
-        &json!({"todos": [
-            {"content": "done thing", "status": "completed"},
-            {"content": "next thing", "status": "pending"},
-            {"content": "later thing", "status": "pending"},
-        ]}),
-    );
-
-    assert_eq!(todos.task_tally(), Some((1, 3)));
-    assert_eq!(
-        tool_item("t2", "Grep", &json!({"pattern": "x"})).task_tally(),
-        None
-    );
-}
-
-#[test]
-fn edit_diff_prefixes_old_and_new_lines() {
-    let diff = edit_diff("Edit", &json!({"old_string": "a\nb", "new_string": "c"}));
-
-    assert_eq!(diff.as_deref(), Some("-a\n-b\n+c\n"));
-
-    assert_eq!(edit_diff("Edit", &json!({})), None);
-}
-
-#[test]
-fn bash_and_file_tools_map_to_dedicated_cards() {
-    let bash = tool_item(
-        "t1",
-        "Bash",
-        &json!({
-            "command": "cargo check",
-            "description": "Check the workspace"
-        }),
-    );
-
-    assert_eq!(
-        bash,
-        Item::CommandExecution {
-            id: "t1".into(),
-            command: "cargo check".into(),
-            purpose: Some("Check the workspace".into()),
-            aggregated_output: None,
-            status: Some("inProgress".into()),
-            exit_code: None,
-        }
-    );
-
-    let write = tool_item(
-        "t2",
-        "Write",
-        &json!({"file_path": "C:\\a.txt", "content": "x"}),
-    );
-
-    assert_eq!(
-        write,
-        Item::FileChange {
-            id: "t2".into(),
-            paths: "C:\\a.txt".into(),
-            diff: Some("+x\n".into()),
-            status: Some("inProgress".into()),
-        }
-    );
-
-    let grep = tool_item("t3", "Grep", &json!({"pattern": "foo.*bar"}));
-
-    assert_eq!(
-        grep,
-        Item::Other {
-            id: "t3".into(),
-            kind: "Grep".into(),
-            title: "foo.*bar".into(),
-            output: None,
-            status: Some("inProgress".into()),
-        }
-    );
+    assert!(!control.contains(&PendingControlOperation::FileRewind));
 }
 
 #[test]
@@ -1308,173 +1321,6 @@ fn a_failed_compaction_reports_its_reason() {
 }
 
 #[test]
-fn initialize_model_catalog_maps_value_and_display_name() {
-    let models = json!([
-        {"value": "default", "displayName": "Default (recommended)", "description": "…",
-         "supportedEffortLevels": ["low", "high"]},
-        {"value": "opus[1m]", "displayName": "Opus with 1M context"},
-        {"displayName": "no value — skipped"}
-    ]);
-
-    let parsed = parse_models(&models, None);
-
-    assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].model, "default");
-    assert_eq!(parsed[0].display, "Default (recommended)");
-    assert_eq!(parsed[0].efforts, vec!["low", "high"]);
-    assert_eq!(parsed[1].model, "opus[1m]");
-    assert!(parsed[1].efforts.is_empty());
-}
-
-#[test]
-fn initialize_model_catalog_keeps_a_selected_custom_model() {
-    let parsed = parse_models(
-        &json!([{"value": "default", "displayName": "Default"}]),
-        Some("claude-custom-model"),
-    );
-
-    assert_eq!(parsed[0].model, "claude-custom-model");
-    assert_eq!(parsed[1].model, "default");
-}
-
-#[test]
-fn custom_endpoint_model_inherits_effort_levels_from_remapped_alias() {
-    let parsed = parse_models(
-        &json!([
-            {"value": "deepseek-v4-flash", "displayName": "deepseek-v4-flash"},
-            {"value": "opus", "displayName": "deepseek-v4-flash",
-             "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]}
-        ]),
-        Some("deepseek-v4-flash"),
-    );
-
-    assert_eq!(parsed[0].model, "deepseek-v4-flash");
-    assert_eq!(
-        parsed[0].efforts,
-        vec!["low", "medium", "high", "xhigh", "max"]
-    );
-}
-
-#[test]
-fn initialize_uses_model_pinned_by_launch_environment() {
-    let launch = LaunchConfig {
-        executable: "claude".into(),
-        env: vec![
-            ("UNRELATED".into(), "value".into()),
-            (
-                ANTHROPIC_MODEL_ENV.into(),
-                "claude-opus-4-8-v4-flash[1m]".into(),
-            ),
-        ],
-        ..LaunchConfig::default()
-    };
-
-    let model = initial_ready_model(launch_model(&launch).as_deref());
-
-    assert_eq!(model, "claude-opus-4-8-v4-flash[1m]");
-}
-
-#[test]
-fn a_requested_model_is_used_unless_the_environment_pins_one() {
-    let requested = LaunchConfig {
-        executable: "claude".into(),
-        model: Some("opus[1m]".into()),
-        ..LaunchConfig::default()
-    };
-
-    assert_eq!(launch_model(&requested).as_deref(), Some("opus[1m]"));
-
-    let pinned = LaunchConfig {
-        env: vec![(ANTHROPIC_MODEL_ENV.into(), "claude-haiku-4-5".into())],
-        ..requested.clone()
-    };
-
-    assert_eq!(launch_model(&pinned).as_deref(), Some("claude-haiku-4-5"));
-
-    let blank = LaunchConfig {
-        model: Some("  ".into()),
-        ..requested
-    };
-
-    assert_eq!(launch_model(&blank), None);
-}
-
-#[test]
-fn approval_descriptions_name_the_action() {
-    assert_eq!(
-        approval_description("Bash", &json!({"command": "rm -rf build"})),
-        "Run command: `rm -rf build`"
-    );
-    assert_eq!(
-        approval_description("Write", &json!({"file_path": "a.txt"})),
-        "Edit file: a.txt"
-    );
-    assert_eq!(
-        approval_description("mcp__github__search", &json!({"query": "is:open"})),
-        "mcp__github__search: is:open"
-    );
-}
-
-#[test]
-fn dynamic_commands_accept_both_json_shapes_and_drop_invalid_duplicates() {
-    let parsed = parse_slash_commands(&json!([
-        "/Review",
-        {"name": "compact", "description": "Compact it", "argumentHint": "[focus]",
-         "aliases": ["summarize", "/shrink", "not valid"]},
-        {"command": "/review"},
-        "",
-        "not valid"
-    ]));
-
-    assert_eq!(parsed.len(), 4);
-    assert_eq!(parsed[0].name, "review");
-    assert_eq!(parsed[1].name, "compact");
-    assert_eq!(parsed[2].name, "summarize");
-    assert_eq!(parsed[3].name, "shrink");
-    assert_eq!(parsed[1].argument_hint.as_deref(), Some("[focus]"));
-    assert_eq!(parsed[2].description, "Compact it");
-    assert_eq!(parsed[1].arguments, SlashCommandArguments::Freeform);
-
-    // A command the catalog gave no hint for still takes arguments. Skills
-    // arrive this way, and rejecting them client-side made every one of them
-    // unusable with input.
-    assert_eq!(parsed[0].argument_hint, None);
-    assert_eq!(parsed[0].arguments, SlashCommandArguments::Freeform);
-    assert!(parse_slash_commands(&Value::Null).is_empty());
-}
-
-#[test]
-fn initialize_commands_are_primary_and_legacy_catalogs_are_fallbacks() {
-    let response = json!({
-        "commands": [{"name": "plugin:review", "aliases": ["pr"]}],
-        "slash_commands": ["legacy"]
-    });
-
-    let (commands, structured) = initialize_command_catalog(&response).unwrap();
-
-    assert!(structured);
-    assert_eq!(
-        commands
-            .iter()
-            .map(|command| command.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["plugin:review", "pr"]
-    );
-    assert!(legacy_command_catalog(structured, &json!(["legacy"])).is_none());
-
-    let (legacy, structured) =
-        initialize_command_catalog(&json!({"slash_commands": ["legacy"]})).unwrap();
-
-    assert!(!structured);
-    assert_eq!(legacy[0].name, "legacy");
-    assert_eq!(
-        legacy_command_catalog(structured, &json!(["newer"])).unwrap()[0].name,
-        "newer"
-    );
-    assert!(initialize_command_catalog(&json!({})).is_none());
-}
-
-#[test]
 fn provider_command_text_is_not_an_ordinary_prompt_shape() {
     assert_eq!(slash_command_text("/compact", ""), "/compact");
     assert_eq!(
@@ -1497,63 +1343,6 @@ fn provider_command_text_is_not_an_ordinary_prompt_shape() {
 }
 
 #[test]
-fn a_context_usage_response_becomes_a_composition_breakdown() {
-    let response = json!({
-        "request_id": "nmt-3",
-        "subtype": "success",
-        "response": {
-            "categories": [
-                {"name": "System prompt", "tokens": 3_200, "color": "#aabbcc"},
-                {"name": "Messages", "tokens": 41_000, "color": "#ddeeff"},
-                {"name": "Free space", "tokens": 109_900, "color": "#101010"},
-                {"name": "Autocompact buffer", "tokens": 45_000, "color": "#303030"},
-                {"name": "Reserved", "tokens": 900, "color": "#202020", "isDeferred": true},
-            ],
-            "totalTokens": 45_100,
-            "maxTokens": 155_000,
-            "rawMaxTokens": 200_000,
-            "autoCompactThreshold": 140_000,
-        },
-    });
-
-    let mut pending = PendingRequests::new(1);
-
-    pending.track(
-        "nmt-3".to_string(),
-        PendingControlOperation::ContextComposition,
-    );
-
-    let event = resolve_pending_control_operation(&mut pending, &response);
-
-    let Some(Event::ContextCompositionUpdated(composition)) = event else {
-        panic!("expected a composition update, got {event:?}");
-    };
-
-    assert_eq!(composition.used_tokens, 45_100);
-    assert_eq!(composition.max_tokens, Some(155_000));
-    assert_eq!(
-        composition.raw_max_tokens,
-        Some(200_000),
-        "the model's own window is distinct from the one compaction leaves"
-    );
-    assert_eq!(composition.auto_compact_threshold, Some(140_000));
-    assert_eq!(
-        composition
-            .segments
-            .iter()
-            .map(|segment| segment.label.as_str())
-            .collect::<Vec<_>>(),
-        ["System prompt", "Messages", "Reserved"],
-        "the window's free room is not one of the parts filling it"
-    );
-    assert!(composition.segments[2].deferred);
-    assert!(
-        pending.operations.is_empty(),
-        "the request is no longer outstanding"
-    );
-}
-
-#[test]
 fn a_failed_context_usage_request_leaves_the_previous_breakdown_alone() {
     let response = json!({
         "request_id": "nmt-3",
@@ -1561,35 +1350,12 @@ fn a_failed_context_usage_request_leaves_the_previous_breakdown_alone() {
         "error": "context usage unavailable",
     });
 
-    let mut pending = PendingRequests::new(1);
-
-    pending.track(
-        "nmt-3".to_string(),
-        PendingControlOperation::ContextComposition,
-    );
+    let mut control = pending_control("nmt-3", PendingControlOperation::ContextComposition);
 
     // Nothing is waiting on this, and the accounting beside it is still
     // accurate, so a failure reports nothing rather than blanking the card.
-    assert!(resolve_pending_control_operation(&mut pending, &response).is_none());
-    assert!(pending.operations.is_empty());
-}
-
-#[test]
-fn a_composition_without_categories_is_not_published() {
-    let response = json!({
-        "request_id": "nmt-3",
-        "subtype": "success",
-        "response": {"totalTokens": 100, "categories": []},
-    });
-
-    let mut pending = PendingRequests::new(1);
-
-    pending.track(
-        "nmt-3".to_string(),
-        PendingControlOperation::ContextComposition,
-    );
-
-    assert!(resolve_pending_control_operation(&mut pending, &response).is_none());
+    assert!(control.resolve(&response).is_none());
+    assert!(!control.contains(&PendingControlOperation::ContextComposition));
 }
 
 /// A resumed conversation replays nothing through the protocol, so no
@@ -1605,9 +1371,11 @@ fn a_restored_window_is_filled_from_the_breakdown() {
         auto_compact_threshold: None,
     };
 
-    let filled = window_from_composition(None, &composition).expect("the window is unknown");
+    let filled = TranscriptState::default()
+        .apply_composition(&composition)
+        .expect("the window is unknown");
 
-    assert_eq!(filled.total_tokens, 41_000);
+    assert_eq!(filled.used_tokens(), 41_000);
 }
 
 #[test]
@@ -1629,23 +1397,18 @@ fn live_accounting_is_never_replaced_by_the_breakdown() {
         auto_compact_threshold: None,
     };
 
+    let mut transcript = TranscriptState::default();
+
+    transcript.on_assistant(&json!({"message": {"content": [], "usage": {
+        "input_tokens": live.input_tokens,
+        "cache_read_input_tokens": live.cache_read_input_tokens,
+        "output_tokens": live.output_tokens,
+    }}}));
+
     assert!(
-        window_from_composition(Some(live), &composition).is_none(),
+        transcript.apply_composition(&composition).is_none(),
         "a coarse total must not overwrite the per-category accounting"
     );
-}
-
-#[test]
-fn an_empty_breakdown_reports_no_window() {
-    let composition = ContextComposition {
-        segments: Vec::new(),
-        used_tokens: 0,
-        max_tokens: Some(155_000),
-        raw_max_tokens: None,
-        auto_compact_threshold: None,
-    };
-
-    assert!(window_from_composition(None, &composition).is_none());
 }
 
 /// A resumed conversation reaches readiness through the initialize control
@@ -1708,71 +1471,6 @@ fn a_resumed_session_asks_for_its_context_before_the_first_turn() {
     drop(session);
 
     let _ = fs::remove_file(log);
-}
-
-/// The adapter forwards a command's arguments as its text, so an entry that
-/// declares none rejects input the CLI itself accepts. These entries are only
-/// a fallback for versions whose discovery payload omits the command, and a
-/// fallback that is stricter than the real thing is a bug.
-#[test]
-fn adapter_commands_declare_the_arguments_the_cli_accepts() {
-    let commands = Session::adapter_commands();
-
-    let compact = commands
-        .iter()
-        .find(|command| command.name == "compact")
-        .expect("compact is offered as a fallback");
-
-    let rewind = commands
-        .iter()
-        .find(|command| command.name == "rewind")
-        .expect("rewind is offered");
-
-    assert_eq!(compact.arguments, SlashCommandArguments::Freeform);
-    assert!(compact.argument_hint.is_some());
-    assert_eq!(
-        slash_command_text("compact", "focus on the API"),
-        "/compact focus on the API",
-        "instructions reach the CLI as part of the command"
-    );
-
-    // Rewind opens this application's own picker, so there is no text to
-    // forward and nothing for arguments to mean.
-    assert!(ui_owns_slash_command("rewind"));
-    assert_eq!(rewind.arguments, SlashCommandArguments::None);
-}
-
-/// The catalog mixes commands worth offering with the CLI's own internal
-/// entries, ones it has retired but still lists, and ones that drive its host
-/// terminal session. Only the first group can be acted on from this palette.
-#[test]
-fn the_catalog_drops_internal_retired_and_host_owned_commands() {
-    let parsed = parse_slash_commands(&json!([
-        {"name": "caveman", "description": "A skill"},
-        {"name": "compact", "description": "Free up context"},
-        {"name": "__remote-workflow", "description": "Run the delivered workflow"},
-        {"name": "agents", "description": "(removed) Ask Claude to manage subagents"},
-        {"name": "extra-usage", "description": "Renamed to /usage-credits"},
-        {"name": "context", "description": "Show current context usage"},
-        {"name": "model", "description": "Set the AI model for Claude Code"},
-        {"name": "clear", "description": "Start a new session with empty context"},
-        {"name": "heapdump", "description": "Dump the JS heap to ~/Desktop"},
-        {"name": "config", "description": "Set a setting by key"},
-    ]));
-
-    let names: Vec<&str> = parsed.iter().map(|command| command.name.as_str()).collect();
-
-    assert_eq!(names, ["caveman", "compact"]);
-}
-
-#[test]
-fn a_retired_marker_only_counts_at_the_start_of_a_description() {
-    // A command that merely mentions the words still belongs in the palette.
-    let parsed = parse_slash_commands(&json!([
-        {"name": "notes", "description": "Explain why a command was (removed) upstream"},
-    ]));
-
-    assert_eq!(parsed.len(), 1);
 }
 
 #[test]
@@ -1856,6 +1554,36 @@ fn answered_questions_merge_into_the_original_tool_input() {
         merged["answers"]["Which extras?"],
         json!(["Metrics", "Tracing"])
     );
+}
+
+#[test]
+fn a_typed_answer_reaches_the_tool_in_place_of_a_label() {
+    let questions = parse_questions(&json!({
+        "questions": [
+            {"question": "Which database?", "options": [{"label": "Postgres"}, {"label": "SQLite"}]},
+            {
+                "question": "Which extras?",
+                "multiSelect": true,
+                "options": [{"label": "Metrics"}, {"label": "Tracing"}],
+            },
+        ]
+    }));
+
+    assert!(
+        questions
+            .iter()
+            .all(|question| question.input == QuestionInput::Text)
+    );
+
+    let mut draft = QuestionDraft::new("ask".into(), questions.clone());
+
+    draft.set_text(0, "DuckDB".into());
+    draft.set_text(1, "Profiling".into());
+
+    let merged = merge_question_answers(json!({"questions": []}), &questions, draft.answers());
+
+    assert_eq!(merged["answers"]["Which database?"], json!("DuckDB"));
+    assert_eq!(merged["answers"]["Which extras?"], json!(["Profiling"]));
 }
 
 #[test]
@@ -2031,4 +1759,70 @@ fn a_resumed_launch_carries_both_the_session_id_and_the_directories() {
         add_dir_group(&arguments),
         Some(&[r"C:\Work\web".to_string()][..])
     );
+}
+
+#[test]
+fn a_pinned_permission_mode_rides_the_launch_and_none_leaves_the_flag_out() {
+    let arguments = |approval: Option<&str>| -> Vec<String> {
+        let launch = LaunchConfig {
+            executable: "claude".into(),
+            approval: approval.map(str::to_owned),
+            ..LaunchConfig::default()
+        };
+
+        let launcher = AgentCli::from_launch(&launch, "claude");
+
+        claude_command(&launcher, &launch, &AgentWorkspace::default(), None, &None)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    };
+
+    let pinned = arguments(Some("acceptEdits"));
+
+    let flag = pinned
+        .iter()
+        .position(|arg| arg == "--permission-mode")
+        .expect("permission mode flag");
+
+    assert_eq!(pinned[flag + 1], "acceptEdits");
+
+    assert!(!arguments(None).iter().any(|arg| arg == "--permission-mode"));
+}
+
+/// The CLI synthesizes a message around an API failure and reports the same
+/// failure in the turn result, so the message's text is not also a reply.
+#[test]
+fn an_api_error_message_is_not_shown_as_a_reply() {
+    let mut transcript = TranscriptState::default();
+
+    let events = transcript.on_assistant(&json!({
+        "is_api_error_message": true,
+        "message": {"content": [{"type": "text", "text": "API Error: overloaded"}]},
+    }));
+
+    assert!(events.is_empty());
+}
+
+#[test]
+fn context_window_variant_inherits_effort_levels_from_its_base_model() {
+    let catalog = serde_json::json!([
+        {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5",
+         "supportedEffortLevels": ["low", "high"]},
+        {"value": "haiku", "resolvedModel": "claude-haiku-4-5", "displayName": "Haiku 4.5"},
+    ]);
+
+    let efforts = |selected: &str| {
+        parse_models(&catalog, Some(selected))
+            .into_iter()
+            .find(|entry| entry.model == selected)
+            .map(|entry| entry.efforts)
+    };
+
+    assert_eq!(efforts("opus[1m]"), Some(vec!["low".into(), "high".into()]));
+    assert_eq!(
+        efforts("claude-opus-5-5[1m]"),
+        Some(vec!["low".into(), "high".into()])
+    );
+    assert_eq!(efforts("haiku[1m]"), Some(Vec::new()));
 }

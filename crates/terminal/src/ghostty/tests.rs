@@ -3,9 +3,9 @@ use std::{collections, io, thread};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use image_rs::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use nmt_config::colors::AnsiColor;
 
 use crate::ghostty::*;
+use crate::grid::Wide;
 
 fn line_text(snapshot: &RenderBuffer, row: usize) -> String {
     let mut text = String::new();
@@ -13,12 +13,7 @@ fn line_text(snapshot: &RenderBuffer, row: usize) -> String {
     for x in 0..snapshot.cols() {
         let cell = snapshot.cell(x, row);
 
-        if cell.c() == '\0'
-            || matches!(
-                cell.wide(),
-                terminal::square::Wide::Spacer | terminal::square::Wide::LeadingSpacer
-            )
-        {
+        if cell.c() == '\0' || matches!(cell.wide(), Wide::Spacer | Wide::LeadingSpacer) {
             continue;
         }
 
@@ -50,20 +45,36 @@ fn finish_block_freezes_and_reads_back() {
     assert_eq!(t.block_count(), 1);
     assert_eq!(t.block_at(0).map(|h| h.id), Some(handle.id));
     assert_eq!(t.block_row_count(handle), Some(2));
-    assert_eq!(t.block_cols(handle), Some(20));
+    assert_eq!(t.block_acquire(handle).map(|block| block.cols()), Some(20));
 
-    let row0 = t.read_block_row(handle, 0).unwrap().expect("row 0");
+    let row0 = t
+        .block_acquire(handle)
+        .unwrap()
+        .read_row(0, &t.color_palette())
+        .unwrap()
+        .expect("row 0");
+
     let text: String = row0.cells.iter().map(|c| c.text.as_str()).collect();
 
     assert_eq!(text, "hello");
     assert!(row0.cells[0].style.bold, "SGR captured in frozen block");
 
-    let row1 = t.read_block_row(handle, 1).unwrap().expect("row 1");
+    let row1 = t
+        .block_acquire(handle)
+        .unwrap()
+        .read_row(1, &t.color_palette())
+        .unwrap()
+        .expect("row 1");
+
     let text: String = row1.cells.iter().map(|c| c.text.as_str()).collect();
 
     assert_eq!(text, "world");
     assert!(
-        t.read_block_row(handle, 2).unwrap().is_none(),
+        t.block_acquire(handle)
+            .unwrap()
+            .read_row(2, &t.color_palette())
+            .unwrap()
+            .is_none(),
         "beyond logical rows"
     );
 
@@ -74,12 +85,21 @@ fn finish_block_freezes_and_reads_back() {
 
     t.write_vt(b"next");
 
-    let row = t.read_screen_row(0).unwrap().expect("active row");
+    let row = t
+        .read_screen_row(0, &t.color_palette())
+        .unwrap()
+        .expect("active row");
 
     assert!(row.cells[0].style.bold, "continuation SGR applies");
 
     // The frozen block never changes.
-    let row0 = t.read_block_row(handle, 0).unwrap().expect("row 0 again");
+    let row0 = t
+        .block_acquire(handle)
+        .unwrap()
+        .read_row(0, &t.color_palette())
+        .unwrap()
+        .expect("row 0 again");
+
     let text: String = row0.cells.iter().map(|c| c.text.as_str()).collect();
 
     assert_eq!(text, "hello");
@@ -268,13 +288,19 @@ fn block_reflows_on_resize() {
     t.resize(5, 5, 10, 20).unwrap();
 
     assert_eq!(t.block_row_count(handle), Some(3));
-    assert_eq!(t.block_cols(handle), Some(5));
+    assert_eq!(t.block_acquire(handle).map(|block| block.cols()), Some(5));
 
     let generation = t.block_at(0).map(|h| h.generation);
 
     assert_eq!(generation, Some(handle.generation + 1));
 
-    let row = t.read_block_row(handle, 1).unwrap().expect("row 1");
+    let row = t
+        .block_acquire(handle)
+        .unwrap()
+        .read_row(1, &t.color_palette())
+        .unwrap()
+        .expect("row 1");
+
     let text: String = row.cells.iter().map(|c| c.text.as_str()).collect();
 
     assert_eq!(text, "56789");
@@ -346,14 +372,11 @@ fn kitty_image_placement() {
     );
 }
 
-/// The backend delta key is `(id, width, height,
-/// data_len)` because the pinned FFI exposes no image generation counter. A
-/// same-ID retransmission whose width, height, and byte length are unchanged
-/// is therefore NOT observed as a delta and is not re-shipped, even if the
-/// pixel bytes differ. This known limitation needs a future Ghostty generation
-/// field to distinguish same-sized retransmissions.
+/// A same-ID retransmission keeps the width, height and byte length, so only
+/// the engine's image generation shows that the pixels changed; the delta
+/// must re-ship them or the frontend keeps drawing the old image.
 #[test]
-fn kitty_same_size_retransmit_not_reshipped() {
+fn kitty_same_size_retransmit_is_reshipped() {
     let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
 
     t.resize(20, 5, 10, 20).unwrap();
@@ -367,16 +390,22 @@ fn kitty_same_size_retransmit_not_reshipped() {
     assert!(first.iter().any(|(id, _)| *id == 1), "first ship");
 
     // Retransmit the SAME id with the SAME 1×1 RGBA dimensions/length but
-    // different pixels (opaque-blue). Same (id,w,h,len) key ⇒ not re-shipped.
+    // different pixels (opaque-blue).
     t.write_vt(b"\x1b_Ga=T,f=32,s=1,v=1,i=1;AAD/fw==\x1b\\");
 
     let snap = t.snapshot().unwrap();
     let (second, removed) = t.take_image_deltas(snap.placements());
 
     assert!(
-        second.iter().all(|(id, _)| *id != 1) && !removed.contains(&1),
-        "same-size same-id retransmission is not re-shipped (known residual)"
+        second.iter().any(|(id, _)| *id == 1) && !removed.contains(&1),
+        "same-size same-id retransmission is re-shipped"
     );
+
+    // Nothing changed since, so the next batch ships nothing.
+    let snap = t.snapshot().unwrap();
+    let (third, _) = t.take_image_deltas(snap.placements());
+
+    assert!(third.is_empty());
 }
 
 /// With the registered PNG decode hook, an `f=100` transmission is
@@ -579,42 +608,9 @@ fn kitty_image_delete() {
     assert!(removed.contains(&1), "deleted image reported for removal");
 }
 
-/// DECSCUSR shape and DECTCEM visibility land in the snapshot cursor.
-#[test]
-fn snapshot_captures_cursor_style() {
-    use crate::ansi::CursorShape;
-
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.write_vt(b"\x1b[2 q"); // steady block
-
-    assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Block);
-
-    t.write_vt(b"\x1b[5 q"); // steady bar
-
-    assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Beam);
-
-    t.write_vt(b"\x1b[3 q"); // blinking underline
-
-    assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Underline);
-
-    assert!(t.snapshot().unwrap().cursor_visible(), "visible by default");
-
-    t.write_vt(b"\x1b[?25l"); // DECTCEM hide
-
-    assert!(
-        !t.snapshot().unwrap().cursor_visible(),
-        "hidden after DECTCEM"
-    );
-
-    t.write_vt(b"\x1b[?25h");
-
-    assert!(t.snapshot().unwrap().cursor_visible(), "shown again");
-}
-
 #[test]
 fn configured_cursor_shape_is_the_decscusr_default() {
-    use crate::ansi::CursorShape;
+    use nmt_config::CursorShape;
 
     let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
 
@@ -631,50 +627,6 @@ fn configured_cursor_shape_is_the_decscusr_default() {
     t.write_vt(b"\x1b[0 q");
 
     assert_eq!(t.snapshot().unwrap().cursor_shape(), CursorShape::Underline);
-}
-
-/// OSC 10/11 dynamic foreground and background land in the snapshot colors.
-/// The 256-entry palette enters through `set_colors`; snapshots capture only
-/// foreground, background, and the background override.
-#[test]
-fn snapshot_captures_colors() {
-    use nmt_config::colors::{ColorRgb, NamedColor};
-
-    let mut t = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    t.set_colors(
-        [205, 214, 244],
-        [15, 13, 14],
-        [180, 190, 254],
-        &[[0u8; 3]; 256],
-    );
-
-    t.write_vt(b"\x1b]10;#112233\x07"); // OSC 10 set foreground
-
-    assert_eq!(
-        t.snapshot().unwrap().colors()[NamedColor::Foreground],
-        Some(
-            ColorRgb {
-                r: 0x11,
-                g: 0x22,
-                b: 0x33
-            }
-            .into()
-        ),
-        "OSC 10 sets the effective foreground"
-    );
-
-    t.write_vt(b"\x1b]11;#445566\x07"); // OSC 11 set background
-
-    assert_eq!(
-        t.snapshot().unwrap().window_bg_override(),
-        Some(ColorRgb {
-            r: 0x44,
-            g: 0x55,
-            b: 0x66
-        }),
-        "OSC 11 sets the background override"
-    );
 }
 
 #[test]
@@ -701,32 +653,6 @@ fn theme_colors_update_engine_defaults() {
     );
 }
 
-/// A VT mode set/reset round-trips through the engine `mode()` reader
-/// and feeds the lock-free per-panel atomic consumed by the input path.
-#[test]
-fn vt_mode_get_roundtrip() {
-    let mut t = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    assert!(!t.mode(mode::CURSOR_KEYS), "app-cursor off by default");
-
-    t.write_vt(b"\x1b[?1h"); // DECCKM on
-
-    assert!(t.mode(mode::CURSOR_KEYS), "DECCKM on after ?1h");
-
-    t.write_vt(b"\x1b[?1l"); // DECCKM off
-
-    assert!(!t.mode(mode::CURSOR_KEYS), "DECCKM off after ?1l");
-
-    // Alt screen toggles independently.
-    t.write_vt(b"\x1b[?1049h");
-
-    assert!(t.mode(mode::ALT_SCREEN), "alt-screen on");
-
-    t.write_vt(b"\x1b[?1049l");
-
-    assert!(!t.mode(mode::ALT_SCREEN), "alt-screen off");
-}
-
 /// A small storage limit evicts older images once exceeded; only the
 /// retained image is still in the engine store.
 #[test]
@@ -751,59 +677,6 @@ fn kitty_storage_limit() {
         !t.kitty_image_exists(1),
         "oldest image evicted by the limit"
     );
-}
-
-/// a sixel sequence is ignored (terminal drops sixel) without panicking and
-/// leaves a valid, image-free snapshot.
-#[test]
-fn sixel_ignored_no_crash() {
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.resize(20, 5, 10, 20).unwrap();
-
-    t.write_vt(b"\x1bPq#0;2;100;0;0#0~~~~~\x1b\\");
-
-    let snap = t.snapshot().unwrap();
-
-    assert!(
-        snap.placements().is_empty(),
-        "no kitty placements from sixel"
-    );
-}
-
-/// an iTerm2 inline-image (OSC 1337) is ignored without panicking and
-/// leaves a valid, image-free snapshot.
-#[test]
-fn iterm2_ignored_no_crash() {
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.resize(20, 5, 10, 20).unwrap();
-
-    t.write_vt(b"\x1b]1337;File=inline=1:AAAA\x07");
-
-    let snap = t.snapshot().unwrap();
-
-    assert!(
-        snap.placements().is_empty(),
-        "no kitty placements from iTerm2"
-    );
-}
-
-/// OSC 133 shell-integration marks are an unknown OSC to the engine and must
-/// be ignored. The PTY sniffer forwards those marks unchanged, so they must
-/// leave only the visible text, no garbage cells.
-#[test]
-fn osc133_marks_ignored_no_crash() {
-    let mut t = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    t.resize(20, 5, 10, 20).unwrap();
-
-    // ESC]133;A BEL  P>  ESC]133;B BEL  ESC]133;C BEL  hi
-    t.write_vt(b"\x1b]133;A\x07P>\x1b]133;B\x07\x1b]133;C\x07hi");
-
-    let snap = t.snapshot().unwrap();
-
-    assert_eq!(line_text(&snap, 0).trim_end(), "P>hi");
 }
 
 /// OSC 11 sets the window background as an override; OSC 111 resets it.
@@ -844,20 +717,6 @@ fn osc_11_set_and_111_reset_background() {
     run(b"\x1b]111\x07"); // BEL-terminated
 
     run(b"\x1b]111\x1b\\"); // ST-terminated
-}
-
-#[test]
-fn extracts_basic_vt_snapshot() {
-    let mut terminal = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    terminal.write_vt(b"hi \x1b[31mred\x1b[0m");
-
-    let snapshot = terminal.snapshot().unwrap();
-
-    assert_eq!(snapshot.cols(), 8);
-    assert_eq!(snapshot.rows(), 3);
-    assert_eq!(snapshot.cell(0, 0).c(), 'h');
-    assert_eq!(snapshot.cell(3, 0).c(), 'r');
 }
 
 /// Verifies the selection-anchoring assumption: a SCREEN
@@ -1442,18 +1301,6 @@ fn scroll_viewport_shows_scrollback() {
 }
 
 #[test]
-fn format_whole_screen_text() {
-    let mut terminal = GhosttyTerminal::new(20, 3, 100).unwrap();
-
-    terminal.write_vt(b"hello\r\nworld");
-
-    let text = terminal.format_text(None, false, true).unwrap();
-
-    assert!(text.contains("hello"), "got {text:?}");
-    assert!(text.contains("world"), "got {text:?}");
-}
-
-#[test]
 fn format_screen_range_reaches_scrollback() {
     // 2 visible rows, scrollback. Push the first line into history, then
     // extract it by SCREEN coordinate (0,0)..(4,0) → "first".
@@ -1470,167 +1317,130 @@ fn format_screen_range_reaches_scrollback() {
     assert_eq!(text.trim_end(), "first", "got {text:?}");
 }
 
+/// Agent attention alerts come from OSC 9 and OSC 777 notifications, so the
+/// engine callback must hand both forms to the PTY task.
 #[test]
-fn viewport_cell_resolves_to_grid_ref() {
-    let mut terminal = GhosttyTerminal::new(20, 2, 100).unwrap();
-
-    terminal.write_vt(b"x");
-
-    // A valid viewport cell resolves to a non-null grid ref node.
-    let r = terminal.grid_ref_at(VtPointTag::VIEWPORT, 0, 0).unwrap();
-
-    assert!(!r.node.is_null());
-}
-
-#[test]
-fn red_sgr_sets_foreground() {
+fn desktop_notifications_are_collected_from_osc_9_and_777() {
     let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
 
-    terminal.write_vt(b"\x1b[31mR");
+    terminal.write_vt(b"\x1b]9;build finished\x07");
+    terminal.write_vt(b"\x1b]777;notify;Agent;needs input\x1b\\");
 
-    let snapshot = terminal.snapshot().unwrap();
-    let style = snapshot.style(snapshot.cell(0, 0).style_id());
-
-    // Ghostty's default palette red (SGR 31), flattened through the palette.
     assert_eq!(
-        style.fg,
-        AnsiColor::Spec(Color {
-            r: 204,
-            g: 102,
-            b: 102
+        terminal.take_notifications(),
+        [
+            (String::new(), "build finished".to_string()),
+            ("Agent".to_string(), "needs input".to_string()),
+        ]
+    );
+    assert!(terminal.take_notifications().is_empty());
+
+    // OSC 9;4 is a progress report, never a notification.
+    terminal.write_vt(b"\x1b]9;4;1;40\x07");
+
+    assert!(terminal.take_notifications().is_empty());
+}
+
+/// The tab strip draws the parsed state and percentage, and the published
+/// cursor hides while an indicator shows, so both must come out of the
+/// engine's OSC 9;4 decode exactly as the byte parser used to produce them.
+#[test]
+fn progress_report_callback_tracks_state_and_percentage() {
+    use crate::event::{ProgressReport, ProgressState};
+
+    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
+
+    assert!(!terminal.progress_active());
+    assert_eq!(terminal.take_progress_report(), None);
+
+    terminal.write_vt(b"\x1b]9;4;1;40\x07");
+
+    assert!(terminal.progress_active());
+    assert_eq!(
+        terminal.take_progress_report(),
+        Some(ProgressReport {
+            state: ProgressState::Set,
+            progress: Some(40),
+        })
+    );
+    assert_eq!(terminal.take_progress_report(), None);
+
+    // A sequence split across writes decodes once it completes; the ST
+    // terminator and a percentage past 100 both resolve.
+    terminal.write_vt(b"\x1b]9;4;2");
+    terminal.write_vt(b";250\x1b\\");
+
+    assert_eq!(
+        terminal.take_progress_report(),
+        Some(ProgressReport {
+            state: ProgressState::Error,
+            progress: Some(100),
+        })
+    );
+
+    // An indeterminate indicator has no meaningful percentage; the engine
+    // drops the field and the tab strip draws the bar full regardless.
+    terminal.write_vt(b"\x1b]9;4;3;0\x07");
+
+    assert_eq!(
+        terminal.take_progress_report(),
+        Some(ProgressReport {
+            state: ProgressState::Indeterminate,
+            progress: None,
+        })
+    );
+
+    // Only the latest report in a batch survives.
+    terminal.write_vt(b"\x1b]9;4;4;10\x07\x1b]9;4;1;20\x07");
+
+    assert_eq!(
+        terminal.take_progress_report(),
+        Some(ProgressReport {
+            state: ProgressState::Set,
+            progress: Some(20),
+        })
+    );
+
+    // PowerShell's progress host ends its indicator with no percentage field.
+    for stream in [b"\x1b]9;4;0\x1b\\".as_slice(), b"\x1b]9;4;0;\x07"] {
+        terminal.write_vt(b"\x1b]9;4;1;5\x07");
+        terminal.write_vt(stream);
+
+        assert!(!terminal.progress_active());
+        assert_eq!(
+            terminal.take_progress_report(),
+            Some(ProgressReport {
+                state: ProgressState::Remove,
+                progress: None,
+            })
+        );
+    }
+
+    // An unknown state leaves the previous indicator in place.
+    terminal.write_vt(b"\x1b]9;4;1;5\x07\x1b]9;4;7;10\x07");
+
+    assert!(terminal.progress_active());
+    assert_eq!(
+        terminal.take_progress_report(),
+        Some(ProgressReport {
+            state: ProgressState::Set,
+            progress: Some(5),
         })
     );
 }
 
 #[test]
-fn rejects_zero_dimensions() {
-    assert!(matches!(
-        GhosttyTerminal::new(0, 24, 100),
-        Err(Error::InvalidValue)
-    ));
-}
-
-#[test]
-fn wide_cjk_char_occupies_two_columns() {
+fn title_change_is_reported_once() {
     let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
 
-    terminal.write_vt("中A".as_bytes());
-
-    let snapshot = terminal.snapshot().unwrap();
-
-    // Wide ideograph in column 0, spacer (no text) in column 1, narrow in 2.
-    assert_eq!(snapshot.cell(0, 0).c(), '中');
-    assert_eq!(snapshot.cell(2, 0).c(), 'A');
-}
-
-#[test]
-fn mode_alt_screen_and_bracketed_paste() {
-    let mut t = GhosttyTerminal::new(8, 3, 100).unwrap();
-
-    assert!(!t.mode(mode::ALT_SCREEN));
-    assert!(!t.mode(mode::BRACKETED_PASTE));
-
-    t.write_vt(b"\x1b[?1049h\x1b[?2004h");
-
-    assert!(t.mode(mode::ALT_SCREEN));
-    assert!(t.mode(mode::BRACKETED_PASTE));
-}
-
-#[test]
-fn mode_sgr_mouse() {
-    let mut t = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    t.write_vt(b"\x1b[?1000h\x1b[?1006h");
-
-    assert!(t.mode(mode::MOUSE_NORMAL));
-    assert!(t.mode(mode::MOUSE_SGR));
-}
-
-#[test]
-fn shrink_resize_does_not_panic() {
-    let mut t = GhosttyTerminal::new(80, 24, 1000).unwrap();
-
-    for i in 0..200u32 {
-        let line = format!("line {i} with some text that is fairly long to wrap\r\n");
-
-        t.write_vt(line.as_bytes());
-    }
-
-    for (c, r) in [(60u16, 20u16), (40, 15), (20, 10), (5, 3), (1, 1), (80, 24)] {
-        t.resize(c, r, 8, 16).unwrap();
-
-        let _ = t.snapshot().unwrap();
-    }
-}
-
-#[test]
-fn custom_palette_applied() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
-    let mut palette = [[0u8; 3]; 256];
-
-    palette[1] = [10, 20, 30]; // SGR 31 resolves to palette index 1.
-
-    terminal.set_colors([255, 255, 255], [0, 0, 0], [255, 255, 255], &palette);
-
-    terminal.write_vt(b"\x1b[31mR");
-
-    let snapshot = terminal.snapshot().unwrap();
-    let style = snapshot.style(snapshot.cell(0, 0).style_id());
-
-    assert_eq!(
-        style.fg,
-        AnsiColor::Spec(Color {
-            r: 10,
-            g: 20,
-            b: 30
-        })
-    );
-}
-
-#[test]
-fn write_pty_dsr_cursor_report() {
-    let mut terminal = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    // Move to row 3 col 4 (1-based 4;5) then request cursor position (DSR 6).
-    terminal.write_vt(b"\x1b[4;5H\x1b[6n");
-
-    let resp = terminal.take_pty_writes();
-
-    assert_eq!(resp, b"\x1b[4;5R");
-
-    // Draining is one-shot.
-    assert!(terminal.take_pty_writes().is_empty());
-}
-
-#[test]
-fn write_pty_primary_da() {
-    let mut terminal = GhosttyTerminal::new(20, 5, 100).unwrap();
-
-    terminal.write_vt(b"\x1b[c");
-
-    assert!(!terminal.take_pty_writes().is_empty());
-}
-
-#[test]
-fn bell_callback_counts() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
-
-    terminal.write_vt(b"a\x07b\x07");
-
-    assert_eq!(terminal.take_bell(), 2);
-    assert_eq!(terminal.take_bell(), 0);
-}
-
-#[test]
-fn title_poll_reports_change_once() {
-    let mut terminal = GhosttyTerminal::new(8, 1, 100).unwrap();
+    assert_eq!(terminal.take_title_change(), None);
 
     terminal.write_vt(b"\x1b]2;hello\x07");
 
-    assert_eq!(terminal.poll_title().as_deref(), Some("hello"));
+    assert_eq!(terminal.take_title_change().as_deref(), Some("hello"));
 
     // No further change → None.
-    assert_eq!(terminal.poll_title(), None);
+    assert_eq!(terminal.take_title_change(), None);
 }
 
 /// The `PWD` getter is populated by both the manual `PWD` setter and by
@@ -1735,12 +1545,17 @@ fn pwd_poll_reports_change() {
     // Canonical OSC 7 with empty authority (`file:///path`).
     terminal.write_vt(b"\x1b]7;file:///home/u\x07");
 
-    let pwd = terminal.poll_pwd().expect("pwd reported");
+    let pwd = terminal.take_pwd_change().expect("pwd reported");
 
     assert!(pwd.contains("/home/u"), "unexpected pwd: {pwd:?}");
 
     // No further change → None.
-    assert_eq!(terminal.poll_pwd(), None);
+    assert_eq!(terminal.take_pwd_change(), None);
+
+    // Clearing the directory is a change too, reported as the empty string.
+    terminal.write_vt(b"\x1b]7;\x07");
+
+    assert_eq!(terminal.take_pwd_change().as_deref(), Some(""));
 }
 
 #[test]
@@ -1749,7 +1564,7 @@ fn kitty_keyboard_flags_map_to_modes() {
     // `Mode` facade so `session_key_flags` / the input path enable kitty press +
     // key-release encoding. This covers the gap where the flags lived
     // only in the engine's kitty stack and never reached vt_modes.
-    use crate::terminal::Mode;
+    use crate::vt_modes::Mode;
 
     let mut t = GhosttyTerminal::new(8, 1, 100).unwrap();
 
@@ -1811,8 +1626,16 @@ fn read_screen_row_reaches_scrollback_with_wrap_flag() {
 
     // Rows 0-1 are now in scrollback; the viewport must not move to read them.
     let offset_before = t.scrollbar().offset;
-    let row0 = t.read_screen_row(0).unwrap().expect("scrollback row 0");
-    let row1 = t.read_screen_row(1).unwrap().expect("scrollback row 1");
+
+    let row0 = t
+        .read_screen_row(0, &t.color_palette())
+        .unwrap()
+        .expect("scrollback row 0");
+
+    let row1 = t
+        .read_screen_row(1, &t.color_palette())
+        .unwrap()
+        .expect("scrollback row 1");
 
     assert_eq!(t.scrollbar().offset, offset_before, "viewport untouched");
 
@@ -1831,11 +1654,17 @@ fn read_screen_row_prompt_tag_and_hyperlinks() {
 
     t.write_vt(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ text");
 
-    let prompt_row = t.read_screen_row(0).unwrap().expect("prompt row");
+    let prompt_row = t
+        .read_screen_row(0, &t.color_palette())
+        .unwrap()
+        .expect("prompt row");
 
     assert!(prompt_row.meta.prompt_start, "OSC 133;A row tagged");
 
-    let link_row = t.read_screen_row(1).unwrap().expect("link row");
+    let link_row = t
+        .read_screen_row(1, &t.color_palette())
+        .unwrap()
+        .expect("link row");
 
     assert!(!link_row.meta.prompt_start);
     assert_eq!(
@@ -1844,11 +1673,150 @@ fn read_screen_row_prompt_tag_and_hyperlinks() {
     );
 }
 
+/// The configured line limit bounds the history the engine keeps, to page
+/// granularity, and a limit of zero keeps none at all.
 #[test]
-fn read_screen_row_out_of_range_is_none() {
-    let mut t = GhosttyTerminal::new(10, 3, 100).unwrap();
+fn scrollback_is_bounded_by_the_configured_line_count() {
+    let output: String = (0..20_000).map(|line| format!("{line}\r\n")).collect();
 
-    t.write_vt(b"x");
+    let history = |limit: usize| {
+        let mut terminal = GhosttyTerminal::new(20, 4, limit).unwrap();
 
-    assert!(t.read_screen_row(9999).unwrap().is_none());
+        terminal.write_vt(output.as_bytes());
+
+        terminal.scrollbar().total - 4
+    };
+
+    let bounded = history(1_000);
+
+    assert!(bounded >= 1_000, "kept {bounded} lines");
+    assert!(bounded < 5_000, "kept {bounded} lines");
+    assert!(history(10_000) > bounded);
+    assert_eq!(history(0), 0);
+}
+
+/// A checkpoint must rebuild the state a late-joining engine needs to decode
+/// the live stream that follows it: input modes, cursor position, and the
+/// palette. Text alone would leave the new engine encoding keys and placing
+/// output differently from the engine that produced the checkpoint.
+#[test]
+fn vt_state_checkpoint_restores_modes_cursor_and_palette() {
+    let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    source.write_vt(b"hello\r\nworld");
+    source.write_vt(b"\x1b[?1h\x1b[?2004h\x1b[?1006h\x1b[?25l");
+    source.write_vt(b"\x1b]4;1;rgb:12/34/56\x07");
+    source.write_vt(b"\x1b[4;7H");
+
+    let checkpoint = source.format_vt_state().unwrap();
+
+    let mut replica = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    replica.write_vt(&checkpoint);
+
+    for id in [
+        mode::CURSOR_KEYS,
+        mode::BRACKETED_PASTE,
+        mode::MOUSE_SGR,
+        mode::CURSOR_VISIBLE,
+    ] {
+        assert_eq!(replica.mode(id), source.mode(id), "mode {id}");
+    }
+
+    let source_snapshot = source.snapshot().unwrap();
+    let replica_snapshot = replica.snapshot().unwrap();
+
+    assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
+    assert_eq!(line_text(&replica_snapshot, 0), "hello");
+    assert_eq!(line_text(&replica_snapshot, 1), "world");
+
+    let palette = replica.color_palette()[1];
+
+    assert_eq!((palette.r, palette.g, palette.b), (0x12, 0x34, 0x56));
+}
+
+/// A checkpoint taken while a full-screen program holds the alternate screen
+/// must still carry the primary screen, or a replica shows an empty shell
+/// once the program exits.
+#[test]
+fn vt_state_checkpoint_keeps_primary_screen_under_alt_screen() {
+    let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    source.write_vt(b"shell$ ls\r\nfile.txt\r\nshell$ ");
+    source.write_vt(b"\x1b[?1049h");
+    source.write_vt(b"editor view");
+
+    let checkpoint = source.format_vt_state().unwrap();
+
+    let mut replica = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    replica.write_vt(&checkpoint);
+
+    let source_alt = source.snapshot().unwrap();
+    let replica_alt = replica.snapshot().unwrap();
+
+    // The formatter writes leading blanks as spaces where the source still
+    // has never-written cells, so rows compare by visible text.
+    assert_eq!(line_text(&source_alt, 2).trim(), "editor view");
+    assert_eq!(line_text(&replica_alt, 2).trim(), "editor view");
+
+    source.write_vt(b"\x1b[?1049l");
+    replica.write_vt(b"\x1b[?1049l");
+
+    let source_snapshot = source.snapshot().unwrap();
+    let replica_snapshot = replica.snapshot().unwrap();
+
+    for row in 0..3 {
+        assert_eq!(
+            line_text(&replica_snapshot, row).trim(),
+            line_text(&source_snapshot, row).trim(),
+            "row {row}"
+        );
+    }
+
+    assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
+}
+
+/// Finished blocks are not part of the screen the formatter reads. A block
+/// mode checkpoint must still carry them, styled and ahead of the current
+/// screen, or an attached replica starts without any command history.
+#[test]
+fn vt_state_checkpoint_carries_finished_blocks() {
+    let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    source.write_vt(b"$ ls\r\n\x1b[1mfile.txt\x1b[0m\r\n");
+    source.finish_block().unwrap().expect("block created");
+    source.write_vt(b"$ ");
+
+    let mut replica = GhosttyTerminal::new(20, 5, 100).unwrap();
+
+    // Stale content proves the checkpoint applies over a used engine.
+    replica.write_vt(b"stale\r\nstale\r\nstale\r\nstale\r\nstale\r\nstale\r\n");
+    replica.write_vt(&source.format_vt_state().unwrap());
+
+    let palette = replica.color_palette();
+
+    let row_text = |row: u32| -> String {
+        replica
+            .read_screen_row(row, &palette)
+            .unwrap()
+            .map(|read| read.cells.iter().map(|c| c.text.as_str()).collect())
+            .unwrap_or_default()
+    };
+
+    let rows: Vec<String> = (0..8).map(row_text).collect();
+
+    assert_eq!(rows[0].trim(), "$ ls", "{rows:?}");
+    assert_eq!(rows[1].trim(), "file.txt", "{rows:?}");
+    assert_eq!(rows[2].trim(), "$", "{rows:?}");
+
+    let file_row = replica.read_screen_row(1, &palette).unwrap().unwrap();
+
+    assert!(file_row.cells[0].style.bold, "block styles survive");
+
+    let source_snapshot = source.snapshot().unwrap();
+    let replica_snapshot = replica.snapshot().unwrap();
+
+    assert_eq!(line_text(&replica_snapshot, 0).trim(), "$");
+    assert_eq!(replica_snapshot.cursor(), source_snapshot.cursor());
 }

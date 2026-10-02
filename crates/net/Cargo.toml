@@ -1,0 +1,20 @@
+[package]
+name = "nmt_net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hyper-util = { workspace = true, features = ["client-proxy", "client-proxy-system"] }
+nmt_config.workspace = true
+parking_lot.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls-native-roots", "socks", "system-proxy"] }
+tokio.workspace = true
+tokio-socks.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true

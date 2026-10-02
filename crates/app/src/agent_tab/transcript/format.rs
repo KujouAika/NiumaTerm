@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui::{Pixels, px};
 use gpui_component::IconName;
 use nmt_agent::chat::{Compaction, CompactionTrigger, Item as SessionItem};
+use nmt_agent::progress::{TaskList, TaskStatus};
 use rust_i18n::t;
 
 use crate::agent_tab::composer::visible_prompt;
@@ -154,21 +155,6 @@ pub(super) fn elapsed_label(total_seconds: u64) -> String {
     parts.join(" ")
 }
 
-/// Entries with nothing to show (yet): an agent bubble before its first delta,
-/// or a reasoning item that never streamed a summary. They render no row and
-/// are transparent to work-run grouping, so an invisible entry can't split a
-/// run of tool calls into two summary lines.
-pub(crate) fn hidden(item: &SessionItem) -> bool {
-    match item {
-        SessionItem::UserMessage { text }
-        | SessionItem::AgentMessage { text, .. }
-        | SessionItem::Reasoning { summary: text, .. } => {
-            text.as_deref().is_none_or(|text| text.trim().is_empty())
-        }
-        _ => false,
-    }
-}
-
 /// Collapsed head of an oversized user prompt, cut at a line boundary when
 /// possible, or `None` when the whole prompt fits under the caps. The character
 /// cap bounds visual wrapping for giant single-line pastes; a byte cap alone
@@ -252,7 +238,7 @@ pub(crate) fn strip_read_gutter(output: &str) -> Option<String> {
 /// Fence-language tag for a file path. The highlight registry accepts file
 /// extensions as language aliases (rs, py, yml, …) and resolves unknown ones
 /// to plain, so the extension itself is the tag.
-pub(crate) fn file_extension_lang(path: &str) -> String {
+pub fn file_extension_lang(path: &str) -> String {
     Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -365,7 +351,35 @@ pub(crate) fn entry_copy_text(item: &SessionItem) -> String {
                 None => head,
             }
         }
+        SessionItem::TaskList { tasks, .. } => task_list_text(tasks),
+        SessionItem::SideBoundary {
+            instructions,
+            message,
+            ..
+        } => format!("{instructions}\n\n{message}"),
     }
+}
+
+/// A task list as a markdown checklist, the explanation first when the
+/// provider gave one.
+pub(crate) fn task_list_text(tasks: &TaskList) -> String {
+    let rows = tasks.items.iter().map(|task| {
+        let mark = match task.status {
+            TaskStatus::Completed => "x",
+            TaskStatus::InProgress => "~",
+            TaskStatus::Pending => " ",
+        };
+
+        format!("- [{mark}] {}", task.title)
+    });
+
+    tasks
+        .explanation
+        .iter()
+        .cloned()
+        .chain(rows)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Heading of a compaction row. An unprompted compaction is named as such

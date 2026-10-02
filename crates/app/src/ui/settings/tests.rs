@@ -1,33 +1,138 @@
-use std::collections::BTreeSet;
-
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
-
 use std::{fs, io};
 
 use app::agent_tab::AgentKind;
-
 use app::terminal_tab::settings::TerminalSettings;
-
 use gpui::{
-    Context, Entity, IntoElement, ListAlignment, ListOffset, ListState, ScrollDelta,
-    ScrollWheelEvent, TestAppContext, list, point, size,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ListAlignment,
+    ListOffset, ListState, ParentElement as _, ScrollDelta, ScrollWheelEvent,
+    StatefulInteractiveElement as _, Styled as _, Task, TestAppContext, Window, div, list, point,
+    px, size,
 };
-
+use gpui_component::Root;
+use gpui_component::setting::{SelectIndex, SettingsState};
 use nmt_config::Config;
-
 use nmt_config::appearance::SmoothScrollingMode;
+use nmt_config::builtin_themes::THEMES as BUILTIN_THEMES;
+use nmt_config::theme_catalog::theme_families;
 
-use nmt_config::builtin_themes::{THEMES as BUILTIN_THEMES, get as builtin_theme_source};
+use crate::ui::settings::state::{
+    AgentProfile, AgentProfileLauncher, AppSettings, DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE,
+    EnvVar, SettingsEditing, agent_kind_display_label, builtin_agent_profile,
+};
+use crate::ui::settings::terminal_bridge::install_terminal_settings;
+use crate::ui::settings::{OpenSettings, SettingsSurface, new_settings_view, save_settings_to};
 
-use nmt_config::profile::ProfilesConfig;
+struct SettingsHost(SettingsSurface);
 
-use nmt_config::theme::Theme as ConfigTheme;
+impl gpui::Render for SettingsHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().children(self.0.render(cx))
+    }
+}
 
-use nmt_platform::default_shell;
+#[gpui::test]
+fn closed_settings_release_local_edits_while_another_window_stays_open(cx: &mut TestAppContext) {
+    use gpui::VisualTestContext;
 
-use crate::ui::settings::theme::ui_theme_config;
+    cx.update(|cx| {
+        gpui_component::init(cx);
 
-use crate::ui::settings::*;
+        cx.set_global(AppSettings::default());
+    });
+
+    let mut windows = Vec::new();
+    let mut editors = Vec::new();
+
+    for _ in 0..2 {
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                let editing = cx.new(|_| SettingsEditing::default());
+
+                editors.push(editing.downgrade());
+
+                let state = SettingsState::owned(
+                    SelectIndex {
+                        page_ix: 0,
+                        group_ix: Some(1),
+                    },
+                    window,
+                    cx,
+                );
+
+                let view = new_settings_view(state, editing, cx);
+
+                cx.new(|_| {
+                    SettingsHost(SettingsSurface {
+                        open: Some(OpenSettings {
+                            view,
+                            _theme_watcher: None,
+                            _pairing_renewal: Task::ready(()),
+                        }),
+                    })
+                })
+            })
+            .unwrap()
+        });
+
+        windows.push(window);
+    }
+
+    cx.run_until_parked();
+
+    editors[0]
+        .update(cx, |editing, cx| {
+            editing.theme_filter = "First window".into();
+
+            cx.notify();
+        })
+        .unwrap();
+
+    cx.update(|cx| {
+        assert!(
+            editors[1]
+                .upgrade()
+                .unwrap()
+                .read(cx)
+                .theme_filter
+                .is_empty()
+        );
+    });
+
+    let mut cx = VisualTestContext::from_window(windows[0].into(), cx);
+
+    windows[0]
+        .update(&mut cx, |host, _, cx| {
+            host.0.retire();
+
+            cx.notify();
+        })
+        .unwrap();
+
+    // Render state keeps the previous frame alive until the next frame
+    // completes, so both retained frames must stop referencing the page.
+    for _ in 0..2 {
+        windows[0].update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+
+        cx.run_until_parked();
+
+        cx.refresh().unwrap();
+
+        cx.run_until_parked();
+    }
+
+    assert!(editors[0].upgrade().is_none());
+    assert!(editors[1].upgrade().is_some());
+    assert!(
+        editors[0]
+            .update(&mut cx, |editing, _| {
+                editing.theme_filter = "Late completion".into();
+            })
+            .is_err()
+    );
+}
 
 #[gpui::test]
 fn powershell_compatibility_changes_reach_the_live_terminal_snapshot(cx: &mut TestAppContext) {
@@ -53,6 +158,7 @@ fn powershell_compatibility_changes_reach_the_live_terminal_snapshot(cx: &mut Te
 struct ThemeGalleryProbe {
     editing: Entity<SettingsEditing>,
     width: gpui::Pixels,
+    scroll: gpui::ScrollHandle,
     _updates: gpui::Subscription,
 }
 
@@ -60,11 +166,17 @@ impl gpui::Render for ThemeGalleryProbe {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::ui::settings::theme_gallery::theme_list;
 
-        div().size_full().relative().child(
-            div()
-                .w(self.width)
-                .child(theme_list(self.editing.clone(), cx)),
-        )
+        div()
+            .id("theme-gallery-probe")
+            .size_full()
+            .relative()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(
+                div()
+                    .w(self.width)
+                    .child(theme_list(self.editing.clone(), cx)),
+            )
     }
 }
 
@@ -77,15 +189,18 @@ fn theme_grid_measures_its_own_width_inside_a_wider_settings_page(cx: &mut TestA
 
     let handle = cx.add_window(|_, cx| {
         let editing = cx.new(|_| SettingsEditing {
-            themes: BUILTIN_THEMES
-                .iter()
-                .map(|builtin| {
-                    (
-                        builtin.name.to_owned(),
-                        toml::from_str(builtin.source).unwrap(),
-                    )
-                })
-                .collect(),
+            theme_families: theme_families(
+                BUILTIN_THEMES
+                    .iter()
+                    .map(|builtin| {
+                        (
+                            builtin.name.to_owned(),
+                            toml::from_str(builtin.source).unwrap(),
+                        )
+                    })
+                    .collect(),
+            )
+            .into(),
             ..SettingsEditing::default()
         });
 
@@ -94,6 +209,7 @@ fn theme_grid_measures_its_own_width_inside_a_wider_settings_page(cx: &mut TestA
         ThemeGalleryProbe {
             editing,
             width: px(650.),
+            scroll: gpui::ScrollHandle::default(),
             _updates: updates,
         }
     });
@@ -135,6 +251,102 @@ fn theme_grid_measures_its_own_width_inside_a_wider_settings_page(cx: &mut TestA
 }
 
 #[gpui::test]
+fn theme_grid_only_builds_visible_cards_and_keeps_scrolled_cards_selectable(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, VisualTestContext};
+    use nmt_config::theme::AppearanceTheme;
+
+    cx.update(gpui_component::init);
+    cx.set_global(AppSettings::default());
+    cx.update(|cx| cx.set_smooth_wheel_scrolling(false));
+
+    let handle = cx.add_window(|_, cx| {
+        let editing = cx.new(|_| SettingsEditing {
+            theme_families: theme_families(
+                BUILTIN_THEMES
+                    .iter()
+                    .map(|builtin| {
+                        (
+                            builtin.name.to_owned(),
+                            toml::from_str(builtin.source).unwrap(),
+                        )
+                    })
+                    .collect(),
+            )
+            .into(),
+            ..Default::default()
+        });
+
+        ThemeGalleryProbe {
+            _updates: cx.observe(&editing, |_, _, cx| cx.notify()),
+            editing,
+            width: px(396.),
+            scroll: gpui::ScrollHandle::default(),
+        }
+    });
+
+    let mut cx = VisualTestContext::from_window(handle.into(), cx);
+
+    cx.simulate_resize(size(px(800.), px(220.)));
+
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+    }
+
+    assert!(cx.debug_bounds("theme-card-0").is_some());
+    assert!(cx.debug_bounds("theme-card-6").is_none());
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(200.), px(100.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+        ..Default::default()
+    });
+
+    assert!(cx.debug_bounds("theme-card-0").is_none());
+
+    let last_card = cx
+        .debug_bounds("theme-card-6")
+        .expect("the last row must become visible");
+
+    let (editing, expected) = cx.update(|window, cx| {
+        let editing = window
+            .root::<ThemeGalleryProbe>()
+            .flatten()
+            .unwrap()
+            .read(cx)
+            .editing
+            .clone();
+
+        let expected = editing.read(cx).theme_families[6]
+            .variant(AppearanceTheme::Dark)
+            .id
+            .clone();
+
+        (editing, expected)
+    });
+
+    cx.simulate_click(last_card.center(), Modifiers::default());
+    cx.update(|_, cx| assert_eq!(cx.global::<AppSettings>().config().theme, expected));
+
+    cx.update(|_, cx| {
+        editing.update(cx, |editing, cx| {
+            editing.theme_filter = expected;
+
+            cx.notify();
+        })
+    });
+
+    assert!(
+        cx.debug_bounds("theme-card-6").is_some(),
+        "filtering must retain the matching card"
+    );
+    assert!(cx.debug_bounds("theme-card-0").is_none());
+}
+
+#[gpui::test]
 fn paired_theme_switch_preserves_geometry_and_survives_config_reload(cx: &mut TestAppContext) {
     use crate::ui::settings::theme::select_theme;
     use app::design::{CARD_RADIUS, CONTROL_RADIUS};
@@ -152,7 +364,7 @@ fn paired_theme_switch_preserves_geometry_and_survives_config_reload(cx: &mut Te
         ("claude_dark", AppearanceTheme::Dark),
     ] {
         cx.update(|cx| {
-            assert!(select_theme(id.into(), cx));
+            assert!(select_theme(id.into(), Config::load_named_theme(id), cx));
             assert_eq!(cx.theme().mode.is_dark(), mode == AppearanceTheme::Dark);
             assert_eq!(cx.theme().radius, CONTROL_RADIUS);
             assert_eq!(cx.theme().radius_lg, CARD_RADIUS);
@@ -173,286 +385,14 @@ fn paired_theme_switch_preserves_geometry_and_survives_config_reload(cx: &mut Te
     cx.update(|cx| {
         let background = cx.theme().background;
 
-        assert!(!select_theme("../missing-theme".into(), cx));
+        assert!(!select_theme(
+            "../missing-theme".into(),
+            Err("missing theme".into()),
+            cx
+        ));
         assert_eq!(cx.global::<AppSettings>().config().theme, "claude_dark");
         assert_eq!(cx.theme().background, background);
     });
-}
-
-#[test]
-fn cursor_shape_dropdown_values_match_config_shapes() {
-    let parsed: CursorShape = "block".into();
-
-    assert_eq!(parsed, CursorShape::Block);
-
-    let parsed: CursorShape = "line".into();
-
-    assert_eq!(parsed, CursorShape::Beam);
-
-    let parsed: CursorShape = "underline".into();
-
-    assert_eq!(parsed, CursorShape::Underline);
-}
-
-#[test]
-fn tab_width_clamps_to_allowed_range() {
-    assert_eq!(clamp_tab_width(MIN_TAB_WIDTH), MIN_TAB_WIDTH);
-    assert_eq!(clamp_tab_width(DEFAULT_TAB_WIDTH), DEFAULT_TAB_WIDTH);
-    assert_eq!(clamp_tab_width(200.0), 200.0);
-    assert_eq!(clamp_tab_width(MAX_TAB_WIDTH), MAX_TAB_WIDTH);
-    assert_eq!(clamp_tab_width(10.0), MIN_TAB_WIDTH);
-    assert_eq!(clamp_tab_width(9999.0), MAX_TAB_WIDTH);
-    assert_eq!(clamp_tab_width(f64::NAN), DEFAULT_TAB_WIDTH);
-}
-
-#[test]
-fn ui_font_falls_back_when_blank() {
-    assert_eq!(ui_font_or_default("Cascadia Code"), "Cascadia Code");
-    assert_eq!(ui_font_or_default(""), DEFAULT_UI_FONT);
-    assert_eq!(ui_font_or_default("   "), DEFAULT_UI_FONT);
-}
-
-#[test]
-fn terminal_font_falls_back_when_blank() {
-    assert_eq!(terminal_font_or_default("Cascadia Code"), "Cascadia Code");
-    assert_eq!(terminal_font_or_default(""), DEFAULT_FONT_FAMILY);
-    assert_eq!(terminal_font_or_default("   "), DEFAULT_FONT_FAMILY);
-}
-
-#[test]
-fn terminal_font_metrics_clamp_to_allowed_range() {
-    assert_eq!(clamp_terminal_font_size(16.0), 16.0);
-    assert_eq!(clamp_terminal_font_size(1.0), 6.0);
-    assert_eq!(clamp_terminal_font_size(100.0), 72.0);
-    assert_eq!(clamp_terminal_font_size(f64::NAN), DEFAULT_FONT_SIZE);
-
-    assert_eq!(clamp_terminal_line_height(1.2), 1.2);
-    assert_eq!(clamp_terminal_line_height(0.1), 0.8);
-    assert_eq!(clamp_terminal_line_height(5.0), 3.0);
-    assert_eq!(clamp_terminal_line_height(f64::NAN), DEFAULT_LINE_HEIGHT);
-
-    assert_eq!(clamp_agent_transcript_font_size(12.5), 12.5);
-    assert_eq!(clamp_agent_transcript_font_size(1.0), 6.0);
-    assert_eq!(clamp_agent_transcript_font_size(100.0), 72.0);
-    assert_eq!(
-        clamp_agent_transcript_font_size(f64::NAN),
-        DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE
-    );
-}
-
-#[test]
-fn agent_transcript_font_has_first_party_defaults() {
-    let settings = AppSettings::default();
-
-    assert_eq!(
-        settings.config().appearance.agent_transcript_font_family,
-        DEFAULT_FONT_FAMILY
-    );
-    assert_eq!(
-        settings.config().appearance.agent_transcript_font_size,
-        DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE
-    );
-}
-
-#[test]
-fn window_transparency_controls_opacity_and_blur() {
-    assert_eq!(clamp_background_opacity(0.1), 0.2);
-    assert_eq!(clamp_background_opacity(0.65), 0.65);
-    assert_eq!(clamp_background_opacity(2.0), 1.0);
-    assert_eq!(clamp_background_opacity(f64::NAN), 1.0);
-
-    // Off keeps the window fully opaque regardless of the slider value.
-    assert_eq!(effective_background_opacity(WindowBackdrop::Off, 0.65), 1.0);
-
-    // The Mica materials hand the background to DWM, so a configured opacity is
-    // ignored.
-    assert_eq!(
-        effective_background_opacity(WindowBackdrop::MicaAlt, 0.65),
-        0.0
-    );
-    assert_eq!(
-        effective_background_opacity(WindowBackdrop::Mica, 0.65),
-        0.0
-    );
-    assert_eq!(
-        effective_background_opacity(WindowBackdrop::Acrylic, 0.65),
-        0.65
-    );
-    assert_eq!(clamp_background_image_opacity(-1.0), 0.0);
-    assert_eq!(clamp_background_image_opacity(2.0), 1.0);
-    assert_eq!(
-        clamp_background_image_opacity(f64::NAN),
-        DEFAULT_BACKGROUND_IMAGE_OPACITY
-    );
-    assert_eq!(effective_surface_background_opacity(1.0, None), 1.0);
-    assert!((effective_surface_background_opacity(1.0, Some(0.3)) - 0.7).abs() < 1e-12);
-    assert_eq!(effective_background_image_layer_opacity(1.0, 0.0), 0.0);
-    assert!((effective_background_image_layer_opacity(1.0, 0.3) - 1.0).abs() < 1e-12);
-
-    let surface = effective_surface_background_opacity(0.65, Some(0.3));
-    let image = effective_background_image_layer_opacity(0.65, 0.3);
-
-    assert!((surface + (1.0 - surface) * image - 0.65).abs() < 1e-12);
-    assert_eq!(
-        window_background_appearance_for(WindowBackdrop::Acrylic),
-        WindowBackgroundAppearance::Blurred
-    );
-    assert_eq!(
-        window_background_appearance_for(WindowBackdrop::MicaAlt),
-        WindowBackgroundAppearance::MicaAltBackdrop
-    );
-    assert_eq!(
-        window_background_appearance_for(WindowBackdrop::Mica),
-        WindowBackgroundAppearance::MicaBackdrop
-    );
-    assert_eq!(
-        window_background_appearance_for(WindowBackdrop::Off),
-        WindowBackgroundAppearance::Opaque
-    );
-}
-
-#[test]
-fn window_backdrop_value_roundtrip() {
-    for backdrop in [
-        WindowBackdrop::MicaAlt,
-        WindowBackdrop::Mica,
-        WindowBackdrop::Acrylic,
-        WindowBackdrop::Off,
-    ] {
-        let value: &str = backdrop.into();
-        let parsed: WindowBackdrop = value.into();
-
-        assert_eq!(parsed, backdrop);
-    }
-
-    // Unknown values fall back to the opaque mode, which always renders.
-    let parsed: WindowBackdrop = "bogus".into();
-
-    assert_eq!(parsed, WindowBackdrop::Off);
-}
-
-#[test]
-fn git_interval_clamps_to_allowed_set() {
-    for v in [10, 15, 30, 60] {
-        assert_eq!(clamp_git_interval(v), v);
-    }
-
-    for v in [0, 7, 45, 1000] {
-        assert_eq!(clamp_git_interval(v), 30);
-    }
-}
-
-#[test]
-fn input_style_value_roundtrip() {
-    for style in [InputStyle::Waterfall, InputStyle::FixedBottom] {
-        let value: &str = style.into();
-        let parsed: InputStyle = value.into();
-
-        assert_eq!(parsed, style);
-    }
-
-    // Unknown values fall back to the default style.
-    let parsed: InputStyle = "bogus".into();
-
-    assert_eq!(parsed, InputStyle::Waterfall);
-}
-
-#[test]
-fn load_falls_back_to_default_profile() {
-    // Test env has no config file: defaults apply, the empty profiles
-    // list maps to the single built-in profile, and the unset default
-    // profile resolves to that profile's name.
-    let settings = AppSettings::load();
-
-    assert_eq!(
-        settings.config().appearance.input_style,
-        InputStyle::Waterfall
-    );
-    assert!(settings.config().appearance.scroll_to_bottom_when_typing);
-    assert_eq!(
-        settings.config().appearance.window_backdrop,
-        WindowBackdrop::Acrylic
-    );
-    assert_eq!(settings.config().profiles.list.len(), 1);
-    assert_eq!(
-        settings.config().profiles.default,
-        settings.config().profiles.list[0].name
-    );
-    assert_eq!(settings.config().profiles.default, "PowerShell");
-    assert!(settings.config().appearance.monospace_only);
-    assert!(settings.config().system.restore_last_session_when_opening);
-    assert_eq!(
-        settings.config().appearance.smooth_scrolling,
-        SmoothScrollingMode::All
-    );
-}
-
-#[test]
-fn default_profile_command_resolves_by_name() {
-    let mut settings = AppSettings::from_config(Config {
-        profiles: ProfilesConfig {
-            list: vec![
-                Profile {
-                    name: "PowerShell".into(),
-                    shell: default_shell(),
-                    args: String::new(),
-                },
-                Profile {
-                    name: "Cmd".into(),
-                    shell: "cmd.exe".into(),
-                    args: "/k echo hi".into(),
-                },
-            ],
-            default: "Cmd".into(),
-        },
-        ..Config::default()
-    });
-
-    let (shell, args) = settings.default_profile_command();
-
-    assert_eq!(shell.as_deref(), Some("cmd.exe"));
-    assert_eq!(args, vec!["/k", "echo", "hi"]);
-
-    assert!(!settings.set_default_profile("Nope".into()));
-    assert_eq!(settings.config().profiles.default, "Cmd");
-
-    // An unknown name loaded from disk falls back to the first profile.
-    let mut config = settings.config().clone();
-
-    config.profiles.default = "Nope".into();
-    settings = AppSettings::from_config(config);
-
-    let (shell, _) = settings.default_profile_command();
-
-    assert_eq!(shell.as_deref(), Some(default_shell().as_str()));
-
-    // Blank shell path: no override, session uses its built-in default.
-    settings.set_profile_shell(0, "  ".into());
-
-    settings.set_default_profile("PowerShell".into());
-
-    let (shell, args) = settings.default_profile_command();
-
-    assert!(shell.is_none());
-    assert!(args.is_empty());
-}
-
-#[test]
-fn profile_name_resolves_from_launch_command() {
-    let mut settings = AppSettings::default();
-
-    settings.add_profile();
-
-    settings.rename_profile(1, "Developer PowerShell".into());
-
-    settings.set_profile_shell(1, "pwsh.exe".into());
-
-    settings.set_profile_args(1, "-NoLogo".into());
-
-    assert_eq!(
-        settings.profile_name_for_command(Some("PWSH.EXE"), &["-NoLogo".to_string()]),
-        "Developer PowerShell"
-    );
 }
 
 #[test]
@@ -502,15 +442,15 @@ fn agent_profile_mutations_keep_default_valid() {
     // label, collisions get a numeric suffix, and the excluded index
     // (edit mode) keeps its own name available.
     assert_eq!(
-        settings.unique_agent_profile_name("", AgentProfileKind::Claude, None),
+        settings.unique_agent_profile_name("", AgentKind::Claude, None),
         "Claude Code 2"
     );
     assert_eq!(
-        settings.unique_agent_profile_name("Codex", AgentProfileKind::Codex, Some(1)),
+        settings.unique_agent_profile_name("Codex", AgentKind::Codex, Some(1)),
         "Codex"
     );
     assert_eq!(
-        settings.unique_agent_profile_name(" Mine ", AgentProfileKind::Codex, None),
+        settings.unique_agent_profile_name(" Mine ", AgentKind::Codex, None),
         "Mine"
     );
 
@@ -540,7 +480,7 @@ fn agent_profile_mutations_keep_default_valid() {
     // The shortcut fallback still produces a launchable profile.
     assert_eq!(
         settings.default_agent_profile_entry().kind,
-        AgentProfileKind::Claude
+        AgentKind::Claude
     );
 }
 
@@ -613,91 +553,6 @@ fn profile_edits_keep_names_and_defaults_valid_across_reordering() {
 }
 
 #[test]
-fn installation_update_titles_only_number_distinct_provider_installations() {
-    assert_eq!(
-        installation_update_title(ProviderKind::Claude, 1, 1),
-        "Claude Code Updates"
-    );
-    assert_eq!(
-        installation_update_title(ProviderKind::Codex, 2, 3),
-        "Codex Updates 2"
-    );
-}
-
-#[test]
-fn unchecked_installations_do_not_render_unknown_versions() {
-    assert_eq!(
-        installation_version_text(UpdatePhase::Unknown, "unknown", "unknown"),
-        "Not checked"
-    );
-    assert_eq!(
-        installation_version_text(UpdatePhase::Available, "1.0.0", "1.1.0"),
-        "1.0.0 → 1.1.0"
-    );
-}
-
-#[test]
-fn default_agent_profile_entry_resolves_by_name() {
-    let mut settings = AppSettings::default();
-
-    let profile = AgentProfile {
-        executable: "custom-codex".into(),
-        ..settings.config().agent_profiles.list[1].clone()
-    };
-
-    settings.save_agent_profile(Some(1), profile);
-
-    settings.set_default_agent_profile("Codex".into());
-
-    assert_eq!(
-        settings.default_agent_profile_entry().executable,
-        "custom-codex"
-    );
-
-    assert!(!settings.set_default_agent_profile("Nope".into()));
-    assert_eq!(settings.config().agent_profiles.default, "Codex");
-
-    // An unknown name loaded from disk falls back to the first profile.
-    let mut config = settings.config().clone();
-
-    config.agent_profiles.default = "Nope".into();
-    settings = AppSettings::from_config(config);
-
-    assert_eq!(
-        settings.default_agent_profile_entry().kind,
-        AgentProfileKind::Claude
-    );
-}
-
-#[test]
-fn defaults_have_one_powershell_profile() {
-    let settings = AppSettings::default();
-
-    assert_eq!(
-        settings.config().appearance.input_style,
-        InputStyle::Waterfall
-    );
-    assert!(settings.config().appearance.scroll_to_bottom_when_typing);
-    assert_eq!(
-        settings.config().appearance.window_backdrop,
-        WindowBackdrop::Acrylic
-    );
-    assert_eq!(settings.config().profiles.list.len(), 1);
-    assert!(
-        settings.config().profiles.list[0].shell == default_shell()
-            || settings.config().profiles.list[0]
-                .shell
-                .ends_with(r"\pwsh.exe")
-    );
-    assert_eq!(settings.config().profiles.list[0].args, "");
-    assert!(settings.config().system.restore_last_session_when_opening);
-    assert_eq!(
-        settings.config().appearance.smooth_scrolling,
-        SmoothScrollingMode::All
-    );
-}
-
-#[test]
 fn failed_settings_save_keeps_edits_for_retry() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -743,7 +598,6 @@ fn failed_settings_save_keeps_edits_for_retry() {
     assert_eq!(config.agent, settings.config().agent);
     assert_eq!(config.system, settings.config().system);
     assert_eq!(config.update, settings.config().update);
-    assert_eq!(config.remote_session, settings.config().remote_session);
     assert!(!config.terminal.improve_powershell_compatibility);
 }
 
@@ -875,120 +729,9 @@ fn every_registered_harness_can_be_named_seeded_and_launched() {
     }
 
     assert_eq!(
-        builtin_agent_profile(AgentProfileKind::DeepSeek).launcher,
+        builtin_agent_profile(AgentKind::DeepSeek).launcher,
         AgentProfileLauncher::Npx
     );
-}
-
-#[test]
-fn built_in_ui_themes_parse_into_component_config() {
-    for builtin in BUILTIN_THEMES {
-        let theme: ConfigTheme = toml::from_str(builtin.source).unwrap();
-
-        let ui = theme
-            .ui_theme()
-            .unwrap_or_else(|| panic!("{} has no [colors.ui] section", builtin.name));
-
-        let config = ui_theme_config(&ui)
-            .unwrap_or_else(|| panic!("{} has an unparsable [colors.ui] section", builtin.name));
-
-        assert_eq!(config.name, ui.name);
-        assert!(config.colors.background.is_some());
-    }
-}
-
-/// Color names a theme file states under `[colors.ui]`. The corner radii share
-/// that section in the file format while being a separate choice a theme may
-/// leave to the application, and the syntax palette is a table of its own, so
-/// neither is part of color coverage.
-fn ui_color_names(name: &str) -> BTreeSet<String> {
-    let theme: ConfigTheme = toml::from_str(builtin_theme_source(name).unwrap()).unwrap();
-
-    theme
-        .ui_theme()
-        .unwrap()
-        .colors
-        .as_table()
-        .unwrap()
-        .keys()
-        .filter(|key| {
-            !matches!(
-                key.as_str(),
-                "radius" | "radius.lg" | "shadow" | "highlight"
-            )
-        })
-        .map(ToString::to_string)
-        .collect()
-}
-
-/// An unstated color is filled from the component library's own light or dark
-/// palette, so a control the theme forgot renders in a foreign hue. Every
-/// built-in names every color the library reads; comparing them against one
-/// another is what catches a color added to one of them and missed on the
-/// others, including after the library gains a new one.
-#[test]
-fn built_in_themes_state_the_same_colors() {
-    let reference = ui_color_names("fluent_light");
-
-    assert!(reference.len() > 100);
-
-    for builtin in BUILTIN_THEMES {
-        let name = builtin.name;
-        let names = ui_color_names(name);
-        let missing: Vec<_> = reference.difference(&names).collect();
-        let extra: Vec<_> = names.difference(&reference).collect();
-
-        assert!(
-            missing.is_empty() && extra.is_empty(),
-            "{name} misses {missing:?} and adds {extra:?}"
-        );
-    }
-}
-
-/// A theme that states no syntax palette falls back to the component
-/// library's palette for its mode, which is tuned to the library's own
-/// surfaces rather than the theme's. Every built-in therefore states a palette
-/// of its own, and the palette's editor background sits on the same side of
-/// mid-gray as the theme's mode so light colors never land on a light surface.
-#[test]
-fn built_in_themes_state_a_syntax_palette_for_their_mode() {
-    for builtin in BUILTIN_THEMES {
-        let name = builtin.name;
-        let theme: ConfigTheme = toml::from_str(builtin.source).unwrap();
-        let config = ui_theme_config(&theme.ui_theme().unwrap()).unwrap();
-
-        let highlight = config
-            .highlight
-            .as_ref()
-            .unwrap_or_else(|| panic!("{name} states no syntax palette"));
-
-        let background = highlight
-            .editor_background
-            .unwrap_or_else(|| panic!("{name} states no editor background"));
-
-        assert_eq!(background.l < 0.5, config.mode.is_dark(), "{name}");
-
-        let syntax = &highlight.syntax;
-
-        for (role, style) in [
-            ("comment", &syntax.comment),
-            ("keyword", &syntax.keyword),
-            ("string", &syntax.string),
-            ("type", &syntax.type_),
-            ("number", &syntax.number),
-        ] {
-            assert!(style.is_some(), "{name} states no {role} color");
-        }
-    }
-}
-
-#[test]
-fn fluent_themes_carry_their_own_corner_radii() {
-    let theme: ConfigTheme = toml::from_str(builtin_theme_source("fluent_dark").unwrap()).unwrap();
-    let config = ui_theme_config(&theme.ui_theme().unwrap()).unwrap();
-
-    assert_eq!(config.radius, Some(4));
-    assert_eq!(config.radius_lg, Some(8));
 }
 
 #[gpui::test]
@@ -1088,4 +831,85 @@ fn windows_notification_switch_keeps_setting_after_registration_failure(cx: &mut
         );
         assert!(field.is_resettable(cx));
     });
+}
+
+#[gpui::test]
+fn background_save_completes_only_after_edits_made_during_the_write_are_saved(
+    cx: &mut TestAppContext,
+) {
+    use gpui::VisualTestContext;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+
+    fs::write(&path, "# retained\n").unwrap();
+
+    let completed = Rc::new(Cell::new(None));
+
+    cx.update(|cx| {
+        gpui_component::init(cx);
+
+        cx.set_global(AppSettings::default());
+
+        // Nothing was edited since the configuration was read, so quitting
+        // must leave the file alone.
+        assert!(!cx.global::<AppSettings>().should_save_on_exit());
+    });
+
+    let window = cx.add_window(|window, cx| {
+        let content = cx.new(|_| SettingsHost(SettingsSurface::default()));
+
+        Root::new(content, window, cx)
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    cx.update(|window, cx| {
+        let completed = completed.clone();
+
+        let saved = save_settings_to(path.clone(), window, cx);
+
+        window
+            .spawn(cx, async move |_| completed.set(Some(saved.await)))
+            .detach();
+
+        cx.global_mut::<AppSettings>()
+            .edit_appearance(|appearance| appearance.reduce_motion = true);
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# retained\n");
+    });
+
+    assert_eq!(completed.get(), None);
+
+    cx.run_until_parked();
+
+    assert_eq!(completed.get(), Some(true));
+
+    let config: Config = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+    assert!(config.appearance.reduce_motion);
+
+    // Both writes landed, so a quit now has nothing left to save.
+    cx.update(|_, cx| assert!(!cx.global::<AppSettings>().should_save_on_exit()));
+
+    fs::write(&path, "invalid [ configuration").unwrap();
+    completed.set(None);
+
+    cx.update(|window, cx| {
+        let completed = completed.clone();
+
+        let saved = save_settings_to(path.clone(), window, cx);
+
+        window
+            .spawn(cx, async move |_| completed.set(Some(saved.await)))
+            .detach();
+    });
+
+    cx.run_until_parked();
+
+    assert_eq!(completed.get(), Some(false));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "invalid [ configuration"
+    );
 }

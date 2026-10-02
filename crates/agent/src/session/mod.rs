@@ -3,13 +3,15 @@
 pub use nmt_profile::AgentKind;
 
 pub use crate::session::backend::{
-    Backend, ConversationTitleRequest, RecoveryIdentity, RenameOutcome,
+    Backend, ConversationTitleRequest, PromptRequest, RecoveryIdentity, RenameOutcome,
+    ResumeOutcome, SettingsOutcome, TaskHistory, TaskHistoryRead, TranscriptLoad, TranscriptRead,
 };
 pub use crate::session::lifecycle::{RecoverySnapshot, RestorationReadiness, SessionRuntime};
 
 pub mod branch;
 pub mod capabilities;
 pub mod children;
+pub mod command;
 pub mod commands;
 pub mod controller;
 pub mod delivery;
@@ -19,10 +21,10 @@ pub mod lifecycle;
 pub mod naming;
 pub mod restore;
 pub mod settings;
+pub mod side;
 pub mod team_capabilities;
-pub mod team_recovery;
-
 pub mod update_readiness;
+pub mod view;
 pub mod workflows;
 
 mod backend;
@@ -30,12 +32,12 @@ mod backend;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;
-
 #[cfg(test)]
 mod tests;
-
 #[cfg(test)]
 mod ui_split_tests;
+
+use serde::{Deserialize, Serialize};
 
 /// Encoded image data borrowed from a composed message.
 #[derive(Clone, Copy)]
@@ -44,14 +46,14 @@ pub struct ImageAttachment<'a> {
     pub media_type: &'a str,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnsupportedOperation {
     Rename,
     Fork,
     FileRewind,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationError {
     Unsupported(UnsupportedOperation),
     Failed(String),

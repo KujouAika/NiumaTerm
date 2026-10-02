@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::background_task::BackgroundTaskTranscriptState;
+use crate::background_task::BackgroundTaskLoadState;
 use crate::chat::{Event, Item};
 use crate::dsh::api::ApiClient;
 use crate::dsh::models::ModelDirectory;
@@ -20,7 +20,13 @@ use crate::dsh::session::{
 #[test]
 fn failed_background_reads_deliver_results_and_end_pending_discovery() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let client = ApiClient::new(format!("http://{}", listener.local_addr().unwrap())).unwrap();
+
+    let client = nmt_platform::runtime()
+        .block_on(ApiClient::new(format!(
+            "http://{}",
+            listener.local_addr().unwrap()
+        )))
+        .unwrap();
 
     drop(listener);
 
@@ -47,14 +53,14 @@ fn failed_background_reads_deliver_results_and_end_pending_discovery() {
         match kind {
             COMMANDS_FRAME => load_commands(api, session, send),
             SKILLS_FRAME => load_skills(api, session, send),
-            PRESETS_FRAME => load_agent_presets(api, session, None, send),
+            PRESETS_FRAME => load_agent_presets(api, session, None, None, send),
             HISTORY_FRAME => load_sessions(api, None, send),
             SUBAGENTS_FRAME => load_subagents(api, session, 4, send),
             SUBAGENT_TRANSCRIPT_FRAME => {
                 load_subagent_transcript(api, session, "child".into(), true, send)
             }
             WORKFLOW_TRANSCRIPT_FRAME => {
-                load_workflow_transcript(api, "task".into(), "child".into(), send)
+                load_workflow_transcript(api, session, "task".into(), "child".into(), send)
             }
             MODELS_FRAME => load_models(
                 api,
@@ -97,7 +103,7 @@ fn failed_background_reads_deliver_results_and_end_pending_discovery() {
             SKILLS_FRAME => assert!(matches!(&events[0], Event::Skills(_))),
             SUBAGENT_TRANSCRIPT_FRAME => assert!(
                 matches!(&events[0], Event::BackgroundTaskTranscript { update, .. }
-                if !update.replace && matches!(update.state, Some(BackgroundTaskTranscriptState::Unavailable { .. })))
+                if !update.replace && matches!(update.state, Some(BackgroundTaskLoadState::Unavailable { .. })))
             ),
             _ => assert_eq!(
                 events.len(),

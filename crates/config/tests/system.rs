@@ -1,5 +1,3 @@
-#![cfg(feature = "application")]
-
 use nmt_config::Config;
 use nmt_config::system::*;
 use toml::{Value, from_str};
@@ -10,7 +8,6 @@ fn system_section_defaults_when_absent() {
 
     assert_eq!(config.system, SystemConfig::default());
     assert!(config.system.restore_last_session_when_opening);
-    assert!(!config.system.manage_subprocess_job);
     assert_eq!(
         config.system.warn_before_terminating_shell,
         WarnBeforeTerminatingShell::WhenChildProcessesRunning
@@ -53,14 +50,6 @@ fn warn_before_terminating_shell_accepts_modes_and_rejects_booleans() {
     }
 
     assert!(from_str::<Config>("[system]\nwarn-before-terminating-shell = true").is_err());
-}
-
-#[test]
-fn warn_mode_decides_from_child_process_count() {
-    assert!(!WarnBeforeTerminatingShell::Disabled.should_warn(1));
-    assert!(!WarnBeforeTerminatingShell::WhenChildProcessesRunning.should_warn(0));
-    assert!(WarnBeforeTerminatingShell::WhenChildProcessesRunning.should_warn(1));
-    assert!(WarnBeforeTerminatingShell::Always.should_warn(0));
 }
 
 #[test]

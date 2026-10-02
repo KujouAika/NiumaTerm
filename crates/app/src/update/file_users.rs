@@ -8,10 +8,11 @@ use gpui_component::dialog::{
     DIALOG_BUTTON_MIN_WIDTH, Dialog, DialogClose, DialogContent, DialogFooter,
 };
 use gpui_component::{ActiveTheme as _, WindowExt as _, v_flex};
-use nmt_platform::windows::restart_manager::{AffectedApplication, ApplicationKind};
+use nmt_updater::windows::restart_manager::{AffectedApplication, ApplicationKind};
+use nmt_updater::windows::{FileUsePrompt, FileUsePromptReason};
 use rust_i18n::t;
 
-use crate::update::{self, FileUsePrompt, FileUsePromptReason};
+use crate::update;
 
 pub(crate) fn open_file_use_prompt(
     handle: AnyWindowHandle,
@@ -51,6 +52,7 @@ fn build_file_use_prompt(window: &mut Window, prompt: FileUsePrompt, cx: &mut Ap
         let footer = file_use_footer(prompt.reason);
 
         dialog
+            .centered(true)
             .title(title.clone())
             .overlay_closable(false)
             .content(move |content, _, cx| {
@@ -181,7 +183,7 @@ pub(crate) fn open_recovery_warning(
     handle
         .update(cx, move |_, window, cx| {
             window.open_dialog(cx, move |dialog, _, _| {
-                build_recovery_dialog(dialog, &applications)
+                build_recovery_dialog(dialog.centered(true), &applications)
             });
         })
         .is_ok()

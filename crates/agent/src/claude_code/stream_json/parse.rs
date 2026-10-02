@@ -6,9 +6,39 @@ use serde_json::Value;
 use crate::chat::{
     ContextUsageScope, ContextWindowUsage, Event, ModelInfo, ScopedTokenUsage,
     SlashCommandArguments, SlashCommandInfo, SlashCommandRunPolicy, SlashCommandSource,
-    TokenUsageBreakdown,
+    TokenUsageBreakdown, list_selected_model,
 };
-use crate::claude_code::tool_items::tool_title;
+use crate::claude_code::records::tool_title;
+
+/// Only parent user input acknowledges a submitted prompt. Tool output,
+/// generated context, and child conversations cannot consume the parent's queue.
+pub(super) fn user_prompt_text(message: &Value) -> Option<String> {
+    if message["type"] != "user"
+        || !message["parent_tool_use_id"].is_null()
+        || message["isSynthetic"] == true
+    {
+        return None;
+    }
+
+    match &message["message"]["content"] {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => {
+            let mut texts = blocks
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str());
+
+            let mut text = texts.next()?.to_owned();
+
+            for part in texts {
+                text.push_str(part);
+            }
+
+            Some(text)
+        }
+        _ => None,
+    }
+}
 
 pub(super) fn parse_claude_usage(usage: &Value) -> Option<TokenUsageBreakdown> {
     let direct_input = usage["input_tokens"].as_u64();
@@ -147,13 +177,6 @@ pub(super) fn initialize_command_catalog(
     } else {
         None
     }
-}
-
-pub(super) fn legacy_command_catalog(
-    structured_commands_published: bool,
-    commands: &Value,
-) -> Option<Vec<SlashCommandInfo>> {
-    (!structured_commands_published).then(|| parse_slash_commands(commands))
 }
 
 /// Commands that belong to the CLI's own terminal session rather than to the
@@ -308,15 +331,7 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
                         .unwrap_or(&model)
                         .to_string();
 
-                    let efforts = entry["supportedEffortLevels"]
-                        .as_array()
-                        .map(|levels| {
-                            levels
-                                .iter()
-                                .filter_map(|v| v.as_str().map(str::to_owned))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let efforts = supported_efforts(entry);
 
                     Some(ModelInfo {
                         model,
@@ -330,21 +345,25 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
         })
         .unwrap_or_default();
 
-    if let Some(model) = selected_model
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        && !parsed.iter().any(|entry| entry.model == model)
+    list_selected_model(&mut parsed, selected_model);
+
+    // A context-window variant such as `opus[1m]` reasons like its base
+    // model, but the catalog lists only the base alias, so the bare entry
+    // inserted for it would otherwise hide the effort picker. The base is
+    // matched by alias or by resolved id, since `claude-opus-5-5[1m]` names
+    // the id rather than the alias.
+    if let Some(selected) = parsed.iter_mut().find(|entry| {
+        entry.efforts.is_empty() && Some(entry.model.as_str()) == selected_model.map(str::trim)
+    }) && let Some((base, _)) = selected
+        .model
+        .strip_suffix(']')
+        .and_then(|model| model.rsplit_once('['))
+        && let Some(entry) = models.as_array().and_then(|list| {
+            list.iter()
+                .find(|entry| entry["value"] == base || entry["resolvedModel"] == base)
+        })
     {
-        parsed.insert(
-            0,
-            ModelInfo {
-                model: model.to_string(),
-                display: model.to_string(),
-                tiers: Vec::new(),
-                default_tier: None,
-                efforts: Vec::new(),
-            },
-        );
+        selected.efforts = supported_efforts(entry);
     }
 
     // A custom endpoint's discovered model lists no supportedEffortLevels,
@@ -372,6 +391,18 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
     }
 
     parsed
+}
+
+fn supported_efforts(entry: &Value) -> Vec<String> {
+    entry["supportedEffortLevels"]
+        .as_array()
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn context_window_usage(

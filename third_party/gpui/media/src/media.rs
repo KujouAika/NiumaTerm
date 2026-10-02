@@ -20,8 +20,9 @@ pub mod core_media {
         impl_CFTypeDescription, impl_TCFType,
         string::CFString,
     };
-    use core_video::image_buffer::{CVImageBuffer, CVImageBufferRef};
-    use std::{ffi::c_void, ptr};
+    use objc2_core_foundation::CFRetained;
+    use objc2_core_video::CVImageBuffer;
+    use std::{ffi::c_void, ptr, ptr::NonNull};
 
     #[repr(C)]
     pub struct __CMSampleBuffer(c_void);
@@ -46,14 +47,13 @@ pub mod core_media {
             }
         }
 
-        pub fn image_buffer(&self) -> Option<CVImageBuffer> {
+        pub fn image_buffer(&self) -> Option<CFRetained<CVImageBuffer>> {
+            // Safety: the sample buffer owns the image buffer it returns (the
+            // get rule), so retaining it keeps it alive past the sample
+            // buffer's lifetime.
             unsafe {
                 let ptr = CMSampleBufferGetImageBuffer(self.as_concrete_TypeRef());
-                if ptr.is_null() {
-                    None
-                } else {
-                    Some(CVImageBuffer::wrap_under_get_rule(ptr))
-                }
+                NonNull::new(ptr).map(|ptr| CFRetained::retain(ptr))
             }
         }
 
@@ -101,7 +101,7 @@ pub mod core_media {
             buffer: CMSampleBufferRef,
             create_if_necessary: bool,
         ) -> CFArrayRef;
-        fn CMSampleBufferGetImageBuffer(buffer: CMSampleBufferRef) -> CVImageBufferRef;
+        fn CMSampleBufferGetImageBuffer(buffer: CMSampleBufferRef) -> *mut CVImageBuffer;
         fn CMSampleBufferGetSampleTimingInfo(
             buffer: CMSampleBufferRef,
             index: CMItemIndex,
@@ -231,9 +231,8 @@ pub mod core_video {
     use core_foundation::{
         base::kCFAllocatorDefault, dictionary::CFDictionaryRef, mach_port::CFAllocatorRef,
     };
-    use foreign_types::ForeignTypeRef;
-
-    use metal::{MTLDevice, MTLPixelFormat};
+    use objc2::runtime::ProtocolObject;
+    use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTexture};
     use std::ptr;
 
     #[repr(C)]
@@ -252,7 +251,7 @@ pub mod core_video {
         /// # Safety
         ///
         /// metal_device must be valid according to CVMetalTextureCacheCreate
-        pub unsafe fn new(metal_device: *mut MTLDevice) -> Result<Self> {
+        pub unsafe fn new(metal_device: &ProtocolObject<dyn MTLDevice>) -> Result<Self> {
             let mut this = ptr::null();
             let result = unsafe {
                 CVMetalTextureCacheCreate(
@@ -275,7 +274,7 @@ pub mod core_video {
         /// The arguments to this function must be valid according to CVMetalTextureCacheCreateTextureFromImage
         pub unsafe fn create_texture_from_image(
             &self,
-            source: ::core_video::image_buffer::CVImageBufferRef,
+            source: &objc2_core_video::CVImageBuffer,
             texture_attributes: CFDictionaryRef,
             pixel_format: MTLPixelFormat,
             width: usize,
@@ -310,14 +309,14 @@ pub mod core_video {
         fn CVMetalTextureCacheCreate(
             allocator: CFAllocatorRef,
             cache_attributes: CFDictionaryRef,
-            metal_device: *const MTLDevice,
+            metal_device: &ProtocolObject<dyn MTLDevice>,
             texture_attributes: CFDictionaryRef,
             cache_out: *mut CVMetalTextureCacheRef,
         ) -> CVReturn;
         fn CVMetalTextureCacheCreateTextureFromImage(
             allocator: CFAllocatorRef,
             texture_cache: CVMetalTextureCacheRef,
-            source_image: ::core_video::image_buffer::CVImageBufferRef,
+            source_image: &objc2_core_video::CVImageBuffer,
             texture_attributes: CFDictionaryRef,
             pixel_format: MTLPixelFormat,
             width: usize,
@@ -336,10 +335,14 @@ pub mod core_video {
     impl_CFTypeDescription!(CVMetalTexture);
 
     impl CVMetalTexture {
-        pub fn as_texture_ref(&self) -> &metal::TextureRef {
+        pub fn as_texture_ref(&self) -> Option<&ProtocolObject<dyn MTLTexture>> {
+            // Safety: CVMetalTextureGetTexture follows the get rule, so the
+            // texture stays alive as long as this CVMetalTexture does, which
+            // the returned borrow is tied to.
             unsafe {
-                let texture = CVMetalTextureGetTexture(self.as_concrete_TypeRef());
-                metal::TextureRef::from_ptr(texture as *mut _)
+                CVMetalTextureGetTexture(self.as_concrete_TypeRef())
+                    .cast::<ProtocolObject<dyn MTLTexture>>()
+                    .as_ref()
             }
         }
     }

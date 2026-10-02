@@ -54,9 +54,7 @@ pub struct WorkflowAgent {
 
     pub label: Option<String>,
     pub phase_index: Option<u64>,
-    pub phase_title: Option<String>,
     pub agent_type: Option<String>,
-    pub isolation: Option<String>,
     pub model: Option<String>,
     pub state: WorkflowAgentState,
     pub tokens: Option<u64>,
@@ -67,8 +65,6 @@ pub struct WorkflowAgent {
     pub reused: bool,
 
     pub error: Option<String>,
-    pub prompt_preview: Option<String>,
-    pub result_preview: Option<String>,
 }
 
 /// One workflow run as the view shows it.
@@ -192,16 +188,11 @@ pub struct WorkflowAgentProgress {
     pub result: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WorkflowRefresh {
-    pub run_id: Option<String>,
-    pub agents: Vec<WorkflowAgentProgress>,
-    pub failed: bool,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkflowRefreshResult {
     pub task_id: String,
-    pub refresh: WorkflowRefresh,
+    pub run_id: Option<String>,
+    pub agents: Vec<WorkflowAgentProgress>,
+    pub failed: bool,
     pub transcript: Option<WorkflowTranscriptRead>,
 }

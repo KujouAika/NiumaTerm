@@ -17,14 +17,13 @@ mod disk;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
-
+use indexmap::IndexMap;
 use serde_json::Value;
 
 use crate::background_task::replace_text;
 use crate::json::text_field;
 use crate::workflow::{
-    WorkflowAgent, WorkflowAgentState, WorkflowPhase, WorkflowRefresh, WorkflowRun,
+    WorkflowAgent, WorkflowAgentState, WorkflowPhase, WorkflowRefreshResult, WorkflowRun,
     WorkflowRunState, WorkflowSnapshot,
 };
 
@@ -34,21 +33,15 @@ use crate::workflow::{
 pub(crate) struct ClaudeWorkflows {
     session_id: Option<String>,
 
-    /// Runs by `task_id`, in first-seen order via `order`.
-    runs: HashMap<String, WorkflowRun>,
-
-    order: Vec<String>,
+    /// Runs by `task_id`, in first-seen order.
+    runs: IndexMap<String, WorkflowRun>,
 }
 
 impl ClaudeWorkflows {
     pub(crate) fn snapshot(&self) -> Option<WorkflowSnapshot> {
         let session_id = self.session_id.clone()?;
 
-        let runs = self
-            .order
-            .iter()
-            .filter_map(|task_id| self.runs.get(task_id).cloned())
-            .collect();
+        let runs = self.runs.values().cloned().collect();
 
         Some(WorkflowSnapshot { session_id, runs })
     }
@@ -63,8 +56,6 @@ impl ClaudeWorkflows {
         self.session_id = Some(session_id.to_owned());
 
         self.runs.clear();
-
-        self.order.clear();
 
         true
     }
@@ -111,8 +102,6 @@ impl ClaudeWorkflows {
         if self.runs.contains_key(task_id) {
             return false;
         }
-
-        self.order.push(task_id.to_owned());
 
         self.runs.insert(
             task_id.to_owned(),
@@ -186,8 +175,8 @@ impl ClaudeWorkflows {
     }
 
     /// Record what a disk refresh learned about one run.
-    pub(crate) fn apply_refresh(&mut self, task_id: &str, refresh: WorkflowRefresh) -> bool {
-        let Some(run) = self.runs.get_mut(task_id) else {
+    pub(crate) fn apply_refresh(&mut self, refresh: WorkflowRefreshResult) -> bool {
+        let Some(run) = self.runs.get_mut(&refresh.task_id) else {
             return false;
         };
 
@@ -225,10 +214,6 @@ impl ClaudeWorkflows {
                 agent.state = observed;
                 changed = true;
             }
-
-            if let Some(result) = entry.result {
-                changed |= replace_text(&mut agent.result_preview, &Some(result));
-            }
         }
 
         changed
@@ -243,8 +228,6 @@ impl ClaudeWorkflows {
             if self.runs.contains_key(&run.task_id) {
                 continue;
             }
-
-            self.order.push(run.task_id.clone());
 
             self.runs.insert(run.task_id.clone(), run);
 
@@ -305,17 +288,13 @@ pub(crate) fn parse_progress(progress: &Value) -> (Vec<WorkflowPhase>, Vec<Workf
                     agent_id: text_field(entry, &["agentId"]),
                     label: text_field(entry, &["label"]),
                     phase_index: entry["phaseIndex"].as_u64(),
-                    phase_title: text_field(entry, &["phaseTitle"]),
                     agent_type: text_field(entry, &["agentType"]),
-                    isolation: text_field(entry, &["isolation"]),
                     model: text_field(entry, &["model"]),
                     state: agent_state(entry),
                     tokens: entry["tokens"].as_u64(),
                     tool_calls: entry["toolCalls"].as_u64(),
                     reused: entry["cached"].as_bool().unwrap_or(false),
                     error: text_field(entry, &["error"]),
-                    prompt_preview: text_field(entry, &["promptPreview"]),
-                    result_preview: text_field(entry, &["resultPreview"]),
                 });
             }
             _ => {}

@@ -3,40 +3,28 @@ use std::time::SystemTime;
 use gpui::{
     App, AppContext as _, Context, Entity, TestAppContext, VisualTestContext, WindowHandle,
 };
-
 use gpui_component::Root;
-
 use nmt_agent::AgentWorkspace;
-
 use nmt_agent::chat::{
     Event, ForkAnchor, ForkCheckpoint, Item, ReplayItem, ReplayTurn, SessionSummary,
     SlashCommandOutcome, ThreadSettings,
 };
-
 use nmt_agent::claude_code::sessions::{ClaudeCheckpoint, ClaudeFork, FileRestoreAvailability};
-
 use nmt_agent::session::branch::{BranchUpdate, RewindAction};
-
 use nmt_agent::session::lifecycle::{StartOutcome, Status};
-
 use nmt_agent::session::test_support::TestBackend;
-
 use nmt_agent::session::{AgentKind, Backend};
-
-use nmt_config::profile::{AgentProfile, AgentProfileKind};
-
+use nmt_config::profile::AgentProfile;
 use rust_i18n::t;
 
 use crate::agent_tab::settings::AgentSettings;
-
 use crate::agent_tab::tests::deliver_session_event;
-
-use crate::agent_tab::{AgentPane, AgentThreadDefaults, RecentSessionsMode};
+use crate::agent_tab::{AgentPane, RecentSessionsMode};
 
 fn open_pane(cx: &mut TestAppContext) -> (Entity<AgentPane>, WindowHandle<Root>) {
     let profile = AgentProfile {
         name: "Branch Test".into(),
-        kind: AgentProfileKind::Codex,
+        kind: AgentKind::Codex,
         // The initial async start is replaced before it is polled.
         executable: "missing-agent.exe".into(),
         ..AgentProfile::default()
@@ -48,8 +36,6 @@ fn open_pane(cx: &mut TestAppContext) -> (Entity<AgentPane>, WindowHandle<Root>)
         gpui_component::init(cx);
 
         cx.set_global(AgentSettings::default());
-
-        cx.set_global(AgentThreadDefaults::default());
 
         cx.open_window(Default::default(), |window, cx| {
             let agent = cx.new(|cx| AgentPane::new(profile, AgentWorkspace::default(), window, cx));
@@ -65,11 +51,19 @@ fn open_pane(cx: &mut TestAppContext) -> (Entity<AgentPane>, WindowHandle<Root>)
 }
 
 fn install(pane: &mut AgentPane) {
-    let epoch = pane.session.borrow_mut().runtime.begin_start();
+    let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
 
-    pane.session.borrow_mut().branch.starting(epoch, None);
+    pane.session
+        .borrow_mut()
+        .branch_parts()
+        .0
+        .starting(epoch, None);
 
-    pane.session.borrow_mut().restore.starting(epoch, None);
+    pane.session
+        .borrow_mut()
+        .restore_parts()
+        .0
+        .starting(epoch, None);
 
     let mut backend = TestBackend::new([], SlashCommandOutcome::Accepted, Vec::new())
         .with_recovery(AgentKind::Claude, "source");
@@ -79,12 +73,12 @@ fn install(pane: &mut AgentPane) {
     assert!(matches!(
         pane.session
             .borrow_mut()
-            .runtime
+            .runtime_mut()
             .install(epoch, Ok(Backend::Test(backend))),
         StartOutcome::Installed
     ));
 
-    pane.session.borrow_mut().runtime.ready();
+    pane.session.borrow_mut().runtime_mut().ready();
 }
 
 fn replay(text: &str) -> Vec<ReplayTurn> {
@@ -137,7 +131,7 @@ fn fork(pane: &Entity<AgentPane>, cx: &mut VisualTestContext) {
         pane.update(cx, |pane, cx| {
             pane.start_conversation_branch(checkpoint, cx);
 
-            assert!(pane.session.borrow().branch.is_working());
+            assert!(pane.session.borrow().branch().is_working());
         });
     });
 }
@@ -158,32 +152,24 @@ fn prepare_local(pane: &mut AgentPane, action: RewindAction, cx: &mut Context<Ag
     let request = {
         let mut guard = pane.session.borrow_mut();
 
-        let state = &mut *guard;
+        let (branch, runtime) = guard.branch_parts();
 
-        state
-            .branch
-            .begin_rewind(&state.runtime, pane.cwd(cx), None)
+        branch.begin_rewind(runtime, pane.cwd(cx), None)
     }
     .expect("load");
 
     {
         let mut guard = pane.session.borrow_mut();
 
-        let state = &mut *guard;
+        let (branch, runtime) = guard.branch_parts();
 
-        state.branch.checkpoints_loaded(
-            state.runtime.epoch(),
-            request,
-            Ok(vec![checkpoint.clone()]),
-        )
+        branch.checkpoints_loaded(runtime.epoch(), request, Ok(vec![checkpoint.clone()]))
     };
 
     assert!({
         let mut guard = pane.session.borrow_mut();
-        let state = &mut *guard;
-        state
-            .branch
-            .select_checkpoint(state.runtime.epoch(), checkpoint)
+        let (branch, runtime) = guard.branch_parts();
+        branch.select_checkpoint(runtime.epoch(), checkpoint)
     });
 
     pane.branch.draft = Some(pane.input.read(cx).text().to_string());
@@ -191,9 +177,9 @@ fn prepare_local(pane: &mut AgentPane, action: RewindAction, cx: &mut Context<Ag
     let update = {
         let mut guard = pane.session.borrow_mut();
 
-        let state = &mut *guard;
+        let (branch, runtime) = guard.branch_parts();
 
-        state.branch.rewind(&mut state.runtime, action)
+        branch.rewind(runtime, action)
     };
 
     let request = match update {
@@ -202,9 +188,9 @@ fn prepare_local(pane: &mut AgentPane, action: RewindAction, cx: &mut Context<Ag
             let BranchUpdate::CreateFork(request) = ({
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state.branch.files_completed(state.runtime.epoch(), Ok(()))
+                branch.files_completed(runtime.epoch(), Ok(()))
             }) else {
                 panic!("fork after files")
             };
@@ -217,10 +203,10 @@ fn prepare_local(pane: &mut AgentPane, action: RewindAction, cx: &mut Context<Ag
     let update = {
         let mut guard = pane.session.borrow_mut();
 
-        let state = &mut *guard;
+        let (branch, runtime) = guard.branch_parts();
 
-        state.branch.fork_created(
-            state.runtime.epoch(),
+        branch.fork_created(
+            runtime.epoch(),
             request,
             Ok(ClaudeFork {
                 session_id: Some("copy".into()),
@@ -262,7 +248,7 @@ fn protocol_branch_keeps_old_rows_until_replay_and_fills_the_prompt_once(cx: &mu
     cx.update(|window, cx| {
         pane.update(cx, |pane, cx| {
             assert_eq!(rows(pane, cx), ["copy"]);
-            assert!(!pane.session.borrow().branch.holds_composer());
+            assert!(!pane.session.borrow().branch().holds_composer());
 
             pane.branch.fill_branch_prompt(&pane.input, window, cx);
 
@@ -334,7 +320,7 @@ fn protocol_failure_preserves_conversation_and_does_not_refill_the_prompt(cx: &m
 
             assert_eq!(rows(pane, cx), ["current"]);
             assert!(pane.input.read(cx).text().len() == 0);
-            assert_eq!(pane.session.borrow().runtime.status(), Status::Idle);
+            assert_eq!(pane.session.borrow().runtime().status(), Status::Idle);
             assert_eq!(pane.history_ui.mode, RecentSessionsMode::Open);
         })
     });
@@ -416,11 +402,12 @@ fn local_start_failure_keeps_old_rows_and_reports_files_already_restored(cx: &mu
 
             assert!(matches!(
                 {
-                    let mut guard = pane.session.borrow_mut();
-                    let state = &mut *guard;
+                    let mut state = pane.session.borrow_mut();
+                    let epoch = state.runtime().epoch();
+
                     state
-                        .runtime
-                        .install(state.runtime.epoch(), Err("cannot start".into()))
+                        .runtime_mut()
+                        .install(epoch, Err("cannot start".into()))
                 },
                 StartOutcome::Failed(_)
             ));
@@ -442,8 +429,8 @@ fn local_start_failure_keeps_old_rows_and_reports_files_already_restored(cx: &mu
 
             assert_eq!(rows(pane, cx), ["current"]);
             assert!(pane.input.read(cx).text().len() == 0);
-            assert_eq!(pane.session.borrow().runtime.status(), Status::Exited);
-            assert!(!pane.session.borrow().branch.holds_composer());
+            assert_eq!(pane.session.borrow().runtime().status(), Status::Exited);
+            assert!(!pane.session.borrow().branch().holds_composer());
 
             let feedback = pane
                 .palette
@@ -476,52 +463,42 @@ fn partial_success_picker_disables_repeating_files_but_allows_continuing_the_con
             let request = {
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state
-                    .branch
-                    .begin_rewind(&state.runtime, pane.cwd(cx), None)
+                branch.begin_rewind(runtime, pane.cwd(cx), None)
             }
             .expect("read");
 
             {
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state.branch.checkpoints_loaded(
-                    state.runtime.epoch(),
-                    request,
-                    Ok(vec![checkpoint.clone()]),
-                )
+                branch.checkpoints_loaded(runtime.epoch(), request, Ok(vec![checkpoint.clone()]))
             };
 
             {
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state
-                    .branch
-                    .select_checkpoint(state.runtime.epoch(), checkpoint)
+                branch.select_checkpoint(runtime.epoch(), checkpoint)
             };
 
             {
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state
-                    .branch
-                    .rewind(&mut state.runtime, RewindAction::FilesAndConversation)
+                branch.rewind(runtime, RewindAction::FilesAndConversation)
             };
 
             let BranchUpdate::CreateFork(request) = ({
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state.branch.files_completed(state.runtime.epoch(), Ok(()))
+                branch.files_completed(runtime.epoch(), Ok(()))
             }) else {
                 panic!("fork expected")
             };
@@ -529,11 +506,9 @@ fn partial_success_picker_disables_repeating_files_but_allows_continuing_the_con
             let update = {
                 let mut guard = pane.session.borrow_mut();
 
-                let state = &mut *guard;
+                let (branch, runtime) = guard.branch_parts();
 
-                state
-                    .branch
-                    .fork_created(state.runtime.epoch(), request, Err("disk full".into()))
+                branch.fork_created(runtime.epoch(), request, Err("disk full".into()))
             };
 
             pane.on_rewind_update(update, cx);
@@ -569,6 +544,7 @@ fn history_resume_cannot_take_over_an_open_branch_picker(cx: &mut TestAppContext
                 cwd: None,
                 last_active: SystemTime::UNIX_EPOCH,
                 snippet: None,
+                origin: None,
             }];
 
             pane.history_ui.mode = RecentSessionsMode::Open;
@@ -578,8 +554,8 @@ fn history_resume_cannot_take_over_an_open_branch_picker(cx: &mut TestAppContext
             pane.resume_session(0, cx);
 
             assert_eq!(pane.history_ui.mode, RecentSessionsMode::Open);
-            assert_eq!(pane.session.borrow().runtime.status(), Status::Idle);
-            assert!(pane.session.borrow().branch.picker_is_open());
+            assert_eq!(pane.session.borrow().runtime().status(), Status::Idle);
+            assert!(pane.session.borrow().branch().picker_is_open());
         })
     });
 }

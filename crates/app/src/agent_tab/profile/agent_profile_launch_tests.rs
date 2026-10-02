@@ -1,4 +1,4 @@
-use nmt_config::profile::{AgentProfile, AgentProfileKind, AgentProfileLauncher, EnvVar};
+use nmt_config::profile::{AgentKind, AgentProfile, AgentProfileLauncher, EnvVar};
 
 use crate::agent_tab::profile::{
     ANTHROPIC_MODEL_ENV, ANTHROPIC_SUB_MODEL_ENVS, CODEX_CREDENTIAL_ENV_PREFIX,
@@ -10,7 +10,7 @@ use crate::agent_tab::profile::{
 fn claude_profile_model_is_an_environment_default_with_user_override_last() {
     let profile = AgentProfile {
         name: "Claude Proxy".into(),
-        kind: AgentProfileKind::Claude,
+        kind: AgentKind::Claude,
         executable: "claude".into(),
         model: "claude-profile-model".into(),
         env: vec![EnvVar {
@@ -53,9 +53,47 @@ fn a_pinned_effort_reaches_the_launch_and_default_leaves_it_unset() {
 }
 
 #[test]
+fn pinned_approval_and_sandbox_reach_the_launch_only_in_their_harness_vocabulary() {
+    let profile = |kind, approval: &str, sandbox: &str| AgentProfile {
+        kind,
+        executable: "agent".into(),
+        approval: approval.into(),
+        sandbox: sandbox.into(),
+        ..AgentProfile::default()
+    };
+
+    let claude = agent_launch(&profile(AgentKind::Claude, "acceptEdits", "readOnly"));
+
+    assert_eq!(claude.approval.as_deref(), Some("acceptEdits"));
+    assert_eq!(claude.sandbox, None, "Claude Code has no sandbox policy");
+
+    let codex = agent_launch(&profile(AgentKind::Codex, "never", "dangerFullAccess"));
+
+    assert_eq!(codex.approval.as_deref(), Some("never"));
+    assert_eq!(codex.sandbox.as_deref(), Some("dangerFullAccess"));
+
+    // A value from the other harness, left behind by a kind switch or a hand
+    // edit, would be refused by the harness, so it pins nothing.
+    assert_eq!(
+        agent_launch(&profile(AgentKind::Codex, "acceptEdits", "")).approval,
+        None
+    );
+    assert_eq!(
+        agent_launch(&profile(AgentKind::Claude, "never", "")).approval,
+        None
+    );
+
+    for unset in ["", "default", "  "] {
+        let launch = agent_launch(&profile(AgentKind::Codex, unset, unset));
+
+        assert_eq!((launch.approval, launch.sandbox), (None, None));
+    }
+}
+
+#[test]
 fn replacing_sub_models_points_every_tier_at_the_profile_model() {
     let profile = AgentProfile {
-        kind: AgentProfileKind::Claude,
+        kind: AgentKind::Claude,
         executable: "claude".into(),
         model: "vendor/only-model".into(),
         replace_sub_models: true,
@@ -83,7 +121,7 @@ fn a_user_env_entry_overrides_a_replaced_sub_model() {
     // Case-insensitive, because Windows resolves process environment keys
     // that way and the launcher hands the table straight to the command.
     let profile = AgentProfile {
-        kind: AgentProfileKind::Claude,
+        kind: AgentKind::Claude,
         executable: "claude".into(),
         model: "vendor/only-model".into(),
         replace_sub_models: true,
@@ -109,7 +147,7 @@ fn a_user_env_entry_overrides_a_replaced_sub_model() {
 #[test]
 fn sub_model_replacement_is_off_by_default_and_needs_a_model() {
     let off = AgentProfile {
-        kind: AgentProfileKind::Claude,
+        kind: AgentKind::Claude,
         executable: "claude".into(),
         model: "vendor/only-model".into(),
         ..AgentProfile::default()
@@ -118,7 +156,7 @@ fn sub_model_replacement_is_off_by_default_and_needs_a_model() {
     // Without a model there is nothing to propagate, so the switch alone
     // must not export empty overrides that would break model selection.
     let no_model = AgentProfile {
-        kind: AgentProfileKind::Claude,
+        kind: AgentKind::Claude,
         executable: "claude".into(),
         replace_sub_models: true,
         ..AgentProfile::default()
@@ -140,7 +178,7 @@ fn claude_custom_endpoint_exports_base_url_and_api_key() {
     // provider environment.
     let profile = AgentProfile {
         name: "Claude Proxy".into(),
-        kind: AgentProfileKind::Claude,
+        kind: AgentKind::Claude,
         executable: "claude".into(),
         use_custom_endpoint: true,
         api_base_url: "https://proxy.example.com".into(),
@@ -168,7 +206,7 @@ fn deepseek_custom_endpoint_exports_base_url_and_api_key() {
     // whole of pointing a profile at another provider.
     let profile = AgentProfile {
         name: "DeepSeek Proxy".into(),
-        kind: AgentProfileKind::DeepSeek,
+        kind: AgentKind::DeepSeek,
         executable: "dsh".into(),
         use_custom_endpoint: true,
         api_base_url: "https://gateway.example.com/v1".into(),
@@ -198,7 +236,7 @@ fn a_deepseek_profile_without_the_switch_exports_no_endpoint() {
     // did not turn on; exporting it would route the harness somewhere they
     // did not ask for.
     let profile = AgentProfile {
-        kind: AgentProfileKind::DeepSeek,
+        kind: AgentKind::DeepSeek,
         executable: "dsh".into(),
         api_base_url: "https://gateway.example.com/v1".into(),
         api_key: "sk-deepseek".into(),
@@ -232,7 +270,7 @@ fn deepseek_package_launchers_pin_the_supported_release() {
 
     for (launcher, expected_executable, expected_args) in cases {
         let profile = AgentProfile {
-            kind: AgentProfileKind::DeepSeek,
+            kind: AgentKind::DeepSeek,
             executable: "ignored-dsh".into(),
             launcher,
             ..AgentProfile::default()
@@ -249,7 +287,7 @@ fn deepseek_package_launchers_pin_the_supported_release() {
 fn codex_custom_endpoint_becomes_a_thread_provider_not_a_base_url_env_var() {
     let profile = AgentProfile {
         name: "Codex Proxy".into(),
-        kind: AgentProfileKind::Codex,
+        kind: AgentKind::Codex,
         executable: "codex".into(),
         model: "vendor/custom-model".into(),
         use_custom_endpoint: true,

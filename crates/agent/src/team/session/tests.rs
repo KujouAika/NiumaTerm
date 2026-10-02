@@ -6,11 +6,10 @@ use crate::session::AgentKind;
 use crate::session::team_capabilities::ModeratorAdmission;
 use crate::team::attempt::{AttemptState, BudgetScope, DispatchIntent};
 use crate::team::budget::TurnPurpose;
-use crate::team::content::{Author, PublicMessage, Publication, UserInput};
-use crate::team::context::ContextLimits;
 use crate::team::discussion::{DiscussionMode, DiscussionState, PublicSnapshot};
-use crate::team::execution_slots::WorkStatus;
-use crate::team::identity::{MessageId, OperationId};
+use crate::team::model::{
+    Author, ContextLimits, MessageId, OperationId, PublicMessage, Publication, UserInput,
+};
 use crate::team::room::Room;
 use crate::team::session::{AttemptEventKey, TeamError, TeamSession};
 use crate::team::tests::config;
@@ -77,17 +76,13 @@ fn native_member_settings_allow_concurrent_work_without_room_permission_gates() 
         );
     }
 
-    let ownership = session.store.room().member(alice).unwrap().ownership();
-
     let updated = ThreadSettings {
         sandbox: Some("read-only".into()),
         approval: Some("never".into()),
         ..ThreadSettings::default()
     };
 
-    session
-        .set_member_settings(alice, ownership, updated.clone())
-        .unwrap();
+    session.set_member_settings(alice, updated.clone()).unwrap();
 
     assert_eq!(
         session.store.room().member(alice).unwrap().settings(),
@@ -113,15 +108,12 @@ fn live_dispatch_requires_a_ready_member_and_reopen_rejects_uncertain_retry() {
     let mut room = Room::new(AgentWorkspace::default());
 
     let alice = room.add_member(config("Alice", "C:/frontend")).unwrap();
-    let member = room.member(alice).unwrap();
     let room_id = room.id();
     let operation = OperationId::new();
 
     let intent = DispatchIntent {
         invocation: Default::default(),
-        attachments: Vec::new(),
         recipient: alice,
-        ownership: member.ownership(),
         backend_generation: 1,
         operation,
         stage: None,
@@ -171,7 +163,7 @@ fn live_dispatch_requires_a_ready_member_and_reopen_rejects_uncertain_retry() {
 
     drop(session);
 
-    let (mut session, _) = TeamSession::open(directory.path(), room_id).unwrap();
+    let mut session = TeamSession::open(directory.path(), room_id).unwrap();
 
     session
         .member_ready(alice, 2, ModeratorAdmission::unverified(AgentKind::Codex))
@@ -200,7 +192,7 @@ fn live_dispatch_requires_a_ready_member_and_reopen_rejects_uncertain_retry() {
 
     drop(session);
 
-    let (session, _) = TeamSession::open(directory.path(), room_id).unwrap();
+    let session = TeamSession::open(directory.path(), room_id).unwrap();
 
     assert!(session.pending_recovery().next().is_none());
     assert_eq!(
@@ -228,7 +220,6 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
         publication: Publication::UserInput,
         text: "Compare both options".into(),
         replies_to: Vec::new(),
-        attachments: Vec::new(),
     });
 
     let room_id = room.id();
@@ -240,8 +231,7 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
         .unwrap();
 
     let operation = OperationId::new();
-    let member = session.store.room().member(alice).unwrap();
-    let ownership = member.ownership();
+
     let snapshot = session.store.room().public_snapshot();
 
     let input = UserInput {
@@ -262,9 +252,7 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
 
     let intent = DispatchIntent {
         invocation: Default::default(),
-        attachments: prepared.attachments,
         recipient: alice,
-        ownership,
         backend_generation: 7,
         operation,
         stage: None,
@@ -280,21 +268,11 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
 
     session.dispatch(id, |_| SendOutcome::StartedTurn).unwrap();
 
-    assert!(
-        session
-            .store
-            .room()
-            .member(alice)
-            .unwrap()
-            .coverage()
-            .messages
-            .is_empty()
-    );
+    assert!(session.store.room().coverage(alice).messages.is_empty());
 
     let key = AttemptEventKey {
         attempt: id,
         member: alice,
-        ownership,
         backend_generation: 7,
     };
 
@@ -315,20 +293,13 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
         session
             .store
             .room()
-            .member(alice)
-            .unwrap()
-            .coverage()
+            .coverage(alice)
             .messages
             .contains(&source)
     );
     assert!(
         session
-            .complete_reply(
-                key,
-                "another-turn",
-                "Wrong reply".into(),
-                WorkStatus::default()
-            )
+            .complete_reply(key, "another-turn", "Wrong reply".into(),)
             .unwrap()
             .is_none()
     );
@@ -338,14 +309,13 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
             key,
             "turn-1",
             "Option A is faster; option B uses less memory.".into(),
-            WorkStatus::default(),
         )
         .unwrap()
         .unwrap();
 
     assert!(
         session
-            .complete_reply(key, "turn-1", "Duplicate".into(), WorkStatus::default())
+            .complete_reply(key, "turn-1", "Duplicate".into())
             .unwrap()
             .is_none()
     );
@@ -354,16 +324,14 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
         session
             .store
             .room()
-            .member(alice)
-            .unwrap()
-            .coverage()
+            .coverage(alice)
             .messages
             .contains(&reply)
     );
 
     drop(session);
 
-    let (session, _) = TeamSession::open(directory.path(), room_id).unwrap();
+    let session = TeamSession::open(directory.path(), room_id).unwrap();
 
     assert_eq!(
         session.store.room().attempts()[0].provider_turn.as_deref(),

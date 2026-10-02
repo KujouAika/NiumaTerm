@@ -3,12 +3,11 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::team::budget::Budget;
-use crate::team::content::UserInput;
-use crate::team::identity::{
-    AttemptId, DiscussionId, InteractionId, MemberId, MessageId, OperationId, StageId, SummaryId,
+use crate::team::attempt::{Attempt, AttemptState, BudgetScope};
+use crate::team::budget::{Budget, TurnPurpose};
+use crate::team::model::{
+    AttemptId, DiscussionId, MemberId, MessageId, OperationId, StageId, SummaryId, UserInput,
 };
-use crate::team::moderation::ModeratorDecision;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -44,8 +43,8 @@ pub enum PauseReason {
     UserInput(MessageId),
     ModeChange,
     MemberUnavailable(MemberId),
-    ModeratorUnavailable,
-    Interaction(InteractionId),
+    /// The member is waiting on the user (an approval or a question).
+    Interaction(MemberId),
     AttemptFailed(AttemptId),
     UncertainAttempt(AttemptId),
     SummaryFailed(AttemptId),
@@ -55,9 +54,47 @@ pub enum PauseReason {
     DispatchUnavailable,
     Storage,
     Maintenance(String),
-    Transfer(MemberId),
     Reopened,
     Closed,
+}
+
+impl PauseReason {
+    /// Whether the user's explicit Continue clears this pause. These record
+    /// something the user has now seen or a dispatch problem worth retrying;
+    /// the rest wait for their own condition (a member returning, an answer,
+    /// an uncertain reply settling) or for a dedicated action (adding turns,
+    /// skipping or finishing past a failure).
+    pub(super) fn cleared_by_continue(&self) -> bool {
+        matches!(
+            self,
+            Self::User
+                | Self::UserInput(_)
+                | Self::ModeChange
+                | Self::Reopened
+                | Self::Closed
+                | Self::InvalidModeration(_)
+                | Self::SummaryFailed(_)
+                | Self::ContextSelection
+                | Self::DispatchUnavailable
+                | Self::Storage
+        )
+    }
+
+    /// Whether finishing with a report clears this pause: everything Continue
+    /// clears, plus the spent budget and failed turns the report supersedes.
+    pub(super) fn cleared_by_finish(&self) -> bool {
+        self.cleared_by_continue() || matches!(self, Self::Budget | Self::AttemptFailed(_))
+    }
+
+    /// The pause for attempt `attempt`, sent for `purpose`, failing with a
+    /// known outcome. A failed summary is reported apart from a failed turn.
+    pub(super) fn attempt_failed(attempt: AttemptId, purpose: TurnPurpose) -> Self {
+        if purpose == TurnPurpose::Summary {
+            Self::SummaryFailed(attempt)
+        } else {
+            Self::AttemptFailed(attempt)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +105,6 @@ pub enum StageKind {
     ModeratorDecision,
     InvitedResponses,
     Report,
-    Direct,
     Summary,
 }
 
@@ -106,10 +142,46 @@ pub struct Stage {
     pub decision: Option<ModeratorDecision>,
 }
 
+impl Stage {
+    /// A new stage of `kind` opened on the public `snapshot`, with a pending
+    /// arrangement for each of `recipients`.
+    pub(super) fn pending(
+        kind: StageKind,
+        recipients: Vec<MemberId>,
+        snapshot: PublicSnapshot,
+    ) -> Self {
+        Self {
+            decision: None,
+            id: StageId::new(),
+            kind,
+            arrangements: recipients
+                .into_iter()
+                .map(|recipient| Arrangement {
+                    operation: OperationId::new(),
+                    recipient,
+                    state: ArrangementState::Pending,
+                })
+                .collect(),
+            segments: vec![snapshot],
+        }
+    }
+
+    /// Whether every arrangement reached an outcome that needs no more work.
+    pub(super) fn is_settled(&self) -> bool {
+        self.arrangements.iter().all(|arrangement| {
+            matches!(
+                arrangement.state,
+                ArrangementState::Completed(_)
+                    | ArrangementState::Skipped
+                    | ArrangementState::Cancelled
+            )
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Discussion {
     pub(super) id: DiscussionId,
-    pub(super) objective: String,
     pub(super) participants: Vec<MemberId>,
     pub(super) mode: DiscussionMode,
     pub(super) state: DiscussionState,
@@ -133,6 +205,14 @@ pub enum DiscussionError {
 }
 
 impl Discussion {
+    pub fn remaining_non_report_turns(&self, attempts: &[Attempt]) -> u32 {
+        self.budget
+            .remaining_non_report_turns(attempts.iter().filter(|attempt| {
+                attempt.intent.budget == BudgetScope::Discussion(self.id)
+                    && attempt.state != AttemptState::Rejected
+            }))
+    }
+
     pub(super) fn new(
         objective: String,
         participants: Vec<MemberId>,
@@ -147,10 +227,9 @@ impl Discussion {
         Ok(Self {
             id: DiscussionId::new(),
             request: UserInput {
-                text: objective.clone(),
+                text: objective,
                 ..UserInput::default()
             },
-            objective,
             participants,
             mode,
             state: DiscussionState::Idle,
@@ -162,10 +241,6 @@ impl Discussion {
 
     pub fn id(&self) -> DiscussionId {
         self.id
-    }
-
-    pub fn objective(&self) -> &str {
-        &self.objective
     }
 
     pub fn participants(&self) -> &[MemberId] {
@@ -188,10 +263,6 @@ impl Discussion {
         &self.stages
     }
 
-    pub fn budget(&self) -> &Budget {
-        &self.budget
-    }
-
     pub fn pause(&mut self, reason: PauseReason) -> bool {
         if self.state == DiscussionState::Completed {
             return false;
@@ -210,6 +281,29 @@ impl Discussion {
         } else {
             DiscussionState::Paused
         };
+    }
+
+    /// Whether work may be sent for this discussion: it is running or
+    /// finishing, and nothing holds it paused.
+    pub(super) fn is_dispatchable(&self) -> bool {
+        self.pauses.is_empty()
+            && matches!(
+                self.state,
+                DiscussionState::Running | DiscussionState::Finishing
+            )
+    }
+
+    /// Set every arrangement made for `operation` to `state`.
+    pub(super) fn mark_operation(&mut self, operation: OperationId, state: ArrangementState) {
+        for arrangement in self
+            .stages
+            .iter_mut()
+            .flat_map(|stage| &mut stage.arrangements)
+        {
+            if arrangement.operation == operation {
+                arrangement.state = state;
+            }
+        }
     }
 
     /// Resolving one condition leaves the explicit continuation gate closed.
@@ -244,4 +338,19 @@ impl Discussion {
                 )
             })
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", deny_unknown_fields, rename_all = "snake_case")]
+pub enum ModeratorAction {
+    Invite { recipients: Vec<MemberId> },
+    Report,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModeratorDecision {
+    pub operation: OperationId,
+    pub attempt: AttemptId,
+    pub actor: MemberId,
+    pub action: ModeratorAction,
 }

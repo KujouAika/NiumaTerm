@@ -1,0 +1,163 @@
+diff --git a/src/terminal/formatter.zig b/src/terminal/formatter.zig
+index 4feedda50..9d53c4e7a 100644
+--- a/src/terminal/formatter.zig
++++ b/src/terminal/formatter.zig
+@@ -10,6 +10,7 @@ const hyperlink = @import("hyperlink.zig");
+ const kitty = @import("kitty.zig");
+ const modespkg = @import("modes.zig");
+ const Screen = @import("Screen.zig");
++const ScreenSet = @import("ScreenSet.zig");
+ const Terminal = @import("Terminal.zig");
+ const Cell = @import("page.zig").Cell;
+ const Coordinate = @import("point.zig").Coordinate;
+@@ -356,6 +357,23 @@ pub const TerminalFormatter = struct {
+         self: TerminalFormatter,
+         writer: *std.Io.Writer,
+     ) std.Io.Writer.Error!void {
++        // A whole-terminal VT dump taken while the alternate screen is active
++        // must also carry the primary screen: a replica that only receives the
++        // alternate screen shows an empty primary screen (and loses its
++        // scrollback) once the full-screen program exits. The primary screen
++        // is written first, then the alternate-screen modes switch over, the
++        // same order a real session produced them in.
++        const primary_screen: ?*const Screen = primary: {
++            if (self.opts.emit != .vt or !self.extra.modes) break :primary null;
++            if (self.pin_map != null) break :primary null;
++            if (self.terminal.screens.active_key != .alternate) break :primary null;
++            switch (self.content) {
++                .none => break :primary null,
++                .selection => |sel| if (sel != null) break :primary null,
++            }
++            break :primary self.terminal.screens.get(.primary);
++        };
++
+         // Emit palette before screen content if using VT format. Technically
+         // we could do this after but this way if replay is slow for whatever
+         // reason the colors will be right right away.
+@@ -415,7 +433,9 @@ pub const TerminalFormatter = struct {
+                 const current = self.terminal.modes.get(mode);
+                 const default_val = @field(self.terminal.modes.default, field.name);
+ 
+-                if (current != default_val) {
++                if (current != default_val and
++                    !(primary_screen != null and isAltScreenMode(mode)))
++                {
+                     const tag: modespkg.ModeTag = @bitCast(@intFromEnum(mode));
+                     const prefix = if (tag.ansi) "" else "?";
+                     const suffix = if (current) "h" else "l";
+@@ -483,6 +503,33 @@ pub const TerminalFormatter = struct {
+             }
+         }
+ 
++        if (primary_screen) |primary| {
++            var primary_formatter: ScreenFormatter = .init(primary, self.opts);
++            primary_formatter.content = self.content;
++            try primary_formatter.format(writer);
++
++            // The primary cursor is where 1049 saved it on entry, so leaving
++            // the alternate screen in the replica restores the same position.
++            primary_formatter.content = .none;
++            primary_formatter.extra = self.extra.screen;
++            try primary_formatter.format(writer);
++
++            inline for (.{
++                modespkg.Mode.alt_screen_legacy,
++                modespkg.Mode.alt_screen,
++                modespkg.Mode.alt_screen_save_cursor_clear_enter,
++            }) |mode| {
++                if (self.terminal.modes.get(mode)) {
++                    const tag: modespkg.ModeTag = @bitCast(@intFromEnum(mode));
++                    try writer.print("\x1b[?{d}h", .{tag.value});
++                }
++            }
++
++            // Tabstop emission above homed the cursor on the primary screen;
++            // the alternate screen's content is also formatted from the top.
++            try writer.writeAll("\x1b[H");
++        }
++
+         var screen_formatter: ScreenFormatter = .init(self.terminal.screens.active, self.opts);
+         screen_formatter.content = self.content;
+         screen_formatter.pin_map = self.pin_map;
+@@ -552,6 +599,16 @@ pub const TerminalFormatter = struct {
+     }
+ };
+ 
++fn isAltScreenMode(mode: modespkg.Mode) bool {
++    return switch (mode) {
++        .alt_screen_legacy,
++        .alt_screen,
++        .alt_screen_save_cursor_clear_enter,
++        => true,
++        else => false,
++    };
++}
++
+ /// Screen formatter formats a single terminal screen (e.g. primary vs alt).
+ pub const ScreenFormatter = struct {
+     /// The screen to format.
+@@ -4860,6 +4917,64 @@ test "TerminalFormatter vt with palette" {
+     try testing.expectEqual(t.colors.palette.current[255], t2.colors.palette.current[255]);
+ }
+ 
++test "TerminalFormatter vt restores primary screen under alternate screen" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var builder: std.Io.Writer.Allocating = .init(alloc);
++    defer builder.deinit();
++
++    var t = try Terminal.init(io, alloc, .{
++        .cols = 20,
++        .rows = 5,
++    });
++    defer t.deinit(alloc);
++
++    var s = t.vtStream();
++    defer s.deinit();
++
++    s.nextSlice("shell$ ls\r\nfile.txt\r\nshell$ ");
++    s.nextSlice("\x1b[?1049h");
++    s.nextSlice("editor view");
++
++    var formatter: TerminalFormatter = .init(&t, .vt);
++    formatter.extra = .all;
++    try formatter.format(&builder.writer);
++
++    var t2 = try Terminal.init(io, alloc, .{
++        .cols = 20,
++        .rows = 5,
++    });
++    defer t2.deinit(alloc);
++
++    var s2 = t2.vtStream();
++    defer s2.deinit();
++
++    s2.nextSlice(builder.writer.buffered());
++
++    try testing.expectEqual(ScreenSet.Key.alternate, t2.screens.active_key);
++    try testing.expectEqual(t.screens.active.cursor.x, t2.screens.active.cursor.x);
++    try testing.expectEqual(t.screens.active.cursor.y, t2.screens.active.cursor.y);
++
++    // Leaving the alternate screen must reveal the same primary screen and
++    // put the cursor back where the shell left it.
++    s.nextSlice("\x1b[?1049l");
++    s2.nextSlice("\x1b[?1049l");
++
++    var original: std.Io.Writer.Allocating = .init(alloc);
++    defer original.deinit();
++    try TerminalFormatter.init(&t, .plain).format(&original.writer);
++
++    var replayed: std.Io.Writer.Allocating = .init(alloc);
++    defer replayed.deinit();
++    try TerminalFormatter.init(&t2, .plain).format(&replayed.writer);
++
++    try testing.expectEqualStrings(original.writer.buffered(), replayed.writer.buffered());
++    try testing.expectEqual(t.screens.active.cursor.x, t2.screens.active.cursor.x);
++    try testing.expectEqual(t.screens.active.cursor.y, t2.screens.active.cursor.y);
++}
++
+ test "TerminalFormatter with selection" {
+     const testing = std.testing;
+     const alloc = testing.allocator;

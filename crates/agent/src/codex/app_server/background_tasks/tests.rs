@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::background_task::{
-    BackgroundTaskDiscoveryState, BackgroundTaskKey, BackgroundTaskRefs, BackgroundTaskState,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskRefs, BackgroundTaskState,
 };
 use crate::chat::Item;
 use crate::codex::app_server::THREAD_SCOPED_NOTIFICATIONS;
@@ -86,13 +86,11 @@ fn a_spawn_item_confirms_the_child_and_applies_its_held_update() {
 
     assert_eq!(child.state, BackgroundTaskState::Working);
     assert_eq!(child.objective.as_deref(), Some("review the diff"));
-    assert_eq!(child.model.as_deref(), Some("gpt-5-codex"));
     assert_eq!(child.parent_session, BackgroundTaskKey::codex(ROOT));
     assert_eq!(
         child.refs,
         BackgroundTaskRefs::Codex {
             thread_id: "thr_child".into(),
-            parent_thread_id: Some(ROOT.into()),
         }
     );
 }
@@ -496,7 +494,7 @@ fn descendant_requests_page_through_subagent_spawns() {
     assert!(tasks.query_in_flight());
     assert!(matches!(
         tasks.snapshot().expect("registry exists").discovery,
-        BackgroundTaskDiscoveryState::Loading
+        BackgroundTaskLoadState::Loading
     ));
 
     let (_, next_cursor) = tasks.apply_descendants(
@@ -539,10 +537,7 @@ fn descendant_requests_page_through_subagent_spawns() {
     let snapshot = tasks.snapshot().expect("registry exists");
 
     assert_eq!(snapshot.tasks.len(), 2);
-    assert!(matches!(
-        snapshot.discovery,
-        BackgroundTaskDiscoveryState::Ready
-    ));
+    assert!(matches!(snapshot.discovery, BackgroundTaskLoadState::Ready));
 
     // A listed thread that is no longer loaded reads as ended, so a resumed
     // parent shows its past children under Finished.
@@ -554,7 +549,6 @@ fn descendant_requests_page_through_subagent_spawns() {
 
     assert_eq!(restored.state, BackgroundTaskState::Stopped);
     assert_eq!(restored.display_name.as_deref(), Some("swift-otter"));
-    assert_eq!(restored.agent_type.as_deref(), Some("reviewer"));
     assert_eq!(restored.objective.as_deref(), Some("review the diff"));
     assert!(restored.started_at.is_some());
     assert!(restored.completed_at.is_some());
@@ -570,10 +564,8 @@ fn descendant_requests_page_through_subagent_spawns() {
         nested.refs,
         BackgroundTaskRefs::Codex {
             thread_id: "thr_b".into(),
-            parent_thread_id: Some("thr_a".into()),
         }
     );
-    assert_eq!(nested.depth, Some(2));
 }
 
 #[test]
@@ -646,7 +638,7 @@ fn a_failed_query_keeps_known_rows_and_only_reports_unavailable_when_empty() {
     assert!(empty.fail_query(7, "thread/list unsupported"));
     assert!(matches!(
         empty.snapshot().expect("registry exists").discovery,
-        BackgroundTaskDiscoveryState::Unavailable { .. }
+        BackgroundTaskLoadState::Unavailable { .. }
     ));
 
     let mut populated = rooted();
@@ -661,10 +653,7 @@ fn a_failed_query_keeps_known_rows_and_only_reports_unavailable_when_empty() {
 
     assert_eq!(snapshot.tasks.len(), 1);
     assert_eq!(snapshot.active_count(), 1);
-    assert!(matches!(
-        snapshot.discovery,
-        BackgroundTaskDiscoveryState::Ready
-    ));
+    assert!(matches!(snapshot.discovery, BackgroundTaskLoadState::Ready));
 }
 
 #[test]
@@ -685,16 +674,38 @@ fn selecting_another_root_drops_the_previous_conversation_rows() {
     assert_eq!(tasks.scope(Some("thr_child")), ThreadScope::Unrelated);
 }
 
+/// Every panel opening refreshes the same root. Its pages must be followed
+/// again on each pass, while a server repeating a page within one pass ends
+/// discovery instead of looping.
 #[test]
-fn a_repeated_pagination_cursor_ends_discovery() {
+fn every_discovery_pass_follows_its_pages_and_a_repeat_ends_it() {
     let mut tasks = rooted();
 
-    assert!(tasks.accept_cursor("page-2"));
-    assert!(
-        !tasks.accept_cursor("page-2"),
-        "a cursor already requested for this root would page forever"
-    );
-    assert!(tasks.accept_cursor("page-3"));
+    for pass in 0..2 {
+        let first = 10 + pass * 10;
+
+        tasks
+            .descendant_request(first, None)
+            .expect("root is known");
+
+        let (_, next) =
+            tasks.apply_descendants(first, &json!({"data": [], "nextCursor": "page-2"}));
+
+        assert_eq!(next.as_deref(), Some("page-2"), "pass {pass}");
+
+        tasks
+            .descendant_request(first + 1, next.as_deref())
+            .expect("root is known");
+
+        let (_, next) =
+            tasks.apply_descendants(first + 1, &json!({"data": [], "nextCursor": "page-2"}));
+
+        assert!(next.is_none(), "pass {pass} repeats its cursor");
+        assert!(matches!(
+            tasks.snapshot().expect("registry exists").discovery,
+            BackgroundTaskLoadState::Ready
+        ));
+    }
 }
 
 #[test]

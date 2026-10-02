@@ -3,16 +3,6 @@
 //! The host schedules blocking work and displays returned outcomes. Runtime,
 //! delivery, recovery, and interactions advance together under one owner.
 
-pub use crate::session::controller::events::SessionEffect;
-pub use crate::session::controller::input::{QuestionSubmission, UserInterruption};
-pub use crate::session::controller::readiness::{SessionBranch, SessionReady, SessionReplay};
-pub use crate::session::controller::transitions::{SessionFailure, SessionStart};
-
-mod events;
-mod input;
-mod readiness;
-mod transitions;
-
 #[cfg(test)]
 mod tests;
 
@@ -23,68 +13,105 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
 
 use crate::background_task::{BackgroundTaskKey, BackgroundTaskSnapshot};
 use crate::chat::{
-    Event, GoalStatus, Item, ReplayTurn, SendOutcome, SkillCatalog, SlashCommandInfo,
-    SlashCommandOutcome, ThreadSettings,
+    Event, ForkCheckpoint, GoalStatus, Item, QueuedPrompt, ReplayTurn, SendOutcome, SessionScope,
+    SessionSummary, SkillCatalog, SlashCommandInfo, SlashCommandOutcome, SlashCommandRunPolicy,
+    TeamDecisionRequest, ThreadSettings, TurnRetry,
 };
+use crate::claude_code::sessions::{ClaudeCheckpoint, ClaudeFork};
 use crate::progress::TaskList;
-use crate::session::branch::{BranchCompletion, BranchReplay, ConversationBranch};
-use crate::session::capabilities::AgentCapabilities as _;
-use crate::session::children::{ChildAgents, ChildTranscript, scoped_background_tasks};
-use crate::session::commands::{CommandQueue, PendingSlashCommand};
-use crate::session::delivery::{MessageDelivery, RecoverablePrompt, Submission};
-use crate::session::input::{
-    ApprovalOutcome, QuestionAction, QuestionKey, SessionInput, Submission as InputSubmission,
+use crate::session::branch::{
+    BranchCompletion, BranchError, BranchFailure, BranchReplay, BranchUpdate, BranchView,
+    CheckpointRead, ConversationBranch, ForkRequest, PromptTarget, RewindAction,
 };
-use crate::session::lifecycle::{SessionRuntime, StartOutcome, Status};
+use crate::session::children::{ChildAgents, ChildTranscript};
+use crate::session::command::{Prompt, SubmitRefusal, Submitted};
+use crate::session::commands::{CommandAdmission, CommandQueue, PendingSlashCommand};
+use crate::session::delivery::{MessageDelivery, RecoverablePrompt};
+use crate::session::input::{
+    ApprovalOutcome, QuestionAction, QuestionCompletion, QuestionKey, SessionInput, Submission,
+};
+use crate::session::lifecycle::{
+    InterruptOutcome, RecoverySnapshot, SessionRuntime, StartOutcome, Status,
+};
 use crate::session::naming::ConversationNaming;
-use crate::session::restore::{ConversationRestore, ReadyAction, ReplayAction, SettingsSeed};
-use crate::session::settings::ConversationSettings;
+use crate::session::restore::{
+    ConversationRestore, LoadedReplay, ReadyAction, ReplayAction, ReplayLoaded, ReplayRead,
+    ResumeStart, SettingsSeed,
+};
+use crate::session::settings::{ConversationSettings, ProfilePins};
+use crate::session::side::{SideQuestionOutcome, SideQuestions};
 use crate::session::update_readiness::{ConversationWork, Readiness, prepare_stop};
-use crate::session::workflows::WorkflowData;
-use crate::session::{AgentKind, Backend, RecoveryIdentity};
-use crate::transcript::TextField;
-use crate::transcript::conversation::{ConversationImage, ConversationState, hidden};
+use crate::session::view::{
+    CatalogView, ImageRef, NamingView, QueueView, SettingsView, Since, StatusView, TasksView,
+    UsageView, ViewEntry, ViewSlot, ViewSlots,
+};
+use crate::session::workflows::{RefreshPlan, WorkflowData, WorkflowReader};
+use crate::session::{
+    AgentKind, Backend, ConversationTitleRequest, ImageAttachment, OperationError, PromptRequest,
+    RecoveryIdentity, RenameOutcome, SettingsOutcome, TaskHistory, TaskHistoryRead, TranscriptLoad,
+    UnsupportedOperation,
+};
+use crate::transcript::conversation::{
+    ConversationImage, ConversationState, EntryMetadata, hidden,
+};
+use crate::transcript::{TextField, TranscriptEntry};
+use crate::workflow::{WorkflowRefreshRequest, WorkflowRefreshResult, WorkflowRun, WorkflowSource};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubmissionBlock {
     QuestionResponse,
     ConversationChange,
     CommandStarting,
 }
 
+/// The host's settings a conversation may start from: what the tab was last
+/// left set to and its launch profile's pins. Which of them apply is the
+/// controller's own decision, made from its settings seed when the session
+/// reports ready.
 #[derive(Clone, Default)]
 pub struct ReadyDefaults {
     pub stored: Option<ThreadSettings>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
+    pub pins: ProfilePins,
 }
 
 pub struct SessionController {
     kind: AgentKind,
-    pub ready_defaults: ReadyDefaults,
-    pub goal: Option<GoalStatus>,
+    ready_defaults: ReadyDefaults,
+    goal: Option<GoalStatus>,
 
     /// An explicit empty snapshot prevents older transcript tasks resurfacing.
-    pub task_list: Option<TaskList>,
+    task_list: Option<TaskList>,
 
-    pub plan_mode: bool,
+    /// Snapshots of the task list written into the transcript so far, which
+    /// numbers the next one.
+    task_snapshots: u64,
+
+    plan_mode: bool,
     command_catalog: Option<Vec<SlashCommandInfo>>,
     skill_catalog: Option<SkillCatalog>,
-    pub conversation: Rc<RefCell<ConversationState>>,
-    pub pending_images: VecDeque<(String, Vec<Arc<ConversationImage>>)>,
-    pub runtime: SessionRuntime,
-    pub delivery: MessageDelivery,
-    pub restore: ConversationRestore,
-    pub naming: ConversationNaming,
+    conversation: Rc<RefCell<ConversationState>>,
+    pending_images: VecDeque<(String, Vec<Arc<ConversationImage>>)>,
+    runtime: SessionRuntime,
+    delivery: MessageDelivery,
+    restore: ConversationRestore,
+    naming: ConversationNaming,
     pub controls: ConversationSettings,
-    pub input: SessionInput,
-    pub branch: ConversationBranch,
-    pub commands: CommandQueue,
-    pub children: ChildAgents,
-    pub workflows: WorkflowData,
+    input: SessionInput,
+    branch: ConversationBranch,
+    commands: CommandQueue,
+    children: ChildAgents,
+    workflows: WorkflowData,
+    side: SideQuestions,
+
+    /// The conversations last listed for a view in another process, which
+    /// reach it through the published view.
+    listed_history: Vec<SessionSummary>,
 }
 
 impl SessionController {
@@ -94,6 +121,7 @@ impl SessionController {
             ready_defaults: ReadyDefaults::default(),
             goal: None,
             task_list: None,
+            task_snapshots: 0,
             plan_mode: false,
             command_catalog: None,
             skill_catalog: None,
@@ -103,6 +131,7 @@ impl SessionController {
             delivery: MessageDelivery::new(kind),
             restore: ConversationRestore::default(),
             naming: ConversationNaming::default(),
+            listed_history: Vec::new(),
             controls: ConversationSettings {
                 seed: SettingsSeed::Defaults,
                 ..ConversationSettings::default()
@@ -112,6 +141,7 @@ impl SessionController {
             commands: CommandQueue::default(),
             children: ChildAgents::default(),
             workflows: WorkflowData::default(),
+            side: SideQuestions::default(),
         }
     }
 
@@ -121,7 +151,7 @@ impl SessionController {
         text: String,
         send: impl FnOnce(&mut Backend, &str) -> SendOutcome,
         recovery: impl FnOnce() -> Option<RecoverablePrompt>,
-    ) -> Result<Submission, SubmissionBlock> {
+    ) -> Result<SendOutcome, SubmissionBlock> {
         if self.input.has_submission() {
             return Err(SubmissionBlock::QuestionResponse);
         }
@@ -138,21 +168,108 @@ impl SessionController {
 
         let outcome = self.runtime.send(|backend| send(backend, &text));
 
-        let result = self.delivery.submit(outcome, text, recovery);
+        let outcome = self.delivery.submit(outcome, text.clone(), recovery);
 
-        if let Submission::Started { text } = &result {
+        if outcome == SendOutcome::StartedTurn {
             self.conversation.borrow_mut().start();
 
-            self.push_item(Item::UserMessage {
-                text: Some(text.clone()),
-            });
+            self.push_item(Item::UserMessage { text: Some(text) });
         }
 
-        Ok(result)
+        Ok(outcome)
+    }
+
+    /// Submit a composed message. What the harness took is recorded here,
+    /// title and images included, so a view in another process gets the
+    /// same result as one beside the session.
+    pub fn submit_prompt(&mut self, prompt: Prompt) -> Result<Submitted, SubmitRefusal> {
+        let title = self.title_request(&prompt.title_text, |_| prompt.fallback_title.clone());
+        let settings = self.controls.settings.clone();
+
+        let attachments: Vec<ImageAttachment> = prompt
+            .images
+            .iter()
+            .map(|image| ImageAttachment {
+                bytes: &image.bytes,
+                media_type: &image.media_type,
+            })
+            .collect();
+
+        let outcome = self
+            .submit(
+                prompt.text.clone(),
+                |backend, text| {
+                    backend.submit(&PromptRequest {
+                        text,
+                        settings: &settings,
+                        skill: prompt.skill.as_ref(),
+                        images: &attachments,
+                        image_paths: &prompt.image_paths,
+                        title: title.as_ref(),
+                    })
+                },
+                || prompt.recoverable,
+            )
+            .map_err(SubmitRefusal::Blocked)?;
+
+        let started_turn = match outcome {
+            SendOutcome::StartedTurn => true,
+            SendOutcome::Steered => false,
+            SendOutcome::NotReady => return Err(SubmitRefusal::NotReady),
+            SendOutcome::Rejected { message } => return Err(SubmitRefusal::Rejected { message }),
+        };
+
+        // Both providers generate their final title asynchronously. Claiming
+        // the first accepted prompt here prevents a failed generation from
+        // naming the conversation from a later message.
+        let title = match (self.kind, title) {
+            (AgentKind::Codex | AgentKind::Claude, Some(title)) => {
+                self.claim_title();
+
+                self.naming.title = Some(title.provisional_title.clone());
+
+                Some(title.provisional_title)
+            }
+            _ => None,
+        };
+
+        let images: Vec<Arc<ConversationImage>> = prompt
+            .images
+            .into_iter()
+            .map(|image| Arc::new(ConversationImage::new(image.bytes)))
+            .collect();
+
+        if started_turn {
+            self.conversation.borrow_mut().attach_last_images(images);
+        } else if !images.is_empty() {
+            // A steered prompt's row appears when the harness echoes it.
+            self.hold_sent_images(prompt.text, images);
+        }
+
+        Ok(Submitted {
+            started_turn,
+            title,
+        })
     }
 
     pub fn execute_command(&mut self, command: &PendingSlashCommand) -> SlashCommandOutcome {
-        self.commands.execute(self.runtime.backend_mut(), command)
+        let outcome = self.commands.execute(self.runtime.backend_mut(), command);
+
+        self.adopt_command_approval(&outcome);
+
+        outcome
+    }
+
+    /// The harness pins its own default preset into every conversation it
+    /// opens, so a permission switch a command made is the preset in force.
+    fn adopt_command_approval(&mut self, outcome: &SlashCommandOutcome) {
+        if let SlashCommandOutcome::Completed {
+            approval: Some(preset),
+            ..
+        } = outcome
+        {
+            self.controls.settings.approval = Some(preset.clone());
+        }
     }
 
     pub fn next_command(&mut self) -> Option<(String, SlashCommandOutcome)> {
@@ -177,10 +294,6 @@ impl SessionController {
         Some((command.name, outcome))
     }
 
-    fn settle_command(&mut self, outcome: &SlashCommandOutcome) -> bool {
-        self.commands.settle(outcome, self.runtime.status())
-    }
-
     /// Installation failure must retire accepted work from the failed start too.
     pub fn install(&mut self, epoch: u64, spawned: Result<Backend, String>) -> StartOutcome {
         let outcome = self.runtime.install(epoch, spawned);
@@ -194,55 +307,584 @@ impl SessionController {
         outcome
     }
 
-    pub fn starting(&mut self, recovery: Option<&RecoveryIdentity>) -> SessionStart {
+    /// Begin a start and return its epoch, which later events must carry.
+    pub fn starting(&mut self, recovery: Option<&RecoveryIdentity>) -> u64 {
         let epoch = self.runtime.begin_start();
 
         self.input.starting(epoch);
 
         self.restore.starting(epoch, recovery);
 
-        let reset_branch = !self.branch.starting(epoch, recovery);
-
-        if reset_branch {
+        if !self.branch.starting(epoch, recovery) {
             self.branch.clear();
         }
 
         self.naming.named = recovery.is_some();
+        self.command_catalog = None;
+        self.skill_catalog = None;
 
-        SessionStart {
-            epoch,
-            reset_branch,
-        }
+        epoch
     }
 
     pub fn background_tasks(&self) -> Option<&BackgroundTaskSnapshot> {
-        scoped_background_tasks(
-            self.runtime.background_task_parent().as_ref(),
-            self.children.background_tasks.as_ref(),
-        )
+        self.children
+            .scoped(self.runtime.background_task_parent().as_ref())
     }
 
     pub fn background_task_transcript(&self, key: &BackgroundTaskKey) -> Option<&ChildTranscript> {
-        self.background_tasks()?;
-
-        self.children.transcripts.get(key)
+        self.children
+            .transcript(self.runtime.background_task_parent().as_ref(), key)
     }
 
     pub fn background_activity(&self) -> (usize, usize) {
-        self.background_tasks()
-            .map_or((0, 0), |tasks| (tasks.tasks.len(), tasks.active_count()))
+        self.children
+            .activity(self.runtime.background_task_parent().as_ref())
     }
 
-    fn set_background_tasks(&mut self, snapshot: BackgroundTaskSnapshot) -> bool {
-        let before = self.background_activity();
+    /// Prepare the read that rebuilds this conversation's child agents, once
+    /// per conversation. A repeated `Ready` for the same conversation must not
+    /// schedule a second read over children that are already live.
+    pub fn begin_task_restoration(&mut self, cwd: Option<&str>) -> Option<TaskHistoryRead> {
+        let session_id = self.runtime.backend()?.session_id()?.to_owned();
 
-        self.children.background_tasks = Some(snapshot);
+        if !self.children.claim_restore(&session_id) {
+            return None;
+        }
 
-        self.background_activity() != before
+        self.runtime.backend_mut()?.begin_task_restoration(cwd)
     }
 
-    pub fn update_readiness(&self, work: ConversationWork) -> Readiness {
-        work.readiness(&self.runtime, &self.commands, &self.delivery)
+    pub fn commands(&self) -> &CommandQueue {
+        &self.commands
+    }
+
+    pub fn clear_commands(&mut self) {
+        self.commands.clear();
+    }
+
+    pub fn admit_command_while_busy(
+        &mut self,
+        command: PendingSlashCommand,
+        policy: SlashCommandRunPolicy,
+    ) -> CommandAdmission {
+        self.commands.while_busy(command, policy)
+    }
+
+    pub fn goal(&self) -> Option<&GoalStatus> {
+        self.goal.as_ref()
+    }
+
+    pub fn task_list(&self) -> Option<&TaskList> {
+        self.task_list.as_ref()
+    }
+
+    pub fn plan_mode(&self) -> bool {
+        self.plan_mode
+    }
+
+    pub fn set_ready_defaults(&mut self, defaults: ReadyDefaults) {
+        self.ready_defaults = defaults;
+    }
+
+    /// Keep the images of a sent prompt until its transcript row exists to
+    /// take them, matched by the prompt text the row will carry.
+    pub fn hold_sent_images(&mut self, text: String, images: Vec<Arc<ConversationImage>>) {
+        self.pending_images.push_back((text, images));
+    }
+
+    /// The title an unnamed conversation should take from this prompt.
+    pub fn title_request(
+        &self,
+        text: &str,
+        fallback: impl FnOnce(&str) -> Option<String>,
+    ) -> Option<ConversationTitleRequest> {
+        self.naming.request(self.kind, text, fallback)
+    }
+
+    /// The title the conversation goes by, once it has one.
+    pub fn conversation_title(&self) -> Option<&str> {
+        self.naming.title.as_deref()
+    }
+
+    /// Record that a prompt claimed the conversation's title, so a failed
+    /// asynchronous generation cannot let a later message name it instead.
+    pub fn claim_title(&mut self) {
+        self.naming.named = true;
+    }
+
+    pub fn rename(&mut self, title: &str) {
+        self.naming.rename(title);
+
+        self.sync_pending_rename();
+    }
+
+    /// A rename made before the harness can address the conversation waits
+    /// here and is sent once it can.
+    pub fn sync_pending_rename(&mut self) {
+        self.naming.sync(self.runtime.backend_mut());
+    }
+
+    pub fn begin_resume(&mut self, summary: &SessionSummary, cwd: Option<&str>) -> ResumeStart {
+        self.restore
+            .begin(&mut self.runtime, self.kind, summary, cwd)
+    }
+
+    pub fn replay_loaded(
+        &mut self,
+        request: ReplayRead,
+        cwd: Option<&str>,
+        replay: Result<LoadedReplay, String>,
+    ) -> ReplayLoaded {
+        self.restore.loaded(&mut self.runtime, request, cwd, replay)
+    }
+
+    /// The transcript content, shared with the view that renders it. The
+    /// handle is lent rather than exposed so the session and its view can
+    /// never end up holding different conversations.
+    pub fn conversation(&self) -> &Rc<RefCell<ConversationState>> {
+        &self.conversation
+    }
+
+    pub fn runtime(&self) -> &SessionRuntime {
+        &self.runtime
+    }
+
+    /// Feed one frame from the harness to the session that was started under
+    /// `epoch`. `None` means that session is gone and the frame is discarded.
+    pub fn process(&mut self, epoch: u64, message: Value) -> Option<Vec<Event>> {
+        self.runtime.process(epoch, message)
+    }
+
+    pub fn process_exit(&mut self, epoch: u64) -> Option<Vec<Event>> {
+        self.runtime.process_exit(epoch)
+    }
+
+    /// Take the backend out so its owner can shut it down off this thread.
+    pub fn retire(&mut self) -> Option<Backend> {
+        self.runtime.retire()
+    }
+
+    /// End the session for good and hand back the backend to shut down. A new
+    /// epoch is opened first so nothing the old backend still delivers can be
+    /// admitted, and the failure releases whatever was waiting on a reply.
+    pub fn close(&mut self) -> Option<Backend> {
+        self.starting(None);
+
+        let backend = self.runtime.retire();
+
+        self.failed("session closed", true);
+
+        self.clear_conversation();
+
+        backend
+    }
+
+    /// The shared host went away underneath a live conversation. Recording
+    /// the identity first is what lets a retry continue this conversation
+    /// instead of opening an empty one.
+    pub fn host_exited(&mut self, profile_name: String, message: String) {
+        let identity = self
+            .runtime
+            .backend()
+            .and_then(|backend| backend.recovery_identity());
+
+        self.runtime.reconnect(Some(RecoverySnapshot {
+            identity,
+            profile_name,
+        }));
+
+        self.runtime.recovery_failed(message);
+    }
+
+    pub fn wait_for_update(&mut self) {
+        self.runtime.wait_for_update();
+    }
+
+    pub fn cancel_update_wait(&mut self) -> bool {
+        self.runtime.cancel_update_wait()
+    }
+
+    /// Bring the conversation to rest before an update replaces its harness.
+    /// An open approval is cancelled rather than interrupted, because the
+    /// harness is blocked on the answer and would not see an interrupt.
+    /// Accepted prompts are published so none is lost with the old process.
+    pub fn stop_active_work_for_update(&mut self) {
+        if self.input.approval().is_some() {
+            self.respond_approval("cancel");
+        } else {
+            self.runtime.interrupt(None);
+        }
+
+        self.prepare_update_stop();
+
+        self.publish_confirmed();
+
+        self.branch.cancel_picker();
+
+        self.conversation.borrow_mut().live.set_compacting(false);
+
+        self.runtime.wait_for_update();
+    }
+
+    pub fn suspend_for_update(&mut self) -> (u64, Option<Backend>) {
+        self.runtime.suspend_for_update()
+    }
+
+    pub fn shutdown_failed(&mut self, epoch: u64, backend: Backend) -> Result<(), Box<Backend>> {
+        self.runtime.shutdown_failed(epoch, backend)
+    }
+
+    pub fn provider_updating(&mut self) {
+        self.runtime.provider_updating();
+    }
+
+    pub fn reconnect(&mut self, snapshot: Option<RecoverySnapshot>) {
+        self.runtime.reconnect(snapshot);
+    }
+
+    pub fn recovery_failed(&mut self, message: String) {
+        self.runtime.recovery_failed(message);
+    }
+
+    pub fn refresh_background_tasks(&mut self) {
+        self.runtime.refresh_background_tasks();
+    }
+
+    pub fn interrupt_background_task(&mut self, key: &BackgroundTaskKey) -> bool {
+        self.runtime.interrupt_background_task(key)
+    }
+
+    /// `None` means no session is running to ask.
+    pub fn load_background_task_transcript(
+        &mut self,
+        key: &BackgroundTaskKey,
+        cwd: Option<&str>,
+    ) -> Option<TranscriptLoad> {
+        Some(
+            self.runtime
+                .backend_mut()?
+                .load_background_task_transcript(key, cwd),
+        )
+    }
+
+    pub fn finish_task_restoration(&mut self, history: TaskHistory) -> Option<Vec<Event>> {
+        Some(self.runtime.backend_mut()?.finish_task_restoration(history))
+    }
+
+    /// `None` means no session is running to ask.
+    pub fn rename_conversation(&mut self, title: &str) -> Option<Result<String, OperationError>> {
+        let outcome = match self.runtime.backend_mut()?.rename_session(title) {
+            RenameOutcome::Accepted => Ok(title.to_owned()),
+            RenameOutcome::Rejected => Err(OperationError::Failed(
+                "the rename could not be sent to the conversation".into(),
+            )),
+            RenameOutcome::Unsupported => {
+                Err(OperationError::Unsupported(UnsupportedOperation::Rename))
+            }
+        };
+
+        Some(outcome)
+    }
+
+    /// The thread a side chat would fork from: the one this conversation
+    /// runs on, once it has history to inherit. A fork of a conversation
+    /// with no turns yet would have nothing to answer from.
+    pub fn side_parent_thread(&self) -> Option<String> {
+        if self.conversation.borrow().content.entries().is_empty() {
+            return None;
+        }
+
+        self.runtime
+            .backend()
+            .and_then(Backend::recovery_identity)
+            .map(|identity| identity.id)
+    }
+
+    pub fn side_questions(&self) -> &SideQuestions {
+        &self.side
+    }
+
+    /// Ask `question` beside the conversation, with the earlier answers as
+    /// its history.
+    pub fn ask_side_question(&mut self, question: String) -> SideQuestionOutcome {
+        if self.side.pending().is_some() {
+            return SideQuestionOutcome::Busy;
+        }
+
+        let Some(backend) = self.runtime.backend_mut() else {
+            return SideQuestionOutcome::Failed("the session is not running".into());
+        };
+
+        match backend.ask_side_question(&question, &self.side.history()) {
+            Some(Ok(request_id)) => {
+                self.side.ask(question, request_id);
+
+                SideQuestionOutcome::Asked
+            }
+            Some(Err(message)) => SideQuestionOutcome::Failed(message),
+            None => SideQuestionOutcome::Unsupported,
+        }
+    }
+
+    /// Dismiss every side question, stopping the one still being answered.
+    pub fn close_side_questions(&mut self) {
+        if let Some(id) = self.side.close()
+            && let Some(backend) = self.runtime.backend_mut()
+        {
+            backend.cancel_side_question(&id);
+        }
+    }
+
+    /// Answers whether a session was running to take the search.
+    pub fn search_sessions(&mut self, query: &str) -> bool {
+        let Some(backend) = self.runtime.backend_mut() else {
+            return false;
+        };
+
+        backend.search_sessions(query);
+
+        true
+    }
+
+    pub fn request_history(&mut self, scope: SessionScope) {
+        if let Some(backend) = self.runtime.backend_mut() {
+            backend.request_history(scope);
+        }
+    }
+
+    /// Start a listing for a view in another process. Rows from an earlier
+    /// listing, perhaps of another scope, would otherwise mix into it.
+    pub fn clear_listed_history(&mut self) {
+        self.listed_history.clear();
+    }
+
+    /// Rows the host read itself, for a harness whose history is on disk.
+    pub fn list_history(&mut self, sessions: Vec<SessionSummary>) {
+        self.listed_history = sessions;
+    }
+
+    pub fn listed_history(&self) -> &[SessionSummary] {
+        &self.listed_history
+    }
+
+    pub fn request_more_history(&mut self) {
+        if let Some(backend) = self.runtime.backend_mut() {
+            backend.request_more_history();
+        }
+    }
+
+    pub fn respond_team_decision(
+        &mut self,
+        request: &TeamDecisionRequest,
+        accepted: bool,
+        explanation: &str,
+    ) {
+        if let Some(backend) = self.runtime.backend_mut() {
+            backend.respond_team_decision(request, accepted, explanation);
+        }
+    }
+
+    pub fn branch(&self) -> &ConversationBranch {
+        &self.branch
+    }
+
+    pub fn begin_fork(&mut self, target: Option<PromptTarget>) -> Result<(), BranchError> {
+        self.branch.begin_fork(&mut self.runtime, target)
+    }
+
+    pub fn fork(&mut self, checkpoint: ForkCheckpoint) -> BranchUpdate {
+        self.branch.fork(&mut self.runtime, checkpoint)
+    }
+
+    pub fn fork_created(
+        &mut self,
+        request: ForkRequest,
+        result: Result<ClaudeFork, String>,
+    ) -> BranchUpdate {
+        self.branch
+            .fork_created(self.runtime.epoch(), request, result)
+    }
+
+    pub fn begin_rewind(
+        &mut self,
+        cwd: Option<String>,
+        target: Option<PromptTarget>,
+    ) -> Result<CheckpointRead, BranchError> {
+        self.branch.begin_rewind(&self.runtime, cwd, target)
+    }
+
+    pub fn checkpoints_loaded(
+        &mut self,
+        request: CheckpointRead,
+        result: Result<Vec<ClaudeCheckpoint>, String>,
+    ) -> BranchUpdate {
+        self.branch
+            .checkpoints_loaded(self.runtime.epoch(), request, result)
+    }
+
+    pub fn select_checkpoint(&mut self, checkpoint: ClaudeCheckpoint) -> bool {
+        self.branch
+            .select_checkpoint(self.runtime.epoch(), checkpoint)
+    }
+
+    pub fn rewind(&mut self, action: RewindAction) -> BranchUpdate {
+        self.branch.rewind(&mut self.runtime, action)
+    }
+
+    pub fn cancel_branch_picker(&mut self) -> bool {
+        self.branch.cancel_picker()
+    }
+
+    pub fn input(&self) -> &SessionInput {
+        &self.input
+    }
+
+    /// The answers in progress belong to whoever is typing them. Everything
+    /// that moves a question through its lifecycle stays on this controller,
+    /// so what is lent here can edit a draft and nothing else.
+    pub fn input_mut(&mut self) -> &mut SessionInput {
+        &mut self.input
+    }
+
+    pub fn can_submit_question(&self, key: QuestionKey) -> bool {
+        self.input.can_submit(&self.runtime, key)
+    }
+
+    /// The number of the turn in progress, or of the last one once idle.
+    pub fn turn(&self) -> u64 {
+        self.delivery.turn()
+    }
+
+    /// Prompts the harness accepted and has not started, oldest first.
+    pub fn queued_prompts(&self) -> &VecDeque<QueuedPrompt> {
+        self.delivery.pending()
+    }
+
+    /// Ask the harness to drop a prompt it has not started. The row leaves
+    /// the queue only once the harness takes the removal, so one it already
+    /// claimed stays where the transcript is about to confirm it.
+    pub fn withdraw_queued_prompt(&mut self, item_id: &str) -> bool {
+        let removed = self
+            .runtime
+            .backend_mut()
+            .is_some_and(|backend| backend.remove_queued_prompt(item_id));
+
+        if removed {
+            self.delivery.removed(item_id);
+        }
+
+        removed
+    }
+
+    pub fn workflows(&self) -> &WorkflowData {
+        &self.workflows
+    }
+
+    /// The stored record a harness keeps of its workflow runs, where it has
+    /// one. A harness that reports runs live has none.
+    pub fn workflow_source(&self) -> Option<Arc<dyn WorkflowSource>> {
+        self.runtime.backend()?.workflow_source()
+    }
+
+    /// The source and conversation to read recorded runs from, once per
+    /// conversation: a repeated `Ready` must not read the same record again.
+    pub fn begin_workflow_restoration(&mut self) -> Option<(Arc<dyn WorkflowSource>, String)> {
+        let source = self.workflow_source()?;
+        let session_id = self.runtime.backend()?.session_id()?.to_owned();
+
+        self.workflows
+            .claim_restore(&session_id)
+            .then_some((source, session_id))
+    }
+
+    /// A failed read leaves whatever the live stream reported and releases
+    /// the claim, so the next opening of the view retries.
+    pub fn merge_restored_workflows(
+        &mut self,
+        restored: Result<Vec<WorkflowRun>, String>,
+    ) -> Vec<Event> {
+        let Ok(restored) = restored else {
+            self.workflows.forget_restore();
+
+            return Vec::new();
+        };
+
+        self.runtime
+            .backend_mut()
+            .map(|backend| backend.restore_workflows(restored))
+            .unwrap_or_default()
+    }
+
+    pub fn workflow_refresh_plan(&self, cwd: Option<String>) -> Option<RefreshPlan> {
+        self.workflows.refresh_plan(&self.runtime, cwd)
+    }
+
+    /// Fold one read in. `None` means the session that asked is gone.
+    pub fn apply_workflow_refresh(&mut self, result: WorkflowRefreshResult) -> Option<Vec<Event>> {
+        self.workflows.accept_revision(&result);
+
+        Some(self.runtime.backend_mut()?.apply_workflow_refresh(result))
+    }
+
+    pub fn mark_open_workflow_availability(&mut self) -> bool {
+        self.workflows.mark_open_availability()
+    }
+
+    pub fn open_workflow_agent(&mut self, task_id: &str, agent_id: &str) -> WorkflowReader {
+        self.workflows.open_agent(task_id, agent_id)
+    }
+
+    /// The request a read of one member's conversation is made with, or
+    /// nothing when the harness keeps no record and was asked over its
+    /// connection instead, where the answer arrives as an ordinary event.
+    pub fn read_workflow_agent(
+        &mut self,
+        task_id: &str,
+        agent_id: &str,
+    ) -> Option<(Arc<dyn WorkflowSource>, String, WorkflowRefreshRequest)> {
+        let Some(source) = self.workflow_source() else {
+            self.runtime
+                .backend_mut()?
+                .request_workflow_agent_transcript(task_id, agent_id);
+
+            return None;
+        };
+
+        let session_id = self.runtime.backend()?.session_id()?.to_owned();
+
+        let request = WorkflowRefreshRequest {
+            task_id: task_id.to_owned(),
+            agent_ids: self.workflows.agent_ids(task_id),
+            open_agent: Some(agent_id.to_owned()),
+            transcript_revision: None,
+        };
+
+        Some((source, session_id, request))
+    }
+
+    /// Whether the backend can be stopped for an update now, and what a
+    /// restart would resume.
+    pub fn update_readiness(&self) -> Readiness {
+        self.work()
+            .readiness(&self.runtime, &self.commands, &self.delivery)
+    }
+
+    /// What a restart would resume, whatever work is running. A blank tab
+    /// needs no provider identity, because restarting it as another blank
+    /// conversation loses nothing.
+    pub fn recovery_identity(&self) -> Readiness {
+        self.work().identity(self.runtime.backend())
+    }
+
+    fn work(&self) -> ConversationWork {
+        let conversation = self.conversation.borrow();
+
+        ConversationWork {
+            approval_open: self.input.approval().is_some(),
+            branch_pending: self.branch.holds_composer(),
+            compacting: conversation.live.is_compacting(),
+            empty: conversation.content.entries().is_empty(),
+        }
     }
 
     pub fn prepare_update_stop(&mut self) {
@@ -289,12 +931,6 @@ impl SessionController {
 
         if !hidden(&item) {
             self.note_visible_output();
-        }
-
-        if matches!(item, Item::AgentMessage { .. }) {
-            self.delivery.agent_message();
-
-            self.publish_confirmed();
         }
 
         self.push_item(item);
@@ -356,59 +992,20 @@ impl SessionController {
         }
     }
 
-    /// Publish content and delivery changes before returning control to readers.
+    /// Compaction is shown on the turn it interrupts, so the flag lives on the
+    /// live turn and the turn is marked changed either way.
+    fn set_compacting(&mut self, compacting: bool) {
+        let mut conversation = self.conversation.borrow_mut();
+
+        conversation.live.set_compacting(compacting);
+
+        conversation.changed_turn(self.delivery.turn());
+    }
+
+    /// Transcript side effects of the results that still leave the
+    /// controller; the payload itself moves on to the host unchanged.
     fn record_content(&mut self, effect: SessionEffect) -> SessionEffect {
         match effect {
-            SessionEffect::ItemStarted(item) => {
-                self.start_item(item);
-
-                SessionEffect::Changed
-            }
-            SessionEffect::ItemCompleted(item) => {
-                self.complete_item(item);
-
-                SessionEffect::Changed
-            }
-            SessionEffect::TextDelta {
-                item_id,
-                delta,
-                field,
-            } => {
-                self.append_delta(&item_id, &delta, field);
-
-                SessionEffect::Changed
-            }
-            SessionEffect::ConfirmedPrompts(prompts) => {
-                for text in prompts {
-                    self.push_item(Item::UserMessage { text: Some(text) });
-                }
-
-                SessionEffect::Changed
-            }
-            SessionEffect::OutputTokens(tokens) => {
-                let mut conversation = self.conversation.borrow_mut();
-
-                if conversation.live.set_output_tokens(tokens) {
-                    conversation.changed_turn(self.delivery.turn());
-                }
-
-                SessionEffect::Changed
-            }
-            SessionEffect::ContextWindow(usage) => {
-                self.conversation.borrow_mut().context_window_usage = Some(usage);
-
-                SessionEffect::Changed
-            }
-            SessionEffect::ContextComposition(composition) => {
-                self.conversation.borrow_mut().context_composition = Some(composition);
-
-                SessionEffect::Changed
-            }
-            SessionEffect::Stats(stats) => {
-                self.conversation.borrow_mut().session_stats = Some(stats);
-
-                SessionEffect::Changed
-            }
             SessionEffect::Error {
                 message,
                 fatal,
@@ -443,7 +1040,7 @@ impl SessionController {
 
                 SessionEffect::InputResolved(completion)
             }
-            SessionEffect::TurnCompleted { error, interrupted } => {
+            SessionEffect::TurnCompleted { error } => {
                 if let Some(text) = &error {
                     let conversation = self.conversation.borrow();
 
@@ -459,31 +1056,7 @@ impl SessionController {
                     }
                 }
 
-                SessionEffect::TurnCompleted { error, interrupted }
-            }
-            SessionEffect::CompactionStarted => {
-                self.note_visible_output();
-
-                let mut conversation = self.conversation.borrow_mut();
-
-                conversation.live.set_compacting(true);
-
-                conversation.changed_turn(self.delivery.turn());
-
-                SessionEffect::Changed
-            }
-            SessionEffect::CompactionFinished { error } => {
-                if let Some(text) = error {
-                    self.push_item(Item::Error { text });
-                }
-
-                let mut conversation = self.conversation.borrow_mut();
-
-                conversation.live.set_compacting(false);
-
-                conversation.changed_turn(self.delivery.turn());
-
-                SessionEffect::Changed
+                SessionEffect::TurnCompleted { error }
             }
             effect @ (SessionEffect::ApprovalRequested | SessionEffect::InputRequested { .. }) => {
                 self.note_visible_output();
@@ -518,7 +1091,7 @@ impl SessionController {
             }
             Event::AgentPresets { presets, current } => {
                 self.controls.agent_presets = presets;
-                self.controls.agent_preset = current;
+                self.controls.settings.agent_preset = current;
 
                 SessionEffect::Changed
             }
@@ -527,24 +1100,37 @@ impl SessionController {
 
                 SessionEffect::EffortRejected { message }
             }
-            Event::Commands(commands) => {
-                self.command_catalog = Some(commands.clone());
+            // An answered pick makes the session's selection the authority,
+            // so a refusal puts the pickers back.
+            Event::ModelSelection {
+                model,
+                effort,
+                refusal,
+            } => {
+                self.controls.settings.model = model;
+                self.controls.settings.effort = effort;
 
-                SessionEffect::Commands(commands)
+                match refusal {
+                    Some(message) => SessionEffect::EffortRejected { message },
+                    None => SessionEffect::Changed,
+                }
+            }
+            Event::Commands(commands) => {
+                self.command_catalog = Some(commands);
+
+                SessionEffect::Commands
             }
             Event::Skills(catalog) => {
-                self.skill_catalog = Some(catalog.clone());
+                self.skill_catalog = Some(catalog);
 
-                SessionEffect::Skills(catalog)
+                SessionEffect::Skills
             }
             Event::SlashCommandResult { name, outcome } => {
-                let advance = self.settle_command(&outcome);
+                self.commands.settle(&outcome, self.runtime.status());
 
-                SessionEffect::CommandResult {
-                    name,
-                    outcome,
-                    advance,
-                }
+                self.adopt_command_approval(&outcome);
+
+                SessionEffect::CommandResult { name, outcome }
             }
             Event::TurnStarted => SessionEffect::TurnStarted {
                 opened: self.turn_started(),
@@ -554,38 +1140,84 @@ impl SessionController {
             Event::ProviderTurnFinished { id, error } => {
                 SessionEffect::ProviderTurnFinished { id, error }
             }
-            Event::TurnCompleted { error } => SessionEffect::TurnCompleted {
-                error,
-                interrupted: self.turn_completed(),
-            },
-            Event::TurnOutputTokensUpdated(tokens) => SessionEffect::OutputTokens(tokens),
-            Event::ContextWindowUpdated(usage) => SessionEffect::ContextWindow(usage),
-            Event::ContextCompositionUpdated(composition) => {
-                SessionEffect::ContextComposition(composition)
+            Event::TurnCompleted { error } => {
+                self.turn_completed();
+
+                SessionEffect::TurnCompleted { error }
             }
-            Event::CompactionStarted => SessionEffect::CompactionStarted,
-            Event::CompactionFinished { error } => SessionEffect::CompactionFinished { error },
+            Event::TurnOutputTokensUpdated(tokens) => {
+                let mut conversation = self.conversation.borrow_mut();
+
+                if conversation.live.set_output_tokens(tokens) {
+                    conversation.changed_turn(self.delivery.turn());
+                }
+
+                SessionEffect::Changed
+            }
+            Event::GenerationCompleted(sample) => {
+                let mut conversation = self.conversation.borrow_mut();
+
+                if conversation.live.is_working() && conversation.generation_stats.record(sample) {
+                    SessionEffect::Changed
+                } else {
+                    SessionEffect::Unchanged
+                }
+            }
+            Event::ContextWindowUpdated(usage) => {
+                self.conversation.borrow_mut().context_window_usage = Some(usage);
+
+                SessionEffect::Changed
+            }
+            Event::ContextCompositionUpdated(composition) => {
+                self.conversation.borrow_mut().context_composition = Some(composition);
+
+                SessionEffect::Changed
+            }
+            Event::CompactionStarted => {
+                self.note_visible_output();
+
+                self.set_compacting(true);
+
+                SessionEffect::Changed
+            }
+            Event::CompactionFinished { error } => {
+                if let Some(text) = error {
+                    self.push_item(Item::Error { text });
+                }
+
+                self.set_compacting(false);
+
+                SessionEffect::Changed
+            }
             Event::FileRewindCompleted { error } => SessionEffect::Branch(
                 self.branch
                     .files_completed(epoch, error.map_or(Ok(()), Err)),
             ),
-            Event::ItemStarted(item) => SessionEffect::ItemStarted(item),
-            Event::ItemCompleted(item) => SessionEffect::ItemCompleted(item),
-            Event::AgentMessageDelta { item_id, delta } => SessionEffect::TextDelta {
-                item_id,
-                delta,
-                field: TextField::Reply,
-            },
-            Event::ReasoningSummaryDelta { item_id, delta } => SessionEffect::TextDelta {
-                item_id,
-                delta,
-                field: TextField::ReasoningSummary,
-            },
-            Event::CommandOutputDelta { item_id, delta } => SessionEffect::TextDelta {
-                item_id,
-                delta,
-                field: TextField::CommandOutput,
-            },
+            Event::ItemStarted(item) => {
+                self.start_item(item);
+
+                SessionEffect::Changed
+            }
+            Event::ItemCompleted(item) => {
+                self.complete_item(item);
+
+                SessionEffect::Changed
+            }
+            Event::AgentMessageDelta { item_id, delta } => {
+                self.append_delta(&item_id, &delta, TextField::Reply);
+
+                SessionEffect::Changed
+            }
+            Event::ReasoningSummaryDelta { item_id, delta } => {
+                self.append_delta(&item_id, &delta, TextField::ReasoningSummary);
+
+                SessionEffect::Changed
+            }
+            Event::CommandOutputDelta { item_id, delta } => {
+                self.append_delta(&item_id, &delta, TextField::CommandOutput);
+
+                SessionEffect::Changed
+            }
             Event::ApprovalRequested { description } => {
                 self.input.ask_approval(description);
 
@@ -627,20 +1259,16 @@ impl SessionController {
                 }
             }
             Event::BackgroundTasks(snapshot) => {
-                if self.set_background_tasks(snapshot) {
+                let parent = self.runtime.background_task_parent();
+
+                if self.children.set_snapshot(parent.as_ref(), snapshot) {
                     SessionEffect::BackgroundActivity
                 } else {
                     SessionEffect::Changed
                 }
             }
             Event::BackgroundTaskTranscript { key, update } => {
-                if self
-                    .children
-                    .transcripts
-                    .entry(key)
-                    .or_default()
-                    .apply(update)
-                {
+                if self.children.apply_transcript(key, update) {
                     SessionEffect::Changed
                 } else {
                     SessionEffect::Unchanged
@@ -660,10 +1288,18 @@ impl SessionController {
                     SessionEffect::Unchanged
                 }
             }
-            Event::History(sessions) => SessionEffect::History(sessions),
+            Event::History(sessions) => {
+                self.listed_history.extend(sessions.iter().cloned());
+
+                SessionEffect::History(sessions)
+            }
             Event::SessionSearchResults(sessions) => SessionEffect::SearchResults(sessions),
             Event::QueuedPrompts(prompts) => {
-                SessionEffect::ConfirmedPrompts(self.delivery.snapshot(prompts))
+                for text in self.delivery.snapshot(prompts) {
+                    self.push_item(Item::UserMessage { text: Some(text) });
+                }
+
+                SessionEffect::Changed
             }
             Event::GoalUpdated(goal) => {
                 self.goal = goal;
@@ -671,6 +1307,25 @@ impl SessionController {
                 SessionEffect::Changed
             }
             Event::TaskListUpdated(tasks) => {
+                // A snapshot goes into the stream each time a task is
+                // completed, so the transcript shows the plan advancing and
+                // the final reply sits under the list it finished. Other
+                // changes only move the panel. The first list seen has
+                // nothing to complete beyond, which also keeps a restored
+                // list from writing a row the conversation never showed.
+                if self
+                    .task_list
+                    .as_ref()
+                    .is_some_and(|previous| tasks.completes_beyond(previous))
+                {
+                    self.task_snapshots += 1;
+
+                    self.push_item(Item::TaskList {
+                        id: format!("task-list-{}", self.task_snapshots),
+                        tasks: tasks.clone(),
+                    });
+                }
+
                 self.task_list = Some(tasks);
 
                 SessionEffect::Changed
@@ -682,10 +1337,15 @@ impl SessionController {
             }
             Event::TitleUpdated(title) => {
                 self.naming.named = true;
+                self.naming.title = Some(title.clone());
 
                 SessionEffect::Title(title)
             }
-            Event::SessionStatsUpdated(stats) => SessionEffect::Stats(stats),
+            Event::SessionStatsUpdated(stats) => {
+                self.conversation.borrow_mut().session_stats = Some(stats);
+
+                SessionEffect::Changed
+            }
             Event::Replay(turns) => self
                 .prepare_replay(turns)
                 .map_or(SessionEffect::Unchanged, SessionEffect::Replay),
@@ -693,7 +1353,15 @@ impl SessionController {
             Event::ForkCheckpoints(checkpoints) => {
                 SessionEffect::Branch(self.branch.fork_checkpoints(&mut self.runtime, checkpoints))
             }
-            Event::HostExited { message } => SessionEffect::HostExited { message },
+            Event::HostExited { message } => {
+                let failure = self.failed(&message, true);
+
+                SessionEffect::Error {
+                    message,
+                    fatal: true,
+                    failure,
+                }
+            }
             Event::Error { message, fatal } => {
                 let failure = self.failed(&message, fatal);
 
@@ -701,6 +1369,13 @@ impl SessionController {
                     message,
                     fatal,
                     failure,
+                }
+            }
+            Event::SideQuestionAnswered { id, answer } => {
+                if self.side.settle(&id, answer) {
+                    SessionEffect::Changed
+                } else {
+                    SessionEffect::Unchanged
                 }
             }
         };
@@ -737,26 +1412,16 @@ impl SessionController {
         key: QuestionKey,
         action: QuestionAction,
         now: Instant,
-    ) -> QuestionSubmission {
+    ) -> Submission {
         if self.branch.holds_composer() || self.commands.awaiting_turn {
-            return QuestionSubmission::Ignored;
+            return Submission::Ignored;
         }
 
-        let waiting = self.input.waiting();
-
-        match self
-            .input
+        self.input
             .submit(&mut self.runtime, key, action, &self.controls.settings, now)
-        {
-            InputSubmission::Ignored => QuestionSubmission::Ignored,
-            InputSubmission::Settled => QuestionSubmission::Settled {
-                waiting_finished: waiting && !self.input.waiting(),
-            },
-            InputSubmission::Waiting => QuestionSubmission::Waiting,
-            InputSubmission::Failed => QuestionSubmission::Failed,
-        }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn restore_questions(&mut self) {
         self.input.restore(&mut self.runtime);
     }
@@ -769,37 +1434,47 @@ impl SessionController {
             self.clear_conversation();
         }
 
-        let mut replay = match self.restore.ready(epoch) {
+        let (mut replay, title) = match self.restore.ready(epoch) {
             ReadyAction::Ignore => return None,
-            ReadyAction::Apply => None,
+            ReadyAction::Apply => (None, None),
             ReadyAction::Replay(replay) => {
                 self.clear_conversation();
 
-                Some(replay)
+                (Some(replay), self.restore.take_title())
             }
         };
 
-        let branch = branch.map(|completion| self.apply_branch_content(completion));
+        let branch = branch.map(|(completion, turns)| {
+            self.apply_replay(turns);
+
+            completion
+        });
+
         let replaced = replay.is_some();
+
+        if let Some(title) = &title {
+            self.naming.title = Some(title.clone());
+        }
 
         if let Some(turns) = replay.take() {
             self.apply_replay(turns);
         }
 
-        let defaults = self.ready_defaults.clone();
+        let reported_approval = settings.approval.clone();
 
-        let selection = self.finish_ready(
-            self.kind,
-            settings.clone(),
-            defaults.stored.as_ref(),
-            defaults.model.as_deref(),
-            defaults.effort.as_deref(),
-        );
+        let selection = self.finish_ready(settings.clone());
+
+        let approval = self
+            .runtime
+            .backend_mut()
+            .and_then(|backend| self.controls.apply_approval(backend, reported_approval));
 
         Some(SessionReady {
             branch,
             replaced,
+            title,
             selection,
+            approval,
         })
     }
 
@@ -818,60 +1493,58 @@ impl SessionController {
             }
         };
 
-        let replace = match self.restore.replayed(epoch) {
+        let (replace, title) = match self.restore.replayed(epoch) {
             ReplayAction::Ignore => return None,
-            ReplayAction::Append => false,
+            ReplayAction::Append => (false, None),
             ReplayAction::Replace => {
                 self.clear_conversation();
 
-                true
+                // The conversation switched to already exists, so its next
+                // prompt must not name it again; a restart into one gets the
+                // same treatment in `starting`.
+                self.naming.named = true;
+
+                (true, self.restore.take_title())
             }
         };
 
-        let branch = branch.map(|completion| self.apply_branch_content(completion));
-
         self.apply_replay(turns);
 
-        Some(SessionReplay { branch, replace })
-    }
-
-    fn apply_branch_content(&mut self, completion: BranchCompletion) -> SessionBranch {
-        let replayed = completion.replay.is_some();
-
-        if let Some(turns) = completion.replay {
-            self.apply_replay(turns);
+        if let Some(title) = &title {
+            self.naming.title = Some(title.clone());
         }
 
-        SessionBranch {
-            prompt: completion.prompt,
-            files: completion.files,
-            replayed,
-        }
+        Some(SessionReplay {
+            branch,
+            replace,
+            title,
+        })
     }
 
     /// Apply host-supplied defaults after any restored content has been accepted.
     /// A model-selection refusal leaves the effective settings reported by the
     /// backend and returns its error for the host to present.
-    pub(crate) fn finish_ready(
-        &mut self,
-        kind: AgentKind,
-        settings: ThreadSettings,
-        stored: Option<&ThreadSettings>,
-        startup_model: Option<&str>,
-        startup_effort: Option<&str>,
-    ) -> Option<Result<(), String>> {
+    fn finish_ready(&mut self, settings: ThreadSettings) -> Option<SettingsOutcome> {
         self.input.restore(&mut self.runtime);
 
-        self.controls
-            .ready(kind, settings, stored, startup_model, startup_effort);
+        let defaults = &self.ready_defaults;
 
-        let selection = if kind.caps().model_selection_is_a_request {
-            self.runtime
-                .backend_mut()
-                .and_then(|backend| self.controls.apply_model(backend))
-        } else {
-            None
+        // A reviewer keeps the tab's own settings but not the launch profile's
+        // pins; a resumed or branched conversation keeps what the provider
+        // restored.
+        let (stored, pins) = match self.controls.seed {
+            SettingsSeed::Defaults => (defaults.stored.clone(), defaults.pins.clone()),
+            SettingsSeed::Reviewer => (defaults.stored.clone(), ProfilePins::default()),
+            SettingsSeed::None => (None, ProfilePins::default()),
         };
+
+        self.controls
+            .ready(self.kind, settings, stored.as_ref(), &pins);
+
+        let selection = self
+            .runtime
+            .backend_mut()
+            .and_then(|backend| self.controls.apply_model(backend));
 
         self.naming.sync(self.runtime.backend_mut());
 
@@ -896,6 +1569,7 @@ impl SessionController {
         self.controls = ConversationSettings::default();
         self.command_catalog = None;
         self.skill_catalog = None;
+        self.naming.title = None;
 
         self.commands.clear();
 
@@ -908,22 +1582,27 @@ impl SessionController {
         self.controls.seed = SettingsSeed::None;
     }
 
-    pub fn apply_model_selection(&mut self) -> Option<Result<(), String>> {
+    pub fn apply_model_selection(&mut self) -> Option<SettingsOutcome> {
         self.controls.apply_model(self.runtime.backend_mut()?)
     }
 
-    pub fn select_agent_preset(&mut self, preset: String) -> Option<Result<(), String>> {
-        if self.controls.agent_preset.as_deref() == Some(&preset) {
+    pub fn select_agent_preset(&mut self, preset: String) -> Option<SettingsOutcome> {
+        if self.controls.settings.agent_preset.as_deref() == Some(&preset) {
             return None;
         }
 
-        let result = self.runtime.backend_mut()?.select_agent_preset(&preset);
+        let outcome = self.runtime.backend_mut()?.select_agent_preset(&preset);
 
-        if result.is_ok() {
-            self.controls.agent_preset = Some(preset);
+        match outcome {
+            SettingsOutcome::Effective
+            | SettingsOutcome::Requested
+            | SettingsOutcome::RidesNextSubmission => {
+                self.controls.settings.agent_preset = Some(preset);
+            }
+            SettingsOutcome::Refused { .. } => {}
         }
 
-        Some(result)
+        Some(outcome)
     }
 
     /// A provider or command may start work without a locally submitted prompt.
@@ -949,7 +1628,7 @@ impl SessionController {
     }
 
     /// Completion consumes the matching interrupt and releases both work queues.
-    fn turn_completed(&mut self) -> bool {
+    fn turn_completed(&mut self) {
         let interrupted = self.runtime.turn_completed(self.delivery.turn());
 
         self.commands.turn_completed();
@@ -967,8 +1646,6 @@ impl SessionController {
         }
 
         conversation.settle(turn);
-
-        interrupted
     }
 
     pub fn failed(&mut self, message: &str, fatal: bool) -> SessionFailure {
@@ -1018,6 +1695,178 @@ impl SessionController {
         }
     }
 
+    /// This conversation's state as a view in another process renders it.
+    pub fn view_slots(&self) -> ViewSlots {
+        let conversation = self.conversation.borrow();
+
+        ViewSlots {
+            status: StatusView {
+                status: self.runtime.status(),
+                epoch: self.runtime.epoch(),
+                start_failure: self.runtime.start_failure().map(str::to_owned),
+                turn: self.delivery.turn(),
+                active: self.delivery.is_active(),
+                live: conversation.live.view(),
+                submitted_at: Since::of(conversation.submitted_at),
+                first_output_latency: conversation.first_output_latency,
+                last_response_at: Since::of(conversation.last_response_at),
+            },
+            usage: UsageView {
+                context_window_usage: conversation.context_window_usage,
+                context_composition: conversation.context_composition.clone(),
+                session_stats: conversation.session_stats,
+                generation: conversation.generation_stats.clone(),
+            },
+            turns: conversation.turns.clone(),
+            settings: SettingsView {
+                settings: self.controls.settings.clone(),
+                models: self.controls.models.clone(),
+                approval_presets: self.controls.approval_presets.clone(),
+                agent_presets: self.controls.agent_presets.clone(),
+                plan_mode: self.plan_mode,
+            },
+            catalogs: CatalogView {
+                commands: self.command_catalog.clone(),
+                skills: self.skill_catalog.clone(),
+                kind: Some(self.kind),
+            },
+            pending: self.input.view(),
+            queue: QueueView {
+                prompts: self.delivery.pending().clone(),
+                commands: self.commands.queue.clone(),
+                awaiting_turn: self.commands.awaiting_turn,
+            },
+            goal: self.goal.clone(),
+            tasks: TasksView {
+                list: self.task_list.clone(),
+                snapshots: self.task_snapshots,
+            },
+            naming: NamingView {
+                named: self.naming.named,
+                title: self.naming.title.clone(),
+            },
+            branch: BranchView::from(&self.branch).into(),
+            history: self.listed_history.clone(),
+        }
+    }
+
+    /// The transcript from entry `from` on, with images by reference.
+    pub fn transcript_view(&self, from: usize) -> Vec<ViewEntry> {
+        let conversation = self.conversation.borrow();
+
+        conversation
+            .content
+            .entries()
+            .get(from..)
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| ViewEntry {
+                turn: entry.turn,
+                item: entry.item.clone(),
+                at: entry.metadata.at,
+                images: entry
+                    .metadata
+                    .images
+                    .iter()
+                    .map(|image| ImageRef {
+                        id: image.id,
+                        len: image.bytes.len() as u64,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// An image of the transcript, for a view that has only its reference.
+    pub fn conversation_image(&self, id: Uuid) -> Option<Arc<ConversationImage>> {
+        self.conversation
+            .borrow()
+            .content
+            .entries()
+            .iter()
+            .flat_map(|entry| entry.metadata.images.iter())
+            .find(|image| image.id == id)
+            .cloned()
+    }
+
+    /// Follow a slot of a conversation running in another process. Only a
+    /// replica, which has no backend, takes these.
+    pub fn apply_slot(&mut self, slot: ViewSlot) {
+        match slot {
+            ViewSlot::Status(status) => {
+                self.runtime
+                    .mirror(status.status, status.epoch, status.start_failure);
+
+                let prompts = self.delivery.pending().clone();
+
+                self.delivery.mirror(status.turn, status.active, prompts);
+
+                let mut conversation = self.conversation.borrow_mut();
+
+                conversation.live.replace(status.live);
+
+                conversation.submitted_at = status.submitted_at.instant();
+                conversation.first_output_latency = status.first_output_latency;
+                conversation.last_response_at = status.last_response_at.instant();
+
+                conversation.changed_turn(status.turn);
+            }
+            ViewSlot::Usage(usage) => {
+                let mut conversation = self.conversation.borrow_mut();
+
+                conversation.context_window_usage = usage.context_window_usage;
+                conversation.context_composition = usage.context_composition;
+                conversation.session_stats = usage.session_stats;
+                conversation.generation_stats = usage.generation;
+            }
+            ViewSlot::Turns(turns) => {
+                let mut conversation = self.conversation.borrow_mut();
+
+                conversation.turns = turns;
+
+                let first = conversation.content.entries().len().saturating_sub(1);
+
+                conversation.changed(first, None);
+            }
+            ViewSlot::Settings(settings) => {
+                self.controls.settings = settings.settings;
+                self.controls.models = settings.models;
+                self.controls.approval_presets = settings.approval_presets;
+                self.controls.agent_presets = settings.agent_presets;
+                self.plan_mode = settings.plan_mode;
+            }
+            ViewSlot::Catalogs(catalogs) => {
+                self.command_catalog = catalogs.commands;
+                self.skill_catalog = catalogs.skills;
+            }
+            ViewSlot::Pending(pending) => self.input.replace(pending),
+            ViewSlot::Queue(queue) => {
+                let (turn, active) = (self.delivery.turn(), self.delivery.is_active());
+
+                self.delivery.mirror(turn, active, queue.prompts);
+
+                self.commands.queue = queue.commands;
+                self.commands.awaiting_turn = queue.awaiting_turn;
+            }
+            ViewSlot::Goal(goal) => self.goal = goal,
+            ViewSlot::Tasks(tasks) => {
+                self.task_list = tasks.list;
+                self.task_snapshots = tasks.snapshots;
+            }
+            ViewSlot::Naming(naming) => {
+                self.naming.named = naming.named;
+                self.naming.title = naming.title;
+            }
+            ViewSlot::Branch(picker) => self.branch.mirror(picker),
+            ViewSlot::History(sessions) => self.listed_history = sessions,
+        }
+    }
+
+    /// Follow a transcript change of a conversation in another process.
+    pub fn splice_transcript(&mut self, from: usize, entries: Vec<TranscriptEntry<EntryMetadata>>) {
+        self.conversation.borrow_mut().splice(from, entries);
+    }
+
     /// Retain the backend while retiring conversation-specific state. Restarted
     /// turn numbers must not match an interrupt requested for the old content.
     pub fn clear_conversation(&mut self) {
@@ -1037,18 +1886,144 @@ impl SessionController {
 
         self.input.clear_questions();
 
-        self.children.background_tasks = None;
-
-        for child in self.children.transcripts.values() {
-            child.conversation.borrow_mut().clear();
-        }
-
-        self.children.transcripts.clear();
+        self.children.clear();
 
         self.goal = None;
         self.task_list = None;
         self.plan_mode = false;
 
         self.workflows.clear();
+
+        // Answers describe the conversation being cleared, so none of them
+        // still applies to what replaces it.
+        self.close_side_questions();
     }
+}
+
+pub struct SessionFailure {
+    pub branch: Option<BranchFailure>,
+    pub resume_failed: bool,
+    pub cancelled_commands: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserInterruption {
+    pub prompt: Option<(u64, RecoverablePrompt)>,
+    pub outcome: InterruptOutcome,
+}
+
+/// Tests arrange a part's state directly and assert on it afterwards. The
+/// application reaches the same parts only through the operations above, so
+/// these stay out of a build without the test feature.
+#[cfg(any(test, feature = "test-support"))]
+impl SessionController {
+    /// A fixture opens its pane as a harness that needs no subprocess and
+    /// then plays another one through the test backend.
+    pub fn set_kind(&mut self, kind: AgentKind) {
+        self.kind = kind;
+    }
+
+    pub fn restore_parts(&mut self) -> (&mut ConversationRestore, &mut SessionRuntime) {
+        (&mut self.restore, &mut self.runtime)
+    }
+
+    pub fn runtime_mut(&mut self) -> &mut SessionRuntime {
+        &mut self.runtime
+    }
+
+    pub fn branch_parts(&mut self) -> (&mut ConversationBranch, &mut SessionRuntime) {
+        (&mut self.branch, &mut self.runtime)
+    }
+
+    pub fn delivery(&self) -> &MessageDelivery {
+        &self.delivery
+    }
+
+    pub fn naming_mut(&mut self) -> &mut ConversationNaming {
+        &mut self.naming
+    }
+
+    pub fn commands_mut(&mut self) -> &mut CommandQueue {
+        &mut self.commands
+    }
+}
+
+pub struct SessionReady {
+    pub branch: Option<BranchCompletion>,
+    pub replaced: bool,
+
+    /// Name of the conversation a restore just switched to, when the
+    /// history list knew one.
+    pub title: Option<String>,
+
+    pub selection: Option<SettingsOutcome>,
+
+    /// The outcome of sending a remembered permission preset to a harness
+    /// that pinned its own default into the new conversation.
+    pub approval: Option<SettingsOutcome>,
+}
+
+pub struct SessionReplay {
+    pub branch: Option<BranchCompletion>,
+    pub replace: bool,
+
+    /// Name of the conversation a restore just switched to, when the
+    /// history list knew one.
+    pub title: Option<String>,
+}
+
+/// What the host must present after the conversation has applied a provider
+/// event. Content updates are applied here and reported as `Changed`; only
+/// results the host acts on beyond a repaint carry a payload.
+pub enum SessionEffect {
+    Unchanged,
+    Changed,
+    Ready(SessionReady),
+    Commands,
+    Skills,
+    CommandResult {
+        name: String,
+        outcome: SlashCommandOutcome,
+    },
+    TurnStarted {
+        opened: bool,
+    },
+    ProviderTurnAccepted {
+        id: String,
+    },
+    TeamDecision(TeamDecisionRequest),
+    ProviderTurnFinished {
+        id: String,
+        error: Option<String>,
+    },
+    TurnCompleted {
+        error: Option<String>,
+    },
+    Branch(BranchUpdate),
+    /// A branch operation ended without this view taking the step that
+    /// ended it: cancelled or finished from another computer.
+    BranchClosed,
+    ApprovalRequested,
+    ApprovalResolved,
+    InputRequested {
+        index: usize,
+    },
+    InputResolved(QuestionCompletion),
+    BackgroundActivity,
+    Workflows {
+        activity_changed: bool,
+    },
+    History(Vec<SessionSummary>),
+    SearchResults(Vec<SessionSummary>),
+    Title(String),
+    Replay(SessionReplay),
+    StatusDetail(Option<TurnRetry>),
+    Error {
+        message: String,
+        fatal: bool,
+        failure: SessionFailure,
+    },
+    EffortRejected {
+        message: String,
+    },
 }

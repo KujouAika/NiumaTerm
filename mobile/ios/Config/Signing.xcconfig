@@ -1,0 +1,30 @@
+// Signing and identity for the NiumaTerm app target.
+//
+// A team ID ties the project to one developer account, so none is committed.
+// The bundle identifier defaults to the app's own and can be overridden the
+// same way. Each value is taken, in order, from:
+//
+//   1. Config/Local.xcconfig, which is gitignored (copy
+//      Config/Local.xcconfig.example). Xcode reads it for builds started in
+//      the IDE, where shell environment variables are not available.
+//   2. The NMT_DEVELOPMENT_TEAM and NMT_BUNDLE_ID environment variables, which
+//      xcodebuild exposes as build settings, for CI and scripted builds.
+//   3. The defaults below: no team, which builds for the simulator only, and
+//      the app's bundle identifier.
+//
+// Choosing a team in Xcode's Signing & Capabilities tab writes it into
+// project.pbxproj instead; set it here so it stays out of the repository.
+
+#include? "Local.xcconfig"
+
+DEVELOPMENT_TEAM = $(NMT_DEVELOPMENT_TEAM)
+
+// The app's bundle identifier. The notification extension is named after
+// it, and both share a keychain group derived from it.
+NMT_APP_BUNDLE_ID = $(NMT_BUNDLE_ID:default=io.f32.NiumaTermMobile)
+PRODUCT_BUNDLE_IDENTIFIER = $(NMT_APP_BUNDLE_ID)
+
+// Where hosts send this build's pushes: the relay deployment that holds the
+// APNs key of the account signing the build. Set NMT_PUSH_ENDPOINT in
+// Local.xcconfig; without it the app asks hosts for no pushes. An xcconfig
+// value cannot contain "//", so write the URL as https:/$()/host/v1/push.

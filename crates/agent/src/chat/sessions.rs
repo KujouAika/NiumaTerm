@@ -6,12 +6,15 @@
 
 use std::time::SystemTime;
 
-use crate::chat::Item;
+use serde::{Deserialize, Serialize};
+
+use crate::chat::{GenerationSample, Item};
+use crate::session::AgentKind;
 
 /// Which directories a session listing covers. A conversation is recorded
 /// against the directory it ran in, and the tab that lists them is rooted in
 /// one, so the two answers a list can give are "this one" and "every one".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionScope {
     #[default]
     CurrentDirectory,
@@ -20,7 +23,7 @@ pub enum SessionScope {
 
 /// One resumable persisted session, for the history list an empty chat tab
 /// shows above its composer. Ordered newest-first by `last_active`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub id: String,
 
@@ -40,6 +43,22 @@ pub struct SessionSummary {
     /// content search, because the excerpt describes the query rather than the
     /// session, and an ordinary list has no query to describe.
     pub snippet: Option<String>,
+
+    /// Which agent, launched on which profile, recorded the conversation.
+    /// `None` on a row the listing tab's own agent reported, which the tab
+    /// continues itself; a row listed from another agent's records carries
+    /// the profile a tab must be launched on to continue it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOrigin>,
+}
+
+/// The agent and launch profile a listed conversation belongs to. A resume id
+/// only resolves in the harness that issued it, and for Codex also only under
+/// the model provider it ran against, so the profile travels with the row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionOrigin {
+    pub kind: AgentKind,
+    pub profile: String,
 }
 
 /// One turn of a resumed conversation. A live turn's shape comes from the turn
@@ -51,6 +70,9 @@ pub struct SessionSummary {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReplayTurn {
     pub items: Vec<ReplayItem>,
+
+    /// Completed responses whose decode timing was retained by the backend.
+    pub generation_samples: Vec<GenerationSample>,
 
     /// Wall time the turn took.
     pub seconds: Option<u64>,
@@ -83,7 +105,7 @@ pub struct ReplayItem {
 /// Every variant names the same cut — the conversation stops before one human
 /// prompt — but the backends anchor it from opposite sides, so the variants
 /// spell out which side they mean.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForkAnchor {
     /// The Claude transcript record the copied prefix stops before.
     ClaudeBefore(String),
@@ -94,7 +116,7 @@ pub enum ForkAnchor {
 }
 
 /// One human prompt a branch can be cut in front of.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForkCheckpoint {
     /// The prompt the branch stops in front of, shown as the row's label and
     /// handed back to the composer so the branch starts where it was cut.

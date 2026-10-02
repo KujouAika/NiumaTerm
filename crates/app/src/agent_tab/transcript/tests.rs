@@ -1,54 +1,14 @@
 #[cfg(test)]
 mod prompt_truncation_tests {
-    use gpui::{FontFallbacks, px};
+    use gpui::px;
     use nmt_agent::chat::{Compaction, CompactionTrigger, Item as SessionItem};
 
-    use crate::agent_tab::composer::{ComposerAction, prompt_with_response_annotations};
-    use crate::agent_tab::profile::AgentKind;
-    use crate::agent_tab::session::Status;
-    use crate::agent_tab::settings::AgentSettings;
-    use crate::agent_tab::transcript::render::transcript_code_block_style;
+    use crate::agent_tab::composer::prompt_with_response_annotations;
     use crate::agent_tab::transcript::{
-        TurnSummary, VIRTUAL_TRANSCRIPT_MAX_SEGMENT_BYTES, command_execution_detail,
-        command_execution_heading, compaction_accounting, compaction_label,
-        compaction_row_is_expandable, elapsed_label, entry_copy_text, interrupted_status_label,
-        is_work_row, last_response_label, should_show_jump_to_latest, should_virtualize_transcript,
-        transcript_segments, truncated_user_prompt, turn_summary, worked_status_label,
-        working_status_label,
+        VIRTUAL_TRANSCRIPT_MAX_SEGMENT_BYTES, entry_copy_text, is_work_row,
+        should_show_jump_to_latest, should_virtualize_transcript, transcript_segments,
+        truncated_user_prompt,
     };
-
-    #[test]
-    fn transcript_code_style_uses_configured_font_and_size() {
-        let settings = AgentSettings {
-            font_fallbacks: FontFallbacks::from_fonts(vec!["Microsoft YaHei".into()]),
-            ..AgentSettings::default()
-        };
-
-        let font = settings.font_with_fallbacks("JetBrains Mono".into());
-        let style = transcript_code_block_style(font, 12.5);
-
-        let fallbacks = style
-            .text
-            .font_fallbacks
-            .expect("transcript font should retain the application fallback");
-
-        assert_eq!(style.text.font_family.as_deref(), Some("JetBrains Mono"));
-        assert_eq!(style.text.font_size, Some(px(12.5).into()));
-        assert_eq!(fallbacks.fallback_list(), ["Microsoft YaHei"]);
-    }
-
-    #[test]
-    fn composer_replaces_send_with_stop_only_while_running() {
-        let action: ComposerAction = Status::Running.into();
-
-        assert_eq!(action, ComposerAction::Stop);
-
-        for status in [Status::Starting, Status::Idle, Status::Exited] {
-            let action: ComposerAction = status.into();
-
-            assert_eq!(action, ComposerAction::Send);
-        }
-    }
 
     #[test]
     fn copying_an_annotated_user_message_omits_hidden_context() {
@@ -63,66 +23,6 @@ mod prompt_truncation_tests {
     }
 
     #[test]
-    fn interruption_replaces_the_elapsed_turn_summary() {
-        assert_eq!(turn_summary(true, Some(12)), Some(TurnSummary::Interrupted));
-        assert_eq!(turn_summary(false, Some(12)), Some(TurnSummary::Worked(12)));
-        assert_eq!(turn_summary(false, None), None);
-    }
-
-    #[test]
-    fn working_status_adds_compact_live_output_tokens() {
-        assert_eq!(working_status_label(4, None, None), "Working for 4 s");
-        assert_eq!(
-            working_status_label(12, Some(1_250), None),
-            "Working for 12 s · 1.2k tokens"
-        );
-    }
-
-    #[test]
-    fn a_reported_activity_leads_the_working_row() {
-        // The elapsed time reads the same every second, so what changed is
-        // what belongs first.
-        assert_eq!(
-            working_status_label(12, Some(1_250), Some("Retrying 1/2 after 429 rate limited")),
-            "Retrying 1/2 after 429 rate limited · Working for 12 s · 1.2k tokens"
-        );
-    }
-
-    #[test]
-    fn elapsed_time_reads_as_a_duration_rather_than_a_seconds_count() {
-        assert_eq!(elapsed_label(0), "0 s");
-        assert_eq!(elapsed_label(45), "45 s");
-        assert_eq!(elapsed_label(125), "2 mins 5 s");
-        assert_eq!(elapsed_label(3_721), "1 hour 2 mins 1 s");
-        assert_eq!(elapsed_label(90_061), "1 day 1 hour 1 min 1 s");
-        assert_eq!(elapsed_label(3_605), "1 hour 5 s");
-        assert_eq!(elapsed_label(86_400), "1 day");
-
-        assert_eq!(
-            worked_status_label(3_721, Some(12_400)),
-            "Worked for 1 hour 2 mins 1 s · 12k tokens"
-        );
-    }
-
-    #[test]
-    fn worked_status_keeps_the_final_output_tokens() {
-        assert_eq!(worked_status_label(8, None), "Worked for 8 s");
-        assert_eq!(
-            worked_status_label(21, Some(12_400)),
-            "Worked for 21 s · 12k tokens"
-        );
-    }
-
-    #[test]
-    fn interrupted_status_only_adds_available_output_tokens() {
-        assert_eq!(interrupted_status_label(None), "Interrupted");
-        assert_eq!(
-            interrupted_status_label(Some(1_250)),
-            "Interrupted · 1.2k tokens"
-        );
-    }
-
-    #[test]
     fn jump_to_latest_requires_hidden_content_below_the_viewport() {
         assert!(!should_show_jump_to_latest(false, None, px(0.)));
         assert!(!should_show_jump_to_latest(false, Some(true), px(200.)));
@@ -130,40 +30,6 @@ mod prompt_truncation_tests {
         assert!(!should_show_jump_to_latest(true, Some(false), px(200.)));
         assert!(!should_show_jump_to_latest(true, None, px(200.)));
         assert!(should_show_jump_to_latest(false, None, px(200.)));
-    }
-
-    #[test]
-    fn compaction_rows_name_the_trigger_and_report_only_known_numbers() {
-        let full = Compaction {
-            trigger: Some(CompactionTrigger::Automatic),
-            pre_tokens: Some(154_000),
-            post_tokens: Some(32_000),
-            messages_summarized: Some(87),
-            user_context: None,
-            summary: None,
-        };
-
-        assert_eq!(compaction_label(&full), "Context auto-compacted");
-        assert_eq!(
-            compaction_accounting(&full),
-            vec![
-                "154k → 32k".to_string(),
-                "122k freed".to_string(),
-                "87 messages summarized".to_string(),
-                "automatic".to_string(),
-            ]
-        );
-
-        // A boundary the backend described only partially must not invent
-        // zeroes for the fields it never reported.
-        let sparse = Compaction {
-            pre_tokens: Some(90_000),
-            ..Compaction::default()
-        };
-
-        assert_eq!(compaction_label(&sparse), "Context compacted");
-        assert_eq!(compaction_accounting(&sparse), vec!["from 90k".to_string()]);
-        assert!(compaction_accounting(&Compaction::default()).is_empty());
     }
 
     #[test]
@@ -186,57 +52,6 @@ mod prompt_truncation_tests {
             entry_copy_text(&item),
             "Context compacted\n120k → 40k · 80k freed · manual\n\nwhat happened so far"
         );
-    }
-
-    #[test]
-    fn compaction_disclosure_matches_provider_capabilities() {
-        assert!(!compaction_row_is_expandable(AgentKind::Codex));
-        assert!(compaction_row_is_expandable(AgentKind::Claude));
-    }
-
-    #[test]
-    fn command_tool_moves_the_full_command_and_output_into_detail() {
-        assert_eq!(
-            command_execution_heading(Some("Inspect repository status")),
-            "Inspect repository status"
-        );
-        assert_eq!(command_execution_heading(Some("  ")), "Run Command");
-        assert_eq!(
-            command_execution_detail("cargo test --workspace", Some("running 42 tests\nok")),
-            "$ cargo test --workspace\n\nrunning 42 tests\nok"
-        );
-        assert_eq!(
-            command_execution_detail("cargo check", None),
-            "$ cargo check"
-        );
-    }
-
-    #[test]
-    fn shared_tool_items_keep_transcript_details_intact() {
-        let item = SessionItem::Other {
-            id: "tool-1".into(),
-            kind: "Read".into(),
-            title: "src/lib.rs".into(),
-            output: Some("contents".into()),
-            status: Some("completed".into()),
-        };
-
-        let SessionItem::Other {
-            id,
-            kind,
-            title,
-            output,
-            status,
-        } = item
-        else {
-            panic!("expected a tool item");
-        };
-
-        assert_eq!(id, "tool-1");
-        assert_eq!(kind, "Read");
-        assert_eq!(title, "src/lib.rs");
-        assert_eq!(output.as_deref(), Some("contents"));
-        assert_eq!(status.as_deref(), Some("completed"));
     }
 
     #[test]
@@ -296,34 +111,11 @@ mod prompt_truncation_tests {
         assert_eq!(segments.len(), 10_000);
         assert!(segments.iter().all(|range| &source[range.clone()] == "row"));
     }
-
-    #[test]
-    fn a_last_response_reading_speaks_a_turn_duration() {
-        // Same units as "Worked for", so the two clocks in the pane agree.
-        assert_eq!(last_response_label(0), "Last response: 0 s ago");
-        assert_eq!(last_response_label(45), "Last response: 45 s ago");
-        assert_eq!(last_response_label(90), "Last response: 1 min 30 s ago");
-        assert_eq!(
-            last_response_label(3_599),
-            "Last response: 59 mins 59 s ago"
-        );
-
-        // Past an hour the reading stops counting: "it has been sitting" is
-        // the whole answer, and the label never changes again.
-        assert_eq!(
-            last_response_label(3_600),
-            "Last response: more than 1 hour ago"
-        );
-        assert_eq!(
-            last_response_label(90_061),
-            "Last response: more than 1 hour ago"
-        );
-    }
 }
 
 #[cfg(test)]
 mod read_gutter_tests {
-    use crate::agent_tab::transcript::{file_extension_lang, strip_read_gutter};
+    use crate::agent_tab::transcript::strip_read_gutter;
 
     #[test]
     fn gutter_strips_only_when_every_line_matches() {
@@ -333,12 +125,6 @@ mod read_gutter_tests {
         );
         assert_eq!(strip_read_gutter("plain output"), None);
         assert_eq!(strip_read_gutter("     1\u{2192}ok\nno gutter"), None);
-    }
-
-    #[test]
-    fn extension_is_the_language_tag() {
-        assert_eq!(file_extension_lang("C:\\src\\main.RS"), "rs");
-        assert_eq!(file_extension_lang("noext"), "");
     }
 }
 
@@ -692,6 +478,7 @@ mod resumed_collapse_tests {
                 .into_iter()
                 .map(|item| ReplayItem { item, at: None })
                 .collect(),
+            generation_samples: Vec::new(),
             seconds: None,
             output_tokens: None,
             interrupted: false,
@@ -1099,6 +886,7 @@ mod row_rhythm_tests {
     fn replay(items: Vec<ReplayItem>) -> ReplayTurn {
         ReplayTurn {
             items,
+            generation_samples: Vec::new(),
             seconds: None,
             output_tokens: None,
             interrupted: false,
@@ -1288,6 +1076,58 @@ mod row_rhythm_tests {
                 assert!(
                     !view.transcript_list.is_following_tail(),
                     "a view reading an earlier turn is pinned where it sits"
+                );
+            });
+        });
+    }
+
+    /// A step landing under a reply moves that reply's gap down a rank, so the
+    /// reply differs from the row the list holds while still being that row.
+    /// Replacing it would hand the list a row it has never measured: the
+    /// reader part-way through the reply is put back at its top, and its
+    /// height drops out of the scrollbar until it is next laid out.
+    #[gpui::test]
+    fn a_step_landing_under_the_reply_being_read_holds_the_readers_place(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let view = cx.new(|_| TranscriptView::new(AgentKind::Codex, None));
+
+            view.update(cx, |view, cx| {
+                // Pushed rather than replayed: a replayed turn has settled,
+                // and a settled turn is headed by its work disclosure.
+                view.push(1, user("ask").item, Vec::new(), cx);
+                view.push(1, agent("reply").item, Vec::new(), cx);
+
+                let specs = view.build_row_specs(CollapseRows::Off);
+
+                view.sync_transcript_list(specs);
+
+                let reading = ListOffset {
+                    item_ix: 1,
+                    offset_in_item: px(40.),
+                };
+
+                view.transcript_list.scroll_to(reading);
+
+                view.push(1, command("ls").item, Vec::new(), cx);
+
+                let specs = view.build_row_specs(CollapseRows::Off);
+
+                view.sync_transcript_list(specs);
+
+                assert_eq!(
+                    rhythm(view),
+                    vec![
+                        ("entry", RowGap::Group),
+                        ("entry", RowGap::Work),
+                        ("work", RowGap::Group),
+                    ]
+                );
+
+                let held = view.transcript_list.logical_scroll_top();
+
+                assert_eq!(
+                    (held.item_ix, held.offset_in_item),
+                    (reading.item_ix, reading.offset_in_item)
                 );
             });
         });
@@ -1757,8 +1597,8 @@ mod surface_palette_tests {
     use gpui_component::{ActiveTheme as _, Theme, ThemeMode};
 
     use crate::agent_tab::settings::AgentSettings;
+    use crate::agent_tab::transcript::render::highlight_theme_for_surface;
     use crate::agent_tab::transcript::render::text_style::transcript_highlight_theme;
-    use crate::agent_tab::transcript::render::{highlight_theme_for_surface, is_dark_surface};
 
     #[gpui::test]
     fn transcript_palette_tracks_background_snapshot_and_pane_choice(cx: &mut TestAppContext) {
@@ -1829,14 +1669,6 @@ mod surface_palette_tests {
             highlight_theme_for_surface(dark, false).appearance,
             ThemeMode::Light
         );
-    }
-
-    #[test]
-    fn surfaces_split_at_mid_gray() {
-        assert!(is_dark_surface(rgb(0x300A24).into()));
-        assert!(is_dark_surface(rgb(0x1C1C1C).into()));
-        assert!(!is_dark_surface(rgb(0xE0E0E0).into()));
-        assert!(!is_dark_surface(rgb(0xFCFBFA).into()));
     }
 }
 

@@ -1,53 +1,36 @@
 use std::borrow::Cow;
 
+use gpui::{App, IntoElement as _};
+use gpui_component::Disableable as _;
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use nmt_agent::HookInstallStatus;
+use nmt_agent::update::{DiscoverySupport, InstallationKey, ProviderKind, UpdatePhase};
 use rust_i18n::t;
 
-use crate::ui::settings::*;
+use crate::agent_updates;
+use crate::ui::settings::card::card_row;
+use crate::ui::settings::fields::{settings_choice, settings_switch};
+use crate::ui::settings::hooks::Hook;
+use crate::ui::settings::state::{AgentProfile, AppSettings, CollapseRows, ModelListStyle};
 
-fn agent_hook_item(
-    name: Cow<'static, str>,
-    detection_path: Option<path::PathBuf>,
-    hooks_path: Option<path::PathBuf>,
-    status: fn(&path::Path) -> HookInstallStatus,
-    install: fn(&path::Path) -> io::Result<()>,
-    uninstall: fn(&path::Path) -> io::Result<()>,
-) -> SettingItem {
-    let detected = detection_path.as_ref().is_some_and(|path| path.is_file());
+fn agent_hook_item(name: Cow<'static, str>, hook: Hook, cx: &App) -> SettingItem {
+    let detected = hook
+        .state(cx)
+        .is_some_and(|state| state.detected && !state.pending);
 
-    let unavailable = hooks_path
-        .as_deref()
-        .is_some_and(|path| status(path) == HookInstallStatus::Unavailable);
-
-    let status_path = hooks_path.clone();
-    let action_path = hooks_path;
+    let unavailable = hook
+        .state(cx)
+        .is_some_and(|state| state.status == Some(HookInstallStatus::Unavailable));
 
     let mut item = SettingItem::new(
         name.clone(),
         SettingField::checkbox(
-            // Settings renders only the active page, so a disk-backed getter
-            // refreshes Hook state whenever the user enters the Agent page.
-            move |_| {
-                status_path
-                    .as_deref()
-                    .is_some_and(|path| status(path) == HookInstallStatus::Installed)
+            move |cx| {
+                hook.state(cx)
+                    .is_some_and(|state| state.status == Some(HookInstallStatus::Installed))
             },
-            move |enabled, cx| {
-                let Some(path) = action_path.as_deref() else {
-                    return;
-                };
-
-                let result = if enabled {
-                    install(path)
-                } else {
-                    uninstall(path)
-                };
-
-                if let Err(error) = result {
-                    warn!("failed to update {name} hooks: {error}");
-                }
-
-                cx.refresh_windows();
-            },
+            move |enabled, cx| hook.set_installed(enabled, cx),
         ),
     )
     .disabled(!detected || unavailable);
@@ -76,18 +59,17 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
         .title(t!("settings-agent-general"))
         .item(SettingItem::new(
             t!("settings-agent-show-usage"),
-            SettingField::switch(
-                |cx| cx.global::<AppSettings>().config().agent.show_agent_usage,
-                |value, cx| {
-                    cx.global_mut::<AppSettings>()
-                        .edit_agent(|section| section.show_agent_usage = value);
+            settings_switch(
+                |config| config.agent.show_agent_usage,
+                |settings, value| {
+                    settings.edit_agent(|section| section.show_agent_usage = value);
                 },
             ),
         ))
         .item(
             SettingItem::new(
                 t!("settings-agent-collapse-tool-calls"),
-                SettingField::dropdown(
+                settings_choice(
                     vec![
                         (
                             work_and_tool_calls_key.into(),
@@ -99,20 +81,9 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                         ),
                         (off_key.into(), t!("settings-common-off").into()),
                     ],
-                    |cx| {
-                        let key: &str = cx
-                            .global::<AppSettings>()
-                            .config()
-                            .agent
-                            .collapse_tool_calls
-                            .into();
-
-                        key.into()
-                    },
-                    |value, cx| {
-                        cx.global_mut::<AppSettings>().edit_agent(|section| {
-                            section.collapse_tool_calls = value.as_str().into()
-                        });
+                    |config| config.agent.collapse_tool_calls.into(),
+                    |settings, value| {
+                        settings.edit_agent(|section| section.collapse_tool_calls = value.into());
                     },
                 ),
             )
@@ -121,16 +92,10 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
         .item(
             SettingItem::new(
                 t!("settings-agent-codex-skill-compat"),
-                SettingField::switch(
-                    |cx| {
-                        cx.global::<AppSettings>()
-                            .config()
-                            .agent
-                            .codex_skill_command_compat
-                    },
-                    |value, cx| {
-                        cx.global_mut::<AppSettings>()
-                            .edit_agent(|section| section.codex_skill_command_compat = value);
+                settings_switch(
+                    |config| config.agent.codex_skill_command_compat,
+                    |settings, value| {
+                        settings.edit_agent(|section| section.codex_skill_command_compat = value);
                     },
                 ),
             )
@@ -139,7 +104,7 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
         .item(
             SettingItem::new(
                 t!("settings-agent-model-list-style"),
-                SettingField::dropdown(
+                settings_choice(
                     vec![
                         (
                             name_and_id_key.into(),
@@ -158,19 +123,9 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                             t!("settings-agent-model-list-style-id-only").into(),
                         ),
                     ],
-                    |cx| {
-                        let key: &str = cx
-                            .global::<AppSettings>()
-                            .config()
-                            .agent
-                            .model_list_style
-                            .into();
-
-                        key.into()
-                    },
-                    |value, cx| {
-                        cx.global_mut::<AppSettings>()
-                            .edit_agent(|section| section.model_list_style = value.as_str().into());
+                    |config| config.agent.model_list_style.into(),
+                    |settings, value| {
+                        settings.edit_agent(|section| section.model_list_style = value.into());
                     },
                 ),
             )
@@ -179,31 +134,87 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
         .item(
             SettingItem::new(
                 t!("settings-agent-enable-team"),
-                SettingField::switch(
-                    |cx| cx.global::<AppSettings>().config().agent.enable_agent_team,
-                    |value, cx| {
-                        cx.global_mut::<AppSettings>()
-                            .edit_agent(|section| section.enable_agent_team = value);
+                settings_switch(
+                    |config| config.agent.enable_agent_team,
+                    |settings, value| {
+                        settings.edit_agent(|section| section.enable_agent_team = value);
                     },
                 ),
             )
             .description(t!("settings-agent-enable-team-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-appearance-human-friendly-agent-ui-layout"),
+                settings_switch(
+                    |config| config.appearance.human_friendly_agent_ui_layout,
+                    |settings, value| {
+                        settings.edit_appearance(|section| {
+                            section.human_friendly_agent_ui_layout = value
+                        });
+                    },
+                ),
+            )
+            .description(
+                t!("settings-appearance-human-friendly-agent-ui-layout-description").into_owned(),
+            ),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-agent-token-speed-mode"),
+                settings_choice(
+                    vec![
+                        (
+                            "session".into(),
+                            t!("settings-agent-token-speed-session").into(),
+                        ),
+                        (
+                            "current-turn".into(),
+                            t!("settings-agent-token-speed-current-turn").into(),
+                        ),
+                    ],
+                    |config| config.agent.token_speed_mode.into(),
+                    |settings, value| {
+                        settings.edit_agent(|section| section.token_speed_mode = value.into());
+                    },
+                ),
+            )
+            .description(t!("settings-agent-token-speed-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-agent-questions-one-at-a-time"),
+                settings_switch(
+                    |config| config.agent.answer_questions_one_at_a_time,
+                    |settings, value| {
+                        settings
+                            .edit_agent(|section| section.answer_questions_one_at_a_time = value);
+                    },
+                ),
+            )
+            .description(t!("settings-agent-questions-one-at-a-time-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-agent-unified-tab"),
+                settings_switch(
+                    |config| config.agent.unified_agent_tab,
+                    |settings, value| {
+                        settings.edit_agent(|section| section.unified_agent_tab = value);
+                    },
+                ),
+            )
+            .description(t!("settings-agent-unified-tab-description").into_owned()),
         );
 
     let mut cli_updates = SettingGroup::new()
         .title(t!("settings-agent-cli-updates"))
         .item(SettingItem::new(
             t!("settings-agent-check-updates"),
-            SettingField::switch(
-                |cx| {
-                    cx.global::<AppSettings>()
-                        .config()
-                        .agent
-                        .check_agent_updates
-                },
-                |value, cx| {
-                    cx.global_mut::<AppSettings>()
-                        .edit_agent(|section| section.check_agent_updates = value);
+            settings_switch(
+                |config| config.agent.check_agent_updates,
+                |settings, value| {
+                    settings.edit_agent(|section| section.check_agent_updates = value);
                 },
             ),
         ))
@@ -238,11 +249,10 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                 .item(
                     SettingItem::new(
                         t!("settings-agent-enable-hooks"),
-                        SettingField::switch(
-                            |cx| cx.global::<AppSettings>().config().agent.enable_agent_hooks,
-                            |value, cx| {
-                                cx.global_mut::<AppSettings>()
-                                    .edit_agent(|section| section.enable_agent_hooks = value);
+                        settings_switch(
+                            |config| config.agent.enable_agent_hooks,
+                            |settings, value| {
+                                settings.edit_agent(|section| section.enable_agent_hooks = value);
                             },
                         ),
                     )
@@ -250,19 +260,13 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                 )
                 .item(agent_hook_item(
                     t!("settings-agent-kind-claude-code"),
-                    claude_hook::settings_path(),
-                    claude_hook::settings_path(),
-                    claude_hook::hooks_status,
-                    claude_hook::install_hooks,
-                    claude_hook::uninstall_hooks,
+                    Hook::Claude,
+                    cx,
                 ))
                 .item(agent_hook_item(
                     t!("settings-agent-kind-codex"),
-                    codex_hook::config_path(),
-                    codex_hook::hooks_path(),
-                    codex_hook::hooks_status,
-                    codex_hook::install_hooks,
-                    codex_hook::uninstall_hooks,
+                    Hook::Codex,
+                    cx,
                 )),
         )
         .group(cli_updates)

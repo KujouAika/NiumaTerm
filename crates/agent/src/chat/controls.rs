@@ -23,6 +23,12 @@ pub struct ThreadSettings {
     /// tiers, so normal is expressed as an explicit `serviceTier: null`
     /// (double-optional in the serialized payload — null resets, absent keeps).
     pub tier: Option<String>,
+
+    /// The agent composition a DeepSeek Harness conversation is built from.
+    /// The harness composes an agent once, when the conversation is created,
+    /// so this is chosen at creation and never overlaid onto a conversation
+    /// that already runs.
+    pub agent_preset: Option<String>,
 }
 
 /// One selectable execution-permission preset a backend advertises.
@@ -31,7 +37,7 @@ pub struct ThreadSettings {
 /// name them itself. This exists for one whose preset table is part of the
 /// deployment, where a hard-coded list would offer values the deployment does
 /// not serve and hide the ones it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalPreset {
     /// Submitted back verbatim when the user picks it.
     pub value: String,
@@ -46,7 +52,7 @@ pub struct ApprovalPreset {
 /// preset is a policy the session switches between at will, while this decides
 /// which plugins compose the agent and can therefore only be chosen before the
 /// conversation has run anything.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPreset {
     /// Submitted back verbatim when the user picks it.
     pub value: String,
@@ -55,8 +61,30 @@ pub struct AgentPreset {
     pub description: Option<String>,
 }
 
+/// Put `selected` at the head of a catalog that does not list it. A
+/// conversation can run on a model its provider stopped advertising, or on
+/// one named by hand, and the picker has to show the value in use rather
+/// than a blank; a bare entry with no tiers or efforts is what such a model
+/// has to offer.
+pub(crate) fn list_selected_model(models: &mut Vec<ModelInfo>, selected: Option<&str>) {
+    if let Some(model) = selected.map(str::trim).filter(|model| !model.is_empty())
+        && !models.iter().any(|entry| entry.model == model)
+    {
+        models.insert(
+            0,
+            ModelInfo {
+                model: model.to_string(),
+                display: model.to_string(),
+                tiers: Vec::new(),
+                default_tier: None,
+                efforts: Vec::new(),
+            },
+        );
+    }
+}
+
 /// One entry of a backend's model catalog.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub model: String,
     pub display: String,

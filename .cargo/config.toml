@@ -4,6 +4,9 @@ rustflags = [
     # these capabilities, so let's optimize for them
     "-Ctarget-cpu=apple-m1"
 ]
+# Sign each binary with the Developer ID identity before it runs, so rebuilds
+# keep one identity and the Keychain stops asking again after every build.
+runner = "scripts/macos-dev-sign.sh"
 
 [target.'cfg(target_os = "windows")']
 rustflags = [
@@ -14,7 +17,17 @@ rustflags = [
     # Rust std also use /MT, avoiding LNK2038 RuntimeLibrary mismatches.
     "-C",
     "target-feature=+crt-static",
+    # Warnings fail the build so they are fixed where they appear.
+    "-D",
+    "warnings",
 ]
+
+# Code gated to one platform is only compiled on that platform, so each
+# platform fails its own build on warnings rather than leaving them for a
+# machine that never sees them. Cargo joins these flags with the target
+# triple's own table above.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-D", "warnings"]
 
 [alias]
 readability = "run --quiet --locked --manifest-path tools/readability/Cargo.toml --"

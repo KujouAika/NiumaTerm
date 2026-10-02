@@ -1,6 +1,12 @@
+use std::iter;
+
 use crate::claude_code::sessions as claude_sessions;
 use crate::codex::app_server;
 use crate::session::{AgentKind, Backend, ConversationTitleRequest, RenameOutcome};
+
+/// Longest provisional title, in characters including the ellipsis, so the
+/// tab strip and history rows stay one line.
+const PROVISIONAL_TITLE_CHARS: usize = 60;
 
 #[derive(Default)]
 pub struct ConversationNaming {
@@ -8,6 +14,10 @@ pub struct ConversationNaming {
 
     /// A rename remains pending until the provider can address and accept it.
     pub pending: Option<String>,
+
+    /// The title the conversation goes by, for views in other processes;
+    /// the tab strip keeps its own copy.
+    pub title: Option<String>,
 }
 
 pub fn conversation_title_request(
@@ -27,6 +37,45 @@ pub fn conversation_title_request(
     })
 }
 
+/// The compact title a conversation shows until its provider generates one,
+/// derived from the opening prompt. Whitespace runs collapse to single
+/// spaces, at most `max_words` words are kept, and longer text is cut with an
+/// ellipsis. A prompt that opens with `/` names a command rather than a
+/// subject, so it yields no title.
+pub(crate) fn provisional_title(text: &str, max_words: Option<usize>) -> Option<String> {
+    let mut words = text.split_whitespace();
+
+    let first = words.next()?;
+
+    if first.starts_with('/') {
+        return None;
+    }
+
+    let normalized = iter::once(first)
+        .chain(words)
+        .take(max_words.unwrap_or(usize::MAX))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut chars = normalized.chars();
+
+    let prefix: String = chars.by_ref().take(PROVISIONAL_TITLE_CHARS).collect();
+
+    if chars.next().is_none() {
+        return Some(prefix);
+    }
+
+    let mut truncated: String = prefix.chars().take(PROVISIONAL_TITLE_CHARS - 1).collect();
+
+    // A cut that lands after a space would render as "word …"; trimming
+    // keeps the ellipsis attached to the last kept word.
+    truncated.truncate(truncated.trim_end().len());
+
+    truncated.push('…');
+
+    Some(truncated)
+}
+
 impl ConversationNaming {
     pub fn request(
         &self,
@@ -44,6 +93,7 @@ impl ConversationNaming {
     pub fn rename(&mut self, title: &str) {
         self.named = true;
         self.pending = Some(title.to_owned());
+        self.title = Some(title.to_owned());
     }
 
     pub fn sync(&mut self, backend: Option<&mut Backend>) {

@@ -1,30 +1,35 @@
 pub(super) use crate::agent_tab::thread_controls::defaults::{
-    launch_effort, launch_model, remember_defaults, stored_thread_settings,
+    launch_model, launch_pins, remember_defaults,
 };
 
 pub(super) mod effort;
 
 mod defaults;
-
 mod harness_rows;
 
 use std::borrow::Cow;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Context, Div, IntoElement, Pixels, SharedString, Stateful, div, px};
+use gpui::{
+    AnyElement, App, Context, Div, Entity, IntoElement, Pixels, SharedString, Stateful, Window,
+    div, px,
+};
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
+use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex};
 use nmt_agent::session::settings::ConversationSettings;
+use nmt_config::profile::AgentProfile;
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
 use crate::agent_tab::commands::setting_value_label;
-use crate::agent_tab::profile::AgentKind;
+use crate::agent_tab::profile::{AgentKind, AgentKindExt as _};
 use crate::agent_tab::settings::AgentSettings;
+use crate::agent_tab::thread_controls::effort::effort_panel;
 use crate::agent_tab::thread_controls::harness_rows::{
-    render_claude_row, render_codex_row, render_deepseek_row,
+    claude_settings, codex_settings, deepseek_settings,
 };
+use crate::agent_tab::view::profile_switch::profile_switch_dialog;
 
 /// One composer setting, drawn as its own pill. Each pill opens its own menu
 /// and changes one value, so each carries its own outline: a shared frame
@@ -55,11 +60,33 @@ const EFFORT_GAUGE_STEPS: usize = 6;
 /// alone, and a pill each for them crowds the two that are actually read.
 #[derive(Clone)]
 pub(super) struct FoldedSetting {
-    name: Cow<'static, str>,
-    icon: IconName,
-    current: Option<String>,
-    options: Vec<(String, String)>,
-    set: fn(&mut AgentPane, String, &mut Context<AgentPane>),
+    pub(super) name: Cow<'static, str>,
+    pub(super) icon: IconName,
+    pub(super) current: Option<String>,
+    pub(super) options: Vec<(String, String)>,
+    pub(super) set: fn(&mut AgentPane, String, &mut Context<AgentPane>),
+}
+
+/// Every setting a harness offers one conversation: what the composer row
+/// draws, and what a menu elsewhere lists. The model is always present; the
+/// effort exists only where the selected model answers to one; the rest are
+/// the harness's standing choices.
+pub(crate) struct HarnessSettings {
+    pub(super) model: FoldedSetting,
+    pub(super) effort: Option<FoldedSetting>,
+    pub(super) folded: Vec<FoldedSetting>,
+}
+
+pub(crate) fn harness_settings(
+    state: &ConversationSettings,
+    kind: AgentKind,
+    cx: &App,
+) -> HarnessSettings {
+    match kind {
+        AgentKind::Codex => codex_settings(state, kind, cx),
+        AgentKind::Claude => claude_settings(state, kind, cx),
+        AgentKind::DeepSeek => deepseek_settings(state, kind, cx),
+    }
 }
 
 /// The effort ladder the composer offers, cheapest first. It is this
@@ -75,17 +102,147 @@ pub(super) const EFFORT_TRACK_HEIGHT: Pixels = px(26.0);
 
 pub(super) const EFFORT_THUMB_INSET: Pixels = px(3.0);
 
-/// The dropdown row under the input, per agent kind.
+/// The dropdown row under the input: the launch profile picker where the tab
+/// may still change agent, the model picker, the effort gauge where the model
+/// has one, and the folded menu for the rest.
 pub(super) fn render_row(
     state: &ConversationSettings,
     kind: AgentKind,
+    profile: Option<AnyElement>,
     cx: &mut Context<AgentPane>,
 ) -> AnyElement {
-    match kind {
-        AgentKind::Codex => render_codex_row(state, kind, cx).into_any_element(),
-        AgentKind::Claude => render_claude_row(state, kind, cx).into_any_element(),
-        AgentKind::DeepSeek => render_deepseek_row(state, kind, cx).into_any_element(),
+    let HarnessSettings {
+        model,
+        effort,
+        folded,
+    } = harness_settings(state, kind, cx);
+
+    let model = setting_picker(
+        cx,
+        "agent-model",
+        model.name,
+        model.icon,
+        model.current,
+        model.options,
+        model.set,
+    )
+    .into_any_element();
+
+    let mut row = h_flex()
+        .w_full()
+        .gap(px(SETTINGS_PILL_GAP))
+        .flex_wrap()
+        .text_color(cx.theme().muted_foreground);
+
+    if let Some(profile) = profile {
+        row = row.child(settings_group(t!("agent-settings-agent"), vec![profile]));
     }
+
+    row = row.child(settings_group(t!("agent-settings-model"), vec![model]));
+
+    if let Some(effort) = effort {
+        let effort =
+            effort_panel(cx, effort.current, effort.options, effort.set).into_any_element();
+
+        row = row.child(settings_group(
+            t!("agent-settings-quality-cost"),
+            vec![effort],
+        ));
+    }
+
+    row.children(folded_settings_pill(cx, folded))
+        .into_any_element()
+}
+
+/// Every setting of `pane`'s conversation as a submenu of `menu`, for a place
+/// that lists a conversation's settings without drawing its row. Each entry
+/// names the setting and the value it stands at.
+pub(crate) fn harness_submenus(
+    menu: PopupMenu,
+    pane: &Entity<AgentPane>,
+    settings: HarnessSettings,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let mut entries = vec![settings.model];
+
+    entries.extend(settings.effort);
+    entries.extend(settings.folded);
+
+    setting_submenus(menu, pane, entries, window, cx)
+}
+
+/// One submenu per setting, listing the values it could stand at with the
+/// current one checked. The entry states the value as well as the name, so
+/// what a row would show on its surface is still read without opening
+/// anything further.
+fn setting_submenus(
+    menu: PopupMenu,
+    pane: &Entity<AgentPane>,
+    settings: Vec<FoldedSetting>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let mut menu = menu;
+
+    for setting in settings {
+        let value = setting
+            .current
+            .as_ref()
+            .map(|value| {
+                setting
+                    .options
+                    .iter()
+                    .find(|(option, _)| option == value)
+                    .map(|(_, label)| label.clone())
+                    .unwrap_or_else(|| setting_value_label(value))
+            })
+            .unwrap_or_else(|| "—".to_string());
+
+        let label = t!(
+            "agent-settings-folded-entry",
+            name = setting.name,
+            value = &value
+        )
+        .into_owned();
+
+        let pane = pane.clone();
+
+        menu = menu.submenu_with_icon(
+            Some(Icon::new(setting.icon)),
+            label,
+            window,
+            cx,
+            move |submenu, _, _| {
+                let mut submenu = submenu;
+
+                let set = setting.set;
+
+                for (value, label) in setting.options.clone() {
+                    let pane = pane.clone();
+                    let checked = setting.current.as_deref() == Some(value.as_str());
+
+                    submenu = submenu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                        move |_, _, cx| {
+                            pane.update(cx, |this, cx| {
+                                if !this.binding.is_current() {
+                                    return;
+                                }
+
+                                set(this, value.clone(), cx);
+
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+
+                submenu
+            },
+        );
+    }
+
+    menu
 }
 
 /// The model catalog as picker entries, spelled the way the settings ask
@@ -147,70 +304,7 @@ pub(super) fn folded_settings_pill(
         // Anchored bottom-left so the menu opens upward — the row sits
         // at the bottom edge of the pane.
         .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, window, cx| {
-            let mut menu = menu;
-
-            for setting in settings.clone() {
-                // The entry states the value as well as the name, so
-                // what the row used to show on its surface is still
-                // read without opening anything further.
-                let value = setting
-                    .current
-                    .as_ref()
-                    .map(|value| {
-                        setting
-                            .options
-                            .iter()
-                            .find(|(option, _)| option == value)
-                            .map(|(_, label)| label.clone())
-                            .unwrap_or_else(|| setting_value_label(value))
-                    })
-                    .unwrap_or_else(|| "—".to_string());
-
-                let label = t!(
-                    "agent-settings-folded-entry",
-                    name = setting.name,
-                    value = &value
-                )
-                .into_owned();
-
-                let pane = pane.clone();
-
-                menu = menu.submenu_with_icon(
-                    Some(Icon::new(setting.icon)),
-                    label,
-                    window,
-                    cx,
-                    move |submenu, _, _| {
-                        let mut submenu = submenu;
-
-                        let set = setting.set;
-
-                        for (value, label) in setting.options.clone() {
-                            let pane = pane.clone();
-                            let checked = setting.current.as_deref() == Some(value.as_str());
-
-                            submenu =
-                                submenu.item(PopupMenuItem::new(label).checked(checked).on_click(
-                                    move |_, _, cx| {
-                                        pane.update(cx, |this, cx| {
-                                            if !this.binding.is_current() {
-                                                return;
-                                            }
-
-                                            set(this, value.clone(), cx);
-
-                                            cx.notify();
-                                        });
-                                    },
-                                ));
-                        }
-
-                        submenu
-                    },
-                );
-            }
-
-            menu
+            setting_submenus(menu, &pane, settings.clone(), window, cx)
         });
 
     Some(settings_pill_frame(pill, cx).into_any_element())
@@ -337,4 +431,92 @@ pub(super) fn setting_picker(
         });
 
     settings_pill_frame(pill, cx)
+}
+
+/// The agent the tab runs, as a pill leading the settings row: the
+/// current profile's mark and name, opening a menu of every configured
+/// profile. Profiles rather than bare agent kinds are listed, because two
+/// profiles of one kind can point at different endpoints, keys, or models.
+pub(super) fn profile_picker(
+    cx: &mut Context<AgentPane>,
+    current: &AgentProfile,
+    profiles: Vec<AgentProfile>,
+) -> AnyElement {
+    let pane = cx.entity();
+    let name = t!("agent-settings-agent");
+    let current_label = profile_label(current);
+    let current_name = current.name.clone();
+    let current_kind = current.kind;
+
+    let pill = settings_pill(Button::new("agent-profile"))
+        .tooltip(name.clone())
+        .accessibility_label(format!("{name}: {current_label}"))
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(current.kind.icon().size(px(SETTINGS_PILL_ICON)))
+                .child(div().text_size(px(SETTINGS_PILL_TEXT)).child(current_label))
+                .child(
+                    Icon::new(IconName::ChevronDown)
+                        .size(px(SETTINGS_PILL_CHEVRON))
+                        .text_color(cx.theme().muted_foreground.opacity(0.7)),
+                ),
+        )
+        // Anchored bottom-left so the menu opens upward — the row sits at
+        // the bottom edge of the pane.
+        .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
+            let mut menu = menu;
+
+            for profile in profiles.clone() {
+                let pane = pane.clone();
+                let checked = profile.name == current_name && profile.kind == current_kind;
+                let label = profile_label(&profile);
+
+                menu = menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .icon(profile.kind.icon())
+                        .checked(checked)
+                        .on_click(move |_, window, cx| {
+                            if checked {
+                                return;
+                            }
+
+                            // The relaunched tab starts a fresh conversation,
+                            // so ending one on screen takes a confirmation.
+                            if pane.read(cx).switch_discards_conversation(cx) {
+                                let pane = pane.clone();
+                                let profile = profile.clone();
+                                let label = label.clone();
+
+                                window.open_dialog(cx, move |dialog, _, _| {
+                                    profile_switch_dialog(
+                                        dialog.centered(true),
+                                        &pane,
+                                        &profile,
+                                        &label,
+                                    )
+                                });
+
+                                return;
+                            }
+
+                            pane.update(cx, |this, cx| this.switch_profile(profile.clone(), cx));
+                        }),
+                );
+            }
+
+            menu
+        });
+
+    settings_pill_frame(pill, cx).into_any_element()
+}
+
+/// A profile's name as a menu shows it; an unnamed profile goes by its agent.
+fn profile_label(profile: &AgentProfile) -> String {
+    if profile.name.trim().is_empty() {
+        profile.kind.display().to_string()
+    } else {
+        profile.name.clone()
+    }
 }

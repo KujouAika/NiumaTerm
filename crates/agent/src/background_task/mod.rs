@@ -3,10 +3,8 @@
 //! reports them as Task tool calls plus sidechain records; both reduce into the
 //! same summary so the UI never parses a provider protocol.
 
-pub use nmt_profile::AgentKind as BackgroundTaskProvider;
-
 pub use crate::background_task::transcript::{
-    BackgroundTaskTranscriptState, BackgroundTaskTranscriptUpdate, MAX_TRANSCRIPT_ITEMS,
+    BackgroundTaskLoadState, BackgroundTaskTranscriptUpdate, MAX_TRANSCRIPT_ITEMS,
 };
 
 mod transcript;
@@ -17,17 +15,19 @@ mod tests;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use crate::session::AgentKind;
+
 /// A provider plus a provider-local stable id. Used both for a child task and
 /// for the parent session that owns it, because both need the same
 /// qualification to stay distinct across simultaneously open providers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BackgroundTaskKey {
-    pub provider: BackgroundTaskProvider,
+    pub provider: AgentKind,
     pub id: String,
 }
 
 impl BackgroundTaskKey {
-    pub fn new(provider: BackgroundTaskProvider, id: impl Into<String>) -> Self {
+    pub fn new(provider: AgentKind, id: impl Into<String>) -> Self {
         Self {
             provider,
             id: id.into(),
@@ -35,15 +35,15 @@ impl BackgroundTaskKey {
     }
 
     pub fn codex(id: impl Into<String>) -> Self {
-        Self::new(BackgroundTaskProvider::Codex, id)
+        Self::new(AgentKind::Codex, id)
     }
 
     pub fn claude_code(id: impl Into<String>) -> Self {
-        Self::new(BackgroundTaskProvider::Claude, id)
+        Self::new(AgentKind::Claude, id)
     }
 
     pub fn deepseek(id: impl Into<String>) -> Self {
-        Self::new(BackgroundTaskProvider::DeepSeek, id)
+        Self::new(AgentKind::DeepSeek, id)
     }
 }
 
@@ -54,10 +54,6 @@ impl BackgroundTaskKey {
 pub enum BackgroundTaskRefs {
     Codex {
         thread_id: String,
-
-        /// Immediate parent thread, which can be another descendant rather than
-        /// the selected root; retained so a later version can nest rows.
-        parent_thread_id: Option<String>,
     },
     ClaudeCode {
         /// Task identifier from lifecycle records; absent until one arrives.
@@ -70,10 +66,6 @@ pub enum BackgroundTaskRefs {
         agent_id: Option<String>,
     },
     DeepSeek {
-        /// Session the child hangs off. Reading a child's conversation is
-        /// addressed by the pair, not by the child alone.
-        parent_session_id: String,
-
         /// Whether the child accepts further prompts or was one execution. The
         /// two are read through different transports, so the row carries which
         /// one it is rather than probing.
@@ -84,48 +76,35 @@ pub enum BackgroundTaskRefs {
 impl BackgroundTaskRefs {
     /// Fill identifiers this reference does not know yet. Known values are kept
     /// because a later record can omit an id it already established.
+    ///
+    /// Only Claude carries identifiers that arrive piecemeal. A provider
+    /// mismatch means the key was reused across providers, which the qualified
+    /// key already prevents; the current value is kept.
     fn merge_from(&mut self, other: &Self) {
-        match (self, other) {
-            (
-                Self::Codex {
-                    parent_thread_id, ..
-                },
-                Self::Codex {
-                    parent_thread_id: incoming,
-                    ..
-                },
-            ) => {
-                if parent_thread_id.is_none() {
-                    parent_thread_id.clone_from(incoming);
-                }
+        if let (
+            Self::ClaudeCode {
+                task_id,
+                tool_use_id,
+                agent_id,
+            },
+            Self::ClaudeCode {
+                task_id: incoming_task,
+                tool_use_id: incoming_tool_use,
+                agent_id: incoming_agent,
+            },
+        ) = (self, other)
+        {
+            if task_id.is_none() {
+                task_id.clone_from(incoming_task);
             }
-            (
-                Self::ClaudeCode {
-                    task_id,
-                    tool_use_id,
-                    agent_id,
-                },
-                Self::ClaudeCode {
-                    task_id: incoming_task,
-                    tool_use_id: incoming_tool_use,
-                    agent_id: incoming_agent,
-                },
-            ) => {
-                if task_id.is_none() {
-                    task_id.clone_from(incoming_task);
-                }
 
-                if tool_use_id.is_none() {
-                    tool_use_id.clone_from(incoming_tool_use);
-                }
-
-                if agent_id.is_none() {
-                    agent_id.clone_from(incoming_agent);
-                }
+            if tool_use_id.is_none() {
+                tool_use_id.clone_from(incoming_tool_use);
             }
-            // A provider mismatch means the key was reused across providers,
-            // which the qualified key already prevents; keep the current value.
-            _ => {}
+
+            if agent_id.is_none() {
+                agent_id.clone_from(incoming_agent);
+            }
         }
     }
 }
@@ -170,20 +149,6 @@ pub enum BackgroundTaskKind {
     Shell,
 }
 
-/// How far provider-specific restoration has progressed. Kept beside the rows
-/// rather than encoded into them so a failed refresh can leave known rows
-/// visible while still reporting the failure.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub enum BackgroundTaskDiscoveryState {
-    #[default]
-    NotLoaded,
-    Loading,
-    Ready,
-    Unavailable {
-        message: String,
-    },
-}
-
 /// One child agent as the UI sees it. Optional fields stay absent when a
 /// provider does not report them; a row is shown from its key and state alone.
 #[derive(Clone, Debug, PartialEq)]
@@ -193,7 +158,6 @@ pub struct BackgroundTaskSummary {
     pub refs: BackgroundTaskRefs,
     pub kind: BackgroundTaskKind,
     pub display_name: Option<String>,
-    pub agent_type: Option<String>,
 
     /// What the child was asked to do, from the launch payload.
     pub objective: Option<String>,
@@ -208,12 +172,7 @@ pub struct BackgroundTaskSummary {
     pub sequence: u64,
 
     pub started_at: Option<SystemTime>,
-    pub updated_at: Option<SystemTime>,
     pub completed_at: Option<SystemTime>,
-    pub model: Option<String>,
-
-    /// Distance from the selected root; direct children are depth 1.
-    pub depth: Option<u32>,
 
     /// Most recent child output excerpt, for later hierarchical presentation.
     pub last_preview: Option<String>,
@@ -259,14 +218,10 @@ pub struct BackgroundTaskUpdate {
     pub kind: Option<BackgroundTaskKind>,
     pub state: Option<BackgroundTaskState>,
     pub display_name: Option<String>,
-    pub agent_type: Option<String>,
     pub objective: Option<String>,
     pub status: Option<String>,
-    pub model: Option<String>,
-    pub depth: Option<u32>,
     pub last_preview: Option<String>,
     pub started_at: Option<SystemTime>,
-    pub updated_at: Option<SystemTime>,
     pub completed_at: Option<SystemTime>,
 }
 
@@ -284,7 +239,7 @@ impl BackgroundTaskUpdate {
 pub struct BackgroundTaskSnapshot {
     pub parent_session: BackgroundTaskKey,
     pub tasks: Vec<BackgroundTaskSummary>,
-    pub discovery: BackgroundTaskDiscoveryState,
+    pub discovery: BackgroundTaskLoadState,
 
     /// Advances when a task is created or changes lifecycle state. The title-bar
     /// button compares it against the last ordinal seen for this parent session,
@@ -318,7 +273,7 @@ impl BackgroundTaskSnapshot {
 pub struct BackgroundTaskRegistry {
     parent_session: BackgroundTaskKey,
     tasks: HashMap<BackgroundTaskKey, BackgroundTaskSummary>,
-    discovery: BackgroundTaskDiscoveryState,
+    discovery: BackgroundTaskLoadState,
     sequence: u64,
     activity: u64,
 }
@@ -328,7 +283,7 @@ impl BackgroundTaskRegistry {
         Self {
             parent_session,
             tasks: HashMap::new(),
-            discovery: BackgroundTaskDiscoveryState::default(),
+            discovery: BackgroundTaskLoadState::default(),
             sequence: 0,
             activity: 0,
         }
@@ -356,13 +311,13 @@ impl BackgroundTaskRegistry {
         self.sequence
     }
 
-    pub fn discovery(&self) -> &BackgroundTaskDiscoveryState {
+    pub fn discovery(&self) -> &BackgroundTaskLoadState {
         &self.discovery
     }
 
     /// Returns true when the state changed, so callers only publish a snapshot
     /// for a real transition.
-    pub fn set_discovery(&mut self, discovery: BackgroundTaskDiscoveryState) -> bool {
+    pub fn set_discovery(&mut self, discovery: BackgroundTaskLoadState) -> bool {
         if self.discovery == discovery {
             return false;
         }
@@ -403,16 +358,12 @@ impl BackgroundTaskRegistry {
                     refs,
                     kind: BackgroundTaskKind::default(),
                     display_name: None,
-                    agent_type: None,
                     objective: None,
                     status: None,
                     state: BackgroundTaskState::Starting,
                     sequence,
                     started_at: None,
-                    updated_at: None,
                     completed_at: None,
-                    model: None,
-                    depth: None,
                     last_preview: None,
                     can_stop: false,
                 };
@@ -448,7 +399,6 @@ impl BackgroundTaskRegistry {
             let metadata_only = BackgroundTaskUpdate {
                 state: None,
                 completed_at: None,
-                updated_at: None,
                 ..update
             };
 
@@ -460,13 +410,13 @@ impl BackgroundTaskRegistry {
 
     /// Drop every row, for example when the pane switches to another session.
     pub fn clear(&mut self) -> bool {
-        if self.tasks.is_empty() && self.discovery == BackgroundTaskDiscoveryState::NotLoaded {
+        if self.tasks.is_empty() && self.discovery == BackgroundTaskLoadState::NotLoaded {
             return false;
         }
 
         self.tasks.clear();
 
-        self.discovery = BackgroundTaskDiscoveryState::NotLoaded;
+        self.discovery = BackgroundTaskLoadState::NotLoaded;
         self.activity += 1;
 
         true
@@ -490,21 +440,15 @@ impl BackgroundTaskRegistry {
 
 fn default_refs(key: &BackgroundTaskKey) -> BackgroundTaskRefs {
     match key.provider {
-        BackgroundTaskProvider::Codex => BackgroundTaskRefs::Codex {
+        AgentKind::Codex => BackgroundTaskRefs::Codex {
             thread_id: key.id.clone(),
-            parent_thread_id: None,
         },
-        BackgroundTaskProvider::Claude => BackgroundTaskRefs::ClaudeCode {
+        AgentKind::Claude => BackgroundTaskRefs::ClaudeCode {
             task_id: None,
             tool_use_id: None,
             agent_id: None,
         },
-        // A child is addressed by the pair, so a reference built without its
-        // parent names nothing readable; the snapshot always supplies one.
-        BackgroundTaskProvider::DeepSeek => BackgroundTaskRefs::DeepSeek {
-            parent_session_id: String::new(),
-            continuable: false,
-        },
+        AgentKind::DeepSeek => BackgroundTaskRefs::DeepSeek { continuable: false },
     }
 }
 
@@ -541,18 +485,9 @@ fn merge_update(
     }
 
     changed |= replace_text(&mut summary.display_name, &update.display_name);
-    changed |= replace_text(&mut summary.agent_type, &update.agent_type);
     changed |= replace_text(&mut summary.objective, &update.objective);
     changed |= replace_text(&mut summary.status, &update.status);
-    changed |= replace_text(&mut summary.model, &update.model);
     changed |= replace_text(&mut summary.last_preview, &update.last_preview);
-
-    if let Some(depth) = update.depth
-        && summary.depth != Some(depth)
-    {
-        summary.depth = Some(depth);
-        changed = true;
-    }
 
     // The earliest known start wins: a restored row can report a start time
     // that a live update observed only after the task was already running.
@@ -567,13 +502,6 @@ fn merge_update(
         && summary.completed_at != Some(completed_at)
     {
         summary.completed_at = Some(completed_at);
-        changed = true;
-    }
-
-    if let Some(updated_at) = update.updated_at
-        && summary.updated_at.is_none_or(|known| updated_at > known)
-    {
-        summary.updated_at = Some(updated_at);
         changed = true;
     }
 

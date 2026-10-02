@@ -1,11 +1,12 @@
+use std::iter;
+
 use thiserror::Error;
 
 use crate::chat::SendOutcome;
 use crate::team::attempt::{Attempt, AttemptState, BudgetScope, DispatchIntent};
 use crate::team::budget::{Budget, BudgetError, TurnPurpose};
 use crate::team::discussion::{ArrangementState, PauseReason};
-use crate::team::identity::AttemptId;
-use crate::team::room::Room;
+use crate::team::model::AttemptId;
 use crate::team::storage::{RoomStore, StorageError};
 
 #[derive(Debug, Error)]
@@ -14,7 +15,7 @@ pub enum DispatchError {
     Storage(#[from] StorageError),
     #[error(transparent)]
     Budget(#[from] BudgetError),
-    #[error("attempt is unavailable, already sent, or belongs to an older owner")]
+    #[error("attempt is unavailable, already sent, or missing its recipient")]
     Ineligible,
 }
 
@@ -26,17 +27,27 @@ pub(crate) fn reserve_dispatches(
     let mut ids = Vec::with_capacity(intents.len());
 
     for intent in intents {
-        let member = next
-            .member(intent.recipient)
+        next.member(intent.recipient)
             .ok_or(DispatchError::Ineligible)?;
-
-        if member.ownership() != intent.ownership {
-            return Err(DispatchError::Ineligible);
-        }
 
         let id = AttemptId::new();
 
-        budget_mut(&mut next, intent.budget)?.reserve(&[(id, intent.purpose)])?;
+        let direct_budget = Budget::direct();
+
+        let budget = match intent.budget {
+            BudgetScope::Discussion(discussion) => {
+                &next
+                    .discussion(discussion)
+                    .ok_or(DispatchError::Ineligible)?
+                    .budget
+            }
+            BudgetScope::Direct(_) => &direct_budget,
+        };
+
+        budget.check_batch(
+            next.budget_attempts(intent.budget),
+            iter::once(intent.purpose),
+        )?;
 
         ids.push(id);
 
@@ -56,11 +67,24 @@ pub(crate) fn reserve_dispatches(
 /// The caller supplies a ready, idle session. Persistence precedes every
 /// external send, including the durable change from reserved to charged.
 /// A transport-level start is still awaiting provider acceptance evidence.
+#[cfg(test)]
 pub(crate) fn dispatch(
     store: &mut RoomStore,
     id: AttemptId,
     send: impl FnOnce(&DispatchIntent) -> SendOutcome,
 ) -> Result<SendOutcome, DispatchError> {
+    let intent = prepare(store, id)?;
+    let outcome = send(&intent);
+
+    finish(store, id, &outcome)?;
+
+    Ok(outcome)
+}
+
+pub(crate) fn prepare(
+    store: &mut RoomStore,
+    id: AttemptId,
+) -> Result<DispatchIntent, DispatchError> {
     let mut next = store.room().clone();
 
     let index = next
@@ -71,17 +95,11 @@ pub(crate) fn dispatch(
 
     let attempt = &next.attempts[index];
 
-    if attempt.state != AttemptState::Reserved
-        || next
-            .member(attempt.intent.recipient)
-            .is_none_or(|member| member.ownership() != attempt.intent.ownership)
-    {
+    if attempt.state != AttemptState::Reserved || next.member(attempt.intent.recipient).is_none() {
         return Err(DispatchError::Ineligible);
     }
 
     let intent = attempt.intent.clone();
-
-    budget_mut(&mut next, intent.budget)?.charge(id)?;
 
     next.attempts[index].state = AttemptState::Sending;
 
@@ -89,9 +107,7 @@ pub(crate) fn dispatch(
         && intent.purpose != TurnPurpose::Summary
     {
         let discussion = next
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == discussion_id)
+            .discussion_mut(discussion_id)
             .ok_or(DispatchError::Ineligible)?;
 
         let arrangement = discussion
@@ -110,9 +126,29 @@ pub(crate) fn dispatch(
 
     store.commit(next)?;
 
-    let outcome = send(&intent);
+    Ok(intent)
+}
 
-    match &outcome {
+pub(crate) fn finish(
+    store: &mut RoomStore,
+    id: AttemptId,
+    outcome: &SendOutcome,
+) -> Result<(), DispatchError> {
+    let room = store.room();
+
+    let index = room
+        .attempts
+        .iter()
+        .position(|attempt| attempt.id == id)
+        .ok_or(DispatchError::Ineligible)?;
+
+    let intent = room.attempts[index].intent.clone();
+
+    if room.attempts[index].state != AttemptState::Sending {
+        return Err(DispatchError::Ineligible);
+    }
+
+    match outcome {
         SendOutcome::StartedTurn => {}
         SendOutcome::Steered | SendOutcome::Rejected { .. } => {
             let mut next = store.room().clone();
@@ -121,20 +157,10 @@ pub(crate) fn dispatch(
 
             if let BudgetScope::Discussion(discussion_id) = intent.budget {
                 let discussion = next
-                    .discussions
-                    .iter_mut()
-                    .find(|run| run.id == discussion_id)
+                    .discussion_mut(discussion_id)
                     .ok_or(DispatchError::Ineligible)?;
 
-                for arrangement in discussion
-                    .stages
-                    .iter_mut()
-                    .flat_map(|stage| &mut stage.arrangements)
-                {
-                    if arrangement.operation == intent.operation {
-                        arrangement.state = ArrangementState::Uncertain(id);
-                    }
-                }
+                discussion.mark_operation(intent.operation, ArrangementState::Uncertain(id));
 
                 discussion.pause(PauseReason::UncertainAttempt(id));
             }
@@ -144,52 +170,21 @@ pub(crate) fn dispatch(
         SendOutcome::NotReady => {
             let mut next = store.room().clone();
 
-            budget_mut(&mut next, intent.budget)?.release_rejected(id)?;
-
             next.attempts[index].state = AttemptState::Rejected;
 
             if let BudgetScope::Discussion(discussion_id) = intent.budget {
                 let discussion = next
-                    .discussions
-                    .iter_mut()
-                    .find(|run| run.id == discussion_id)
+                    .discussion_mut(discussion_id)
                     .ok_or(DispatchError::Ineligible)?;
 
-                for arrangement in discussion
-                    .stages
-                    .iter_mut()
-                    .flat_map(|stage| &mut stage.arrangements)
-                {
-                    if arrangement.operation == intent.operation {
-                        arrangement.state = ArrangementState::Failed(id);
-                    }
-                }
+                discussion.mark_operation(intent.operation, ArrangementState::Failed(id));
 
-                discussion.pause(if intent.purpose == TurnPurpose::Summary {
-                    PauseReason::SummaryFailed(id)
-                } else {
-                    PauseReason::AttemptFailed(id)
-                });
+                discussion.pause(PauseReason::attempt_failed(id, intent.purpose));
             }
 
             store.commit(next)?;
         }
     }
 
-    Ok(outcome)
-}
-
-fn budget_mut(room: &mut Room, scope: BudgetScope) -> Result<&mut Budget, DispatchError> {
-    match scope {
-        BudgetScope::Discussion(id) => room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .map(|run| &mut run.budget)
-            .ok_or(DispatchError::Ineligible),
-        BudgetScope::Direct(id) => Ok(room
-            .direct_allowances
-            .entry(id)
-            .or_insert_with(Budget::direct)),
-    }
+    Ok(())
 }

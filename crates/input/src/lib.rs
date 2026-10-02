@@ -4,7 +4,7 @@
 //! expects (kitty keyboard protocol + textual + modifier folding). It was moved
 //! here from `app/rioterm/src/bindings/kitty_keyboard.rs` and decoupled
 //! from frontend-specific key events onto the neutral [`KeyInput`], and from
-//! `nmt_terminal::terminal::Mode`
+//! `nmt_terminal::vt_modes::Mode`
 //! onto [`KeyEncodeFlags`] so terminal encoding stays independent of the renderer.
 //!
 //! `build_key_sequence` was originally taken from alacritty (Apache 2.0).
@@ -24,7 +24,7 @@ use crate::event::ElementState;
 use crate::keyboard::{Key, KeyLocation, ModifiersState, NamedKey};
 
 bitflags! {
-    /// Terminal modes that affect key encoding, lifted off `nmt_terminal::terminal::Mode`
+    /// Terminal modes that affect key encoding, lifted off `nmt_terminal::vt_modes::Mode`
     /// so this crate stays independent of rio-backend. Each frontend derives these
     /// from its own mode source (rioterm: `Mode`; NiumaTerm: the session `vt_modes` atomic).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,37 +244,6 @@ pub fn bracket_paste(body: &[u8], bracketed: bool) -> Vec<u8> {
     out.extend_from_slice(b"\x1b[201~");
 
     out
-}
-
-/// Encode a terminal mouse report in SGR (1006) or legacy X10 form.
-pub fn encode_mouse_report(
-    sgr: bool,
-    button: u8,
-    mods: u8,
-    pressed: bool,
-    col: u16,
-    row: u16,
-) -> Option<Vec<u8>> {
-    if sgr {
-        let c = if pressed { 'M' } else { 'm' };
-
-        Some(format!("\x1b[<{};{};{}{}", button + mods, col + 1, row + 1, c).into_bytes())
-    } else {
-        let b = if pressed { button + mods } else { 3 + mods };
-
-        if col >= 223 || row >= 223 {
-            return None;
-        }
-
-        Some(vec![
-            b'\x1b',
-            b'[',
-            b'M',
-            32 + b,
-            32 + 1 + col as u8,
-            32 + 1 + row as u8,
-        ])
-    }
 }
 
 /// Named keys whose terminal sequence overrides the generic encoder, mirroring

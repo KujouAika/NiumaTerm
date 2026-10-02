@@ -1,62 +1,50 @@
 pub use nmt_config::agent::{CollapseRows, ModelListStyle};
 #[cfg(test)]
-pub use nmt_config::appearance::{
-    DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE, DEFAULT_BACKGROUND_IMAGE_OPACITY, DEFAULT_FONT_FAMILY,
-    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, DEFAULT_TAB_WIDTH, DEFAULT_UI_FONT,
-    clamp_agent_transcript_font_size, clamp_background_image_opacity, clamp_background_opacity,
-    clamp_git_interval, clamp_tab_width, clamp_terminal_font_size, clamp_terminal_line_height,
-    terminal_font_or_default, ui_font_or_default,
-};
-pub use nmt_config::appearance::{InputStyle, MIN_TAB_WIDTH, TabBarStyle, WindowBackdrop};
-pub use nmt_config::profile::{
-    AgentProfile, AgentProfileKind, AgentProfileLauncher, EnvVar, Profile,
-};
+pub use nmt_config::appearance::{DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_UI_FONT};
+pub use nmt_config::appearance::{InputStyle, TabBarStyle, WindowBackdrop};
+pub use nmt_config::profile::{AgentKind, AgentProfile, AgentProfileLauncher, EnvVar, Profile};
 
 use std::borrow::Cow;
 use std::io;
 use std::path::Path;
+use std::rc::Rc;
 
-use app::agent_tab::AgentKind;
 use gpui::Global;
-#[cfg(windows)]
-use gpui::SharedString;
 use nmt_agent::dsh;
 use nmt_config::agent::AgentConfig;
 use nmt_config::appearance::AppearanceConfig;
 use nmt_config::defaults::default_theme;
-#[cfg(windows)]
-use nmt_config::remote_session::RemoteSessionConfig;
+use nmt_config::remote::RemoteConfig;
 use nmt_config::system::SystemConfig;
 use nmt_config::terminal::TerminalConfig;
-use nmt_config::theme::Theme;
+use nmt_config::theme_catalog::ThemeFamily;
 use nmt_config::update::UpdateConfig;
 use nmt_config::{Config, CursorShape, SettingsPatch, config_file_path, get, save_settings_to};
-use nmt_platform::default_shell;
+use nmt_platform::{default_shell, default_shell_name};
 use rust_i18n::t;
 
 /// Persistent settings are shared with the configuration reader and writer.
 /// Picker state lives separately and never enters a pane snapshot.
+#[derive(Clone)]
 pub struct AppSettings {
     config: Config,
-    discard_on_exit: bool,
+
+    /// The configuration as it was last read from or written to disk. Quitting
+    /// writes only when the live configuration differs from it, so edits made
+    /// to the file by hand while the app runs survive a quit that changed
+    /// nothing.
+    persisted: Config,
 }
 
 #[derive(Default)]
 pub struct SettingsEditing {
     pub theme_filter: String,
 
-    /// Parsed theme files refreshed by the settings surface's watcher.
-    pub themes: Vec<(String, Theme)>,
+    /// Grouped theme files refreshed by the settings surface's watcher.
+    pub theme_families: Rc<Vec<ThemeFamily>>,
 
     pub theme_columns: u16,
     pub theme_load_failed: bool,
-
-    #[cfg(windows)]
-    pub remote_pairing_code: Option<String>,
-    #[cfg(windows)]
-    pub remote_pairing_input: SharedString,
-    #[cfg(windows)]
-    pub remote_client_status: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -77,28 +65,28 @@ pub(super) fn input_style_label(style: InputStyle) -> Cow<'static, str> {
 /// The built-in profile seeded when the config file defines none.
 fn builtin_profile() -> Profile {
     Profile {
-        name: "PowerShell".to_string(),
+        name: default_shell_name().to_string(),
         shell: default_shell(),
         args: String::new(),
     }
 }
 
-pub(super) fn agent_kind_display_label(kind: AgentProfileKind) -> Cow<'static, str> {
+pub(super) fn agent_kind_display_label(kind: AgentKind) -> Cow<'static, str> {
     match kind {
-        AgentProfileKind::Claude => t!("settings-agent-kind-claude-code"),
-        AgentProfileKind::Codex => t!("settings-agent-kind-codex"),
-        AgentProfileKind::DeepSeek => t!("settings-agent-kind-deepseek"),
+        AgentKind::Claude => t!("settings-agent-kind-claude-code"),
+        AgentKind::Codex => t!("settings-agent-kind-codex"),
+        AgentKind::DeepSeek => t!("settings-agent-kind-deepseek"),
     }
 }
 
 /// The built-in agent profile for `kind`. The bare executable name resolves
 /// through PATH (and PATHEXT on Windows), so it finds `claude.exe` as well as
 /// the npm `claude.cmd` shim.
-pub(crate) fn builtin_agent_profile(kind: AgentProfileKind) -> AgentProfile {
+pub(crate) fn builtin_agent_profile(kind: AgentKind) -> AgentProfile {
     let executable = match kind {
-        AgentProfileKind::Claude => "claude",
-        AgentProfileKind::Codex => "codex",
-        AgentProfileKind::DeepSeek => dsh::DEFAULT_EXECUTABLE,
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::DeepSeek => dsh::DEFAULT_EXECUTABLE,
     };
 
     AgentProfile {
@@ -109,7 +97,7 @@ pub(crate) fn builtin_agent_profile(kind: AgentProfileKind) -> AgentProfile {
         // own, so a fresh profile runs it through npx and needs nothing
         // installed first. The executable stays filled in as what the profile
         // falls back to once it is pointed at a binary instead.
-        launcher: if kind == AgentProfileKind::DeepSeek {
+        launcher: if kind == AgentKind::DeepSeek {
             AgentProfileLauncher::Npx
         } else {
             AgentProfileLauncher::Custom
@@ -131,11 +119,16 @@ fn builtin_agent_profiles() -> Vec<AgentProfile> {
 impl AppSettings {
     /// The last window's explicit discard also bypasses the final quit hook.
     pub(crate) fn discard_on_exit(&mut self) {
-        self.discard_on_exit = true;
+        self.persisted = self.config.clone();
     }
 
     pub(crate) fn should_save_on_exit(&self) -> bool {
-        !self.discard_on_exit
+        self.config != self.persisted
+    }
+
+    /// Record `config` as what the configuration file now holds.
+    pub(super) fn mark_persisted(&mut self, config: Config) {
+        self.persisted = config;
     }
 
     pub fn config(&self) -> &Config {
@@ -187,8 +180,8 @@ impl AppSettings {
         }
 
         Self {
+            persisted: config.clone(),
             config,
-            discard_on_exit: false,
         }
     }
 
@@ -206,17 +199,16 @@ impl AppSettings {
         edit(&mut self.config.system);
     }
 
-    #[cfg(windows)]
-    pub fn edit_remote_session(&mut self, edit: impl FnOnce(&mut RemoteSessionConfig)) {
-        edit(&mut self.config.remote_session);
-    }
-
     pub fn edit_update(&mut self, edit: impl FnOnce(&mut UpdateConfig)) {
         edit(&mut self.config.update);
     }
 
     pub(super) fn edit_terminal(&mut self, edit: impl FnOnce(&mut TerminalConfig)) {
         edit(&mut self.config.terminal);
+    }
+
+    pub(super) fn edit_remote(&mut self, edit: impl FnOnce(&mut RemoteConfig)) {
+        edit(&mut self.config.remote);
     }
 
     pub fn set_theme(&mut self, theme: String) {
@@ -366,7 +358,7 @@ impl AppSettings {
     pub fn unique_agent_profile_name(
         &self,
         desired: &str,
-        kind: AgentProfileKind,
+        kind: AgentKind,
         exclude: Option<usize>,
     ) -> String {
         let base = if desired.trim().is_empty() {
@@ -462,7 +454,7 @@ impl AppSettings {
             .find(|p| p.name == self.config.agent_profiles.default)
             .or_else(|| self.config.agent_profiles.list.first())
             .cloned()
-            .unwrap_or_else(|| builtin_agent_profile(AgentProfileKind::Claude))
+            .unwrap_or_else(|| builtin_agent_profile(AgentKind::Claude))
     }
 
     /// The default profile's launch command: shell plus whitespace-split
@@ -521,13 +513,13 @@ impl AppSettings {
                 cursor_shape: self.config.cursor.shape,
                 agent: &self.config.agent,
                 system: &self.config.system,
-                remote_session: &self.config.remote_session,
                 update: &self.config.update,
                 profiles: &self.config.profiles.list,
                 default_profile: &self.config.profiles.default,
                 agent_profiles: &self.config.agent_profiles.list,
                 default_agent_profile: &self.config.agent_profiles.default,
                 terminal: &self.config.terminal,
+                remote: &self.config.remote,
             },
         )
     }

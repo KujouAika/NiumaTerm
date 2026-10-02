@@ -34,9 +34,7 @@ command-blocks = true
 show-daily-token-usage = false
 show-git-status-on-title-bar = false
 git-status-refresh-interval = 30
-tab-width = 220.0
-tab-auto-size = false
-tab-bar-style = "horizontal"
+tab-bar-style = "vertical"
 ui-font = "Segoe UI"
 terminal-font-family = "Consolas"
 terminal-font-size = 14.0
@@ -54,6 +52,7 @@ agent-transcript-font-family = "Consolas"
 agent-transcript-font-size = 13.0
 reduce-motion = false
 human-friendly-agent-ui-layout = true
+tab-shape = "attached"
 
 [profiles]
 default = ""
@@ -72,21 +71,20 @@ check-agent-updates = true
 codex-skill-command-compat = true
 model-list-style = "name-and-id"
 enable-agent-team = false
+token-speed-mode = "session"
+answer-questions-one-at-a-time = false
+unified-agent-tab = true
 
 [system]
 restore-last-session-when-opening = true
-manage-subprocess-job = false
 warn-before-terminating-shell = "when-child-processes-running"
 confirm-before-closing-workspace = true
 prioritize-ui-threads = false
 newline-shortcut = "ctrl-enter"
 open-in-best-workspace = true
 send-system-notifications = true
-
-[remote-session]
-host-enabled = false
-relay-url = ""
-access-token = ""
+proxy = "system"
+proxy-url = ""
 
 [update]
 check-updates = true
@@ -94,3 +92,11 @@ channel = "stable"
 
 [terminal]
 improve-powershell-compatibility = true
+
+[remote]
+enabled = false
+lan-port = 47470
+device-name = ""
+relay-url = ""
+lan-announce = false
+lan-browse = false

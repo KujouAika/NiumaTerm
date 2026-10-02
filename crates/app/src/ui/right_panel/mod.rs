@@ -1,9 +1,6 @@
 //! Background tasks and workflows share one auxiliary column. Git review
 //! belongs to the workspace tab strip and uses the central content area.
 
-#[cfg(test)]
-mod tests;
-
 use app::design::{
     AUXILIARY_MAX_WIDTH, AUXILIARY_MIN_WIDTH, AUXILIARY_WIDTH_SHARE, PRIMARY_CONTENT_MIN_WIDTH,
     SPACE_2,

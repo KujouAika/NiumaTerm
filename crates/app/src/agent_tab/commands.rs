@@ -1,7 +1,8 @@
 //! Pure slash-command parsing and catalog logic for the agent composer.
 
 pub(super) use nmt_agent::catalog::{
-    merge_catalog, parse_skill_prefix, parse_slash_command, reconcile_skill_binding,
+    SlashRefusal, SlashRoute, merge_catalog, parse_skill_prefix, parse_slash_command,
+    reconcile_skill_binding, route_slash,
 };
 
 #[cfg(test)]
@@ -12,13 +13,16 @@ use std::borrow::Cow;
 
 use nmt_agent::catalog::{
     ChoiceError, SkillError, prepare_skill_selection as prepare_core_skill_selection,
-    resolve_choice as resolve_core_choice, validate_skill_binding as validate_core_skill_binding,
+    validate_skill_binding as validate_core_skill_binding,
 };
 use nmt_agent::chat::{
     SkillCatalog, SkillInfo, SkillReference, SlashCommandArguments, SlashCommandInfo,
-    SlashCommandRunPolicy, SlashCommandSource,
+    SlashCommandRunPolicy, SlashCommandSource, ThreadSettings,
 };
+use nmt_agent::session::lifecycle::Status;
 use rust_i18n::t;
+
+use crate::agent_tab::profile::AgentKind;
 
 pub(super) fn validate_skill_binding(
     input: &str,
@@ -39,19 +43,6 @@ pub(super) fn prepare_skill_selection(
 ) -> Result<(String, SkillReference), String> {
     prepare_core_skill_selection(skill)
         .map_err(|_| t!("agent-command-skill-disabled-by-codex", name = &skill.name).into_owned())
-}
-
-pub(super) fn resolve_choice(input: &str, choices: &[(String, String)]) -> Result<String, String> {
-    resolve_core_choice(input, choices).map_err(|error| {
-        t!(
-            match error {
-                ChoiceError::Unknown => "agent-command-value-unknown",
-                ChoiceError::Ambiguous => "agent-command-value-ambiguous",
-            },
-            value = input
-        )
-        .into_owned()
-    })
 }
 
 pub(super) fn local_commands() -> Vec<SlashCommandInfo> {
@@ -278,4 +269,96 @@ pub(super) fn move_palette_selection(
         PaletteDirection::Previous => current.min(row_count - 1) - 1,
         PaletteDirection::Next => (current + 1) % row_count,
     })
+}
+
+/// The composer's wording of a refused slash line.
+pub(super) fn slash_refusal_message(refusal: SlashRefusal) -> String {
+    match refusal {
+        SlashRefusal::ChooseCommand => t!("agent-composer-choose-command").into_owned(),
+        SlashRefusal::Unknown(name) => {
+            t!("agent-composer-unknown-command", name = &name).into_owned()
+        }
+        SlashRefusal::SkillsLoading => {
+            t!("agent-composer-skill-discovery-loading-period").into_owned()
+        }
+        SlashRefusal::NoSkills => t!("agent-composer-no-skills-period").into_owned(),
+        SlashRefusal::SkillDiscovery(error) => error,
+        SlashRefusal::ChooseSkill => t!("agent-composer-choose-skill").into_owned(),
+        SlashRefusal::NoArguments(name) => {
+            t!("agent-composer-command-no-arguments", name = &name).into_owned()
+        }
+        SlashRefusal::ChooseValue(name) => {
+            t!("agent-composer-choose-value", name = &name).into_owned()
+        }
+        SlashRefusal::Choice { error, value } => t!(
+            match error {
+                ChoiceError::Unknown => "agent-command-value-unknown",
+                ChoiceError::Ambiguous => "agent-command-value-ambiguous",
+            },
+            value = &value
+        )
+        .into_owned(),
+        SlashRefusal::IdleOnly(name) => {
+            t!("agent-composer-command-idle-only", name = &name).into_owned()
+        }
+    }
+}
+
+/// The `/status` answer: the harness, its state, the settings the next
+/// message goes out with, and how many commands wait behind the running turn.
+pub(super) fn status_summary(
+    kind: AgentKind,
+    status: Status,
+    settings: &ThreadSettings,
+    queued: usize,
+) -> String {
+    let status = match status {
+        Status::Starting => t!("agent-composer-status-starting"),
+        Status::Idle => t!("agent-composer-status-idle"),
+        Status::Running => t!("agent-composer-status-running"),
+        Status::Exited => t!("agent-composer-status-exited"),
+    };
+
+    let mut fields = vec![
+        t!(
+            "agent-composer-status-field",
+            name = t!("agent-composer-status-backend"),
+            value = kind.display()
+        )
+        .into_owned(),
+        t!(
+            "agent-composer-status-field",
+            name = t!("agent-composer-status-label"),
+            value = status
+        )
+        .into_owned(),
+    ];
+
+    for (name, value) in [
+        (t!("agent-setting-model"), settings.model.as_deref()),
+        (
+            t!("agent-setting-permissions"),
+            settings.approval.as_deref(),
+        ),
+        (t!("agent-setting-sandbox"), settings.sandbox.as_deref()),
+        (t!("agent-setting-effort"), settings.effort.as_deref()),
+        (t!("agent-setting-tier"), settings.tier.as_deref()),
+    ] {
+        if let Some(value) = value {
+            fields.push(t!("agent-composer-status-field", name = name, value = value).into_owned());
+        }
+    }
+
+    if queued > 0 {
+        fields.push(
+            t!(
+                "agent-composer-status-field",
+                name = t!("agent-composer-status-queued"),
+                value = queued
+            )
+            .into_owned(),
+        );
+    }
+
+    fields.join(" · ")
 }

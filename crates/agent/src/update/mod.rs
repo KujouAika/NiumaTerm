@@ -6,26 +6,27 @@ pub use crate::claude_code::update::{
 pub use crate::codex::update::CodexMaintenance;
 
 #[cfg(test)]
-mod coordinator_tests;
-
-#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
-use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, fs, io};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use nmt_platform::filesystem::{installation_path_spelling, replace_file};
+use futures::future::BoxFuture;
+use nmt_platform::durable_file;
+use nmt_platform::filesystem::installation_path_spelling;
 use parking_lot::Mutex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use thiserror::Error;
+use tokio::task::JoinHandle;
 use tracing::warn;
 
+use crate::json::collapse;
 use crate::launcher::{AgentCli, ProcessError, ProcessLimits, ProcessOutput, run_bounded};
 
 pub(crate) const PROBE_LIMITS: ProcessLimits =
@@ -104,23 +105,16 @@ impl InstallationKey {
             digest.update([0]);
         }
 
-        let fingerprint = hex_digest(digest.finalize().as_slice());
-
         let key = Self(format!(
             "{}:{}",
             match provider {
                 ProviderKind::Claude => "claude",
                 ProviderKind::Codex => "codex",
             },
-            fingerprint
+            hex::encode(digest.finalize())
         ));
 
-        InstallationIdentity {
-            key,
-            provider,
-            resolved_launcher,
-            environment_fingerprint: fingerprint,
-        }
+        InstallationIdentity { key, provider }
     }
 
     pub fn as_str(&self) -> &str {
@@ -147,8 +141,6 @@ impl fmt::Display for InstallationKey {
 pub struct InstallationIdentity {
     pub key: InstallationKey,
     pub provider: ProviderKind,
-    pub resolved_launcher: PathBuf,
-    pub environment_fingerprint: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +179,7 @@ impl VersionStatus {
             channel: None,
             can_update: false,
             support: DiscoverySupport::Unsupported {
-                reason: bounded_label(reason, MAX_LABEL_CHARS),
+                reason: collapse(reason, MAX_LABEL_CHARS),
             },
             remediation: None,
         }
@@ -223,23 +215,12 @@ pub struct UpdateProgress {
     pub total: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallationUpdateState {
     pub phase: UpdatePhase,
     pub versions: Option<VersionStatus>,
     pub progress: Option<UpdateProgress>,
     pub error: Option<UpdateError>,
-}
-
-impl Default for InstallationUpdateState {
-    fn default() -> Self {
-        Self {
-            phase: UpdatePhase::Unknown,
-            versions: None,
-            progress: None,
-            error: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,7 +236,8 @@ pub enum UpdateErrorKind {
     Recovery,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
+#[error("{message}")]
 pub struct UpdateError {
     pub kind: UpdateErrorKind,
     message: String,
@@ -265,7 +247,7 @@ impl UpdateError {
     pub fn new(kind: UpdateErrorKind, message: impl AsRef<str>) -> Self {
         Self {
             kind,
-            message: bounded_label(message.as_ref(), MAX_DIAGNOSTIC_CHARS),
+            message: collapse(message.as_ref(), MAX_DIAGNOSTIC_CHARS),
         }
     }
 
@@ -274,47 +256,47 @@ impl UpdateError {
     }
 }
 
-impl fmt::Display for UpdateError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl Error for UpdateError {}
-
+/// Provider probes and updates wait on child processes and the network, so
+/// both run on the shared runtime.
 pub trait ProviderMaintenance: Send + Sync {
     fn provider(&self) -> ProviderKind;
 
-    fn probe(&self, launcher: &AgentCli) -> Result<VersionStatus, UpdateError>;
+    fn probe<'a>(
+        &'a self,
+        launcher: &'a AgentCli,
+    ) -> BoxFuture<'a, Result<VersionStatus, UpdateError>>;
 
-    fn update(&self, launcher: &AgentCli) -> Result<String, UpdateError>;
+    fn update<'a>(&'a self, launcher: &'a AgentCli) -> BoxFuture<'a, Result<String, UpdateError>>;
 }
 
-pub(crate) fn current_version_fallback(launcher: &AgentCli) -> Option<Version> {
+pub(crate) async fn current_version_fallback(launcher: &AgentCli) -> Option<Version> {
     run_bounded(launcher, ["--version"], PROBE_LIMITS)
+        .await
         .ok()
         .and_then(|output| extract_version(output.stdout_for_parsing()))
 }
 
-pub(crate) fn vendor_update(
+pub(crate) async fn vendor_update(
     launcher: &AgentCli,
     provider: ProviderKind,
 ) -> Result<String, UpdateError> {
-    let output = run_bounded(launcher, ["update"], UPDATE_LIMITS).map_err(|error| {
-        let kind = if matches!(error, ProcessError::TimedOut { .. }) {
-            UpdateErrorKind::TimedOut
-        } else {
-            UpdateErrorKind::Launch
-        };
+    let output = run_bounded(launcher, ["update"], UPDATE_LIMITS)
+        .await
+        .map_err(|error| {
+            let kind = if matches!(error, ProcessError::TimedOut { .. }) {
+                UpdateErrorKind::TimedOut
+            } else {
+                UpdateErrorKind::Launch
+            };
 
-        UpdateError::new(kind, error.to_string())
-    })?;
+            UpdateError::new(kind, error.to_string())
+        })?;
 
     if !output.success() {
         return Err(classify_vendor_failure(provider, &output));
     }
 
-    Ok(bounded_label(&output.diagnostic(), MAX_DIAGNOSTIC_CHARS))
+    Ok(collapse(&output.diagnostic(), MAX_DIAGNOSTIC_CHARS))
 }
 
 fn classify_vendor_failure(provider: ProviderKind, output: &ProcessOutput) -> UpdateError {
@@ -364,31 +346,6 @@ fn extract_version(output: &str) -> Option<Version> {
             })
         })
         .find_map(|candidate| Version::parse(candidate).ok())
-}
-
-pub(crate) fn bounded_label(value: &str, max_chars: usize) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(max_chars)
-        .collect()
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut output = String::with_capacity(bytes.len() * 2);
-
-    for byte in bytes {
-        write!(output, "{byte:02x}").expect("writing to String cannot fail");
-    }
-
-    output
 }
 
 const CACHE_VERSION: u32 = 1;
@@ -508,6 +465,17 @@ impl UpdateCoordinator {
         key
     }
 
+    /// Forget installations no current profile launches, so they stop being
+    /// checked and stop raising notifications. An installation whose check or
+    /// update is still running stays until a later call, because that
+    /// operation writes its outcome back into the record.
+    pub fn retain(&self, keep: impl Fn(&InstallationKey) -> bool) {
+        self.inner
+            .lock()
+            .records
+            .retain(|key, record| record.busy || keep(key));
+    }
+
     pub fn snapshots(&self) -> Vec<InstallationSnapshot> {
         let inner = self.inner.lock();
 
@@ -524,8 +492,13 @@ impl UpdateCoordinator {
     }
 
     /// Check an installation. Automatic callers reuse a successful result for
-    /// one hour; manual callers always probe the provider.
-    pub fn check(&self, key: &InstallationKey, manual: bool) -> Result<VersionStatus, UpdateError> {
+    /// one hour; manual callers always probe the provider and clear a previous
+    /// notification dismissal when the check succeeds.
+    pub async fn check(
+        &self,
+        key: &InstallationKey,
+        manual: bool,
+    ) -> Result<VersionStatus, UpdateError> {
         let (launcher, maintenance) = {
             let mut inner = self.inner.lock();
 
@@ -562,39 +535,53 @@ impl UpdateCoordinator {
             (record.launcher.clone(), record.maintenance.clone())
         };
 
-        let result = maintenance.probe(&launcher);
+        let result = maintenance.probe(&launcher).await;
 
-        let mut inner = self.inner.lock();
+        let write = {
+            let mut inner = self.inner.lock();
 
-        let record = inner.records.get_mut(key).expect("registered installation");
+            let record = inner.records.get_mut(key).expect("registered installation");
 
-        record.busy = false;
+            record.busy = false;
 
-        match &result {
-            Ok(status) => {
-                let now = (self.now)();
+            match &result {
+                Ok(status) => {
+                    let now = (self.now)();
 
-                record.last_checked = Some(now);
-                record.state = status.clone().into();
+                    record.last_checked = Some(now);
+                    record.state = status.clone().into();
 
-                if matches!(status.support, DiscoverySupport::Supported) {
-                    let entry = CacheEntry {
-                        status: cacheable_status(status),
-                        checked_at: now,
-                        dismissed_target: record.dismissed_target.clone(),
-                    };
+                    if manual {
+                        record.dismissed_target = None;
+                    }
 
-                    inner.cache.installations.insert(key.to_string(), entry);
+                    if matches!(status.support, DiscoverySupport::Supported) {
+                        let entry = CacheEntry {
+                            status: cacheable_status(status),
+                            checked_at: now,
+                            dismissed_target: record.dismissed_target.clone(),
+                        };
 
-                    drop(inner);
+                        inner.cache.installations.insert(key.to_string(), entry);
 
-                    self.persist_cache();
+                        drop(inner);
+
+                        Some(self.persist_cache())
+                    } else {
+                        None
+                    }
+                }
+                Err(error) => {
+                    record.state.phase = UpdatePhase::Failed;
+                    record.state.error = Some(error.clone());
+
+                    None
                 }
             }
-            Err(error) => {
-                record.state.phase = UpdatePhase::Failed;
-                record.state.error = Some(error.clone());
-            }
+        };
+
+        if let Some(write) = write {
+            let _ = write.await;
         }
 
         result
@@ -652,16 +639,16 @@ impl UpdateCoordinator {
         }
     }
 
-    pub fn run_vendor_update(&self, key: &InstallationKey) -> Result<String, UpdateError> {
+    pub async fn run_vendor_update(&self, key: &InstallationKey) -> Result<String, UpdateError> {
         let (launcher, maintenance) = self.operation_parts(key)?;
 
-        maintenance.update(&launcher)
+        maintenance.update(&launcher).await
     }
 
-    pub fn verify(&self, key: &InstallationKey) -> Result<VersionStatus, UpdateError> {
+    pub async fn verify(&self, key: &InstallationKey) -> Result<VersionStatus, UpdateError> {
         let (launcher, maintenance) = self.operation_parts(key)?;
 
-        maintenance.probe(&launcher)
+        maintenance.probe(&launcher).await
     }
 
     pub fn finish_update(
@@ -788,15 +775,19 @@ impl UpdateCoordinator {
         self.persist_cache();
     }
 
-    fn persist_cache(&self) {
-        // Serialize disk replacement before taking the latest snapshot, so an
-        // older caller cannot overwrite newer state after waiting for a writer.
-        let _write = self.cache_write.lock();
-        let cache = self.inner.lock().cache.clone();
+    fn persist_cache(&self) -> JoinHandle<()> {
+        let coordinator = self.clone();
 
-        if let Err(error) = write_cache(&self.cache_path, &cache) {
-            warn!("failed to save agent update state: {error}");
-        }
+        nmt_platform::runtime().spawn_blocking(move || {
+            // Read the latest snapshot after acquiring the writer lock, so
+            // workers scheduled out of order cannot restore an older value.
+            let _write = coordinator.cache_write.lock();
+            let cache = coordinator.inner.lock().cache.clone();
+
+            if let Err(error) = write_cache(&coordinator.cache_path, &cache) {
+                warn!("failed to save agent update state: {error}");
+            }
+        })
     }
 
     pub fn hide_notification(&self, key: &InstallationKey) {
@@ -858,11 +849,8 @@ fn write_cache(path: &Path, cache: &CacheFile) -> io::Result<()> {
     fs::create_dir_all(parent)?;
 
     let bytes = serde_json::to_vec(cache).map_err(io::Error::other)?;
-    let temporary = path.with_extension("tmp");
 
-    fs::write(&temporary, bytes)?;
-
-    replace_file(&temporary, path)
+    durable_file::write(path, &bytes)
 }
 
 impl From<VersionStatus> for InstallationUpdateState {

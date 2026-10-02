@@ -34,30 +34,6 @@ EOF
     exit 1
 fi
 
-# A present Co-Authored-By trailer must name the model that did the work
-# (AGENTS.md), so the credit records the actual model ID instead of a vendor
-# or human label. Model IDs are lowercase and versioned, so the name part
-# must contain a '-' or '.' separator (e.g. deepseek-v4-flash); a bare label
-# like "Claude" or "Codex" does not pass. A bracketed suffix carries the
-# variant an agent reports alongside the ID, such as the context window in
-# claude-opus-5[1m].
-coauthor_pattern='^Co-Authored-By: [a-z0-9][a-z0-9._-]*[-.][a-z0-9._-]*(\[[a-z0-9._-]+\])? <noreply@[a-z0-9][a-z0-9.-]*\.[a-z]{2,}>$'
-bad_coauthors=$(printf '%s\n' "$body" | grep -E '^Co-Authored-By:' | grep -Ev "$coauthor_pattern" || true)
-if [ -n "$bad_coauthors" ]; then
-    cat >&2 <<EOF
-commit-msg: Co-Authored-By must name the model ID
-
-Expected:
-  Co-Authored-By: <MODEL_ID> <noreply@<vendor>.com>
-Example:
-  Co-Authored-By: deepseek-v4-flash <noreply@deepseek.com>
-
-Offending lines:
-$bad_coauthors
-EOF
-    exit 1
-fi
-
 # A Verification section names the specific changed behavior that was exercised
 # and its observed result. A command invocation does not carry that information.
 # Only the section body is scanned, so a subject or body line about one of these

@@ -24,8 +24,7 @@ use gpui_component::{
     ActiveTheme as _, IconName, IconNamed, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use nmt_agent::background_task::{
-    BackgroundTaskDiscoveryState, BackgroundTaskKey, BackgroundTaskSnapshot, BackgroundTaskSummary,
-    BackgroundTaskTranscriptState,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskSnapshot, BackgroundTaskSummary,
 };
 use nmt_profiling::transcript::{Operation, Probe};
 use rust_i18n::t;
@@ -34,7 +33,7 @@ use crate::ui::AppSettings;
 use crate::ui::background_tasks::rows::{
     background_task_kind_label, background_task_state_label, finished_heading, finished_rows,
     render_row, row_detail, row_timing, running_heading, running_rows, section_control_label,
-    state_color, visible_rows,
+    state_color,
 };
 use crate::ui::composition::{empty_state, panel_header, toolbar_button};
 
@@ -239,7 +238,12 @@ impl BackgroundTasksView {
         now: SystemTime,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let shown = visible_rows(rows.len(), limit, expanded);
+        let shown = if expanded {
+            rows.len()
+        } else {
+            rows.len().min(limit)
+        };
+
         let hidden = rows.len() - shown;
 
         let control = section_control_label(hidden, expanded).map(|label| {
@@ -274,8 +278,7 @@ impl BackgroundTasksView {
             .children(
                 rows.iter()
                     .take(shown)
-                    .enumerate()
-                    .map(|(index, task)| render_row(index, task, now, cx))
+                    .map(|task| render_row(task, now, cx))
                     .collect::<Vec<_>>(),
             )
             .children(control.map(|control| div().px_2().pb_1().child(control)))
@@ -335,7 +338,7 @@ impl BackgroundTasksView {
 
         if running.is_empty() && finished.is_empty() {
             return match &snapshot.discovery {
-                BackgroundTaskDiscoveryState::Unavailable { message } => empty_state(
+                BackgroundTaskLoadState::Unavailable { message } => empty_state(
                     t!("tasks-background-status-unavailable-title"),
                     t!(
                         "tasks-background-status-unavailable-detail",
@@ -343,7 +346,7 @@ impl BackgroundTasksView {
                     ),
                     cx,
                 ),
-                BackgroundTaskDiscoveryState::Loading => empty_state(
+                BackgroundTaskLoadState::Loading => empty_state(
                     t!("tasks-background-loading-title"),
                     t!("tasks-background-loading-detail"),
                     cx,
@@ -478,7 +481,7 @@ impl BackgroundTasksView {
                     child.dropped(),
                 ))
             })
-            .unwrap_or_else(|| (None, BackgroundTaskTranscriptState::NotLoaded, 0));
+            .unwrap_or_else(|| (None, BackgroundTaskLoadState::NotLoaded, 0));
 
         let empty = content
             .as_ref()
@@ -540,7 +543,7 @@ impl BackgroundTasksView {
             );
 
         let body: AnyElement = match (&state, empty) {
-            (BackgroundTaskTranscriptState::Unavailable { message }, _) => empty_state(
+            (BackgroundTaskLoadState::Unavailable { message }, _) => empty_state(
                 t!("tasks-background-transcript-unavailable-title"),
                 t!(
                     "tasks-background-transcript-unavailable-detail",
@@ -548,7 +551,7 @@ impl BackgroundTasksView {
                 ),
                 cx,
             ),
-            (BackgroundTaskTranscriptState::Loading, true) => empty_state(
+            (BackgroundTaskLoadState::Loading, true) => empty_state(
                 t!("tasks-background-loading-title"),
                 t!("tasks-background-transcript-loading-detail"),
                 cx,

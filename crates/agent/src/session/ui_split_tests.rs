@@ -10,7 +10,7 @@ use crate::session::history::{CountPublication, SessionHistory};
 use crate::session::lifecycle::{SessionRuntime, Status};
 use crate::session::naming::ConversationNaming;
 use crate::session::restore::SettingsSeed;
-use crate::session::settings::{ConversationSettings, RememberedSettings};
+use crate::session::settings::{ConversationSettings, ProfilePins};
 use crate::session::test_support::TestBackend;
 use crate::session::update_readiness::{ConversationWork, Readiness};
 use crate::session::workflows::WorkflowData;
@@ -43,10 +43,16 @@ fn queued_commands_wait_for_real_turn_and_exit_discards_pending_work() {
         commands.execute(Some(&mut backend), &command),
         SlashCommandOutcome::Accepted
     ));
-    assert!(!commands.settle(
-        &SlashCommandOutcome::Completed { message: None },
-        Status::Running
-    ));
+
+    commands.settle(
+        &SlashCommandOutcome::Completed {
+            message: None,
+            approval: None,
+        },
+        Status::Running,
+    );
+
+    assert!(commands.awaiting_turn);
     assert!(commands.turn_started());
     assert!(!commands.turn_started());
 
@@ -74,8 +80,10 @@ fn ready_priority_keeps_profile_then_current_then_branch_settings() {
         AgentKind::Claude,
         ThreadSettings::default(),
         Some(&stored),
-        Some("profile"),
-        None,
+        &ProfilePins {
+            model: Some("profile".into()),
+            ..ProfilePins::default()
+        },
     );
 
     assert_eq!(settings.settings.model.as_deref(), Some("profile"));
@@ -88,8 +96,7 @@ fn ready_priority_keeps_profile_then_current_then_branch_settings() {
             ..Default::default()
         },
         None,
-        None,
-        None,
+        &ProfilePins::default(),
     );
 
     assert_eq!(settings.settings.model.as_deref(), Some("profile"));
@@ -104,53 +111,11 @@ fn ready_priority_keeps_profile_then_current_then_branch_settings() {
         AgentKind::Claude,
         ThreadSettings::default(),
         None,
-        None,
-        None,
+        &ProfilePins::default(),
     );
 
     assert_eq!(settings.settings.model.as_deref(), Some("branch"));
     assert!(settings.restore_on_ready.is_none());
-}
-
-#[test]
-fn remembered_profiles_fall_back_to_legacy_provider_without_crossing_named_profiles() {
-    let mut settings = RememberedSettings::default();
-
-    settings.remember(
-        AgentKind::Codex,
-        "",
-        ThreadSettings {
-            model: Some("legacy".into()),
-            ..Default::default()
-        },
-    );
-
-    settings.remember(
-        AgentKind::Codex,
-        "work",
-        ThreadSettings {
-            model: Some("work-model".into()),
-            ..Default::default()
-        },
-    );
-
-    assert_eq!(
-        settings
-            .get(AgentKind::Codex, "work")
-            .unwrap()
-            .model
-            .as_deref(),
-        Some("work-model")
-    );
-    assert_eq!(
-        settings
-            .get(AgentKind::Codex, "personal")
-            .unwrap()
-            .model
-            .as_deref(),
-        Some("legacy")
-    );
-    assert!(settings.get(AgentKind::Claude, "personal").is_none());
 }
 
 fn summary(id: &str) -> SessionSummary {
@@ -161,6 +126,7 @@ fn summary(id: &str) -> SessionSummary {
         cwd: None,
         last_active: SystemTime::UNIX_EPOCH,
         snippet: None,
+        origin: None,
     }
 }
 
@@ -168,14 +134,14 @@ fn summary(id: &str) -> SessionSummary {
 fn search_retires_disk_reads_and_next_history_page_replaces_matches() {
     let mut history = SessionHistory::default();
 
-    let request = history.begin_filesystem_history(None, 1);
+    let request = history.begin_filesystem_history(None);
 
     assert!(history.search_results(vec![summary("match")]));
     assert!(matches!(
-        history.publish_filesystem_count(&request, None, 1, 8),
+        history.publish_filesystem_count(&request, None, 8),
         CountPublication::Stale
     ));
-    assert!(!history.publish_filesystem_rows(&request, None, 1, vec![summary("old")]));
+    assert!(!history.publish_filesystem_rows(&request, None, vec![summary("old")]));
 
     history.append_page(vec![summary("recent"), summary("recent")]);
 

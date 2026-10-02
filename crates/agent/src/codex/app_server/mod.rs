@@ -6,7 +6,7 @@
 //! conversation thread and shares its app-server host with other sessions.
 
 pub use crate::background_task::{
-    BackgroundTaskKey, BackgroundTaskTranscriptState, BackgroundTaskTranscriptUpdate,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskTranscriptUpdate,
 };
 pub use crate::chat::{
     Compaction, CompactionTrigger, ContextUsageScope, ContextWindowUsage, Event, ForkAnchor,
@@ -15,9 +15,7 @@ pub use crate::chat::{
     SlashCommandOutcome, SlashCommandRunPolicy, SlashCommandSource, ThreadSettings,
     TokenUsageBreakdown,
 };
-pub use crate::codex::app_server::options::{
-    APPROVAL_OPTIONS, APPROVAL_REVIEWER_OPTIONS, SANDBOX_OPTIONS,
-};
+pub use crate::codex::app_server::side::SideStart;
 
 pub(crate) use crate::codex::app_server::title_generation::provisional_title_from_prompt;
 
@@ -26,54 +24,65 @@ mod compaction;
 mod control;
 mod conversation;
 mod host;
-mod options;
 mod progress;
 mod protocol;
 mod questions;
+mod side;
 mod skills;
 mod team;
 mod title_generation;
 
+#[cfg(test)]
+#[cfg(windows)]
+mod steering_tests;
 #[cfg(test)]
 mod tests;
 
 use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
-#[cfg(test)]
-use std::time::UNIX_EPOCH;
 
+use futures::future::{BoxFuture, FutureExt as _, ready};
 use serde_json::{Value, json};
 
+use crate::LaunchConfig;
+use crate::chat::{QuestionRequest, QuestionResponse, TeamDecisionRequest};
+use crate::codex::ProviderConfig;
 use crate::codex::app_server::background_tasks::{CodexTasks, ThreadScope, notification_thread_id};
-use crate::codex::app_server::compaction::is_legacy_compaction_notification;
 use crate::codex::app_server::control::{ControlOperation, ControlState, QueryKind};
 use crate::codex::app_server::conversation::ThreadState;
 #[cfg(test)]
 use crate::codex::app_server::conversation::TurnOutputUsage;
 use crate::codex::app_server::host::{CodexHost, HOST_EXIT_METHOD, RegistrationId};
-use crate::codex::app_server::progress::{PLAN_RESTORED, goal_request, goal_status, read_plan};
+use crate::codex::app_server::progress::{goal_status, spawn_plan_restore};
 #[cfg(test)]
 use crate::codex::app_server::protocol::thread_start_params;
 use crate::codex::app_server::protocol::{
-    codex_command_request, codex_command_response, codex_user_input, file_change_paths,
+    CodexCommand, codex_user_input, file_change_paths, initial_thread_request,
     parse_fork_checkpoints, parse_models, parse_replay, parse_thread_settings,
     parse_thread_summaries, resumed_thread_events, skills_list_request, stringify_command,
-    thread_list_params, thread_resume_params, turn_start_params,
+    thread_list_params, thread_name_request, thread_resume_params, turn_interrupt_request,
+    turn_start_params,
 };
-use crate::codex::app_server::questions::QuestionState;
+use crate::codex::app_server::questions::{
+    on_question_request, on_question_response, respond_input, restore_question_requests,
+};
+use crate::codex::app_server::side::{
+    side_boundary_item, side_boundary_request, side_fork_request,
+};
 #[cfg(test)]
 use crate::codex::app_server::skills::parse_skill_catalog;
 use crate::codex::app_server::skills::{SkillRefreshState, skill_catalog_from_response};
-use crate::codex::app_server::team::TeamState;
+use crate::codex::app_server::team::{TeamState, decision_tool};
 use crate::codex::app_server::title_generation::{
-    TITLE_GENERATION_RESULT_METHOD, TitleGenerationHandle,
+    TITLE_GENERATION_RESULT_METHOD, TitleGenerationHandle, TitleGenerationRequest,
+    parse_title_generation_result, start_title_generation,
 };
-use crate::session::team_capabilities::TeamLaunch;
+use crate::session::team_capabilities::{ModeratorAdmission, RecoveredTeamTurn, TeamLaunch};
+use crate::session::{AgentKind, ConversationTitleRequest};
+use crate::subprocess::DROP_SHUTDOWN_GRACE;
 use crate::workspace::AgentWorkspace;
-use crate::{CodexProviderConfig, LaunchConfig};
 
 const FIRST_TURN_RPC_ID: u64 = 100;
 const PROVIDER_API_FIELD: &str = concat!("wi", "re_api");
@@ -105,7 +114,7 @@ const THREAD_SCOPED_NOTIFICATIONS: [&str; 14] = [
 #[derive(Clone, Debug, Default)]
 struct ThreadProfile {
     model: Option<String>,
-    provider: Option<CodexProviderConfig>,
+    provider: Option<ProviderConfig>,
 }
 
 impl From<&LaunchConfig> for ThreadProfile {
@@ -151,6 +160,14 @@ pub struct Session {
     background: CodexTasks,
 
     team: Option<TeamState>,
+
+    /// The parent this session forks from when it is a side conversation.
+    side: Option<Box<SideStart>>,
+
+    /// A side conversation's settings from its fork reply, held until the
+    /// boundary is written: a question sent before the boundary would be
+    /// read as a continuation of the parent's inherited task.
+    side_ready: Option<Box<ThreadSettings>>,
 }
 
 #[derive(Default)]
@@ -158,6 +175,7 @@ struct ConversationStart {
     resume: Option<String>,
     suppress_replay: bool,
     team: Option<TeamLaunch>,
+    side: Option<SideStart>,
 }
 
 impl Session {
@@ -205,6 +223,14 @@ impl Session {
                 arguments: SlashCommandArguments::Freeform,
                 run_policy: SlashCommandRunPolicy::Immediate,
             },
+            SlashCommandInfo {
+                name: "side".into(),
+                description: "Open a side chat forked from this conversation".into(),
+                argument_hint: Some("[question]".into()),
+                source: SlashCommandSource::Adapter,
+                arguments: SlashCommandArguments::Freeform,
+                run_policy: SlashCommandRunPolicy::Immediate,
+            },
         ]
     }
 
@@ -224,8 +250,8 @@ impl Session {
     /// Attach a conversation to the shared app-server, starting and
     /// initializing the host only when no compatible generation is live.
     /// Messages for this conversation are handed to `deliver` from the host's
-    /// reader thread, so callers hop threads before invoking [`Session::process`].
-    pub fn spawn(
+    /// reader task, so callers hop threads before invoking [`Session::process`].
+    pub async fn spawn(
         launch: &LaunchConfig,
         host_catalog: &[LaunchConfig],
         workspace: &AgentWorkspace,
@@ -240,12 +266,13 @@ impl Session {
             deliver,
             on_stderr,
         )
+        .await
     }
 
     /// Attach directly to an existing thread without creating a disposable
     /// empty thread first. Replay can be suppressed when the caller already
     /// retains the visible transcript in place.
-    pub fn spawn_resuming(
+    pub async fn spawn_resuming(
         launch: &LaunchConfig,
         host_catalog: &[LaunchConfig],
         workspace: &AgentWorkspace,
@@ -262,13 +289,41 @@ impl Session {
                 resume: Some(thread_id),
                 suppress_replay,
                 team: None,
+                side: None,
             },
             deliver,
             on_stderr,
         )
+        .await
     }
 
-    fn spawn_inner(
+    /// Open a side conversation: an ephemeral fork of `side`'s parent
+    /// thread under its own registration on the shared host. The parent
+    /// keeps its thread, routes, and running turn; the fork inherits its
+    /// model context up to the moment the server takes the snapshot.
+    pub async fn spawn_side(
+        launch: &LaunchConfig,
+        host_catalog: &[LaunchConfig],
+        workspace: &AgentWorkspace,
+        side: SideStart,
+        deliver: impl Fn(Value) + Send + Sync + 'static,
+        on_stderr: impl Fn(String) + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_inner(
+            launch,
+            host_catalog,
+            workspace,
+            ConversationStart {
+                side: Some(side),
+                ..ConversationStart::default()
+            },
+            deliver,
+            on_stderr,
+        )
+        .await
+    }
+
+    async fn spawn_inner(
         launch: &LaunchConfig,
         host_catalog: &[LaunchConfig],
         workspace: &AgentWorkspace,
@@ -277,7 +332,7 @@ impl Session {
         on_stderr: impl Fn(String) + Send + 'static,
     ) -> Result<Self, String> {
         let thread_profile: ThreadProfile = launch.into();
-        let host = CodexHost::acquire(launch, host_catalog, on_stderr)?;
+        let host = CodexHost::acquire(launch, host_catalog, on_stderr).await?;
         let deliver: SessionDelivery = Arc::new(deliver);
         let root_delivery = Arc::clone(&deliver);
         let registration_id = host.register(move |message| root_delivery(message));
@@ -300,6 +355,8 @@ impl Session {
             suppress_resume_replay: start.suppress_replay,
             background: CodexTasks::default(),
             team: start.team.map(TeamState::new),
+            side: start.side.map(Box::new),
+            side_ready: None,
         };
 
         session.request_skills(false);
@@ -315,15 +372,21 @@ impl Session {
 
     pub fn has_active_operation(&self) -> bool {
         self.conversation.current_turn.is_some()
-            || self.conversation.pending_approval.is_some()
+            || self.conversation.has_pending_approval()
             || self.conversation.questions.has_active_request()
             || self.control.has_command()
             || self.conversation.compaction.active.is_some()
     }
 
-    pub fn shutdown(&mut self, timeout: Duration, force: bool) -> Result<(), String> {
+    /// Detach from the shared host now; the returned future waits for the
+    /// host process only when this session was its last owner.
+    pub fn shutdown(
+        &mut self,
+        timeout: Duration,
+        force: bool,
+    ) -> BoxFuture<'static, Result<(), String>> {
         if self.detached {
-            return Ok(());
+            return ready(Ok(())).boxed();
         }
 
         self.cancel_title_generation();
@@ -334,12 +397,7 @@ impl Session {
         ) {
             let rpc_id = self.alloc_rpc_id();
 
-            self.send(json!({
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "method": "turn/interrupt",
-                "params": {"threadId": thread_id, "turnId": turn_id},
-            }));
+            self.send(turn_interrupt_request(rpc_id, &thread_id, &turn_id));
         }
 
         if let Some(thread_id) = self.conversation.thread_id.clone() {
@@ -353,21 +411,18 @@ impl Session {
             }));
         }
 
-        let result = if let Some(host) = self.host.take() {
-            if host.detach(self.registration_id) {
-                host.shutdown(timeout, force)
-            } else {
-                Ok(())
+        let stopping = match self.host.take() {
+            Some(host) if host.detach(self.registration_id) => {
+                host.shutdown(timeout, force).boxed()
             }
-        } else {
-            Ok(())
+            _ => ready(Ok(())).boxed(),
         };
 
         self.control.close();
 
         self.detached = true;
 
-        result
+        stopping
     }
 
     fn sync_descendant_owners(&self) {
@@ -390,12 +445,16 @@ impl Session {
             return self.apply_title_generation_result(&message["params"]);
         }
 
-        let events = match (id, method.as_deref()) {
+        let mut events = match (id, method.as_deref()) {
             (Some(rpc_id), Some(method)) => self.on_server_request(rpc_id, method, &message),
             (Some(rpc_id), None) => self.on_response(rpc_id, &message),
             (None, Some(method)) => self.on_notification(method, &message["params"]),
             (None, None) => Vec::new(),
         };
+
+        // An answer frees the approval surface outside this call; the next
+        // waiting approval shows with whatever the server sends next.
+        events.extend(self.conversation.next_approval());
 
         self.sync_descendant_owners();
 
@@ -427,6 +486,7 @@ impl Session {
 
         let rpc_id = self.alloc_rpc_id();
         let input = codex_user_input(text, skill, images);
+        let params = turn_start_params(&thread_id, input, settings, &self.workspace);
 
         if let Some(turn_id) = self.conversation.current_turn.clone() {
             if let Err(message) = self.try_send(json!({
@@ -436,16 +496,21 @@ impl Session {
                 "params": {
                     "threadId": thread_id,
                     "expectedTurnId": turn_id,
-                    "input": input,
+                    "input": params["input"],
                 },
             })) {
                 return SendOutcome::Rejected { message };
             }
 
+            self.control.track(
+                rpc_id,
+                ControlOperation::Steer {
+                    next_turn_params: params,
+                },
+            );
+
             return SendOutcome::Steered;
         }
-
-        let params = turn_start_params(&thread_id, input, settings, &self.workspace);
 
         if let Err(message) = self.try_send(json!({
             "jsonrpc": "2.0",
@@ -460,19 +525,22 @@ impl Session {
     }
 
     /// Submit the first primary prompt and start its isolated title request
-    /// only after the primary thread accepts the prompt.
+    /// only after the primary thread accepts the prompt. The title is
+    /// generated from the request's description rather than from `text`:
+    /// the two differ when the prompt carries instructions around what the
+    /// user asked, and the title should name what the user asked.
     pub(crate) fn send_user_message_with_generated_title(
         &mut self,
         text: &str,
         settings: &ThreadSettings,
         skill: Option<&SkillReference>,
         images: &[PathBuf],
-        provisional_title: &str,
+        title: &ConversationTitleRequest,
     ) -> SendOutcome {
         let outcome = self.send_user_message_with_skill(text, settings, skill, images);
 
         if matches!(outcome, SendOutcome::StartedTurn | SendOutcome::Steered) {
-            self.begin_title_generation(text, provisional_title);
+            self.begin_title_generation(&title.description, &title.provisional_title);
         }
 
         outcome
@@ -486,42 +554,40 @@ impl Session {
             return SlashCommandOutcome::NotReady;
         };
 
-        if name != "goal" && self.conversation.current_turn.is_some() {
-            return SlashCommandOutcome::Rejected {
-                message: "Codex is already running a turn.".to_string(),
-            };
-        }
-
-        if name != "goal" && !arguments.trim().is_empty() {
-            return SlashCommandOutcome::Rejected {
-                message: format!("/{name} does not accept arguments."),
-            };
-        }
-
-        let rpc_id = self.alloc_rpc_id();
-
-        let request = if name == "goal" {
-            Some(goal_request(rpc_id, &thread_id, arguments))
-        } else {
-            codex_command_request(rpc_id, &thread_id, name)
-        };
-
-        let Some(request) = request else {
+        let Some(command) = CodexCommand::parse(name) else {
             return SlashCommandOutcome::Rejected {
                 message: format!("Unsupported Codex command: /{name}"),
             };
         };
 
-        if let Err(message) = self.try_send(request) {
+        // A goal is read and set alongside a running turn, and it is the only
+        // command that takes an argument.
+        if command != CodexCommand::Goal {
+            if self.conversation.current_turn.is_some() {
+                return SlashCommandOutcome::Rejected {
+                    message: "Codex is already running a turn.".to_string(),
+                };
+            }
+
+            if !arguments.trim().is_empty() {
+                return SlashCommandOutcome::Rejected {
+                    message: format!("/{name} does not accept arguments."),
+                };
+            }
+        }
+
+        let rpc_id = self.alloc_rpc_id();
+
+        if let Err(message) = self.try_send(command.request(rpc_id, &thread_id, arguments)) {
             return SlashCommandOutcome::Rejected { message };
         }
 
-        if name == "compact" {
+        if command == CodexCommand::Compact {
             self.conversation.compaction.request_manual();
         }
 
         self.control
-            .track(rpc_id, ControlOperation::Command(name.to_string()));
+            .track(rpc_id, ControlOperation::Command(command));
 
         SlashCommandOutcome::Accepted
     }
@@ -537,13 +603,17 @@ impl Session {
 
         let rpc_id = self.alloc_rpc_id();
 
-        self.try_send(json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "method": "turn/interrupt",
-            "params": {"threadId": thread_id, "turnId": turn_id},
-        }))
-        .is_ok()
+        if self
+            .try_send(turn_interrupt_request(rpc_id, &thread_id, &turn_id))
+            .is_err()
+        {
+            return false;
+        }
+
+        // An explicit stop must not be undone by a late steering refusal.
+        self.control.cancel_steering_retries();
+
+        true
     }
 
     /// Switch this session onto a persisted thread. The response carries the
@@ -706,7 +776,7 @@ impl Session {
 
         vec![Event::BackgroundTaskTranscript {
             key: BackgroundTaskKey::codex(thread_id),
-            update: BackgroundTaskTranscriptUpdate::state(BackgroundTaskTranscriptState::Loading),
+            update: BackgroundTaskTranscriptUpdate::state(BackgroundTaskLoadState::Loading),
         }]
     }
 
@@ -742,10 +812,10 @@ impl Session {
             .collect()
     }
 
-    /// Answer the pending approval request (`"accept"` / `"decline"`); a no-op
-    /// when none is pending.
+    /// Answer the approval request on screen (`"accept"` / `"decline"`); a
+    /// no-op when none is shown.
     pub fn respond_approval(&mut self, decision: &str) -> bool {
-        let Some(rpc_id) = self.conversation.pending_approval else {
+        let Some(rpc_id) = self.conversation.shown_approval() else {
             return false;
         };
 
@@ -760,9 +830,20 @@ impl Session {
             return false;
         }
 
-        self.conversation.pending_approval = None;
+        self.conversation.answered_approval(rpc_id);
 
         true
+    }
+
+    fn request_models(&mut self) {
+        self.send_query(
+            QueryKind::Models,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "model/list",
+                "params": {"limit": 100},
+            }),
+        );
     }
 
     fn alloc_rpc_id(&mut self) -> u64 {
@@ -862,7 +943,7 @@ impl Session {
     fn on_server_request(&mut self, rpc_id: u64, method: &str, message: &Value) -> Vec<Event> {
         match method {
             "item/tool/call" => self.on_team_decision(rpc_id, &message["params"]),
-            "item/tool/requestUserInput" => self.on_question_request(rpc_id, &message["params"]),
+            "item/tool/requestUserInput" => on_question_request(self, rpc_id, &message["params"]),
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                 let params = &message["params"];
 
@@ -875,9 +956,10 @@ impl Session {
                     )
                 };
 
-                self.conversation.pending_approval = Some(rpc_id);
-
-                vec![Event::ApprovalRequested { description }]
+                self.conversation
+                    .request_approval(rpc_id, description)
+                    .into_iter()
+                    .collect()
             }
             // Any other server→client request is unsupported by this client;
             // an error reply keeps the turn from hanging (the same strategy
@@ -896,9 +978,32 @@ impl Session {
 
     fn on_response(&mut self, rpc_id: u64, message: &Value) -> Vec<Event> {
         let (pending_command, query) = match self.control.finish(rpc_id) {
+            Some(ControlOperation::Steer { next_turn_params })
+                if message["error"]["message"] == "no active turn to steer" =>
+            {
+                // The server rejected this input before admission. Starting it
+                // again is safe only for this explicit refusal, never for a
+                // timeout whose delivery outcome is unknown.
+                let id = self.alloc_rpc_id();
+
+                return match self.try_send(json!({
+                    "jsonrpc": "2.0", "id": id, "method": "turn/start",
+                    "params": next_turn_params,
+                })) {
+                    Ok(()) => Vec::new(),
+                    Err(message) => vec![Event::Error {
+                        message,
+                        fatal: false,
+                    }],
+                };
+            }
             Some(ControlOperation::Command(command)) => (Some(command), None),
             Some(ControlOperation::Query(kind)) => (None, Some(kind)),
-            Some(ControlOperation::Other | ControlOperation::ThreadRequest) => (None, None),
+            Some(
+                ControlOperation::Other
+                | ControlOperation::ThreadRequest
+                | ControlOperation::Steer { .. },
+            ) => (None, None),
             Some(ControlOperation::ThreadName)
                 if message["error"]["data"]["requestTimedOut"].as_bool() == Some(true) =>
             {
@@ -907,7 +1012,7 @@ impl Session {
             Some(ControlOperation::ThreadName) | None => return Vec::new(),
         };
 
-        if let Some(events) = self.on_question_response(rpc_id, message) {
+        if let Some(events) = on_question_response(self, rpc_id, message) {
             return events;
         }
 
@@ -939,25 +1044,32 @@ impl Session {
                 return Vec::new();
             }
 
-            return self.on_response_error(pending_command.as_deref(), query, error);
+            return self.on_response_error(pending_command, query, error);
         }
 
         if let Some(command) = pending_command {
-            if command == "goal" {
+            if command == CodexCommand::Goal {
                 // A live update can arrive before the command reply. Read the
                 // current goal with revision protection instead of restoring
                 // the older state captured in that reply.
                 self.request_goal();
 
                 return vec![Event::SlashCommandResult {
-                    name: command,
-                    outcome: SlashCommandOutcome::Completed { message: None },
+                    name: command.name().to_string(),
+                    outcome: SlashCommandOutcome::Completed {
+                        message: None,
+                        approval: None,
+                    },
                 }];
             }
 
+            // Dedicated command requests acknowledge scheduling before their
+            // turn and item notifications report the actual work. Treating
+            // this response as completion could admit another queued command
+            // while the thread is busy.
             return vec![Event::SlashCommandResult {
-                outcome: codex_command_response(&command, None),
-                name: command,
+                name: command.name().to_string(),
+                outcome: SlashCommandOutcome::Accepted,
             }];
         }
 
@@ -976,14 +1088,7 @@ impl Session {
 
                 self.request_goal();
 
-                self.send_query(
-                    QueryKind::Models,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "model/list",
-                        "params": {"limit": 100},
-                    }),
-                );
+                self.request_models();
 
                 // History for the empty-tab session list, over whatever scope
                 // the tab last asked for.
@@ -992,6 +1097,49 @@ impl Session {
                 self.start_descendant_discovery();
 
                 self.finish_team_start(vec![Event::Ready(parse_thread_settings(result))])
+            }
+            // A side conversation is ready only once its boundary is in the
+            // model history, so the fork reply writes it and waits. It lists
+            // no history and discovers no descendants: it is kept out of the
+            // history list and may not use sub-agents.
+            Some(QueryKind::SideFork) => {
+                let result = &message["result"];
+
+                let Some(thread_id) = result["thread"]["id"].as_str().map(str::to_owned) else {
+                    return vec![Event::Error {
+                        message: "Could not start the side chat: the fork named no thread.".into(),
+                        fatal: true,
+                    }];
+                };
+
+                self.conversation.thread_id = Some(thread_id.clone());
+
+                self.side_ready = Some(Box::new(parse_thread_settings(result)));
+
+                self.send_query(QueryKind::SideBoundary, side_boundary_request(&thread_id));
+
+                Vec::new()
+            }
+            Some(QueryKind::SideBoundary) => {
+                self.request_goal();
+
+                self.request_models();
+
+                let boundary = self.thread_id().map(side_boundary_item);
+
+                let ready = Event::Ready(
+                    self.side_ready
+                        .take()
+                        .map(|settings| *settings)
+                        .unwrap_or_default(),
+                );
+
+                // The boundary lands after Ready so it opens the side
+                // transcript, above the first question.
+                [ready]
+                    .into_iter()
+                    .chain(boundary.map(Event::ItemStarted))
+                    .collect()
             }
             Some(QueryKind::Models) => {
                 let models = if self.thread_profile.provider.is_some() {
@@ -1038,7 +1186,7 @@ impl Session {
 
         let update = match message["error"]["message"].as_str() {
             Some(error) => {
-                BackgroundTaskTranscriptUpdate::state(BackgroundTaskTranscriptState::Unavailable {
+                BackgroundTaskTranscriptUpdate::state(BackgroundTaskLoadState::Unavailable {
                     message: error.to_owned(),
                 })
             }
@@ -1072,9 +1220,7 @@ impl Session {
             .background
             .apply_descendants(rpc_id, &message["result"]);
 
-        // A server that keeps handing back the same cursor would page
-        // forever, so a repeat ends discovery instead of looping.
-        if let Some(cursor) = next_cursor.filter(|cursor| self.background.accept_cursor(cursor)) {
+        if let Some(cursor) = next_cursor {
             let next_rpc_id = self.alloc_rpc_id();
 
             if let Some(request) = self
@@ -1092,18 +1238,22 @@ impl Session {
 
     fn on_response_error(
         &mut self,
-        pending_command: Option<&str>,
+        pending_command: Option<CodexCommand>,
         query: Option<QueryKind>,
         error: &str,
     ) -> Vec<Event> {
         if let Some(command) = pending_command {
-            if command == "compact" {
+            if command == CodexCommand::Compact {
                 self.conversation.compaction.reject_manual_request();
             }
 
+            let name = command.name();
+
             return vec![Event::SlashCommandResult {
-                name: command.to_string(),
-                outcome: codex_command_response(command, Some(error)),
+                name: name.to_string(),
+                outcome: SlashCommandOutcome::Rejected {
+                    message: format!("/{name} failed: {error}"),
+                },
             }];
         }
 
@@ -1125,13 +1275,21 @@ impl Session {
             // A refused branch leaves the session on the thread it was
             // already holding, so the conversation stays usable.
             Some(QueryKind::Fork) => format!("Could not branch this conversation: {error}"),
+            Some(QueryKind::SideFork | QueryKind::SideBoundary) => {
+                format!("Could not start the side chat: {error}")
+            }
             _ => error.to_string(),
         };
 
-        vec![Event::Error {
-            message,
-            fatal: initial_resume_failed || query == Some(QueryKind::Start),
-        }]
+        // A side conversation that failed to fork or to take its boundary
+        // has nothing it could safely answer from.
+        let fatal = initial_resume_failed
+            || matches!(
+                query,
+                Some(QueryKind::Start | QueryKind::SideFork | QueryKind::SideBoundary)
+            );
+
+        vec![Event::Error { message, fatal }]
     }
 
     fn on_thread_switched(&mut self, result: &Value) -> Vec<Event> {
@@ -1139,12 +1297,8 @@ impl Session {
 
         self.retain_request_routes();
 
-        self.conversation.pending_approval = None;
+        self.conversation.end_thread();
 
-        self.conversation.compaction.reset_thread();
-
-        self.conversation.questions = QuestionState::default();
-        self.conversation.current_turn = None;
         self.conversation.thread_id = result["thread"]["id"].as_str().map(str::to_owned);
         self.initial_resume = None;
         self.conversation.plan_revision += 1;
@@ -1153,18 +1307,12 @@ impl Session {
         self.request_goal();
 
         if let Some(path) = result["thread"]["path"].as_str() {
-            let path = PathBuf::from(path);
-            let deliver = self.deliver.clone();
-            let thread_id = self.conversation.thread_id.clone();
-            let revision = self.conversation.plan_revision;
-
-            let _ = thread::Builder::new()
-                .name("codex-plan-restore".into())
-                .spawn(move || {
-                    deliver(json!({"method": PLAN_RESTORED, "params": {
-                        "threadId": thread_id, "revision": revision, "value": read_plan(&path)
-                    }}));
-                });
+            spawn_plan_restore(
+                PathBuf::from(path),
+                self.conversation.thread_id.clone(),
+                self.conversation.plan_revision,
+                self.deliver.clone(),
+            );
         }
 
         // A resumed parent can already have finished descendants, and
@@ -1184,7 +1332,7 @@ impl Session {
             return self.on_host_exit(params);
         }
 
-        if is_legacy_compaction_notification(method) {
+        if method == "thread/compacted" {
             // Current servers can publish this deprecated notification beside
             // the authoritative item lifecycle. Ignoring it prevents a second
             // boundary for the same context rewrite.
@@ -1253,15 +1401,11 @@ impl Session {
     fn on_host_exit(&mut self, params: &Value) -> Vec<Event> {
         self.cancel_title_generation();
 
-        self.conversation.current_turn = None;
-        self.conversation.pending_approval = None;
-        self.conversation.questions = QuestionState::default();
+        self.conversation.end_thread();
 
         self.control.close();
 
         self.skill_refresh = SkillRefreshState::default();
-
-        self.conversation.compaction.reset_thread();
 
         vec![Event::HostExited {
             message: params["message"]
@@ -1274,6 +1418,309 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.shutdown(Duration::from_millis(250), true);
+        nmt_platform::runtime().spawn(self.shutdown(DROP_SHUTDOWN_GRACE, true));
+    }
+}
+
+/// Serialized values for approval-policy selection (`AskForApproval` serializes
+/// kebab-case).
+pub const APPROVAL_OPTIONS: [&str; 3] = ["untrusted", "on-request", "never"];
+
+/// Serialized values for choosing who handles eligible approval requests.
+pub const APPROVAL_REVIEWER_OPTIONS: [&str; 2] = ["user", "auto_review"];
+
+/// `(serialized value, display label)` for sandbox selection (`SandboxPolicy` uses a
+/// camelCase `type` tag).
+pub const SANDBOX_OPTIONS: [(&str, &str); 3] = [
+    ("readOnly", "read-only"),
+    ("workspaceWrite", "workspace-write"),
+    ("dangerFullAccess", "full-access"),
+];
+
+impl Session {
+    /// A user-authored name invalidates any generated replacement before the
+    /// provider write is queued, so a late worker result cannot rename it.
+    pub(crate) fn rename_thread(&mut self, name: &str) -> bool {
+        self.cancel_title_generation();
+
+        let Some(thread_id) = self.conversation.thread_id.clone() else {
+            return false;
+        };
+
+        let name = name.trim();
+
+        if name.is_empty() {
+            return false;
+        }
+
+        let rpc_id = self.alloc_rpc_id();
+
+        self.try_send(thread_name_request(rpc_id, &thread_id, name))
+            .is_ok()
+    }
+
+    pub(crate) fn cancel_title_generation(&mut self) {
+        if let Some(generation) = self.title_generation.take() {
+            generation.cancel();
+        }
+    }
+
+    pub(super) fn begin_title_generation(&mut self, prompt: &str, provisional_title: &str) {
+        self.cancel_title_generation();
+
+        let (Some(host), Some(root_thread_id)) =
+            (self.host.as_ref(), self.conversation.thread_id.clone())
+        else {
+            self.queue_thread_name(provisional_title);
+
+            return;
+        };
+
+        self.next_title_generation_id = self.next_title_generation_id.wrapping_add(1).max(1);
+
+        let generation_id = self.next_title_generation_id;
+
+        self.title_generation = Some(start_title_generation(
+            Arc::clone(host),
+            Arc::clone(&self.deliver),
+            TitleGenerationRequest {
+                generation_id,
+                root_thread_id,
+                provisional_title: provisional_title.to_string(),
+                prompt: prompt.to_string(),
+                profile: self.thread_profile.clone(),
+                workspace: self.workspace.clone(),
+            },
+        ));
+    }
+
+    pub(super) fn apply_title_generation_result(&mut self, params: &Value) -> Vec<Event> {
+        let Some(result) = parse_title_generation_result(params) else {
+            return Vec::new();
+        };
+
+        let matches_active = self
+            .title_generation
+            .as_ref()
+            .is_some_and(|active| active.accepts(&result, self.conversation.thread_id.as_deref()));
+
+        if !matches_active {
+            return Vec::new();
+        }
+
+        self.title_generation.take();
+
+        let title = result.resolved_title().to_string();
+
+        self.queue_thread_name(&title);
+
+        vec![Event::TitleUpdated(title)]
+    }
+
+    fn queue_thread_name(&mut self, name: &str) {
+        let Some(thread_id) = self.conversation.thread_id.clone() else {
+            return;
+        };
+
+        // Keep later writes queued even while an earlier name is pending: a
+        // user rename that follows a generated name must be the final request
+        // the server applies.
+        let rpc_id = self.alloc_rpc_id();
+
+        self.send(thread_name_request(rpc_id, &thread_id, name));
+    }
+}
+
+impl Session {
+    pub fn team_recovered_turns(&self) -> &[RecoveredTeamTurn] {
+        self.team
+            .as_ref()
+            .map_or(&[], |team| team.completed_turns.as_slice())
+    }
+
+    pub(super) fn retain_team_history(&mut self, turns: &Value) {
+        let Some(team) = self.team.as_mut() else {
+            return;
+        };
+
+        team.completed_turns = turns
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|turn| {
+                if turn["status"].as_str() != Some("completed") {
+                    return None;
+                }
+
+                let id = turn["id"].as_str().filter(|id| !id.is_empty())?;
+
+                let text = turn["items"]
+                    .as_array()?
+                    .iter()
+                    .rev()
+                    .find(|item| item["type"].as_str() == Some("agentMessage"))
+                    .and_then(|item| item["text"].as_str())
+                    .unwrap_or_default();
+
+                Some(RecoveredTeamTurn {
+                    id: id.to_owned(),
+                    text: text.to_owned(),
+                })
+            })
+            .collect();
+    }
+
+    pub async fn spawn_team(
+        launch: &LaunchConfig,
+        host_catalog: &[LaunchConfig],
+        workspace: &AgentWorkspace,
+        resume: Option<String>,
+        policy: TeamLaunch,
+        deliver: impl Fn(Value) + Send + Sync + 'static,
+        on_stderr: impl Fn(String) + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_inner(
+            launch,
+            host_catalog,
+            workspace,
+            ConversationStart {
+                resume,
+                suppress_replay: !policy.restore_transcript,
+                team: Some(policy),
+                side: None,
+            },
+            deliver,
+            on_stderr,
+        )
+        .await
+    }
+
+    pub fn team_capabilities(&self, backend_generation: u64) -> ModeratorAdmission {
+        let mut capabilities = ModeratorAdmission::unverified(AgentKind::Codex);
+
+        if self
+            .team
+            .as_ref()
+            .is_some_and(|team| team.ready && team.moderation_registered)
+        {
+            capabilities = ModeratorAdmission::CodexDynamicTools { backend_generation };
+        }
+
+        capabilities
+    }
+
+    pub(super) fn start_initial_thread(&mut self) {
+        if let Some(side) = &self.side {
+            let request = side_fork_request(side);
+
+            self.send_query(QueryKind::SideFork, request);
+
+            return;
+        }
+
+        let mut request = initial_thread_request(
+            self.initial_resume.as_deref(),
+            &self.thread_profile,
+            &self.workspace,
+        );
+
+        if self.team.as_ref().is_some_and(|team| team.launch.moderator)
+            && self.initial_resume.is_none()
+        {
+            request["params"]["dynamicTools"] = json!([decision_tool()]);
+        }
+
+        let kind = if self.initial_resume.is_some() {
+            QueryKind::Resume
+        } else {
+            QueryKind::Start
+        };
+
+        self.send_query(kind, request);
+    }
+
+    pub(super) fn finish_team_start(&mut self, events: Vec<Event>) -> Vec<Event> {
+        if let Some(team) = &mut self.team {
+            team.moderation_registered = team.launch.moderator;
+            team.ready = true;
+        }
+
+        events
+    }
+
+    pub(super) fn on_team_decision(&mut self, request_id: u64, params: &Value) -> Vec<Event> {
+        let valid = params["tool"].as_str() == Some("team_decide")
+            && params["threadId"].as_str() == self.thread_id()
+            && params["turnId"].as_str() == self.conversation.current_turn.as_deref()
+            && self.team.as_ref().is_some_and(|team| {
+                team.ready
+                    && team.moderation_registered
+                    && !team.pending_decisions.contains_key(&request_id)
+            });
+
+        if !valid {
+            self.send(json!({"id": request_id, "result": {"success": false, "contentItems": [{"type": "inputText", "text": "This discussion operation is unavailable for this session or turn."}]}}));
+
+            return Vec::new();
+        }
+
+        let Some(turn) = params["turnId"].as_str() else {
+            return Vec::new();
+        };
+
+        if let Some(team) = &mut self.team {
+            team.pending_decisions.insert(request_id, turn.to_owned());
+        }
+
+        vec![Event::TeamDecision(TeamDecisionRequest {
+            request_id,
+            provider_turn: turn.to_owned(),
+            arguments: params["arguments"].clone(),
+        })]
+    }
+
+    pub fn respond_team_decision(
+        &mut self,
+        request: &TeamDecisionRequest,
+        accepted: bool,
+        explanation: &str,
+    ) -> bool {
+        let current = self
+            .team
+            .as_ref()
+            .and_then(|team| team.pending_decisions.get(&request.request_id));
+
+        if current != Some(&request.provider_turn)
+            || self.conversation.current_turn.as_deref() != Some(request.provider_turn.as_str())
+        {
+            return false;
+        }
+
+        if self.try_send(json!({"id": request.request_id, "result": {"success": accepted, "contentItems": [{"type": "inputText", "text": explanation}]}})).is_err() {
+            return false;
+        }
+
+        if let Some(team) = &mut self.team {
+            team.pending_decisions.remove(&request.request_id);
+        }
+
+        true
+    }
+}
+
+impl Session {
+    pub(crate) fn restore_question_requests(&mut self, requests: Vec<QuestionRequest>) {
+        restore_question_requests(self, requests);
+    }
+
+    /// Message dismissal settles locally; submitted answers resolve through
+    /// later events.
+    pub fn respond_input(
+        &mut self,
+        id: &str,
+        answers: Option<Vec<Vec<String>>>,
+        settings: &ThreadSettings,
+    ) -> Result<QuestionResponse, String> {
+        respond_input(self, id, answers, settings)
     }
 }

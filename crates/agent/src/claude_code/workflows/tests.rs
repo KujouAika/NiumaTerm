@@ -101,120 +101,6 @@ fn only_run(workflows: &ClaudeWorkflows) -> WorkflowRun {
 }
 
 #[test]
-fn a_run_appears_before_any_agent_reports() {
-    let mut workflows = reducer();
-
-    assert!(workflows.observe(&started(json!({}))));
-
-    let run = only_run(&workflows);
-
-    assert_eq!(run.task_id, TASK);
-    assert_eq!(run.name.as_deref(), Some("two-ok"));
-    assert_eq!(run.state, WorkflowRunState::Starting);
-    assert!(run.agents.is_empty());
-    assert!(run.phases.is_empty());
-    assert!(workflows.snapshot().expect("session").has_active_run());
-}
-
-#[test]
-fn only_the_workflow_task_type_opens_a_run() {
-    for task_type in [
-        "local_agent",
-        "local_bash",
-        "monitor_mcp",
-        "in_process_teammate",
-    ] {
-        let mut workflows = reducer();
-
-        assert!(!workflows.observe(&started(json!({"task_type": task_type}))));
-        assert!(workflows.snapshot().expect("session").runs.is_empty());
-    }
-}
-
-#[test]
-fn phases_and_agents_arrive_from_the_progress_array() {
-    let mut workflows = reducer();
-
-    workflows.observe(&started(json!({})));
-
-    assert!(workflows.observe(&progress(json!([
-        {"type": "workflow_phase", "index": 1, "title": "Ok"},
-        agent_entry(2, AGENT_TWO, "start", json!({"startedAt": 1_786_606_971_533u64})),
-        agent_entry(1, AGENT_ONE, "done", json!({"tokens": 15_577, "toolCalls": 0, "resultPreview": "ok"})),
-    ]))));
-
-    let run = only_run(&workflows);
-
-    assert_eq!(run.state, WorkflowRunState::Running);
-    assert_eq!(
-        run.phases,
-        vec![WorkflowPhase {
-            index: 1,
-            title: "Ok".into()
-        }]
-    );
-    assert_eq!(run.total_tokens, Some(31_154));
-    assert_eq!(run.total_tool_calls, Some(0));
-
-    // Provider order wins over arrival order.
-    let labels: Vec<_> = run.agents.iter().map(|agent| agent.index).collect();
-
-    assert_eq!(labels, vec![1, 2]);
-
-    assert_eq!(run.agents[0].state, WorkflowAgentState::Done);
-    assert_eq!(run.agents[0].tokens, Some(15_577));
-    assert_eq!(run.agents[0].result_preview.as_deref(), Some("ok"));
-    assert_eq!(run.agents[0].phase_title.as_deref(), Some("Ok"));
-    assert_eq!(run.agents[1].state, WorkflowAgentState::Running);
-
-    // Unreported details stay absent instead of being defaulted.
-    assert_eq!(run.agents[1].tokens, None);
-    assert_eq!(run.agents[1].agent_type, None);
-}
-
-#[test]
-fn a_queued_agent_is_distinguished_from_a_running_one() {
-    let mut workflows = reducer();
-
-    workflows.observe(&started(json!({})));
-
-    workflows.observe(&progress(json!([
-        agent_entry(1, AGENT_ONE, "start", json!({})),
-        agent_entry(
-            2,
-            AGENT_TWO,
-            "start",
-            json!({"startedAt": 1_786_606_971_533u64})
-        ),
-    ])));
-
-    let run = only_run(&workflows);
-
-    assert_eq!(run.agents[0].state, WorkflowAgentState::Queued);
-    assert_eq!(run.agents[1].state, WorkflowAgentState::Running);
-}
-
-#[test]
-fn a_failed_agent_keeps_its_error_and_a_reused_one_is_marked() {
-    let mut workflows = reducer();
-
-    workflows.observe(&started(json!({})));
-
-    workflows.observe(&progress(json!([
-        agent_entry(1, AGENT_ONE, "error", json!({"error": "spawn refused"})),
-        agent_entry(2, AGENT_TWO, "done", json!({"cached": true})),
-    ])));
-
-    let run = only_run(&workflows);
-
-    assert_eq!(run.agents[0].state, WorkflowAgentState::Failed);
-    assert_eq!(run.agents[0].error.as_deref(), Some("spawn refused"));
-    assert!(!run.agents[0].reused);
-    assert_eq!(run.agents[1].state, WorkflowAgentState::Done);
-    assert!(run.agents[1].reused);
-}
-
-#[test]
 fn later_records_match_their_run_without_a_task_type() {
     // Only `task_started` carries `task_type`; every later record identifies
     // its run by `task_id` alone.
@@ -452,10 +338,9 @@ fn source_retries_unaccepted_reads_and_invalidates_grown_transcripts() {
     let transcript = first.transcript.expect("initial transcript");
 
     assert!(!transcript.items.is_empty());
-    assert_eq!(first.refresh.agents.len(), 2);
+    assert_eq!(first.agents.len(), 2);
     assert!(
         first
-            .refresh
             .agents
             .iter()
             .all(|agent| agent.state == WorkflowAgentState::Done)
@@ -493,7 +378,7 @@ fn source_retries_unaccepted_reads_and_invalidates_grown_transcripts() {
 
     let failed = source.refresh_directory(Some(&dir), &request);
 
-    assert!(failed.refresh.failed);
+    assert!(failed.failed);
     assert!(failed.transcript.is_none());
 
     fs::remove_dir_all(&root).ok();
@@ -549,31 +434,29 @@ fn a_journal_refresh_advances_agents_the_stream_has_not_settled() {
         agent_entry(2, AGENT_TWO, "start", json!({})),
     ])));
 
-    assert!(workflows.apply_refresh(
-        TASK,
-        WorkflowRefresh {
-            run_id: Some(RUN_ID.to_owned()),
-            agents: vec![
-                WorkflowAgentProgress {
-                    agent_id: AGENT_ONE.to_owned(),
-                    state: WorkflowAgentState::Done,
-                    result: Some("ok".to_owned()),
-                },
-                WorkflowAgentProgress {
-                    agent_id: AGENT_TWO.to_owned(),
-                    state: WorkflowAgentState::Running,
-                    result: None,
-                },
-            ],
-            failed: false,
-        },
-    ));
+    assert!(workflows.apply_refresh(WorkflowRefreshResult {
+        task_id: TASK.to_owned(),
+        transcript: None,
+        run_id: Some(RUN_ID.to_owned()),
+        agents: vec![
+            WorkflowAgentProgress {
+                agent_id: AGENT_ONE.to_owned(),
+                state: WorkflowAgentState::Done,
+                result: Some("ok".to_owned()),
+            },
+            WorkflowAgentProgress {
+                agent_id: AGENT_TWO.to_owned(),
+                state: WorkflowAgentState::Running,
+                result: None,
+            },
+        ],
+        failed: false,
+    },));
 
     let run = only_run(&workflows);
 
     assert_eq!(run.run_id.as_deref(), Some(RUN_ID));
     assert_eq!(run.agents[0].state, WorkflowAgentState::Done);
-    assert_eq!(run.agents[0].result_preview.as_deref(), Some("ok"));
 
     // A journal `started` line moves a queued agent forward, never backward.
     assert_eq!(run.agents[1].state, WorkflowAgentState::Running);
@@ -592,13 +475,11 @@ fn a_failed_refresh_is_reported_without_touching_known_state() {
         json!({"tokens": 15_577})
     ),])));
 
-    assert!(workflows.apply_refresh(
-        TASK,
-        WorkflowRefresh {
-            failed: true,
-            ..WorkflowRefresh::default()
-        },
-    ));
+    assert!(workflows.apply_refresh(WorkflowRefreshResult {
+        task_id: TASK.to_owned(),
+        failed: true,
+        ..WorkflowRefreshResult::default()
+    },));
 
     let run = only_run(&workflows);
 

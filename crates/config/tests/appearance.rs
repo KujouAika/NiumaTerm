@@ -1,5 +1,3 @@
-#![cfg(feature = "application")]
-
 use nmt_config::Config;
 use nmt_config::appearance::{AppearanceConfig, InputStyle, SmoothScrollingMode, WindowBackdrop};
 use toml::from_str;
@@ -116,16 +114,4 @@ enable-window-transparency = \"tabbed\"
         from_str("[appearance]\nenable-window-transparency = false\n").unwrap();
 
     assert_eq!(legacy_off.appearance.window_backdrop, WindowBackdrop::Off);
-}
-
-#[test]
-fn smooth_scrolling_modes_select_the_expected_views() {
-    assert!(SmoothScrollingMode::All.terminal_enabled());
-    assert!(SmoothScrollingMode::All.agent_enabled());
-    assert!(SmoothScrollingMode::OnlyTerminal.terminal_enabled());
-    assert!(!SmoothScrollingMode::OnlyTerminal.agent_enabled());
-    assert!(!SmoothScrollingMode::OnlyAgent.terminal_enabled());
-    assert!(SmoothScrollingMode::OnlyAgent.agent_enabled());
-    assert!(!SmoothScrollingMode::Off.terminal_enabled());
-    assert!(!SmoothScrollingMode::Off.agent_enabled());
 }

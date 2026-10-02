@@ -5,7 +5,7 @@ use futures::channel::oneshot;
 use nmt_config::CursorShape;
 use nmt_config::appearance::InputStyle;
 use nmt_config::colors::Colors;
-use nmt_terminal::session::request::RequestError;
+use nmt_terminal::event::RequestError;
 use tokio::time::timeout;
 
 use crate::terminal_tab::block_list::chrome::DurationLabels;
@@ -63,7 +63,7 @@ async fn settings_refresh_colors_metrics_and_layout_without_repeating_cursor_req
 
     model.begin_frame();
 
-    assert_eq!(model.viewport.cursor_y(0, cell.height_px), 100.0);
+    assert_eq!(model.viewport().cursor_y(0, cell.height_px), 100.0);
     assert!(!model.frame_cache.needs_rebuild());
     assert_eq!(
         model.cell_metrics_or_measure(|| panic!("cached metrics must be reused")),

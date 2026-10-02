@@ -1,14 +1,13 @@
-#[cfg(test)]
-#[path = "input_tests.rs"]
-mod input_tests;
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Weak, mpsc};
+#[cfg(test)]
+use std::sync::mpsc;
+use std::sync::{Arc, Weak};
 
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use serde_json::Value;
 use thiserror::Error;
+use tokio::sync::Notify;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("The agent input is closed")]
@@ -88,7 +87,10 @@ struct QueueState {
 
 struct Queue {
     state: Mutex<QueueState>,
-    ready: Condvar,
+
+    /// Stores one permit when the writer is not waiting, so a submission made
+    /// between its empty check and its suspension still wakes it.
+    ready: Notify,
 }
 
 pub(super) struct InputQueue {
@@ -100,21 +102,25 @@ pub(super) struct InputReceiver {
 }
 
 impl InputReceiver {
-    pub(super) fn recv(&self) -> Result<QueuedInput, mpsc::RecvError> {
-        let mut state = self.queue.state.lock();
-
+    /// The next batch, or `None` once the sender closed and every accepted
+    /// batch was taken.
+    pub(super) async fn recv(&self) -> Option<QueuedInput> {
         loop {
-            if let Some(input) = state.pending.pop_front() {
-                input.ticket.state.store(1, Ordering::Release);
+            {
+                let mut state = self.queue.state.lock();
 
-                return Ok(input);
+                if let Some(input) = state.pending.pop_front() {
+                    input.ticket.state.store(1, Ordering::Release);
+
+                    return Some(input);
+                }
+
+                if !state.sender_open {
+                    return None;
+                }
             }
 
-            if !state.sender_open {
-                return Err(mpsc::RecvError);
-            }
-
-            self.queue.ready.wait(&mut state);
+            self.queue.ready.notified().await;
         }
     }
 
@@ -131,14 +137,6 @@ impl InputReceiver {
         } else {
             Err(mpsc::TryRecvError::Disconnected)
         }
-    }
-}
-
-impl Iterator for InputReceiver {
-    type Item = QueuedInput;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.recv().ok()
     }
 }
 
@@ -163,6 +161,14 @@ impl Drop for InputQueue {
 }
 
 impl InputQueue {
+    /// Whether every queued batch has been taken or cancelled. Test-only
+    /// visibility because the queue's contents are otherwise observed
+    /// through the receiver alone.
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.queue.state.lock().pending.is_empty()
+    }
+
     pub(super) fn new() -> (Self, InputReceiver) {
         let queue = Arc::new(Queue {
             state: Mutex::new(QueueState {
@@ -170,7 +176,7 @@ impl InputQueue {
                 sender_open: true,
                 receiver_open: true,
             }),
-            ready: Condvar::new(),
+            ready: Notify::new(),
         });
 
         (

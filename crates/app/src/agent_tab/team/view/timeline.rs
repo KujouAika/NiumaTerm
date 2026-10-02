@@ -4,8 +4,7 @@ use gpui::{Context, Entity};
 use nmt_agent::chat::Item;
 use nmt_agent::team::attempt::{Attempt, AttemptState, BudgetScope};
 use nmt_agent::team::budget::TurnPurpose;
-use nmt_agent::team::content::{Author, Publication};
-use nmt_agent::team::identity::{AttemptId, OperationId};
+use nmt_agent::team::model::{AttemptId, Author, OperationId, Publication};
 use nmt_agent::team::room::Room;
 use nmt_agent::transcript::TranscriptEntry;
 use nmt_agent::transcript::conversation::EntryMetadata;
@@ -48,26 +47,20 @@ impl TimelineMirror {
 
             if !runtime.room().attempts().iter().any(|entry| {
                 entry.id == attempt
-                    && entry.intent.backend_generation == state.runtime.epoch()
-                    && matches!(
-                        entry.state,
-                        AttemptState::Sending | AttemptState::Accepted { .. }
-                    )
+                    && entry.intent.backend_generation == state.runtime().epoch()
+                    && matches!(entry.state, AttemptState::Sending | AttemptState::Accepted)
             }) {
                 continue;
             }
 
-            let conversation = state.conversation.borrow();
+            let conversation = state.conversation().borrow();
 
-            if let Some(text) = conversation
-                .content
-                .latest_agent_message(state.delivery.turn())
-            {
+            if let Some(text) = conversation.content.latest_agent_message(state.turn()) {
                 live.insert(attempt, text.to_owned());
             }
         }
 
-        let revision = runtime.session.store().revision();
+        let revision = runtime.revision;
 
         if self.revision == Some(revision) {
             for (id, text) in live {
@@ -162,10 +155,7 @@ fn public_rows(room: &Room, live: &BTreeMap<AttemptId, String>) -> Vec<TimelineR
     let mut groups = Vec::new();
 
     for (index, message) in room.messages().iter().enumerate() {
-        if !matches!(
-            message.publication,
-            Publication::UserInput | Publication::ExplicitShare
-        ) {
+        if !matches!(message.publication, Publication::UserInput) {
             continue;
         }
 
@@ -298,7 +288,7 @@ fn attempt_row(room: &Room, attempt: &Attempt, live: &BTreeMap<AttemptId, String
             })
             .unwrap_or_default(),
         AttemptState::Reserved => t!("team-waiting").into_owned(),
-        AttemptState::Sending | AttemptState::Accepted { .. } => live
+        AttemptState::Sending | AttemptState::Accepted => live
             .get(&attempt.id)
             .cloned()
             .unwrap_or_else(|| t!("team-responding").into_owned()),

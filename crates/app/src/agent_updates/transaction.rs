@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use app::agent_tab::RecoveryReadiness;
 use app::agent_tab::execution::{AgentSession, SessionRegistry};
 use futures::future::join_all;
 use gpui::prelude::*;
@@ -8,18 +9,19 @@ use gpui::{App, AsyncApp, Entity, Window, div};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dialog::{DIALOG_BUTTON_MIN_WIDTH, Dialog, DialogClose, DialogFooter};
 use gpui_component::{ActiveTheme as _, WindowExt as _};
-use nmt_agent::session::lifecycle::{RecoveryReadiness, RecoverySnapshot, RestorationReadiness};
+use nmt_agent::session::lifecycle::{RecoverySnapshot, RestorationReadiness};
 use nmt_agent::update::{
     InstallationKey, ProviderKind, UpdateCoordinator, UpdateError, UpdateErrorKind, UpdatePhase,
     UpdateProgress, VersionStatus,
 };
-use nmt_config::profile::AgentProfileKind;
+use nmt_config::profile::AgentKind;
 use rust_i18n::t;
 
 use crate::agent_updates::AgentUpdates;
 use crate::agent_updates::maintenance::{
     PreflightFailure, UpdateEnvironment, UpdateMode, run_transaction,
 };
+use crate::utils::on_runtime;
 
 pub(super) fn combine_transaction_error(
     operation_error: Option<UpdateError>,
@@ -52,7 +54,7 @@ pub(crate) fn request_update(key: InstallationKey, window: &mut Window, cx: &mut
         .iter()
         .filter(|session| {
             matches!(
-                session.read(cx).recovery_readiness(cx),
+                session.read(cx).recovery_readiness(),
                 RecoveryReadiness::Busy(_)
             )
         })
@@ -65,7 +67,7 @@ pub(crate) fn request_update(key: InstallationKey, window: &mut Window, cx: &mut
     }
 
     window.open_dialog(cx, move |dialog, _, _| {
-        active_work_dialog(dialog, &key, busy)
+        active_work_dialog(dialog.centered(true), &key, busy)
     });
 }
 
@@ -224,7 +226,7 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
     fn identity_failure(&mut self) -> Option<String> {
         self.cx.update(|cx| {
             self.sessions.iter().find_map(|session| {
-                match session.read(cx).recovery_identity_snapshot(cx) {
+                match session.read(cx).recovery_identity_snapshot() {
                     RecoveryReadiness::MissingIdentity(message) => Some(message),
                     _ => None,
                 }
@@ -247,7 +249,7 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
         self.cx.update(|cx| {
             self.sessions
                 .iter()
-                .map(|session| session.read(cx).recovery_readiness(cx))
+                .map(|session| session.read(cx).recovery_readiness())
                 .collect()
         })
     }
@@ -285,20 +287,14 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
         let coordinator = self.coordinator.clone();
         let key = self.key.clone();
 
-        self.cx
-            .background_executor()
-            .spawn(async move { coordinator.run_vendor_update(&key).map(|_| ()) })
-            .await
+        on_runtime(async move { coordinator.run_vendor_update(&key).await.map(|_| ()) }).await
     }
 
     async fn verify(&mut self) -> Result<VersionStatus, UpdateError> {
         let coordinator = self.coordinator.clone();
         let key = self.key.clone();
 
-        self.cx
-            .background_executor()
-            .spawn(async move { coordinator.verify(&key) })
-            .await
+        on_runtime(async move { coordinator.verify(&key).await }).await
     }
 
     fn restore(&mut self, snapshots: &[RecoverySnapshot], suspended: &[usize]) {
@@ -349,10 +345,10 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
 /// The updatable installation this profile resolves to. `None` means the
 /// harness is installed and updated through the user's own package manager, so
 /// there is nothing for the update surface to probe or replace.
-pub(crate) fn provider_for_profile(kind: AgentProfileKind) -> Option<ProviderKind> {
+pub(crate) fn provider_for_profile(kind: AgentKind) -> Option<ProviderKind> {
     match kind {
-        AgentProfileKind::Claude => Some(ProviderKind::Claude),
-        AgentProfileKind::Codex => Some(ProviderKind::Codex),
-        AgentProfileKind::DeepSeek => None,
+        AgentKind::Claude => Some(ProviderKind::Claude),
+        AgentKind::Codex => Some(ProviderKind::Codex),
+        AgentKind::DeepSeek => None,
     }
 }

@@ -1,198 +1,353 @@
-#[cfg(windows)]
-pub(crate) use crate::ui::shell::actions::NewRemoteTab;
-
 pub(crate) use crate::ui::shell::actions::{
     CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
     PrevWorkspace, QuoteGitLine, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
     ReturnFromGit, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, ToggleBackgroundTasks,
     ToggleGitSidebar, ToggleSidebar, ToggleWorkflows,
 };
-
 pub(crate) use crate::ui::shell::tab_surface::TabSurface;
 
 pub(super) use crate::ui::shell::inline_rename::{InlineRename, InlineRenameStyle};
-
 pub(super) use crate::ui::shell::rename::InlineRenameSession;
-
 pub(super) use crate::ui::shell::tab_presentation::pending_tab_icon;
 
 pub(crate) mod tab_surface;
 
 mod actions;
-
 mod agent_notifications;
-
+mod close_confirm;
 mod inline_rename;
-
+mod main_surface;
 mod panels;
-
 mod rename;
-
 mod render;
-
-mod settings_workspace;
-
 mod tab_presentation;
-
 mod updates_layer;
-
 mod workspace_dirs;
 
 #[cfg(test)]
 mod tests;
 
-use std::borrow::Cow;
-
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::{collections, io, iter, mem, path, time};
 
-use std::rc::Rc;
-
-use std::{collections, io, iter, path, thread, time};
-
-use app::agent_tab::execution::AgentSession;
-
+use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::{TeamPane, TeamRuntime};
-
-use app::agent_tab::{AgentPane, AgentPaneEvent, RecoveryIdentity};
-
+use app::agent_tab::{AgentPane, AgentPaneEvent};
+use app::design::SETTINGS_NAV_WIDTH_PX;
+use app::remote_control::CloseTab as SheetClose;
 use app::terminal_tab::session::HostEvent;
-
-use app::terminal_tab::view::{AgentInterrupted, TerminalGridResized, TerminalPane};
-
+use app::terminal_tab::view::{AgentInterrupted, TerminalPane};
 use dirs::home_dir;
-
 use gpui::prelude::*;
-
 use gpui::{
-    Anchor, AnyElement, App, Axis, Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent,
-    MouseDownEvent, ObjectFit, Pixels, Render, SharedString, Window, WindowBounds, WindowId, div,
-    img, px, relative,
+    AnyElement, AnyView, AnyWindowHandle, App, AppContext, Axis, Bounds, Context, Div, Entity,
+    EntityId, FocusHandle, Focusable, Global, KeyDownEvent, ObjectFit, Pixels, Render,
+    SharedString, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds,
+    WindowDecorations, WindowHandle, WindowId, WindowOptions, div, img, point, px, size,
+    transparent_black,
 };
-
-use gpui_component::button::{Button, ButtonVariants};
-
-use gpui_component::dialog::{
-    DIALOG_BUTTON_MIN_WIDTH, Dialog, DialogAction, DialogButtonProps, DialogClose, DialogFooter,
-};
-
-use gpui_component::input::{Input, InputState};
-
-use gpui_component::modern_menu::{ModernMenu, dispatch_modern_menu_key};
-
-use gpui_component::notification::{Notification, NotificationType};
-
-use gpui_component::progress::Progress;
-
-use gpui_component::resizable::{PANEL_MIN_SIZE, ResizablePanelGroup, resizable_panel};
-
-use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, IconNamed, Root, StyledExt, TitleBar, WindowExt,
-    h_flex, v_flex,
-};
-
-use nmt_agent::team::identity::RoomId;
-
-use nmt_agent::update::{ProviderKind, UpdatePhase};
-
+use gpui_component::modern_menu::dispatch_modern_menu_key;
+use gpui_component::resizable::PANEL_MIN_SIZE;
+use gpui_component::{ActiveTheme, Root, Theme as ComponentTheme, WindowExt};
+use nmt_agent::chat::SessionSummary;
+use nmt_agent::team::model::RoomId;
 use nmt_agent::{
-    AgentActivityPolicy, AgentEvent, AgentMonitor, AgentNotification, AgentRoute,
-    AgentRuntimeStatus, AgentWorkspace, MonitorMutation, agent_process, request_native_delivery,
+    AgentActivityPolicy, AgentEvent, AgentMonitor, AgentRoute, AgentRuntimeStatus, AgentWorkspace,
+    agent_process,
 };
-
-use nmt_config::local_state::{TabState, WindowState};
-
+use nmt_config::local_state::{WindowLocalState, WindowState};
 use nmt_config::system::WarnBeforeTerminatingShell;
-
 use nmt_config::{config_dir_path, get};
-
+use nmt_platform::default_shell_name;
+use nmt_platform::filesystem::path_identity;
 use nmt_platform::window::native_active_state;
-
-use nmt_platform::{
-    NativeNotification, remove_notification, show_notification, system_notification_enabled,
-};
-
+use nmt_remote::NetworkPty;
+use nmt_remote::local_view::LocalView;
+use nmt_remote_core::identity::DeviceId;
+use nmt_remote_core::rpc::{SessionInfo, WorkspaceInfo};
 use rust_i18n::t;
-
 use tracing::warn;
 
-use crate::agent_updates::{
-    AgentUpdates, FocusedVisibleLifetime, NotificationPrimaryAction, NotificationProgress,
-    UpdateNotificationTone, UpdateNotificationView,
-};
-
-use crate::agent_usage::AgentUsageView;
-
-use crate::cli::CliAction;
-
-use crate::pane_tree::{PaneId, PaneNode, SplitDirection};
-
-#[cfg(windows)]
-use crate::remote;
-
+use crate::agent_updates::AgentUpdates;
 use crate::tabs::{Tab, TabId, TabManager};
-
+use crate::ui;
 use crate::ui::background_tasks::BackgroundTasksView;
-
-use crate::ui::composition::{
-    FLOATING_SURFACE_SIDE_INSET, TOOLBAR_BUTTON_SIZE, toolbar_button, toolbar_toggle,
-};
-
 use crate::ui::git_sidebar::GitSidebar;
-
-use crate::ui::git_status::{GitStatusModel, GitStatusView};
-
+use crate::ui::git_status::GitStatusModel;
+use crate::ui::pane_tree::{PaneId, SplitDirection};
 use crate::ui::persistence::{
-    default_session, materialize_active_tab, restore_session, session_state, spawn_default_pane,
+    default_session, materialize_active_tab, materialize_tab, restore_session, session_state,
 };
-
+use crate::ui::platform_style::{Host, PlatformStyle as _};
+use crate::ui::remote::{self, Remote};
 use crate::ui::right_panel::{RightPanel, RightPanelKind};
-
-use crate::ui::settings::{AgentProfile, AppSettings, TabBarStyle};
-
+use crate::ui::settings::{
+    AgentProfile, AppSettings, SettingsSurface, TabBarStyle, settings_title,
+};
 use crate::ui::shell::actions::NewTeamTab;
-
-use crate::ui::shell::agent_notifications::AgentNotificationState;
-
+use crate::ui::shell::agent_notifications::{
+    AgentNotificationState, apply_monitor_display_change, remove_native_notifications,
+};
+use crate::ui::shell::close_confirm::{
+    close_description, close_last_workspace_dialog, open_close_confirm, open_save_failed_close,
+    should_confirm_close,
+};
+use crate::ui::shell::main_surface::{floating_surface_card, surface_border, tab_surface_view};
 use crate::ui::shell::panels::RightPanelController;
-
 use crate::ui::shell::render::ShellChrome;
-
-use crate::ui::shell::settings_workspace::{SettingsSurface, settings_title};
-
 use crate::ui::shell::tab_surface::{AgentTab, GitTab};
-
 use crate::ui::shell::updates_layer::UpdateNotificationLayer;
-
-use crate::ui::shell::workspace_dirs::{RootAvailability, WorkspaceDirsEditor};
-
-use crate::ui::tab_bar::TabStrip;
-
-#[cfg(windows)]
-use crate::ui::terminal_launch::attach_remote;
-
+use crate::ui::shell::workspace_dirs::{
+    RootAvailability, open_new_workspace_dialog, open_workspace_dirs_dialog,
+};
+use crate::ui::tab_bar::{TabStrip, VerticalTabList, WorkspaceTabs};
+use crate::ui::terminal_launch::{spawn_default_pane, spawn_local_view_pane, spawn_remote_pane};
 use crate::ui::terminal_layout::TerminalLayout;
-
-use crate::ui::token_usage::TokenUsageView;
-
+use crate::ui::title_bar::{PanelToggle, TitleBarInputs, TitleCenter};
 use crate::ui::workflows::WorkflowsView;
-
-use crate::ui::workspace_sidebar::{Sidebar, SidebarTab, SidebarUsage, WorkspaceChrome};
-
-use crate::ui::{main_view_background_opacity, workspace_sidebar};
-
-#[cfg(windows)]
-use crate::update::check;
-
-use crate::usage_sources::daily_source;
-
-use crate::window::{AppWindow, LastActiveWindow, ShellEntry, ShellRegistry, WindowRegistry};
-
+use crate::ui::workspace_sidebar;
+use crate::ui::workspace_sidebar::{Sidebar, SidebarUsage, WorkspaceChrome};
 use crate::workspace::{
     ProgressTally, TerminalActivity, WorkspaceId, WorkspaceKind, WorkspaceManager, WorkspaceRoots,
-    best_match, exact_match,
+    best_match, exact_match, workspace_display_label,
 };
 
-use crate::{agent_updates, ui};
+/// Open terminal windows in creation order, plus the last closed window's
+/// state for saving on quit or restoring when the application is reopened.
+#[derive(Default)]
+pub(crate) struct WindowRegistry {
+    windows: Vec<WindowEntry>,
+    last_closed: Option<WindowLocalState>,
+}
+
+impl Global for WindowRegistry {}
+
+/// A window's current state and the references used to reach its interface
+/// share one entry so closing it cannot leave a stale dispatch target.
+pub(crate) struct WindowEntry {
+    pub(crate) handle: AnyWindowHandle,
+    pub(crate) view: WeakEntity<AppWindow>,
+    state: WindowLocalState,
+}
+
+impl WindowRegistry {
+    fn register(
+        &mut self,
+        handle: AnyWindowHandle,
+        view: WeakEntity<AppWindow>,
+        state: WindowLocalState,
+    ) {
+        // A newly opened window replaces the retained state even when its
+        // caller requested a fresh session instead of restoring the old one.
+        self.last_closed = None;
+
+        self.windows.push(WindowEntry {
+            handle,
+            view,
+            state,
+        });
+    }
+
+    pub(crate) fn dispatch(
+        cx: &mut App,
+        mut action: impl FnMut(AnyWindowHandle, &WeakEntity<AppWindow>, &mut App) -> bool,
+    ) -> bool {
+        // Actions can change the registry. Copy only the dispatch references
+        // so they run without borrowing it or cloning session snapshots.
+        let targets: Vec<_> = cx
+            .global::<Self>()
+            .windows
+            .iter()
+            .map(|entry| (entry.handle, entry.view.clone()))
+            .collect();
+
+        targets
+            .iter()
+            .any(|(handle, view)| action(*handle, view, cx))
+    }
+
+    pub(crate) fn windows(&self) -> &[WindowEntry] {
+        &self.windows
+    }
+
+    pub(crate) fn states(&self) -> impl Iterator<Item = &WindowLocalState> {
+        self.windows
+            .iter()
+            .map(|entry| &entry.state)
+            .chain(self.last_closed.iter())
+    }
+
+    pub(crate) fn prioritized(&self, last: Option<WindowId>) -> impl Iterator<Item = &WindowEntry> {
+        self.windows
+            .iter()
+            .find(|entry| Some(entry.handle.window_id()) == last)
+            .into_iter()
+            .chain(
+                self.windows
+                    .iter()
+                    .rev()
+                    .filter(move |entry| Some(entry.handle.window_id()) != last),
+            )
+    }
+
+    pub(crate) fn get(&self, id: WindowId) -> Option<&WindowLocalState> {
+        self.windows
+            .iter()
+            .find(|entry| entry.handle.window_id() == id)
+            .map(|entry| &entry.state)
+    }
+
+    pub(crate) fn get_mut(&mut self, id: WindowId) -> Option<&mut WindowLocalState> {
+        self.windows
+            .iter_mut()
+            .find(|entry| entry.handle.window_id() == id)
+            .map(|entry| &mut entry.state)
+    }
+
+    pub(crate) fn close(&mut self, id: WindowId) -> bool {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|entry| entry.handle.window_id() == id)
+        else {
+            return false;
+        };
+
+        let entry = self.windows.remove(index);
+
+        if self.windows.is_empty() {
+            self.last_closed = Some(entry.state);
+        }
+
+        true
+    }
+
+    pub(crate) fn take_last_closed(&mut self) -> Option<WindowLocalState> {
+        self.last_closed.take()
+    }
+}
+
+/// The window that most recently gained focus; CLI `new_tab`/`activate`
+/// target it. `None` until any window activates.
+pub(crate) struct LastActiveWindow(pub(crate) Option<WindowId>);
+
+impl Global for LastActiveWindow {}
+
+pub(crate) fn selected_window_appearance(cx: &App) -> WindowAppearance {
+    if ComponentTheme::global(cx).is_dark() {
+        WindowAppearance::Dark
+    } else {
+        WindowAppearance::Light
+    }
+}
+
+/// The workspace sidebar's width until the user drags it. The default is
+/// raised to the minimum where the window buttons need more leading room.
+const DEFAULT_SIDEBAR_WIDTH: f32 = f32::max(
+    workspace_sidebar::SIDEBAR_WIDTH,
+    workspace_sidebar::MIN_WIDTH,
+);
+
+/// The settings content lays each row out as label beside control only while
+/// its panel is wider than 480; at 480 or narrower every row stacks and the
+/// page reflows. Two points above that threshold keep rounding at fractional
+/// scale factors from tipping it over.
+const SETTINGS_CONTENT_MIN_WIDTH: f32 = 482.0;
+
+/// Narrower than this, with the workspace sidebar at its default width, the
+/// settings page stacks its rows and the agent composer wraps its toolbar
+/// onto a second line; the tightest of the two is settings, whose navigation
+/// pane has a fixed width. The sidebar default differs per platform (216 on
+/// macOS, 180 on Windows), so the minimum does too: 938 and 902. Shorter
+/// than the minimum height a terminal pane stops showing a usable number of
+/// rows. The platform enforces both during interactive resize, not just for
+/// the initial geometry.
+pub(super) const MIN_WINDOW_WIDTH: f32 =
+    DEFAULT_SIDEBAR_WIDTH + SETTINGS_NAV_WIDTH_PX + SETTINGS_CONTENT_MIN_WIDTH;
+
+const MIN_WINDOW_HEIGHT: f32 = 400.0;
+
+/// Open a terminal window using the saved geometry and session. Register its
+/// state before constructing the view so workspace updates during restoration
+/// can publish the resulting session.
+pub(crate) fn open_window(
+    cx: &mut App,
+    initial: WindowLocalState,
+    initial_cwd: Option<String>,
+) -> WindowHandle<Root> {
+    let window_bounds = match &initial.window {
+        Some(w) => {
+            // WM_GETMINMAXINFO bounds interactive resize only, so geometry
+            // saved by an older build (or edited by hand) is clamped here
+            // as well; otherwise the window would restore below its
+            // minimum and stay there until the user resized it.
+            let bounds = Bounds::new(
+                point(px(w.x), px(w.y)),
+                size(
+                    px(w.width.max(MIN_WINDOW_WIDTH)),
+                    px(w.height.max(MIN_WINDOW_HEIGHT)),
+                ),
+            );
+
+            if w.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            }
+        }
+        None => WindowBounds::Windowed(Bounds::centered(None, size(px(960.0), px(620.0)), cx)),
+    };
+
+    // Titlebar setup for a shell window. A host that keeps drawing its own
+    // window buttons over the transparent titlebar centers them in a
+    // standard-height strip; this bar is taller, so the buttons are re-anchored
+    // to its middle to line up with the controls the bar draws itself. A host
+    // that draws its controls as part of the bar needs no such adjustment.
+    let titlebar_options = TitlebarOptions {
+        title: Some(t!("app-window-title").into()),
+        appears_transparent: true,
+        traffic_light_position: Host::WINDOW_CONTROLS_INSET
+            .map(|inset| point(px(inset), px(inset))),
+    };
+
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(window_bounds),
+            // Borderless: the app draws its own titlebar (gpui-component
+            // `TitleBar`); the Windows backend routes controls/drag/resize.
+            window_decorations: Some(WindowDecorations::Client),
+            titlebar: Some(titlebar_options),
+            window_background: ui::window_background_appearance(cx),
+            window_appearance_override: Some(selected_window_appearance(cx)),
+            window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+            ..Default::default()
+        },
+        // Wrap the shell in gpui-component's `Root` so modal/dialog layers
+        // render. The shell focuses its active pane on first render.
+        move |window, cx| {
+            let view: AnyView = cx
+                .new(|cx| {
+                    let view = cx.weak_entity();
+
+                    cx.global_mut::<WindowRegistry>().register(
+                        window.window_handle(),
+                        view,
+                        initial,
+                    );
+
+                    AppWindow::new(initial_cwd, window, cx)
+                })
+                .into();
+
+            // Each top-level region paints the configured alpha once. A
+            // background on Root would sit underneath all of them and make
+            // the effective opacity higher than the requested value.
+            cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
+        },
+    )
+    .expect("open GPUI terminal window")
+}
 
 /// A workspace cwd as a shell working directory: `None` for empty or the
 /// legacy `"."` placeholder (shells then start in their default directory).
@@ -205,6 +360,12 @@ pub(super) fn explicit_cwd(cwd: &str) -> Option<String> {
 /// The directory list an Agent Tab of `roots` starts with. Placeholder entries
 /// are dropped for the same reason [`explicit_cwd`] drops them: they name no
 /// directory a harness could be pointed at.
+/// What a pane's control sheet closes its tab with: the close shortcut's
+/// action, so the sheet closes the tab the same way the keyboard would.
+fn close_tab() -> SheetClose {
+    Arc::new(|window, cx| window.dispatch_action(Box::new(CloseTab), cx))
+}
+
 pub(super) fn agent_workspace(roots: Option<&WorkspaceRoots>) -> AgentWorkspace {
     let Some(roots) = roots else {
         return AgentWorkspace::default();
@@ -221,15 +382,79 @@ pub(super) fn agent_workspace(roots: Option<&WorkspaceRoots>) -> AgentWorkspace 
 }
 
 /// A conversation to reopen in a tab rooted where it ran, carrying the profile
-/// of the tab that listed it so the new tab launches the same agent.
+/// that continues it: the listing tab's own, or the one of the agent that
+/// recorded it. A conversation that names no directory opens with `fallback`,
+/// the listing tab's directories.
 pub(super) struct PendingAgentResume {
     pub(super) profile: AgentProfile,
-    pub(super) cwd: String,
-    pub(super) session_id: String,
+    pub(super) cwd: Option<String>,
+    pub(super) fallback: AgentWorkspace,
+    pub(super) summary: SessionSummary,
 }
 
-pub(crate) struct Shell {
+/// A blank agent tab to relaunch in place on `profile`, optionally going on to
+/// continue the conversation `resume` lists once the new session is ready.
+pub(super) struct PendingAgentSwitch {
+    pub(super) tab: TabId,
+    pub(super) profile: AgentProfile,
+    pub(super) resume: Option<SessionSummary>,
+}
+
+/// The launch profile last picked in a composer's agent control, by name.
+/// The unified New Agent Tab entry opens it, so a user who works with one
+/// agent picks it once rather than on every new tab. It lives for the process
+/// only: the configured default profile is what a fresh start opens.
+#[derive(Default)]
+pub(crate) struct PickedAgentProfile(Option<String>);
+
+impl Global for PickedAgentProfile {}
+
+/// The profile a unified New Agent Tab opens: the one last picked in a
+/// composer while it still exists, otherwise the configured default.
+pub(crate) fn unified_agent_profile(cx: &App) -> AgentProfile {
+    let settings = cx.global::<AppSettings>();
+
+    cx.try_global::<PickedAgentProfile>()
+        .and_then(|picked| picked.0.as_deref())
+        .and_then(|name| {
+            settings
+                .config()
+                .agent_profiles
+                .list
+                .iter()
+                .find(|profile| profile.name == name)
+                .cloned()
+        })
+        .unwrap_or_else(|| settings.default_agent_profile_entry())
+}
+
+/// A tab's fallback title for an agent profile: the profile's name, so two
+/// profiles of one agent stay distinguishable, or the agent's own name for an
+/// unnamed profile.
+fn agent_tab_title(profile: &AgentProfile) -> String {
+    if profile.name.trim().is_empty() {
+        profile.kind.display().to_string()
+    } else {
+        profile.name.clone()
+    }
+}
+
+/// What a window did with a paired device's request to close a session.
+pub(crate) enum DeviceClose {
+    Closed,
+    /// No tab of this window shows the session.
+    NotHere,
+    /// The session's tab is the last of the window's last workspace, which
+    /// only the person at the host may close.
+    LastWorkspace,
+}
+
+pub(crate) struct AppWindow {
     pub(crate) workspaces: WorkspaceManager,
+
+    /// The remote workspace holding the tabs that follow each paired host's
+    /// sessions, by host id.
+    remote_workspaces: collections::HashMap<String, WorkspaceId>,
 
     /// Monotonic surface-id source shared by tabs and workspaces.
     next_id: u64,
@@ -269,16 +494,22 @@ pub(crate) struct Shell {
     /// the close-last-workspace dialog, so it must not be restored on the
     /// next launch. Only set on the quit path — cancelling keeps everything.
     pub(crate) doomed_workspace: Option<WorkspaceId>,
+
+    settings_close_pending: bool,
 }
 
-impl Drop for Shell {
+impl Drop for AppWindow {
     fn drop(&mut self) {
-        Self::remove_native_notifications(&self.agent_notifications.agent_monitor.notifications());
+        remove_native_notifications(&self.agent_notifications.agent_monitor.notifications());
     }
 }
 
-impl Shell {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl AppWindow {
+    pub(crate) fn new(
+        initial_cwd: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.observe_global_in::<AppSettings>(window, |this, window, cx| {
             this.sync_team_setting(window, cx);
 
@@ -289,6 +520,10 @@ impl Shell {
         cx.observe_global::<AgentUpdates>(|_, cx| cx.notify())
             .detach();
 
+        // Tabs mark the paired devices viewing them, and the title bar counts
+        // the connected ones.
+        cx.observe_global::<Remote>(|_, cx| cx.notify()).detach();
+
         // Stash the window geometry on every move/resize; main.rs flushes it
         // to local_state.toml on quit. Fires for both, and the Maximized
         // variant carries the restore bounds. Scan-and-update only: a stale
@@ -298,35 +533,43 @@ impl Shell {
         cx.observe_window_bounds(window, Self::on_window_bounds_changed)
             .detach();
 
-        // Expose this shell to the CLI dispatch task and track which window
-        // was focused last (the `new_tab`/`activate` URL target).
-        let entry = ShellEntry {
-            window_id,
-            handle: window.window_handle(),
-            shell: cx.weak_entity(),
-        };
-
-        cx.global_mut::<ShellRegistry>().0.push(entry);
-
         // OS-level close requests (Alt+F4, taskbar, system menu) go through
         // the running-processes confirmation. The titlebar X bypasses
         // WM_CLOSE, so it routes through the same check via `on_close_window`.
         let weak = cx.weak_entity();
 
         window.on_window_should_close(cx, move |window, cx| {
-            weak.update(cx, |this, cx| this.confirm_window_close(window, cx))
-                .unwrap_or(true)
+            // The shell closes the window itself once settings are saved; a
+            // shell that is already gone has nothing left to save.
+            weak.update(cx, |this, cx| this.request_window_close(window, cx))
+                .is_err()
         });
 
         cx.observe_window_activation(window, Self::on_window_activation)
             .detach();
 
+        // A running tab's pane withdraws its session from paired devices as
+        // it is released, but a tab still waiting to be started has no pane,
+        // so the window withdraws those as it goes; a closed window's tabs
+        // would otherwise stay listed with nothing left to start.
+        cx.on_release(|this, cx| {
+            let pending: Vec<String> = this
+                .workspaces
+                .all_tabs()
+                .flat_map(|tabs| tabs.list().items())
+                .filter_map(|tab| tab.surface().pending_session().map(str::to_owned))
+                .collect();
+
+            for id in pending {
+                ui::remote::withdraw_pending_session(&id, cx);
+            }
+        })
+        .detach();
+
         let default_profile = cx.global::<AppSettings>().default_profile_command();
         let registry_entry = cx.global::<WindowRegistry>().get(window_id);
 
         // A CLI new_window target replaces session restore for this window.
-        let initial_cwd = registry_entry.and_then(|entry| entry.initial_cwd.clone());
-
         let remembered_session = if initial_cwd.is_some() {
             None
         } else {
@@ -336,7 +579,7 @@ impl Shell {
         let sidebar_width = registry_entry
             .and_then(|entry| entry.sidebar_width)
             .map(|width| width.clamp(workspace_sidebar::MIN_WIDTH, workspace_sidebar::MAX_WIDTH))
-            .unwrap_or(workspace_sidebar::SIDEBAR_WIDTH.max(workspace_sidebar::MIN_WIDTH));
+            .unwrap_or(DEFAULT_SIDEBAR_WIDTH);
 
         let mut restore_next_id = 1;
 
@@ -363,7 +606,7 @@ impl Shell {
                     _ => AgentActivityPolicy::ExpireAfterInactivity,
                 };
 
-                for route in Self::agent_routes_in_surface(tab.surface(), cx) {
+                for route in tab.surface().agent_routes(cx) {
                     agent_monitor.register_route(route, activity_policy, now);
                 }
             }
@@ -373,6 +616,7 @@ impl Shell {
 
         let mut this = Self {
             workspaces,
+            remote_workspaces: collections::HashMap::new(),
             next_id,
             chrome: ShellChrome::new(git_model.clone(), cx),
             agent_notifications: AgentNotificationState::new(agent_monitor),
@@ -392,9 +636,8 @@ impl Shell {
             update_notifications: UpdateNotificationLayer::default(),
             root_availability: RootAvailability::default(),
             doomed_workspace: None,
+            settings_close_pending: false,
         };
-
-        this.sync_session_memory(cx);
 
         this.refresh_root_availability(cx);
 
@@ -407,7 +650,7 @@ impl Shell {
         let bounds = window_bounds.get_bounds();
 
         if let Some(entry) = cx.global_mut::<WindowRegistry>().get_mut(id) {
-            entry.bounds = Some(WindowState {
+            entry.window = Some(WindowState {
                 x: bounds.origin.x.as_f32(),
                 y: bounds.origin.y.as_f32(),
                 width: bounds.size.width.as_f32(),
@@ -422,6 +665,10 @@ impl Shell {
 
         if self.window_active {
             cx.global_mut::<LastActiveWindow>().0 = Some(self.window_id);
+
+            // Coming back to a window is the person being back at this
+            // computer, which ends pushes to devices they carried away.
+            remote::note_local_use(cx);
 
             self.acknowledge_visible(window, true, cx);
         } else {
@@ -495,7 +742,7 @@ impl Shell {
             _ => AgentActivityPolicy::ExpireAfterInactivity,
         };
 
-        let routes = Self::agent_routes_in_surface(surface, cx);
+        let routes = surface.agent_routes(cx);
 
         let now = time::Instant::now();
 
@@ -564,6 +811,30 @@ impl Shell {
         self.acknowledge_visible(window, true, cx);
     }
 
+    /// Put the active workspace, tab, and pane on screen after any of them
+    /// changed: refresh the tab's own state, move keyboard focus into it,
+    /// record the session a restore would rebuild, and repaint.
+    pub(super) fn show_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_active_tab_changed(window, cx);
+
+        self.focus_active(window, cx);
+
+        cx.notify();
+    }
+
+    /// Switch to the workspace at `index`. The workspace keeps its own active
+    /// tab, so the user returns to the tab they last used there.
+    pub(super) fn activate_workspace(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspaces.list_mut().activate(index);
+
+        self.show_active_tab(window, cx);
+    }
+
     pub(crate) fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(git) = self.workspaces.active_tabs().active().git() {
             let view = git.view.clone();
@@ -630,7 +901,7 @@ impl Shell {
             return;
         };
 
-        self.acknowledge_notification(&route, &id, cx);
+        self.agent_notifications.acknowledge(&route, &id, cx);
     }
 
     /// One tab's terminal activity: a live command outranks the tab's recorded
@@ -654,13 +925,17 @@ impl Shell {
         self.workspaces
             .summaries()
             .into_iter()
-            .map(|summary| {
+            .enumerate()
+            // Remote entries are listed under their host, after this
+            // computer's workspaces.
+            .filter(|(_, summary)| summary.kind != WorkspaceKind::Remote)
+            .map(|(index, summary)| {
                 let tabs = self.workspaces.tabs_of(summary.id);
 
                 let routes: Vec<_> = tabs
                     .into_iter()
                     .flat_map(|tabs| tabs.list().items())
-                    .flat_map(|tab| Self::agent_routes_in_surface(tab.surface(), cx))
+                    .flat_map(|tab| tab.surface().agent_routes(cx))
                     .collect();
 
                 let agent = self.agent_notifications.agent_monitor.project(&routes);
@@ -680,6 +955,7 @@ impl Shell {
                     .fold(summary.terminal_progress, ProgressTally::merge);
 
                 WorkspaceChrome {
+                    index,
                     summary,
                     agent,
                     terminal_activity,
@@ -709,7 +985,7 @@ impl Shell {
             .all_tabs()
             .flat_map(|tabs| tabs.list().items())
         {
-            let routes = Self::agent_routes_in_surface(tab.surface(), cx);
+            let routes = tab.surface().agent_routes(cx);
             let projection = self.agent_notifications.agent_monitor.project(&routes);
 
             if projection.unread_count > 0 {
@@ -732,7 +1008,7 @@ impl Shell {
         let tab = &tabs.list().items()[tabs.list().active_index()];
 
         let base = if tab.title().is_empty() {
-            "PowerShell"
+            default_shell_name()
         } else {
             tab.title()
         };
@@ -744,7 +1020,7 @@ impl Shell {
         }
     }
 
-    fn on_toggle_sidebar(
+    pub(super) fn on_toggle_sidebar(
         &mut self,
         _: &ToggleSidebar,
         _window: &mut Window,
@@ -788,6 +1064,8 @@ impl Shell {
     /// Close the focused pane of the active (multi-pane) tab, with a confirm
     /// dialog first when its shell has running child processes.
     fn request_close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = self.workspaces.active_tabs().list().active_id();
+
         let id = self
             .workspaces
             .active_tabs()
@@ -799,9 +1077,8 @@ impl Shell {
         let pane = self.active_pane();
         let settings = cx.global::<AppSettings>();
 
-        let count = if settings.config().system.manage_subprocess_job
-            && settings.config().system.warn_before_terminating_shell
-                != WarnBeforeTerminatingShell::Disabled
+        let count = if settings.config().system.warn_before_terminating_shell
+            != WarnBeforeTerminatingShell::Disabled
         {
             pane.read(cx).child_process_count()
         } else {
@@ -813,29 +1090,46 @@ impl Shell {
             settings.config().system.warn_before_terminating_shell,
             &count,
         ) {
-            self.close_pane_now(id, window, cx);
+            self.close_pane_now(tab, id, window, cx);
 
             return;
         }
 
-        let description = Self::close_description(
+        let description = close_description(
             count,
             "shell-close-pane-description",
             "shell-close-pane-processes-description",
         );
 
-        Self::open_close_confirm(
+        open_close_confirm(
             window,
             cx,
             t!("shell-close-pane-title"),
             description,
             None,
-            move |this, window, cx| this.close_pane_now(id, window, cx),
+            move |this, window, cx| this.close_pane_now(tab, id, window, cx),
         );
     }
 
-    fn close_pane_now(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
-        let tree = self.workspaces.active_tabs_mut().active_mut().live_mut();
+    /// Close pane `id` of a split tab. The tab need not be active: a paired
+    /// device may close a pane of any tab.
+    fn close_pane_now(
+        &mut self,
+        tab: TabId,
+        id: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_active = self.workspaces.active_tabs().list().active_id() == tab;
+
+        let Some(tree) = self
+            .workspaces
+            .tabs_for_tab_mut(tab)
+            .and_then(|tabs| tabs.list_mut().find_mut(tab))
+            .and_then(|tab| tab.surface_mut().tree_mut())
+        else {
+            return;
+        };
 
         let Some(pane) = tree.remove(id, cx) else {
             return;
@@ -843,42 +1137,20 @@ impl Shell {
 
         let route = pane.read(cx).agent_route().clone();
 
-        self.remove_agent_route(&route, cx);
+        self.agent_notifications.remove_route(&route, cx);
+
+        pane.read(cx).end_remote_session();
 
         // Dropping the pane entity drops its surface, releasing the IO thread
         // and ConPTY handle (same Drop chain as a tab close).
         drop(pane);
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
-    }
-
-    fn close_description(count: io::Result<usize>, plain: &str, with_processes: &str) -> String {
-        match count {
-            Ok(count) if count > 0 => {
-                t!(with_processes, processes = &Self::processes_running(count)).into_owned()
-            }
-            Ok(_) => t!(plain).into_owned(),
-            Err(error) => {
-                warn!("failed to count processes before closing: {error}");
-
-                t!(plain).into_owned()
-            }
-        }
-    }
-
-    /// "1 child process is running" / "N child processes are running" — the
-    /// lead-in of every close-confirmation description.
-    fn processes_running(count: usize) -> String {
-        if count == 1 {
-            t!("shell-close-one-process-running").to_string()
+        // Refocusing a tab the user is not looking at would pull keyboard
+        // focus away from what they are doing.
+        if was_active {
+            self.show_active_tab(window, cx);
         } else {
-            t!("shell-close-many-processes-running", count = count).into_owned()
+            cx.notify();
         }
     }
 
@@ -916,55 +1188,14 @@ impl Shell {
         })
     }
 
-    /// Shared scaffolding of every close-confirmation alert: title +
-    /// description, OK runs `on_confirm` against this shell. `note` adds a
-    /// bold line under the description for a consequence the description
-    /// itself does not cover.
-    fn open_close_confirm(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        // Dialog callbacks can rebuild their content, so they retain a
-        // translated title that can be reused on each invocation.
-        title: Cow<'static, str>,
-        description: String,
-        note: Option<SharedString>,
-        on_confirm: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) {
-        let shell = cx.entity();
-        let on_confirm = Rc::new(on_confirm);
-
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let shell = shell.clone();
-            let on_confirm = Rc::clone(&on_confirm);
-
-            alert
-                .confirm()
-                .title(title.clone())
-                .description(
-                    v_flex()
-                        .gap_1()
-                        .child(description.clone())
-                        .children(note.clone().map(|note| div().font_bold().child(note))),
-                )
-                .on_ok(move |_, window, cx| {
-                    let on_confirm = Rc::clone(&on_confirm);
-
-                    shell.update(cx, |this, cx| on_confirm(this, window, cx));
-
-                    true
-                })
-        });
-    }
-
     /// Child processes running across every pane of this tab, summed over
     /// each shell's Job Object. The count enriches warnings but is not needed
     /// by the `Always` mode.
     fn close_process_count(&self, tree: &TabSurface, cx: &App) -> io::Result<usize> {
         let settings = cx.global::<AppSettings>();
 
-        if !settings.config().system.manage_subprocess_job
-            || settings.config().system.warn_before_terminating_shell
-                == WarnBeforeTerminatingShell::Disabled
+        if settings.config().system.warn_before_terminating_shell
+            == WarnBeforeTerminatingShell::Disabled
         {
             return Ok(0);
         }
@@ -1004,7 +1235,15 @@ impl Shell {
 
         let surface = tab.surface();
         let is_settings = surface.is_settings();
-        let is_agent = surface.is_agent();
+
+        // Closing a tab that follows a paired host's agent ends only this
+        // view; the conversation runs on there, so there is nothing to warn
+        // about.
+        let is_agent = surface.is_agent()
+            && !surface
+                .agent()
+                .is_some_and(|pane| pane.read(cx).remote_address().is_some());
+
         let count = self.close_process_count(surface, cx);
 
         let last_tab = self
@@ -1020,6 +1259,14 @@ impl Shell {
             return;
         }
 
+        // A remote entry only gathers a host's tabs, so its last tab takes
+        // it along without the warning that guards a local workspace's tabs.
+        if last_tab && self.workspaces.kind_of(ws_id) == Some(WorkspaceKind::Remote) {
+            self.close_workspace_now(ws_id, window, cx);
+
+            return;
+        }
+
         if last_tab {
             if self.workspaces.real_len() == 1 {
                 self.confirm_close_last_workspace(ws_id, window, cx);
@@ -1027,7 +1274,7 @@ impl Shell {
                 return;
             }
 
-            let description = Self::close_description(
+            let description = close_description(
                 count,
                 if is_agent {
                     "shell-close-last-tab-agent-description"
@@ -1037,7 +1284,7 @@ impl Shell {
                 "shell-close-last-tab-processes-description",
             );
 
-            Self::open_close_confirm(
+            open_close_confirm(
                 window,
                 cx,
                 t!("shell-close-last-tab-title"),
@@ -1065,14 +1312,14 @@ impl Shell {
         let description = if is_agent {
             t!("shell-close-tab-agent-description").to_string()
         } else {
-            Self::close_description(
+            close_description(
                 count,
                 "shell-close-tab-description",
                 "shell-close-tab-processes-description",
             )
         };
 
-        Self::open_close_confirm(
+        open_close_confirm(
             window,
             cx,
             t!("shell-close-tab-title"),
@@ -1096,8 +1343,16 @@ impl Shell {
             return;
         };
 
-        for route in Self::agent_routes_in_surface(&tree, cx) {
-            self.remove_agent_route(&route, cx);
+        for route in tree.agent_routes(cx) {
+            self.agent_notifications.remove_route(&route, cx);
+        }
+
+        for (_, pane) in tree.leaves() {
+            pane.read(cx).end_remote_session();
+        }
+
+        if let Some(shared) = tree.pending_session() {
+            ui::remote::withdraw_pending_session(shared, cx);
         }
 
         let return_to = tree.git().and_then(|git| git.return_to);
@@ -1120,8 +1375,6 @@ impl Shell {
         }
 
         self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
 
         cx.notify();
     }
@@ -1177,13 +1430,13 @@ impl Shell {
             return;
         }
 
-        let description = Self::close_description(
+        let description = close_description(
             count,
             "shell-close-workspace-description",
             "shell-close-workspace-processes-description",
         );
 
-        Self::open_close_confirm(
+        open_close_confirm(
             window,
             cx,
             t!("shell-close-workspace-title"),
@@ -1229,13 +1482,13 @@ impl Shell {
             return;
         }
 
-        let description = Self::close_description(
+        let description = close_description(
             process_count,
             "shell-close-temporary-workspaces-description",
             "shell-close-temporary-workspaces-processes-description",
         );
 
-        Self::open_close_confirm(
+        open_close_confirm(
             window,
             cx,
             t!("shell-close-temporary-workspaces-title"),
@@ -1280,7 +1533,7 @@ impl Shell {
     ) {
         let count = self.workspace_process_count(id, cx);
 
-        let message = Self::close_description(
+        let message = close_description(
             count,
             "shell-close-last-workspace-message",
             "shell-close-last-workspace-processes-message",
@@ -1293,16 +1546,14 @@ impl Shell {
         let shell = cx.entity();
 
         window.open_dialog(cx, move |dialog, _, _| {
-            close_last_workspace_dialog(dialog, &shell, id, &message, &note)
+            close_last_workspace_dialog(dialog.centered(true), &shell, id, &message, &note)
         });
     }
 
-    /// Exclude `id` from session persistence and push the trimmed session to
-    /// the registry so the quit hook saves local_state without it.
-    fn doom_workspace(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
+    /// Exclude `id` from session persistence, so neither the quit hook nor a
+    /// window close saves it into local_state.
+    fn doom_workspace(&mut self, id: WorkspaceId) {
         self.doomed_workspace = Some(id);
-
-        self.sync_session_memory(cx);
     }
 
     /// Swap the last workspace for a fresh default one rooted in the user's
@@ -1323,15 +1574,35 @@ impl Shell {
         self.close_workspace_now(id, window, cx);
     }
 
-    /// True when the window may close right away. The explicit confirmation
-    /// setting and terminal child-process warnings share this path. Reached
-    /// from the titlebar X and the OS close request (Alt+F4, taskbar).
-    pub(crate) fn confirm_window_close(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    /// Save settings, then close the window unless the explicit confirmation
+    /// setting or a terminal child-process warning holds it. Reached from the
+    /// titlebar X and the OS close request (Alt+F4, taskbar); a close already
+    /// waiting on its save is left to finish.
+    pub(crate) fn request_window_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_close_pending {
+            return;
+        }
+
+        self.settings_close_pending = true;
+
         let saved = ui::settings::save_settings(window, cx);
+
+        cx.spawn_in(window, async move |this, cx| {
+            let saved = saved.await;
+
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.settings_close_pending = false;
+
+                this.finish_window_close(saved, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_window_close(&mut self, saved: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Every way this window is removed passes here; the state kept for
+        // reopening it must be current at that moment.
+        self.sync_session_memory(cx);
 
         let count: io::Result<usize> = self
             .workspaces
@@ -1350,10 +1621,12 @@ impl Shell {
                 &count,
             )
         {
-            return true;
+            window.remove_window();
+
+            return;
         }
 
-        let mut description = Self::close_description(
+        let mut description = close_description(
             count,
             "shell-close-window-description",
             "shell-close-window-processes-description",
@@ -1367,39 +1640,13 @@ impl Shell {
 
         let note = self.temporary_workspace_note();
 
-        // `remove_window` tears the window down directly (no WM_CLOSE
-        // round-trip), so this dialog won't re-trigger.
         if !saved {
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                alert
-                    .title(t!("settings-save-failed-title"))
-                    .description(
-                        v_flex()
-                            .gap_1()
-                            .child(description.clone())
-                            .children(note.clone().map(|note| div().font_bold().child(note))),
-                    )
-                    .button_props(
-                        DialogButtonProps::default()
-                            .show_cancel(true)
-                            .ok_text(t!("settings-close-without-saving"))
-                            .cancel_text(t!("shell-close-cancel")),
-                    )
-                    .on_ok(|_, window, cx| {
-                        if cx.windows().len() == 1 {
-                            cx.global_mut::<AppSettings>().discard_on_exit();
-                        }
+            open_save_failed_close(description, note, window, cx);
 
-                        window.remove_window();
-
-                        true
-                    })
-            });
-
-            return false;
+            return;
         }
 
-        Self::open_close_confirm(
+        open_close_confirm(
             window,
             cx,
             t!("shell-close-window-title"),
@@ -1407,8 +1654,6 @@ impl Shell {
             note,
             |_, window, _| window.remove_window(),
         );
-
-        false
     }
 
     fn close_workspace_now(
@@ -1417,6 +1662,22 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.workspaces.kind_of(id) == Some(WorkspaceKind::Settings) {
+            let saved = ui::settings::save_settings(window, cx);
+
+            cx.spawn_in(window, async move |this, cx| {
+                if saved.await {
+                    let _ = this
+                        .update_in(cx, |this, window, cx| this.remove_workspace(id, window, cx));
+                }
+            })
+            .detach();
+        } else {
+            self.remove_workspace(id, window, cx);
+        }
+    }
+
+    fn remove_workspace(&mut self, id: WorkspaceId, window: &mut Window, cx: &mut Context<Self>) {
         let routes = self
             .workspaces
             .tabs_of(id)
@@ -1424,26 +1685,54 @@ impl Shell {
                 tabs.list()
                     .items()
                     .iter()
-                    .flat_map(|tab| Self::agent_routes_in_surface(tab.surface(), cx))
+                    .flat_map(|tab| tab.surface().agent_routes(cx))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
 
-        let settings = self.workspaces.kind_of(id) == Some(WorkspaceKind::Settings);
+        let restoring: Vec<String> = self
+            .workspaces
+            .tabs_of(id)
+            .into_iter()
+            .flat_map(|tabs| tabs.list().items())
+            .filter_map(|tab| tab.surface().pending_session().map(str::to_owned))
+            .collect();
 
-        if settings && !ui::settings::save_settings(window, cx) {
-            return;
-        }
+        // A host terminal opened from a tab here ends with that tab, which
+        // closing its workspace must not skip.
+        let panes: Vec<_> = self
+            .workspaces
+            .tabs_of(id)
+            .into_iter()
+            .flat_map(|tabs| tabs.list().items())
+            .flat_map(|tab| tab.surface().leaves())
+            .map(|(_, pane)| pane.clone())
+            .collect();
+
+        let kind = self.workspaces.kind_of(id);
 
         let was_active = self.workspaces.list().active_id() == id;
 
         if self.workspaces.close_workspace(id).is_some() {
             for route in routes {
-                self.remove_agent_route(&route, cx);
+                self.agent_notifications.remove_route(&route, cx);
             }
 
-            if settings {
-                self.retire_settings_workspace(cx);
+            for shared in restoring {
+                ui::remote::withdraw_pending_session(&shared, cx);
+            }
+
+            for pane in panes {
+                pane.read(cx).end_remote_session();
+            }
+
+            match kind {
+                Some(WorkspaceKind::Settings) => self.retire_settings_workspace(),
+                Some(WorkspaceKind::Remote) => {
+                    self.remote_workspaces
+                        .retain(|_, workspace| *workspace != id);
+                }
+                Some(WorkspaceKind::Normal) | None => {}
             }
 
             if was_active {
@@ -1451,8 +1740,6 @@ impl Shell {
             }
 
             self.focus_active(window, cx);
-
-            self.sync_session_memory(cx);
 
             cx.notify();
         }
@@ -1532,13 +1819,7 @@ impl Shell {
 
         self.register_agent_pane(&pane, cx);
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     pub(super) fn on_resize_pane_up(
@@ -1595,8 +1876,6 @@ impl Shell {
             return;
         }
 
-        self.sync_session_memory(cx);
-
         cx.notify();
     }
 
@@ -1610,13 +1889,7 @@ impl Shell {
             return;
         }
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     /// Apply saved split ratios once their groups have real bounds (the first
@@ -1627,133 +1900,6 @@ impl Shell {
         };
 
         tree.apply_pending_ratios(cx);
-    }
-
-    /// The active tab's pane tree as nested resizable groups. The main surface
-    /// owns the outer frame, so a single pane renders without another card.
-    pub(super) fn render_active_tree(&self, cx: &mut Context<Self>) -> AnyElement {
-        match self.workspaces.active_tabs().active() {
-            TabSurface::Git(tab) => {
-                return div()
-                    .size_full()
-                    .overflow_hidden()
-                    .child(tab.view.clone())
-                    .into_any_element();
-            }
-            TabSurface::Team(pane) => {
-                return div()
-                    .size_full()
-                    .overflow_hidden()
-                    .child(pane.clone())
-                    .into_any_element();
-            }
-            TabSurface::TeamUnavailable { message, .. } => {
-                return div()
-                    .size_full()
-                    .p_4()
-                    .child(message.clone())
-                    .into_any_element();
-            }
-            TabSurface::TeamDisabled(_) => {
-                return div()
-                    .size_full()
-                    .p_4()
-                    .child(t!("team-disabled").into_owned())
-                    .into_any_element();
-            }
-            _ => {}
-        }
-
-        if self.workspaces.active_tabs().active().is_settings() {
-            let settings = self.settings.render(cx);
-
-            return div()
-                .size_full()
-                .overflow_hidden()
-                // The Settings widget paints no fill of its own, so without
-                // this the translucent surface card shows the window backdrop
-                // through the page area while the sidebar, which carries an
-                // explicit fill, stays opaque.
-                .bg(cx
-                    .theme()
-                    .background
-                    .alpha(main_view_background_opacity(cx)))
-                .children(settings)
-                .into_any_element();
-        }
-
-        if let Some(agent) = self.active_agent() {
-            return div()
-                .size_full()
-                .overflow_hidden()
-                .child(agent)
-                .into_any_element();
-        }
-
-        let tree = self.workspaces.active_tabs().active().live();
-
-        let multi = !tree.tree().is_single_leaf();
-
-        Self::render_pane_node(tree.tree().root(), tree.tree().focused(), multi, cx)
-    }
-
-    fn render_pane_node(
-        node: &PaneNode<Entity<TerminalPane>>,
-        focused: PaneId,
-        multi: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match node {
-            PaneNode::Leaf { id, pane, .. } => {
-                let id = *id;
-
-                div()
-                    .size_full()
-                    // Split leaves retain equal-width borders so focus changes
-                    // never shift layout; the parent surface clips their outer
-                    // edges and provides the single-pane frame.
-                    .when(multi, |this| {
-                        this.border_1().border_color(if id == focused {
-                            cx.theme().primary
-                        } else {
-                            cx.theme().border
-                        })
-                    })
-                    .capture_any_mouse_down(cx.listener(
-                        move |this, _: &MouseDownEvent, window, cx| {
-                            this.focus_pane(id, window, cx);
-                        },
-                    ))
-                    .child(pane.clone())
-                    .into_any_element()
-            }
-            PaneNode::Split {
-                id,
-                axis,
-                children,
-                state,
-                ..
-            } => {
-                let shell = cx.entity();
-
-                let mut group = ResizablePanelGroup::new(("pane-split", *id as usize))
-                    .axis(*axis)
-                    .with_state(state)
-                    // Keep the in-memory session mirror's split ratios fresh
-                    // after divider drags (the quit hook reads it).
-                    .on_resize(move |_, _, cx| {
-                        shell.update(cx, |this, cx| this.sync_session_memory(cx));
-                    });
-
-                for child in children {
-                    group = group.child(
-                        resizable_panel().child(Self::render_pane_node(child, focused, multi, cx)),
-                    );
-                }
-
-                group.into_any_element()
-            }
-        }
     }
 
     fn insert_tab(
@@ -1768,13 +1914,7 @@ impl Shell {
             .active_tabs_mut()
             .new_tab(surface, id, title);
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     pub(crate) fn open_team_tab(
@@ -1787,7 +1927,7 @@ impl Shell {
             return;
         }
 
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let directory = config_dir_path();
 
@@ -1800,16 +1940,7 @@ impl Shell {
             ),
         };
 
-        let surface = match runtime {
-            Ok(runtime) => TabSurface::Team(cx.new(|cx| TeamPane::new(runtime, window, cx))),
-            Err(error) => TabSurface::TeamUnavailable {
-                saved: Box::new(TabState {
-                    team_room: saved.map(|id| id.to_string()),
-                    ..TabState::default()
-                }),
-                message: error.to_string(),
-            },
-        };
+        let surface = TabSurface::Team(cx.new(|cx| TeamPane::new(runtime, window, cx)));
 
         let id = Self::alloc_id(&mut self.next_id);
 
@@ -1845,10 +1976,10 @@ impl Shell {
     ) {
         let bounds = window.window_bounds().get_bounds();
 
-        AppWindow::open(
+        open_window(
             cx,
-            AppWindow {
-                bounds: Some(WindowState {
+            WindowLocalState {
+                window: Some(WindowState {
                     x: bounds.origin.x.as_f32() + 30.0,
                     y: bounds.origin.y.as_f32() + 30.0,
                     width: bounds.size.width.as_f32(),
@@ -1858,8 +1989,8 @@ impl Shell {
                 session: None,
                 // New windows inherit this window's sidebar width.
                 sidebar_width: Some(self.sidebar.width),
-                initial_cwd: None,
             },
+            None,
         );
     }
 
@@ -1878,9 +2009,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // `leave_settings_workspace` can change which workspace is active, so
+        // `leave_pseudo_workspace` can change which workspace is active, so
         // the primary directory is read only after the move.
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let cwd = self.workspaces.active_cwd().to_string();
 
@@ -1898,7 +2029,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         let id = Self::alloc_id(&mut self.next_id);
 
@@ -1917,102 +2048,229 @@ impl Shell {
         );
     }
 
-    /// Open a remote-session tab: connect to a paired host in the background,
-    /// then add a tab whose terminal is fed over the network by `NetPty`.
-    #[cfg(windows)]
-    pub(crate) fn on_new_remote_tab(
+    /// Show `session` on the paired host `host`: the tab already following
+    /// it if there is one, otherwise a new tab following it.
+    pub(crate) fn open_remote_session(
         &mut self,
-        _: &NewRemoteTab,
+        host: &DeviceId,
+        session: &SessionInfo,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let hosts = remote::known_hosts();
+        let found = self
+            .workspaces
+            .all_tabs()
+            .enumerate()
+            .find_map(|(workspace_index, tabs)| {
+                tabs.list()
+                    .items()
+                    .iter()
+                    .position(|tab| {
+                        tab.surface()
+                            .follows_remote(host.as_str(), &session.session, cx)
+                    })
+                    .map(|tab_index| (workspace_index, tab_index))
+            });
 
-        let Some(host) = hosts.into_iter().next() else {
-            window.push_notification(t!("shell-remote-no-hosts"), cx);
+        match found {
+            Some((workspace_index, tab_index)) => {
+                self.jump_to_tab(workspace_index, tab_index, window, cx)
+            }
+            // Opening one inserts a tab into this window, which is being
+            // updated now; it runs once this update is done.
+            None => {
+                let host = host.clone();
+                let session = session.clone();
 
+                window.defer(cx, move |window, cx| {
+                    ui::remote::open_session(&host, &session, window, cx)
+                });
+            }
+        }
+    }
+
+    /// Open a tab on a terminal a paired device started on this computer.
+    pub(crate) fn open_local_view(
+        &mut self,
+        view: LocalView,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_pseudo_workspace();
+
+        let id = Self::alloc_id(&mut self.next_id);
+
+        let pane = match spawn_local_view_pane(cx, id, view, title.clone()) {
+            Ok(pane) => pane,
+            Err(error) => {
+                warn!("a view of a remote-created terminal failed to start: {error}");
+
+                return;
+            }
+        };
+
+        Self::watch_pane(&pane, cx);
+
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
+            title,
+            window,
+            cx,
+        );
+    }
+
+    /// Open a tab on a terminal that runs on another computer. With
+    /// `ends_with_tab`, closing the tab ends the session on the host.
+    pub(crate) fn open_remote_terminal(
+        &mut self,
+        pty: NetworkPty,
+        ends_with_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = Self::alloc_id(&mut self.next_id);
+        let host = pty.host().id().as_str().to_owned();
+        let host_name = pty.host().name();
+
+        let pane = match spawn_remote_pane(cx, id, pty, ends_with_tab) {
+            Ok(pane) => pane,
+            Err(error) => {
+                warn!("remote terminal failed to start: {error}");
+
+                return;
+            }
+        };
+
+        Self::watch_pane(&pane, cx);
+
+        self.insert_remote_tab(
+            host,
+            TabId(id),
+            TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
+            host_name,
+            window,
+            cx,
+        );
+    }
+
+    /// Open a tab following an agent session on a paired host. The session
+    /// keeps running there when the tab closes.
+    pub(crate) fn open_remote_agent_tab(
+        &mut self,
+        owner: SessionOwner,
+        pane: Entity<AgentPane>,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((host, _)) = pane.read(cx).remote_address() else {
             return;
         };
 
-        // Connects to the first paired host; a host picker is only meaningful
-        // once a user keeps several hosts paired at the same time.
         let id = Self::alloc_id(&mut self.next_id);
 
-        cx.spawn_in(window, async move |this, cx| {
-            let connected = cx
-                .background_executor()
-                .spawn(async move { remote::connect_new_session(&host) })
-                .await;
+        Self::watch_agent_tab(&pane, None, cx);
 
-            let _ = this.update_in(cx, |this, window, cx| match connected {
-                Ok(remote) => match attach_remote(cx, id, remote) {
-                    Ok(pane) => {
-                        this.leave_settings_workspace();
-
-                        this.register_agent_pane(&pane, cx);
-
-                        this.insert_tab(
-                            TabId(id),
-                            TabSurface::Live(TerminalLayout::new_leaf(PaneId(id), pane)),
-                            t!("shell-remote-tab-title").to_string(),
-                            window,
-                            cx,
-                        );
-                    }
-                    Err(e) => {
-                        window.push_notification(
-                            t!("shell-remote-session-failed", error = e)
-                                .into_owned()
-                                .as_str(),
-                            cx,
-                        );
-                    }
-                },
-                Err(e) => {
-                    window.push_notification(
-                        t!("shell-remote-connect-failed", error = e)
-                            .into_owned()
-                            .as_str(),
-                        cx,
-                    );
-                }
-            });
-        })
-        .detach();
+        self.insert_remote_tab(
+            host,
+            TabId(id),
+            TabSurface::Agent(AgentTab { owner, pane }),
+            title,
+            window,
+            cx,
+        );
     }
 
-    /// Open an agent tab: an agent chat conversation in place of a terminal.
-    /// The conversation's agent process starts in the workspace cwd.
-    pub(crate) fn open_agent_tab(
+    /// Add a tab following one of `host`'s sessions to that host's remote
+    /// workspace, creating the workspace on the host's first tab, and show
+    /// it. The session runs on the host, so the tab never joins a local
+    /// workspace, where it would pass for a tab running on this computer.
+    fn insert_remote_tab(
         &mut self,
-        profile: AgentProfile,
+        host: String,
+        id: TabId,
+        surface: TabSurface,
+        title: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        let existing = self
+            .remote_workspaces
+            .get(&host)
+            .copied()
+            .and_then(|workspace| self.workspaces.list().index_of(workspace));
 
-        let workspace = agent_workspace(self.workspaces.active_roots());
+        match existing {
+            Some(index) => {
+                self.workspaces.list_mut().activate(index);
 
-        self.open_agent_tab_in(&profile, workspace, None, window, cx);
+                self.insert_tab(id, surface, title, window, cx);
+            }
+            None => {
+                let tabs = TabManager::new(surface, id, title);
+                let workspace = WorkspaceId(Self::alloc_id(&mut self.next_id));
+                let name = remote::paired_host_name(&host, cx).unwrap_or_else(|| host.clone());
+
+                self.workspaces.new_workspace_of_kind(
+                    tabs,
+                    workspace,
+                    name,
+                    // The host's directories are not this computer's, so
+                    // the entry owns none and never takes part in routing
+                    // a local path to a workspace.
+                    None,
+                    WorkspaceKind::Remote,
+                );
+
+                self.remote_workspaces.insert(host, workspace);
+
+                self.show_active_tab(window, cx);
+            }
+        }
     }
 
-    /// Open an agent tab rooted at `cwd`, optionally continuing `resume` once
-    /// its session starts. A conversation belongs to the directory it ran in,
-    /// so one listed from another tab opens here rather than in the tab that
-    /// listed it.
-    pub(super) fn open_agent_tab_in(
+    /// The workspaces a paired device may start an agent in: this window's
+    /// normal workspaces, by id, name and primary directory.
+    pub(crate) fn device_workspaces(&self) -> Vec<WorkspaceInfo> {
+        self.workspaces
+            .summaries()
+            .into_iter()
+            .filter(|workspace| {
+                workspace.kind == WorkspaceKind::Normal && !workspace.cwd.is_empty()
+            })
+            // Sessions name their workspace by this label, so a device can
+            // set each one under the workspace offered with the same name.
+            .map(|workspace| WorkspaceInfo {
+                id: Some(remote::device_workspace_id(self.window_id, workspace.id)),
+                name: workspace_display_label(&workspace.name, &workspace.cwd),
+                path: workspace.cwd,
+            })
+            .collect()
+    }
+
+    /// Start an agent tab for a paired device in the workspace whose primary
+    /// directory is `path`, without switching to it: the person at the host
+    /// keeps what they are looking at. Returns the id devices know the tab
+    /// by, or `None` when no workspace here has that directory.
+    pub(crate) fn open_agent_tab_for_device(
         &mut self,
         profile: &AgentProfile,
-        workspace: AgentWorkspace,
-        resume: Option<RecoveryIdentity>,
+        path: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<String> {
+        let workspace_id = self
+            .workspaces
+            .summaries()
+            .into_iter()
+            .find(|workspace| workspace.kind == WorkspaceKind::Normal && workspace.cwd == path)?
+            .id;
+
+        let workspace = agent_workspace(self.workspaces.roots_of(workspace_id));
         let id = Self::alloc_id(&mut self.next_id);
 
-        // The tab is titled by the profile so multiple profiles of the same
-        // agent stay distinguishable; an unnamed profile falls back to the
-        // agent name.
         let title = if profile.name.trim().is_empty() {
             profile.kind.display().to_string()
         } else {
@@ -2022,19 +2280,290 @@ impl Shell {
         let owner = AgentSession::create(profile.clone(), workspace, None, cx);
         let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
 
-        Self::watch_agent_tab(&pane, cx);
+        Self::watch_agent_tab(&pane, None, cx);
 
         self.register_agent_tab(&pane, cx);
 
-        owner.start(resume, cx);
+        owner.start(None, cx);
+
+        let shared = ui::remote::shared_agent_id(&pane, cx);
+
+        self.workspaces.tabs_of_mut(workspace_id)?.append_tab(
+            TabSurface::Agent(AgentTab { owner, pane }),
+            TabId(id),
+            title,
+        );
+
+        // Render keeps session workspaces current, but a minimized or
+        // occluded host window may not render for a long time, and until it
+        // does the device would list the new session under no workspace.
+        ui::remote::sync_workspaces(self.window_id, &self.workspaces, cx);
+
+        cx.notify();
+
+        shared
+    }
+
+    /// Close what shows a session a paired device asked to end: `pane`, the
+    /// pane the session is shared from, or the still-pending agent tab
+    /// devices know by `session`. The device already confirmed, so no dialog
+    /// asks again. A split tab loses only that pane; a tab closing as the
+    /// last of its workspace takes the workspace with it, as it does when
+    /// its user closes it, but never the window's last workspace, which
+    /// would end the window for the person at the host.
+    pub(crate) fn close_for_device(
+        &mut self,
+        pane: Option<EntityId>,
+        session: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DeviceClose {
+        let found = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .find(|tab| {
+                let surface = tab.surface();
+
+                surface.pending_session() == Some(session)
+                    || pane.is_some_and(|pane| surface.pane_ids().contains(&pane))
+            })
+            .map(|tab| {
+                let surface = tab.surface();
+
+                let leaf = surface
+                    .tree()
+                    .filter(|tree| !tree.tree().is_single_leaf())
+                    .and_then(|_| {
+                        surface
+                            .leaves()
+                            .into_iter()
+                            .find(|(_, leaf)| Some(leaf.entity_id()) == pane)
+                    })
+                    .map(|(id, _)| id);
+
+                (tab.id(), leaf)
+            });
+
+        let Some((tab, leaf)) = found else {
+            return DeviceClose::NotHere;
+        };
+
+        if let Some(leaf) = leaf {
+            self.close_pane_now(tab, leaf, window, cx);
+
+            return DeviceClose::Closed;
+        }
+
+        let Some(workspace) = self.workspaces.workspace_of_tab(tab) else {
+            return DeviceClose::NotHere;
+        };
+
+        let last_tab = self
+            .workspaces
+            .tabs_of(workspace)
+            .is_some_and(|tabs| tabs.list().len() == 1);
+
+        match (last_tab, self.workspaces.real_len()) {
+            (false, _) => self.close_tab_now(tab, window, cx),
+            (true, 1) => return DeviceClose::LastWorkspace,
+            (true, _) => self.close_workspace_now(workspace, window, cx),
+        }
+
+        DeviceClose::Closed
+    }
+
+    /// Open an agent tab: an agent chat conversation in place of a terminal.
+    /// The conversation's agent process starts in the workspace cwd, at once
+    /// or, for a unified tab, with its first message.
+    pub(crate) fn open_agent_tab(
+        &mut self,
+        profile: AgentProfile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_pseudo_workspace();
+
+        let workspace = agent_workspace(self.workspaces.active_roots());
+
+        if !cx.global::<AppSettings>().config().agent.unified_agent_tab {
+            self.open_agent_tab_in(&profile, workspace, None, window, cx);
+
+            return;
+        }
+
+        // A unified tab may still change agent in its composer, so its
+        // harness waits for the first message, like a tab relaunched on
+        // another profile does. Starting it now would cover the blank tab
+        // with the start layer for a process the next pick may retire.
+        let id = Self::alloc_id(&mut self.next_id);
+        let tab = self.create_agent_tab(&profile, workspace, None, window, cx);
+
+        tab.pane.update(cx, |pane, cx| pane.defer_launch(cx));
 
         self.insert_tab(
             TabId(id),
-            TabSurface::Agent(AgentTab { owner, pane }),
-            title,
+            TabSurface::Agent(tab),
+            agent_tab_title(&profile),
             window,
             cx,
         );
+    }
+
+    /// Open an agent tab rooted at `cwd`, optionally continuing the
+    /// conversation `resume` lists once its session is ready. A conversation
+    /// belongs to the directory it ran in, so one listed from another tab
+    /// opens here rather than in the tab that listed it.
+    pub(super) fn open_agent_tab_in(
+        &mut self,
+        profile: &AgentProfile,
+        workspace: AgentWorkspace,
+        resume: Option<SessionSummary>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = Self::alloc_id(&mut self.next_id);
+        let tab = self.launch_agent_tab(profile, workspace, resume, window, cx);
+
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Agent(tab),
+            agent_tab_title(profile),
+            window,
+            cx,
+        );
+    }
+
+    /// A started agent tab on `profile`, registered with this window's agent
+    /// monitor and shared with paired devices, but not yet placed in any tab
+    /// list.
+    fn launch_agent_tab(
+        &mut self,
+        profile: &AgentProfile,
+        workspace: AgentWorkspace,
+        resume: Option<SessionSummary>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AgentTab {
+        let tab = self.create_agent_tab(profile, workspace, resume, window, cx);
+
+        tab.owner.start(None, cx);
+
+        tab
+    }
+
+    /// `launch_agent_tab` without the launch, for a caller that decides
+    /// when the harness starts.
+    fn create_agent_tab(
+        &mut self,
+        profile: &AgentProfile,
+        workspace: AgentWorkspace,
+        resume: Option<SessionSummary>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AgentTab {
+        let owner = AgentSession::create(profile.clone(), workspace, None, cx);
+        let pane = cx.new(|cx| AgentPane::attach(&owner, window, cx));
+
+        Self::watch_agent_tab(&pane, None, cx);
+
+        self.register_agent_tab(&pane, cx);
+
+        // The conversation is resumed through the history-list path once
+        // the fresh session is ready: a start that carries the id replays
+        // nothing for Claude Code and Codex and never names the tab.
+        if let Some(summary) = resume {
+            owner
+                .session()
+                .clone()
+                .update(cx, |session, _| session.resume_when_ready(summary));
+        }
+
+        AgentTab { owner, pane }
+    }
+
+    /// Relaunch the agent tab `request.tab` on another profile, in the same
+    /// place in its tab list and in a fresh conversation. The tab keeps its
+    /// id and position and the unsent message moves across; the old session
+    /// is dropped, which retires its agent process and ends any conversation
+    /// it held.
+    fn replace_agent_tab(
+        &mut self,
+        request: PendingAgentSwitch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let PendingAgentSwitch {
+            tab: id,
+            profile,
+            resume,
+        } = request;
+
+        let Some(old_pane) = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .find(|tab| tab.id() == id)
+            .and_then(|tab| tab.surface().agent())
+            .cloned()
+        else {
+            return;
+        };
+
+        let Some(workspace) = old_pane
+            .read(cx)
+            .agent_session()
+            .map(|session| session.read(cx).workspace().clone())
+        else {
+            return;
+        };
+
+        // Picking an agent chooses which harness the next message launches,
+        // not a request to launch it now, and flipping through agents would
+        // otherwise start and retire one process per pick. Continuing a
+        // listed conversation does need the harness.
+        let deferred = resume.is_none();
+
+        let draft = old_pane.update(cx, |pane, cx| pane.take_composer_draft(window, cx));
+        let fresh = self.create_agent_tab(&profile, workspace, resume, window, cx);
+        let pane = fresh.pane.clone();
+
+        if deferred {
+            pane.update(cx, |pane, cx| pane.defer_launch(cx));
+        } else {
+            fresh.owner.start(None, cx);
+        }
+
+        pane.update(cx, |pane, cx| {
+            pane.restore_composer_draft(draft, window, cx)
+        });
+
+        let Some(tabs) = self.workspaces.tabs_for_tab_mut(id) else {
+            return;
+        };
+
+        let old = tabs
+            .list_mut()
+            .find_mut(id)
+            .map(|tab| mem::replace(tab.surface_mut(), TabSurface::Agent(fresh)));
+
+        // A title the blank tab was given from its draft or history belongs
+        // to the old agent's conversation, so the relaunched tab starts from
+        // its new profile's name; a user-authored title still wins.
+        tabs.set_title(id, String::new());
+        tabs.set_default_title(id, agent_tab_title(&profile));
+
+        if let Some(old) = old {
+            for route in old.agent_routes(cx) {
+                self.agent_notifications.remove_route(&route, cx);
+            }
+        }
+
+        if self.workspaces.active_tabs().list().active_id() == id {
+            self.focus_active(window, cx);
+        }
+
+        cx.notify();
     }
 
     pub(crate) fn on_new_agent_tab(
@@ -2043,15 +2572,68 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let profile = cx.global::<AppSettings>().default_agent_profile_entry();
+        let profile = if cx.global::<AppSettings>().config().agent.unified_agent_tab {
+            unified_agent_profile(cx)
+        } else {
+            cx.global::<AppSettings>().default_agent_profile_entry()
+        };
 
         self.open_agent_tab(profile, window, cx);
     }
 
-    /// CLI `new_tab`: reuse the workspace rooted exactly at `path`, otherwise
-    /// open a fresh workspace there. With `open_in_best_workspace` on, a
-    /// containing workspace is preferred over a new one and gets the tab
-    /// instead, with the shell started in `path`.
+    /// Find a terminal by its current directory across this window's workspaces.
+    /// A workspace root alone says nothing about where its shells are now.
+    pub(crate) fn focus_dir_tab(
+        &mut self,
+        path: &path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let target = path_identity(path);
+
+        let location =
+            self.workspaces
+                .all_tabs()
+                .enumerate()
+                .find_map(|(workspace_index, tabs)| {
+                    tabs.list()
+                        .items()
+                        .iter()
+                        .enumerate()
+                        .find_map(|(tab_index, tab)| {
+                            tab.surface()
+                                .terminal_in_directory(&target, cx)
+                                .map(|pane_index| (workspace_index, tab_index, pane_index))
+                        })
+                });
+
+        let Some((workspace_index, tab_index, pane_index)) = location else {
+            return false;
+        };
+
+        self.workspaces.list_mut().activate(workspace_index);
+
+        self.workspaces
+            .active_tabs_mut()
+            .list_mut()
+            .activate(tab_index);
+
+        self.ensure_active_tab_live(window, cx);
+
+        let tree = self.workspaces.active_tabs_mut().active_mut().live_mut();
+
+        if let Some(pane_id) = tree.tree().leaves().get(pane_index).map(|(id, _)| *id) {
+            tree.tree_mut().set_focused(pane_id);
+        }
+
+        window.activate_window();
+        self.show_active_tab(window, cx);
+
+        true
+    }
+
+    /// Open a terminal in the exact workspace, or a containing workspace when
+    /// enabled. With no suitable workspace, create a temporary one at `path`.
     pub(crate) fn open_dir_tab(
         &mut self,
         path: &path::Path,
@@ -2059,40 +2641,18 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let summaries = self.workspaces.summaries();
-
-        if let Some(index) = exact_match(&summaries, path).and_then(|workspace_id| {
-            summaries
-                .iter()
-                .position(|workspace| workspace.id == workspace_id)
-        }) {
-            // Workspace activation preserves its TabManager's active index,
-            // restoring the tab the user last used without spawning a shell.
-            self.workspaces.list_mut().activate(index);
-
-            window.activate_window();
-
-            self.on_active_tab_changed(window, cx);
-
-            self.focus_active(window, cx);
-
-            self.sync_session_memory(cx);
-
-            cx.notify();
-
-            return;
-        }
-
         let target = path.display().to_string();
 
-        let containing = cx
-            .global::<AppSettings>()
-            .config()
-            .system
-            .open_in_best_workspace
-            .then(|| best_match(&self.workspaces.summaries(), path))
-            .flatten();
+        let workspace = exact_match(&summaries, path).or_else(|| {
+            cx.global::<AppSettings>()
+                .config()
+                .system
+                .open_in_best_workspace
+                .then(|| best_match(&summaries, path))
+                .flatten()
+        });
 
-        let Some(ws_id) = containing else {
+        let Some(ws_id) = workspace else {
             self.create_temporary_workspace(
                 t!("shell-workspace-default-name").into(),
                 WorkspaceRoots::single(target),
@@ -2103,12 +2663,7 @@ impl Shell {
             return;
         };
 
-        if let Some(index) = self
-            .workspaces
-            .summaries()
-            .iter()
-            .position(|ws| ws.id == ws_id)
-        {
+        if let Some(index) = summaries.iter().position(|ws| ws.id == ws_id) {
             self.workspaces.list_mut().activate(index);
         }
 
@@ -2125,7 +2680,12 @@ impl Shell {
     ) {
         self.workspaces.set_pinned(id, pinned);
 
-        self.sync_session_memory(cx);
+        cx.notify();
+    }
+
+    /// Step the workspace's tab list on to its next fold.
+    pub(crate) fn cycle_tab_fold(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
+        self.workspaces.cycle_tab_fold(id);
 
         cx.notify();
     }
@@ -2140,8 +2700,6 @@ impl Shell {
         self.workspaces.reorder(from, to);
 
         self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
 
         cx.notify();
     }
@@ -2164,33 +2722,19 @@ impl Shell {
 
         self.focus_active(window, cx);
 
-        self.sync_session_memory(cx);
-
         cx.notify();
     }
 
     pub(super) fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.workspaces.active_tabs_mut().list_mut().focus_next();
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     pub(super) fn on_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         self.workspaces.active_tabs_mut().list_mut().focus_prev();
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     /// Position of the next tab `marked` accepts, searching after the active
@@ -2231,7 +2775,7 @@ impl Shell {
     /// because focusing a tab is what clears both marks.
     pub(super) fn next_ready_tab(&self, cx: &App) -> Option<(usize, usize)> {
         self.next_marked_tab(|tab| {
-            let routes = Self::agent_routes_in_surface(tab.surface(), cx);
+            let routes = tab.surface().agent_routes(cx);
 
             tab.last_outcome().is_some()
                 || self
@@ -2250,13 +2794,13 @@ impl Shell {
     /// watching a tab does not finish its work — so the jump keeps cycling
     /// while the same tabs stay busy, which is what following several parallel
     /// runs needs.
-    pub(super) fn next_busy_tab(&self, cx: &App) -> Option<(usize, usize)> {
+    pub(crate) fn next_busy_tab(&self, cx: &App) -> Option<(usize, usize)> {
         self.next_marked_tab(|tab| {
             if Self::tab_terminal_activity(tab, cx) == TerminalActivity::Running {
                 return true;
             }
 
-            let routes = Self::agent_routes_in_surface(tab.surface(), cx);
+            let routes = tab.surface().agent_routes(cx);
 
             self.agent_notifications
                 .agent_monitor
@@ -2280,13 +2824,7 @@ impl Shell {
             .list_mut()
             .activate(tab_index);
 
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     /// Open the new-workspace dialog: a name plus the shared directory editor,
@@ -2298,29 +2836,13 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(t!("shell-workspace-default-name").to_string())
-        });
-
-        // A new workspace starts with no directory at all, which the editor's
-        // non-empty invariant cannot express; the picker fills the first one
-        // in and Create stays refused until it does.
-        let dirs = cx.new(|cx| WorkspaceDirsEditor::new(None, cx));
-
-        let shell = cx.entity();
-
-        window.open_dialog(cx, move |dialog, window, _| {
-            new_workspace_dialog(dialog, &name_input, &dirs, &shell, window)
-        });
+        open_new_workspace_dialog(window, cx);
     }
 
     /// Adopt a temporary workspace: from here on it is saved with the session
     /// like any other. Already-persistent workspaces are unaffected.
     pub(crate) fn activate_as_workspace(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
         self.workspaces.set_temporary(id, false);
-
-        self.sync_session_memory(cx);
 
         cx.notify();
     }
@@ -2339,8 +2861,6 @@ impl Shell {
         let id = self.create_workspace(name, roots, window, cx);
 
         self.workspaces.set_temporary(id, true);
-
-        self.sync_session_memory(cx);
     }
 
     /// Create a workspace named `name` (empty falls back to the shared default)
@@ -2394,8 +2914,6 @@ impl Shell {
 
         self.refresh_root_availability(cx);
 
-        self.sync_session_memory(cx);
-
         cx.notify();
 
         ws_id
@@ -2410,15 +2928,7 @@ impl Shell {
         let len = self.workspaces.list().len();
         let next = (self.workspaces.list().active_index() + 1) % len;
 
-        self.workspaces.list_mut().activate(next);
-
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.activate_workspace(next, window, cx);
     }
 
     pub(super) fn on_prev_workspace(
@@ -2430,15 +2940,7 @@ impl Shell {
         let len = self.workspaces.list().len();
         let prev = (self.workspaces.list().active_index() + len - 1) % len;
 
-        self.workspaces.list_mut().activate(prev);
-
-        self.on_active_tab_changed(window, cx);
-
-        self.focus_active(window, cx);
-
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.activate_workspace(prev, window, cx);
     }
 
     /// Start renaming a workspace inline in the sidebar: the item swaps its
@@ -2481,8 +2983,6 @@ impl Shell {
             let name = input.read(cx).value().trim().to_string();
 
             self.workspaces.rename(id, name);
-
-            self.sync_session_memory(cx);
         }
 
         self.focus_active(window, cx);
@@ -2498,11 +2998,12 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Vertical tab rows list every workspace's tabs, and right-clicking a
+        // row does not activate its workspace.
         let Some(current) = self
             .workspaces
-            .active_tabs()
-            .list()
-            .find(id)
+            .tabs_for_tab(id)
+            .and_then(|tabs| tabs.list().find(id))
             .map(|tab| tab.title().to_string())
         else {
             return;
@@ -2529,31 +3030,234 @@ impl Shell {
             let name = input.read(cx).value().trim().to_string();
 
             if !name.is_empty() {
-                let mut renamed_agent = None;
-
-                if let Some(tabs) = self.workspaces.tabs_for_tab_mut(id) {
-                    tabs.rename(id, name.clone());
-
-                    renamed_agent = tabs
-                        .list()
-                        .find(id)
-                        .and_then(|tab| tab.surface().agent().cloned());
-
-                    self.sync_session_memory(cx);
-                }
-
-                // An agent tab's name is the conversation's name, so it goes
-                // to the harness too: its session listing is what this
-                // application's own recent-sessions list reads.
-                if let Some(agent) = renamed_agent {
-                    agent.update(cx, |agent, _| agent.rename_session(&name));
-                }
+                self.rename_tab(id, name, cx);
             }
         }
 
         self.focus_active(window, cx);
 
         cx.notify();
+    }
+
+    fn rename_tab(&mut self, id: TabId, name: String, cx: &mut Context<Self>) {
+        let mut renamed_agent = None;
+
+        if let Some(tabs) = self.workspaces.tabs_for_tab_mut(id) {
+            tabs.rename(id, name.clone());
+
+            renamed_agent = tabs
+                .list()
+                .find(id)
+                .and_then(|tab| tab.surface().agent().cloned());
+        }
+
+        // An agent tab's name is the conversation's name, so it goes to the
+        // harness too: its session listing is what this application's own
+        // recent-sessions list reads.
+        if let Some(agent) = renamed_agent {
+            agent.update(cx, |agent, _| agent.rename_session(&name));
+        }
+    }
+
+    /// Rename the tab showing a session a paired device renamed: the one
+    /// holding `pane`, the pane the session is shared from, or the pending
+    /// tab devices know by `session`. Returns whether this window holds it.
+    pub(crate) fn rename_for_device(
+        &mut self,
+        pane: Option<EntityId>,
+        session: &str,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.workspaces.find_tab_id(|surface| {
+            surface.pending_session() == Some(session)
+                || pane.is_some_and(|pane| surface.pane_ids().contains(&pane))
+        }) else {
+            return false;
+        };
+
+        self.rename_tab(tab, title, cx);
+
+        // Devices hear the new name when the window next renders, which a
+        // minimized or occluded window may not do for a long time.
+        ui::remote::sync_workspaces(self.window_id, &self.workspaces, cx);
+
+        cx.notify();
+
+        true
+    }
+
+    /// Begin renaming `session` on the paired host `host` in its sidebar row.
+    pub(crate) fn start_remote_rename(
+        &mut self,
+        host: DeviceId,
+        session: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.renames.begin_remote(host, session, window, cx);
+
+        cx.notify();
+    }
+
+    /// End the in-flight rename of a paired host's session, with the same
+    /// semantics as a tab rename. The host renames its tab, and the new name
+    /// shows once it lists the session again.
+    pub(crate) fn finish_remote_rename(
+        &mut self,
+        commit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((host, session, input)) = self.renames.take_remote() else {
+            return;
+        };
+
+        let name = input.read(cx).value().trim().to_string();
+
+        if commit && !name.is_empty() && name != session.title {
+            ui::remote::rename_session(&host, session.session, name, window, cx);
+        }
+
+        self.focus_active(window, cx);
+
+        cx.notify();
+    }
+
+    /// Ask before closing the tabs here that follow `session` on `host`,
+    /// leaving the session running on the host.
+    pub(crate) fn request_disconnect_session(
+        &mut self,
+        host: DeviceId,
+        host_name: String,
+        session: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_close_confirm(
+            window,
+            cx,
+            t!("remote-session-disconnect-title"),
+            t!("remote-session-disconnect-description", host = &host_name).into_owned(),
+            None,
+            move |this, window, cx| this.close_following(&host, &session, window, cx),
+        );
+    }
+
+    /// Ask before ending `session` on `host` for every device viewing it.
+    /// Once the host ended it, the tabs here following it close too.
+    pub(crate) fn request_close_remote_session(
+        &mut self,
+        host: DeviceId,
+        host_name: String,
+        session: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_close_confirm(
+            window,
+            cx,
+            t!("remote-session-close-title"),
+            t!(
+                "remote-session-close-description",
+                title = &session.title,
+                host = &host_name
+            )
+            .into_owned(),
+            None,
+            move |_, window, cx| {
+                let shell = cx.entity();
+                let closed_host = host.clone();
+                let closed = session.session.clone();
+
+                ui::remote::close_session(
+                    &host,
+                    session.session.clone(),
+                    window,
+                    cx,
+                    move |window, cx| {
+                        shell.update(cx, |this, cx| {
+                            this.close_following(&closed_host, &closed, window, cx)
+                        });
+                    },
+                );
+            },
+        );
+    }
+
+    /// Close what here follows `session` on `host`, leaving the session to
+    /// the host: a split tab loses only the panes following it, and a remote
+    /// entry's last tab takes the entry along, as closing it would.
+    fn close_following(
+        &mut self,
+        host: &DeviceId,
+        session: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tabs: Vec<TabId> = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .filter(|tab| tab.surface().follows_remote(host.as_str(), session, cx))
+            .map(|tab| tab.id())
+            .collect();
+
+        for tab in tabs {
+            let Some(surface) = self
+                .workspaces
+                .tabs_for_tab(tab)
+                .and_then(|tabs| tabs.list().find(tab))
+                .map(|tab| tab.surface())
+            else {
+                continue;
+            };
+
+            let following: Vec<_> = surface
+                .leaves()
+                .into_iter()
+                .filter(|(_, pane)| {
+                    pane.read(cx).remote_tab().is_some_and(|remote| {
+                        remote.host.id().as_str() == host.as_str() && remote.session == session
+                    })
+                })
+                .map(|(leaf, pane)| (leaf, pane.clone()))
+                .collect();
+
+            // A terminal this computer started on the host ends with its
+            // tab; closing what follows it here only detaches from it.
+            for (_, pane) in &following {
+                pane.update(cx, |pane, _| pane.keep_remote_session());
+            }
+
+            let split = surface
+                .tree()
+                .is_some_and(|tree| !tree.tree().is_single_leaf());
+
+            let workspace = self.workspaces.workspace_of_tab(tab);
+
+            let last_tab = workspace
+                .and_then(|workspace| self.workspaces.tabs_of(workspace))
+                .is_some_and(|tabs| tabs.list().len() == 1);
+
+            match (split, workspace) {
+                (true, _) if !following.is_empty() => {
+                    for (leaf, _) in following {
+                        self.close_pane_now(tab, leaf, window, cx);
+                    }
+                }
+                (_, Some(workspace))
+                    if last_tab
+                        && self.workspaces.kind_of(workspace) == Some(WorkspaceKind::Remote) =>
+                {
+                    self.close_workspace_now(workspace, window, cx);
+                }
+                (_, Some(_)) if !last_tab => self.close_tab_now(tab, window, cx),
+                // A local workspace's last tab stays, as it would after the
+                // session ended on its own.
+                _ => {}
+            }
+        }
     }
 
     /// Follow the active terminal's OSC7 directory or the active Agent's
@@ -2681,36 +3385,32 @@ impl Shell {
 
     /// Drop the settings surface after its edits have been saved successfully.
     /// Reached from every path that removes the settings entry.
-    pub(super) fn retire_settings_workspace(&mut self, _cx: &mut Context<Self>) {
-        // Pick up relay URL / token edits made while the entry was open.
-        #[cfg(windows)]
-        ui::settings::reconcile_remote_host(_cx);
-
+    pub(super) fn retire_settings_workspace(&mut self) {
         self.settings.retire();
     }
 
-    /// Leave the settings entry for a normal workspace. Every path that adds a
-    /// tab funnels through this, so a new tab never lands in the settings
-    /// entry and breaks its single-tab presentation.
-    pub(crate) fn leave_settings_workspace(&mut self) {
-        if self.workspaces.active_kind() == WorkspaceKind::Settings {
+    /// Leave the settings or a remote entry for a normal workspace. Every
+    /// path that adds a local tab funnels through this, so a new tab never
+    /// breaks the settings entry's single-tab presentation, and a tab running
+    /// on this computer never sits among a host's tabs.
+    pub(crate) fn leave_pseudo_workspace(&mut self) {
+        if self.workspaces.active_kind() != WorkspaceKind::Normal {
             let index = self.workspaces.first_normal_index();
 
             self.workspaces.list_mut().activate(index);
         }
     }
 
-    /// Keep background host events and accepted grid changes in the saved session.
+    /// Keep background host events flowing while the pane is not in front.
     pub(crate) fn watch_pane(pane: &Entity<TerminalPane>, cx: &mut Context<Self>) {
         cx.observe(pane, |this, pane, cx| this.on_pane_notified(pane, cx))
             .detach();
 
-        cx.subscribe(pane, Self::on_agent_interrupted).detach();
+        pane.update(cx, |pane, _| pane.close_tab_with(close_tab()));
 
-        cx.subscribe(pane, |this, _, _: &TerminalGridResized, cx| {
-            this.sync_session_memory(cx);
-        })
-        .detach();
+        ui::remote::share_tab(pane, cx);
+
+        cx.subscribe(pane, Self::on_agent_interrupted).detach();
     }
 
     fn on_agent_interrupted(
@@ -2726,7 +3426,7 @@ impl Shell {
             .agent_monitor
             .interrupt(&route, time::Instant::now());
 
-        Self::apply_agent_monitor_display_change(&mutation, cx);
+        apply_monitor_display_change(&mutation, cx);
 
         self.agent_notifications.reschedule_agent_timer(cx);
     }
@@ -2763,11 +3463,18 @@ impl Shell {
                             })
                         && let Some(tabs) = self.workspaces.tabs_for_tab_mut(tab_id)
                     {
-                        chrome_changed |= tabs.set_title(tab_id, title.clone());
+                        // The saved session carries the title, so a restore
+                        // labels the tab with it before its shell runs.
+                        let changed = tabs.set_title(tab_id, title.clone());
+
+                        ui::remote::tab_title_changed(&pane, title, cx);
+
+                        chrome_changed |= changed;
+                        session_changed |= changed;
                     }
                 }
                 HostEvent::Exit => {
-                    self.remove_agent_route(&agent_route, cx);
+                    self.agent_notifications.remove_route(&agent_route, cx);
 
                     if let Some(tab_id) = self.tab_for_pane(pane_id) {
                         // A pane whose shell exits auto-closes when the tab has
@@ -2803,8 +3510,6 @@ impl Shell {
                             // Re-run focus_active on the next render (the pump
                             // has no Window).
                             self.chrome.needs_focus = true;
-
-                            self.sync_session_memory(cx);
                         }
 
                         chrome_changed = true;
@@ -2870,7 +3575,7 @@ impl Shell {
                             .agent_monitor
                             .notify(&agent_route, title, body);
 
-                    Self::remove_native_notifications(&mutation.removed_notifications);
+                    remove_native_notifications(&mutation.removed_notifications);
 
                     chrome_changed |= mutation.visible_changed;
 
@@ -2881,8 +3586,6 @@ impl Shell {
         }
 
         if session_changed {
-            self.sync_session_memory(cx);
-
             self.sync_git_target(cx);
         }
 
@@ -2904,12 +3607,7 @@ impl Shell {
             return;
         };
 
-        let editor = cx.new(|cx| WorkspaceDirsEditor::new(Some(roots), cx));
-        let shell = cx.entity();
-
-        window.open_dialog(cx, move |dialog, window, cx| {
-            workspace_dirs_dialog(dialog, &editor, &shell, id, window, cx)
-        });
+        open_workspace_dirs_dialog(id, roots, window, cx);
     }
 
     /// Adopt an edited directory list. Open Agent Tabs of this workspace pick
@@ -2926,8 +3624,6 @@ impl Shell {
         self.sync_agent_workspaces(id, cx);
 
         self.refresh_root_availability(cx);
-
-        self.sync_session_memory(cx);
 
         cx.notify();
     }
@@ -2982,17 +3678,6 @@ impl Shell {
             .collect()
     }
 
-    pub(super) fn apply_agent_monitor_display_change(
-        mutation: &MonitorMutation,
-        cx: &mut Context<Self>,
-    ) {
-        Self::remove_native_notifications(&mutation.removed_notifications);
-
-        if mutation.visible_changed {
-            cx.notify();
-        }
-    }
-
     pub(super) fn register_agent_pane(&mut self, pane: &Entity<TerminalPane>, cx: &App) {
         self.agent_notifications.agent_monitor.register_route(
             pane.read(cx).agent_route().clone(),
@@ -3013,120 +3698,27 @@ impl Shell {
         );
     }
 
-    pub(super) fn remove_agent_route(&mut self, route: &AgentRoute, cx: &mut Context<Self>) {
-        let mutation = self.agent_notifications.agent_monitor.remove_route(route);
-
-        Self::apply_agent_monitor_display_change(&mutation, cx);
-
-        self.agent_notifications.reschedule_agent_timer(cx);
-    }
-
-    pub(super) fn remove_native_notifications(notifications: &[AgentNotification]) {
-        for notification in notifications {
-            let tag = notification.native_tag.clone();
-            let group = notification.native_group.clone();
-
-            thread::spawn(move || {
-                let _ = remove_notification(&tag, &group);
-            });
-        }
-    }
-
     pub(super) fn exact_window_active(window: &Window) -> bool {
         native_active_state(window).unwrap_or_else(|| window.is_window_active())
     }
 
-    pub(super) fn acknowledge_notification(
-        &mut self,
-        route: &AgentRoute,
-        notification_id: &str,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let mutation = self
-            .agent_notifications
-            .agent_monitor
-            .acknowledge(route, notification_id);
-
-        Self::apply_agent_monitor_display_change(&mutation, cx);
-
-        mutation.visible_changed
-    }
-
+    /// Offer the monitor's pending notifications to the system, keeping back
+    /// the one for the agent the user is looking at right now.
     pub(super) fn process_native_notifications(&mut self, cx: &mut Context<Self>) {
-        let system_notifications_enabled = cx
-            .global::<AppSettings>()
-            .config()
-            .system
-            .send_system_notifications
-            && system_notification_enabled();
-
         let visible_route = self
             .window_active
             .then(|| self.active_agent_route(cx))
             .flatten();
 
-        for notification in self
-            .agent_notifications
-            .agent_monitor
-            .pending_native_notifications()
-        {
-            if !request_native_delivery(visible_route.as_ref(), &notification.route) {
-                self.acknowledge_notification(&notification.route, &notification.id, cx);
-
-                continue;
-            }
-
-            if !self
-                .agent_notifications
-                .agent_monitor
-                .mark_native_requested(&notification.route, &notification.id)
-            {
-                continue;
-            }
-
-            if !system_notifications_enabled {
-                continue;
-            }
-
-            let activation_url: String = (&CliAction::FocusNotification {
-                route: notification.route.clone(),
-                notification_id: notification.id.clone(),
-            })
-                .into();
-
-            thread::spawn(move || {
-                match show_notification(&NativeNotification {
-                    title: notification.title,
-                    body: notification.body,
-                    activation_url,
-                    tag: notification.native_tag,
-                    group: notification.native_group,
-                }) {
-                    Ok(()) => {}
-                    Err(error) => warn!("native notification failed: {error}"),
-                }
-            });
-        }
-    }
-
-    pub(super) fn agent_routes_in_surface(surface: &TabSurface, cx: &App) -> Vec<AgentRoute> {
-        let mut routes: Vec<_> = surface
-            .leaves()
-            .into_iter()
-            .map(|(_, pane)| pane.read(cx).agent_route().clone())
-            .collect();
-
-        if let Some(session) = surface.agent_session() {
-            routes.push(session.read(cx).agent_route().clone());
-        }
-
-        routes
+        self.agent_notifications
+            .process_native_notifications(visible_route.as_ref(), cx);
     }
 
     fn owns_agent_route(&self, route: &AgentRoute, cx: &App) -> bool {
         self.workspaces.all_tabs().any(|tabs| {
             tabs.list().items().iter().any(|tab| {
-                Self::agent_routes_in_surface(tab.surface(), cx)
+                tab.surface()
+                    .agent_routes(cx)
                     .iter()
                     .any(|candidate| candidate == route)
             })
@@ -3138,7 +3730,7 @@ impl Shell {
             let tabs = self.workspaces.tabs_of(summary.id)?;
 
             for (tab_index, tab) in tabs.list().items().iter().enumerate() {
-                if let Some(pane) = tab.surface().agent()
+                if tab.surface().agent().is_some()
                     && tab
                         .surface()
                         .agent_session()
@@ -3149,7 +3741,7 @@ impl Shell {
                         workspace_index,
                         tab_id: tab.id(),
                         tab_index,
-                        target: AgentRouteTarget::Agent(pane.clone()),
+                        terminal_pane_id: None,
                     });
                 }
 
@@ -3160,10 +3752,7 @@ impl Shell {
                             workspace_index,
                             tab_id: tab.id(),
                             tab_index,
-                            target: AgentRouteTarget::Terminal {
-                                pane_id,
-                                pane: pane.clone(),
-                            },
+                            terminal_pane_id: Some(pane_id),
                         });
                     }
                 }
@@ -3180,15 +3769,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self
-            .agent_notifications
-            .agent_monitor
-            .notification(route)
-            .is_some_and(|notification| notification.id == notification_id && !notification.read)
-        {
-            return false;
-        }
-
+        // A delivered notification can be clicked after it was acknowledged
+        // or replaced. Its route still identifies the tab while that tab lives.
         let Some(location) = self.locate_agent_route(route, cx) else {
             return false;
         };
@@ -3211,27 +3793,19 @@ impl Shell {
 
         window.activate_window();
 
-        match location.target {
-            AgentRouteTarget::Terminal { pane_id, pane } => {
-                self.workspaces
-                    .active_tabs_mut()
-                    .active_mut()
-                    .live_mut()
-                    .tree_mut()
-                    .set_focused(pane_id);
-
-                let handle = pane.read(cx).focus.clone();
-
-                window.focus(&handle, cx);
-            }
-            AgentRouteTarget::Agent(pane) => {
-                pane.update(cx, |pane, cx| pane.focus(window, cx));
-            }
+        if let Some(pane_id) = location.terminal_pane_id {
+            self.workspaces
+                .active_tabs_mut()
+                .active_mut()
+                .live_mut()
+                .tree_mut()
+                .set_focused(pane_id);
         }
 
-        self.on_active_tab_changed(window, cx);
+        self.show_active_tab(window, cx);
 
-        self.acknowledge_notification(route, notification_id, cx);
+        self.agent_notifications
+            .acknowledge(route, notification_id, cx);
 
         true
     }
@@ -3246,7 +3820,7 @@ impl Shell {
             .agent_monitor
             .apply(event, time::Instant::now());
 
-        Self::apply_agent_monitor_display_change(&mutation, cx);
+        apply_monitor_display_change(&mutation, cx);
 
         self.agent_notifications.reschedule_agent_timer(cx);
 
@@ -3260,7 +3834,7 @@ impl Shell {
             return;
         };
 
-        Self::apply_agent_monitor_display_change(&mutation, cx);
+        apply_monitor_display_change(&mutation, cx);
 
         self.agent_notifications.reschedule_agent_timer(cx);
 
@@ -3277,12 +3851,45 @@ impl Shell {
             .map(|tab| tab.id())
     }
 
-    pub(crate) fn watch_agent_tab(pane: &Entity<AgentPane>, cx: &mut Context<Self>) {
+    /// `shared` is the id paired devices knew a restored tab by.
+    pub(crate) fn watch_agent_tab(
+        pane: &Entity<AgentPane>,
+        shared: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = pane.read(cx).agent_session() else {
             return;
         };
 
         cx.subscribe(&session, Self::on_agent_pane_event).detach();
+
+        pane.update(cx, |pane, _| pane.close_tab_with(close_tab()));
+
+        ui::remote::share_agent_tab(pane, shared, cx);
+    }
+
+    /// Start the still-pending tab that paired devices know by `id`, in
+    /// place and without activating it, because a device asked for the
+    /// agent or terminal session it holds. Returns whether such a tab was
+    /// started.
+    pub(crate) fn start_pending_tab(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self
+            .workspaces
+            .find_tab_id(|surface| surface.pending_session() == Some(id))
+        else {
+            return false;
+        };
+
+        let restored = materialize_tab(&mut self.workspaces, tab, &mut self.next_id, window, cx);
+
+        cx.notify();
+
+        restored
     }
 
     fn on_agent_pane_event(
@@ -3310,24 +3917,34 @@ impl Shell {
                 return;
             }
             AgentPaneEvent::BackgroundTaskActivity => {
-                // Sticky: a finished child stays reachable, so the control
-                // never goes away once it has appeared. The running count
-                // is read at render time, so this only has to repaint the
-                // title bar.
-                self.panels
-                    .note_background_task_seen(session.read(cx).background_task_count() > 0);
-
                 cx.notify();
 
                 return;
             }
-            AgentPaneEvent::ResumeElsewhere { cwd, session_id } => {
+            // The Side Chat control reads the pane at render time, so this
+            // only has to repaint.
+            AgentPaneEvent::SideChatActivity => {
+                cx.notify();
+
+                return;
+            }
+            // Addressed to the Team that owns the member's room; a member's
+            // session is never a tab of its own.
+            AgentPaneEvent::TeamPrompt(_) => return,
+            AgentPaneEvent::ResumeElsewhere {
+                cwd,
+                summary,
+                profile,
+            } => {
                 // Opening a tab needs a window, which an event
                 // subscription has none of; the next render has one.
                 self.agent_notifications.pending_agent_resume = Some(PendingAgentResume {
-                    profile: session.read(cx).profile().clone(),
+                    profile: profile
+                        .clone()
+                        .unwrap_or_else(|| session.read(cx).profile().clone()),
                     cwd: cwd.clone(),
-                    session_id: session_id.clone(),
+                    fallback: session.read(cx).workspace().clone(),
+                    summary: summary.clone(),
                 });
 
                 cx.notify();
@@ -3335,11 +3952,15 @@ impl Shell {
                 return;
             }
             AgentPaneEvent::TitleSuggested(title) => {
-                // A user-authored rename outranks this, so a tab the user
-                // has named keeps its name.
+                // A user-authored rename outranks a suggestion, so a tab the
+                // user has named keeps its name. An agent tab's rename names
+                // the conversation, though, so an empty suggestion (the
+                // conversation was replaced) drops it along with the old
+                // conversation.
                 if let Some(tab_id) = self.tab_for_agent_session(&session)
                     && let Some(tabs) = self.workspaces.tabs_for_tab_mut(tab_id)
-                    && tabs.set_title(tab_id, title.clone())
+                    && (title.is_empty() && tabs.clear_rename(tab_id))
+                        | tabs.set_title(tab_id, title.clone())
                 {
                     cx.notify();
                 }
@@ -3359,9 +3980,34 @@ impl Shell {
                 .agent_notifications
                 .agent_monitor
                 .interrupt(&route, time::Instant::now()),
+            // Addressed to paired devices; this window notifies from the
+            // lifecycle event that accompanies it.
+            AgentPaneEvent::Attention { .. } => return,
+            AgentPaneEvent::SwitchProfile { profile, resume } => {
+                // Only a pick from the composer says which agent the user
+                // wants next time; continuing another agent's conversation
+                // says nothing about that.
+                if resume.is_none() {
+                    cx.set_global(PickedAgentProfile(Some(profile.name.clone())));
+                }
+
+                // Same reason as the resume above: building the replacement
+                // pane needs a window, and the next render has one.
+                if let Some(tab) = self.tab_for_agent_session(&session) {
+                    self.agent_notifications.pending_agent_switch = Some(PendingAgentSwitch {
+                        tab,
+                        profile: profile.clone(),
+                        resume: resume.clone(),
+                    });
+
+                    cx.notify();
+                }
+
+                return;
+            }
         };
 
-        Self::apply_agent_monitor_display_change(&mutation, cx);
+        apply_monitor_display_change(&mutation, cx);
 
         self.agent_notifications.reschedule_agent_timer(cx);
 
@@ -3369,9 +4015,6 @@ impl Shell {
     }
 
     fn bind_actions(element: Div, cx: &mut Context<Self>) -> Div {
-        #[cfg(windows)]
-        let element = element.on_action(cx.listener(Self::on_new_remote_tab));
-
         element
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_close_tab))
@@ -3397,304 +4040,60 @@ impl Shell {
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_new_agent_tab))
             .on_action(cx.listener(Self::on_new_team_tab))
+            .on_action(cx.listener(Self::on_toggle_workflows))
     }
 
-    fn render_title_bar(
-        &mut self,
-        tab_bar: impl IntoElement,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // Vertical tabs move the strip into the sidebar, which leaves the
-        // middle of the bar free to name the session on screen instead.
-        let vertical_tabs =
-            cx.global::<AppSettings>().config().appearance.tab_bar_style == TabBarStyle::Vertical;
+    /// What the title bar shows for the window's current state.
+    fn title_bar_inputs(&self, center: TitleCenter, cx: &App) -> TitleBarInputs {
+        // Both panel toggles count the work of the active tab, because
+        // activating either one opens that tab's runs or children.
+        let active_agent = self.active_agent();
 
-        let sidebar_width = if self.sidebar.collapsed {
-            0.0
-        } else {
-            self.sidebar.width
-        };
-
-        let leading_width = if cfg!(target_os = "macos") {
-            (sidebar_width + ui::composition::FLOATING_SURFACE_SIDE_INSET - TITLE_BAR_LEADING_INSET)
-                .max(0.0)
-        } else {
-            sidebar_width - ui::composition::FLOATING_SURFACE_SIDE_INSET
-        };
-
-        // Interactive chrome lives in the titlebar but is wrapped in
-        // `occlude()`: that blocks the drag hitbox beneath it, so Windows
-        // treats these regions as client (clickable) while the empty titlebar
-        // space stays draggable. The wrappers must size to their content (no
-        // `flex_1`), or they'd cover the whole bar and leave nothing to drag.
-        // Add future titlebar buttons the same way.
-        TitleBar::new()
-            .h(px(TITLE_BAR_HEIGHT))
-            .when(cfg!(target_os = "macos"), |bar| {
-                bar.pl(px(TITLE_BAR_LEADING_INSET))
-            })
-            // The default X calls `remove_window()` directly (no
-            // WM_CLOSE), skipping `on_window_should_close` — so the
-            // shared close confirmation is handled here too.
-            .on_close_window(cx.listener(|this, _, window, cx| {
-                if this.confirm_window_close(window, cx) {
-                    window.remove_window();
-                }
-            }))
-            .child(
-                title_bar_leading_region(leading_width)
-                    .child(
-                        div()
-                            .flex_none()
-                            .occlude()
-                            .child(self.render_app_menu_button(cx)),
-                    )
-                    .child(
-                        div().flex_none().occlude().child(
-                            toolbar_button("toggle-sidebar")
-                                .icon(if self.sidebar.collapsed {
-                                    SideBarIcon::Expand
-                                } else {
-                                    SideBarIcon::Collapse
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.on_toggle_sidebar(&ToggleSidebar, window, cx)
-                                })),
-                        ),
-                    )
-                    // Anchored to the leading edge behind two fixed-width
-                    // controls, so their screen position never moves with the
-                    // sidebar width or the session title: repeated clicks can
-                    // cycle through targets without the pointer chasing them.
-                    // Both stay mounted and go disabled when there is nowhere
-                    // to jump, which is what keeps that position stable.
-                    .child(
-                        div().flex_none().occlude().child(
-                            toolbar_button("next-ready-tab")
-                                .icon(IconName::Bell)
-                                .tooltip(t!("shell-next-ready-tab"))
-                                .disabled(self.next_ready_tab(cx).is_none())
-                                // The target is picked on the click rather
-                                // than captured here, so a tab that went ready
-                                // (or was closed) since this frame is still
-                                // reached by the very next click.
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    let Some((workspace_index, tab_index)) =
-                                        this.next_ready_tab(cx)
-                                    else {
-                                        return;
-                                    };
-
-                                    this.jump_to_tab(workspace_index, tab_index, window, cx);
-                                })),
-                        ),
-                    )
-                    .child(
-                        div().flex_none().occlude().child(
-                            toolbar_button("next-busy-tab")
-                                .icon(NextBusyTabIcon)
-                                .tooltip(t!("shell-next-busy-tab"))
-                                .disabled(self.next_busy_tab(cx).is_none())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    let Some((workspace_index, tab_index)) = this.next_busy_tab(cx)
-                                    else {
-                                        return;
-                                    };
-
-                                    this.jump_to_tab(workspace_index, tab_index, window, cx);
-                                })),
-                        ),
-                    )
-                    // Absorbs the leftover width so the controls stay packed
-                    // against the leading edge.
-                    .child(div().flex_1().min_w_0()),
-            )
-            // The container keeps the title-bar drag area. Tabs and the
-            // new-tab button block only their own bounds.
-            .child(
-                div()
-                    .flex_1()
-                    // A floor rather than `min_w_0`: without it flexbox drains
-                    // this zero-basis column to nothing before squeezing its
-                    // neighbours, and a zero-width strip cannot be scrolled
-                    // back into view. The strip's own horizontal scroll takes
-                    // over once the tabs no longer fit this width.
-                    .min_w(px(TAB_STRIP_MIN_WIDTH))
-                    .h_full()
-                    .flex()
-                    .items_end()
-                    .map(|this| match vertical_tabs {
-                        true => this.child(self.render_session_heading(cx)),
-                        false => this.child(tab_bar),
-                    }),
-            )
-            .child(title_bar_git_summary().child(self.chrome.git_status.clone()))
-            .child(
-                title_bar_trailing_region()
-                    // The sidebar itself stays reachable through the
-                    // `ToggleGitSidebar` action while the button is hidden.
-                    .children(
-                        cx.global::<AppSettings>()
-                            .config()
-                            .appearance
-                            .show_git_status_on_title_bar
-                            .then(|| {
-                                div().flex_none().occlude().child(
-                                    toolbar_toggle("toggle-git-sidebar")
-                                        .checked(self.workspaces.active_tabs().active().is_git())
-                                        .icon(GitIcon)
-                                        .on_click(cx.listener(|this, _: &bool, window, cx| {
-                                            this.on_toggle_git_sidebar(
-                                                &ToggleGitSidebar,
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                            }),
-                    )
-                    // Each control gets its own occluding wrapper: a shared one
-                    // would stack them, because the wrapper is a column.
-                    // The workflow control stays out of the chrome until a run
-                    // exists to look at.
-                    .children(self.panels.workflows_seen().then(|| {
-                        // Scoped to the active tab, because activating the
-                        // control opens that tab's runs.
-                        let running = self
-                            .active_agent()
-                            .map(|pane| pane.read(cx).running_workflow_agents())
-                            .unwrap_or(0);
-
-                        div()
-                            .flex_none()
-                            .occlude()
-                            .child(self.render_workflows_button(running, cx))
-                    }))
-                    // The background-task control stays out of the chrome until
-                    // a tab has spawned a child to look at.
-                    .children(if self.panels.background_tasks_seen() {
-                        // The history flag is window-wide, so the active Agent
-                        // gate keeps this Agent-only control off terminal tabs.
-                        self.active_agent().map(|pane| {
-                            // Scoped to the active tab, because activating the
-                            // control opens that tab's children.
-                            let running = pane.read(cx).running_background_tasks();
-
-                            div()
-                                .flex_none()
-                                .occlude()
-                                .child(self.render_background_tasks_button(running, cx))
-                        })
-                    } else {
-                        None
-                    }),
-            )
+        TitleBarInputs {
+            sidebar_width: match self.sidebar.collapsed {
+                true => 0.0,
+                false => self.sidebar.width,
+            },
+            sidebar_collapsed: self.sidebar.collapsed,
+            center,
+            has_ready_tab: self.next_ready_tab(cx).is_some(),
+            has_busy_tab: self.next_busy_tab(cx).is_some(),
+            git_tab_active: self.workspaces.active_tabs().active().is_git(),
+            // The workflow control stays out of the chrome until a run exists
+            // to look at.
+            workflows: self.panels.workflows_seen().then(|| PanelToggle {
+                running: active_agent
+                    .as_ref()
+                    .map(|pane| pane.read(cx).running_workflow_agents())
+                    .unwrap_or(0),
+                open: self.panels.shows(RightPanelKind::Workflows, cx),
+            }),
+            // Finished children remain reachable in their own session without
+            // making the control appear in tabs that have no children.
+            background_tasks: active_agent
+                .filter(|pane| pane.read(cx).background_task_count() > 0)
+                .map(|pane| PanelToggle {
+                    running: pane.read(cx).running_background_tasks(),
+                    open: self.panels.shows(RightPanelKind::BackgroundTasks, cx),
+                }),
+            side_chat: self
+                .active_agent()
+                .and_then(|pane| pane.read(cx).side_chat_shown()),
+        }
     }
 
-    /// The leading control of the title bar. It carries the commands that have
-    /// no chrome of their own; anything with a visible button of its own stays
-    /// on that button rather than being listed here as well.
-    fn render_app_menu_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let shell = cx.entity();
-
-        ui::modern_dropdown(
-            toolbar_button("app-menu")
-                .icon(IconName::Menu)
-                .tooltip(t!("shell-app-menu"))
-                .accessibility_label(t!("shell-app-menu")),
-            move |menu, _, cx| app_menu(menu, &shell, cx),
-        )
-    }
-
-    /// What the title bar names in the vertical tab-bar style, where the strip
-    /// that would otherwise fill this space lives in the sidebar: the session
-    /// on screen, and the branch its working directory is on.
-    fn render_session_heading(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let branch = self
-            .panels
-            .git_model()
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.branch.clone());
-
-        h_flex()
-            .min_w_0()
-            .gap(px(TITLE_BAR_HEADING_GAP))
-            .items_center()
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(TITLE_BAR_HEADING_TEXT))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(self.active_tab_title()),
-            )
-            .children(branch.map(|branch| {
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .items_center()
-                    .rounded(px(TITLE_BAR_CHIP_RADIUS))
-                    .px(px(TITLE_BAR_CHIP_PADDING_X))
-                    .py(px(TITLE_BAR_CHIP_PADDING_Y))
-                    .bg(cx.theme().muted)
-                    .text_size(px(TITLE_BAR_CHIP_TEXT))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(Icon::new(IconName::GitBranch).size(px(TITLE_BAR_CHIP_ICON)))
-                    .child(branch)
-            }))
-    }
-
-    /// Upper-right `Workflows` control, revealed once a run exists. It carries
-    /// the number of agents running right now, which is the one thing about a
-    /// workflow worth watching without opening the view; a run with nothing in
-    /// flight shows the icon alone rather than a zero.
-    fn render_workflows_button(&self, running: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = t!("workflows-running-agents", count = running).into_owned();
-
-        toolbar_toggle("toggle-workflows")
-            .checked(self.panels.shows(RightPanelKind::Workflows, cx))
-            // Matches the gap a Button puts between its icon and label; the
-            // toggle centres its children without one.
-            .gap_2()
-            .icon(IconName::LayoutDashboard)
-            .when(running > 0, |toggle| toggle.label(running.to_string()))
-            .tooltip(label)
-            .on_click(cx.listener(|this, _: &bool, window, cx| {
-                this.on_toggle_workflows(&ToggleWorkflows, window, cx)
-            }))
-    }
-
-    /// Upper-right `Background Tasks` control, revealed once a tab has spawned
-    /// background work. It carries the number of tasks running right now; a
-    /// session with none in flight shows the icon alone rather than a zero.
-    /// The `ToggleBackgroundTasks` action still reaches the view while the
-    /// control is hidden.
-    fn render_background_tasks_button(
-        &self,
-        running: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let label = match running {
-            0 => t!("tasks-background-title").to_string(),
-            _ => t!("tasks-background-running-count", count = running).into_owned(),
-        };
-
-        toolbar_toggle("toggle-background-tasks")
-            .checked(self.panels.shows(RightPanelKind::BackgroundTasks, cx))
-            .gap_2()
-            .icon(IconName::Bot)
-            .when(running > 0, |toggle| toggle.label(running.to_string()))
-            .tooltip(label)
-            .on_click(cx.listener(|this, _: &bool, window, cx| {
-                this.on_toggle_background_tasks(&ToggleBackgroundTasks, window, cx)
-            }))
+    /// Minimize the active tab's Side Chat window, or bring it back.
+    pub(super) fn on_toggle_side_chat(&mut self, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_agent() {
+            pane.update(cx, |pane, cx| pane.toggle_side_chat(cx));
+        }
     }
 
     /// Publish this window's session to the registry the app writes out on
-    /// quit. Called from every path that changes what a restore would rebuild.
-    pub(super) fn sync_session_memory(&self, cx: &mut Context<Shell>) {
+    /// quit and keeps for reopening a closed window. Both readers take the
+    /// snapshot at their own moment, when the window closes and when the app
+    /// quits, so nothing in between has to keep the registry current.
+    pub(crate) fn sync_session_memory(&self, cx: &mut Context<AppWindow>) {
         let session = session_state(&self.workspaces, self.doomed_workspace, cx);
 
         if let Some(entry) = cx.global_mut::<WindowRegistry>().get_mut(self.window_id) {
@@ -3705,153 +4104,10 @@ impl Shell {
     pub(super) fn tab_strip_mut(&mut self) -> &mut TabStrip {
         &mut self.chrome.tab_strip
     }
-}
 
-fn close_last_workspace_dialog(
-    dialog: Dialog,
-    shell: &Entity<Shell>,
-    id: WorkspaceId,
-    message: &str,
-    note: &Option<SharedString>,
-) -> Dialog {
-    let quit_shell = shell.clone();
-    let replace_shell = shell.clone();
-    let message = message.to_string();
-    let note = note.clone();
-
-    dialog
-        .title(t!("shell-close-last-workspace-title"))
-        .overlay_closable(false)
-        .content(move |content, _, cx| {
-            content.child(
-                v_flex()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(message.clone())
-                    .children(note.clone().map(|note| div().font_bold().child(note))),
-            )
-        })
-        .footer(
-            DialogFooter::new()
-                .child(
-                    Button::new("replace-ws")
-                        .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                        .label(t!("shell-close-new-default-workspace"))
-                        .primary()
-                        .on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-
-                            replace_shell
-                                .update(cx, |this, cx| this.replace_last_workspace(id, window, cx));
-                        }),
-                )
-                .child(
-                    Button::new("quit-app")
-                        .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                        .label(t!("shell-close-quit"))
-                        .danger()
-                        .on_click(move |_, window, cx| {
-                            if !ui::settings::save_settings(window, cx) {
-                                window.close_dialog(cx);
-
-                                return;
-                            }
-
-                            quit_shell.update(cx, |this, cx| this.doom_workspace(id, cx));
-
-                            cx.quit();
-                        }),
-                )
-                .child(
-                    DialogClose::new().child(
-                        Button::new("keep-ws")
-                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                            .label(t!("shell-close-cancel")),
-                    ),
-                ),
-        )
-}
-
-pub(super) fn should_confirm_close(
-    confirm: bool,
-    warn: WarnBeforeTerminatingShell,
-    child_process_count: &io::Result<usize>,
-) -> bool {
-    confirm
-        || match child_process_count {
-            Ok(count) => warn.should_warn(*count),
-            Err(_) => warn != WarnBeforeTerminatingShell::Disabled,
-        }
-}
-
-fn new_workspace_dialog(
-    dialog: Dialog,
-    name_input: &Entity<InputState>,
-    dirs: &Entity<WorkspaceDirsEditor>,
-    shell: &Entity<Shell>,
-    window: &Window,
-) -> Dialog {
-    let name_input = name_input.clone();
-    let dirs = dirs.clone();
-    let content_name = name_input.clone();
-    let content_dirs = dirs.clone();
-    let shell = shell.clone();
-    let margin_top = ((window.viewport_size().height - px(300.)) * 0.5).max(px(16.));
-
-    dialog
-        .title(t!("shell-workspace-new-title"))
-        .overlay_closable(false)
-        .margin_top(margin_top)
-        .button_props(
-            DialogButtonProps::default()
-                .ok_text(t!("shell-workspace-create"))
-                .cancel_text(t!("shell-workspace-cancel"))
-                .show_cancel(true),
-        )
-        // Plain `Dialog` never renders `button_props` buttons (only
-        // `AlertDialog` does), so the footer supplies them; the
-        // wrappers dispatch Confirm/CancelDialog into on_ok/on_cancel.
-        .footer(
-            DialogFooter::new()
-                .child(
-                    DialogAction::new().child(
-                        Button::new("create-ws")
-                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                            .label(t!("shell-workspace-create"))
-                            .primary(),
-                    ),
-                )
-                .child(
-                    DialogClose::new().child(
-                        Button::new("cancel-ws")
-                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                            .label(t!("shell-workspace-cancel")),
-                    ),
-                ),
-        )
-        .content(move |content, _, _| {
-            content.child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child(t!("shell-workspace-name-label")))
-                    .child(Input::new(&content_name))
-                    .child(content_dirs.clone()),
-            )
-        })
-        .on_ok(move |_, window, cx| {
-            let name = name_input.read(cx).value().trim().to_string();
-
-            let Some(roots) = dirs.read(cx).roots().cloned() else {
-                return false;
-            };
-
-            shell.update(cx, |this, cx| {
-                this.create_workspace(name, roots, window, cx);
-            });
-
-            true
-        })
+    pub(super) fn vertical_tabs_mut(&mut self) -> &mut VerticalTabList {
+        &mut self.chrome.vertical_tabs
+    }
 }
 
 /// Walk from just after `active` and wrap around, returning the first marked
@@ -3863,141 +4119,15 @@ pub(super) fn next_marked_position(marks: &[bool], active: usize) -> Option<usiz
         .find(|&index| marks[index])
 }
 
-fn workspace_dirs_dialog(
-    dialog: Dialog,
-    editor: &Entity<WorkspaceDirsEditor>,
-    shell: &Entity<Shell>,
-    id: WorkspaceId,
-    window: &Window,
-    cx: &App,
-) -> Dialog {
-    let editor = editor.clone();
-    let content_editor = editor.clone();
-    let shell = shell.clone();
-    let margin_top = ((window.viewport_size().height - px(300.)) * 0.5).max(px(16.));
-
-    dialog
-        .title(t!("shell-workspace-edit-title"))
-        .overlay_closable(false)
-        .margin_top(margin_top)
-        .button_props(
-            DialogButtonProps::default()
-                .ok_text(t!("shell-workspace-save"))
-                .cancel_text(t!("shell-workspace-cancel"))
-                .show_cancel(true),
-        )
-        .footer(
-            DialogFooter::new()
-                .w_full()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .pt_4()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_xs()
-                        .line_height(relative(1.5))
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("shell-workspace-dirs-applies-next")),
-                )
-                .child(
-                    DialogAction::new().child(
-                        Button::new("save-ws-dirs")
-                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                            .label(t!("shell-workspace-save"))
-                            .primary(),
-                    ),
-                )
-                .child(
-                    DialogClose::new().child(
-                        Button::new("cancel-ws-dirs")
-                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
-                            .label(t!("shell-workspace-cancel")),
-                    ),
-                ),
-        )
-        .content(move |content, _, _| content.child(content_editor.clone()))
-        .on_ok(move |_, _, cx| {
-            let Some(roots) = editor.read(cx).roots().cloned() else {
-                return false;
-            };
-
-            shell.update(cx, |this, cx| this.replace_workspace_roots(id, roots, cx));
-
-            true
-        })
-}
-
 struct AgentRouteLocation {
     workspace_id: WorkspaceId,
     workspace_index: usize,
     tab_id: TabId,
     tab_index: usize,
-    target: AgentRouteTarget,
+    terminal_pane_id: Option<PaneId>,
 }
 
-enum AgentRouteTarget {
-    Terminal {
-        pane_id: PaneId,
-        pane: Entity<TerminalPane>,
-    },
-    Agent(Entity<AgentPane>),
-}
-
-/// Width the tab strip keeps once the title bar runs out of room: about one
-/// truncated tab plus the new-tab button, so the strip stays visible and its
-/// horizontal scroll stays reachable at the window's minimum width.
-pub(super) const TAB_STRIP_MIN_WIDTH: f32 = 120.0;
-
-/// The bar is taller than the Fluent standard strip because it carries
-/// controls and a session heading rather than a title alone. Window creation
-/// reads it to re-anchor the macOS close/minimize/zoom buttons, which AppKit
-/// would otherwise center in its own, shorter strip.
-pub(crate) const TITLE_BAR_HEIGHT: f32 = 44.0;
-
-const TITLE_BAR_LEADING_INSET: f32 = 80.0;
-pub(super) const MACOS_TITLE_BAR_TRAILING_INSET: f32 = 12.0;
-const TITLE_BAR_BUTTON_GAP: f32 = 4.0;
-
-// Four controls, three internal gaps, and a trailing gap stay reachable
-// before the first tab, including at the sidebar's drag limit.
-const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * (TOOLBAR_BUTTON_SIZE + TITLE_BAR_BUTTON_GAP);
-
-pub(crate) const MIN_SIDEBAR_WIDTH: f32 = if cfg!(target_os = "macos") {
-    TITLE_BAR_LEADING_INSET + TITLE_BAR_CONTROLS_WIDTH - FLOATING_SURFACE_SIDE_INSET
-} else {
-    140.0
-};
-
-/// The session heading in the middle of the bar, and the branch chip beside
-/// it. The chip is set smaller than the title because it qualifies the title
-/// rather than competing with it.
-const TITLE_BAR_HEADING_TEXT: f32 = 13.0;
-
-const TITLE_BAR_HEADING_GAP: f32 = 10.0;
-const TITLE_BAR_CHIP_TEXT: f32 = 12.0;
-const TITLE_BAR_CHIP_RADIUS: f32 = 6.0;
-const TITLE_BAR_CHIP_PADDING_X: f32 = 8.0;
-const TITLE_BAR_CHIP_PADDING_Y: f32 = 2.0;
-const TITLE_BAR_CHIP_ICON: f32 = 11.0;
-
-pub(super) fn title_bar_trailing_region() -> Div {
-    // Keep toggled and hovered controls inside the macOS window's curved edge.
-    // Windows already reserves native caption controls after this group.
-    h_flex()
-        .flex_none()
-        .when(cfg!(target_os = "macos"), |group| {
-            group.mr(px(MACOS_TITLE_BAR_TRAILING_INSET))
-        })
-}
-
-pub(super) fn title_bar_git_summary() -> Div {
-    // Counts can yield space before the buttons or tab strip become unreachable.
-    div().flex_initial().min_w_0().overflow_hidden().occlude()
-}
-
-impl Render for Shell {
+impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Safety net for any activation path that reaches a render without
         // passing `focus_active`: the visible tab must be live before anything
@@ -4009,6 +4139,8 @@ impl Render for Shell {
         self.acknowledge_visible(window, false, cx);
 
         window.set_window_title(&self.active_tab_title());
+
+        ui::remote::sync_workspaces(self.window_id, &self.workspaces, cx);
 
         if self.chrome.needs_focus {
             self.chrome.needs_focus = false;
@@ -4023,24 +4155,27 @@ impl Render for Shell {
             // workspace owns that directory, the reopened tab gets that
             // workspace's whole directory list; otherwise the conversation's
             // own directory is all this tab can honestly claim.
-            let workspace =
-                exact_match(&self.workspaces.summaries(), path::Path::new(&request.cwd))
+            let workspace = match request.cwd {
+                Some(cwd) => exact_match(&self.workspaces.summaries(), path::Path::new(&cwd))
                     .and_then(|id| self.workspaces.roots_of(id))
                     .map_or_else(
-                        || AgentWorkspace::single(Some(request.cwd.clone())),
+                        || AgentWorkspace::single(Some(cwd.clone())),
                         |roots| agent_workspace(Some(roots)),
-                    );
+                    ),
+                None => request.fallback,
+            };
 
             self.open_agent_tab_in(
                 &request.profile,
                 workspace,
-                Some(RecoveryIdentity::new(
-                    request.profile.kind,
-                    request.session_id,
-                )),
+                Some(request.summary),
                 window,
                 cx,
             );
+        }
+
+        if let Some(request) = self.agent_notifications.pending_agent_switch.take() {
+            self.replace_agent_tab(request, window, cx);
         }
 
         if let Some(tab) = self.agent_notifications.pending_agent_close.take() {
@@ -4078,54 +4213,86 @@ impl Render for Shell {
 
         let (unread_tabs, busy_agent_tabs) = self.tab_agent_indicators(cx);
 
-        let sidebar_tabs: Vec<Vec<SidebarTab>> = match vertical_tabs {
+        let tab_rows: Vec<Vec<AnyElement>> = match vertical_tabs {
             false => Vec::new(),
-            true => summaries
-                .iter()
-                .map(|ws| {
-                    let Some(tabs) = self.workspaces.tabs_of(ws.summary.id) else {
-                        return Vec::new();
-                    };
+            true => {
+                self.chrome.vertical_tabs.end_cancelled_drag(cx);
 
-                    let active_id = tabs.list().active_id();
+                let row_width = self.sidebar.tab_row_width();
 
-                    tabs.list()
-                        .items()
-                        .iter()
-                        .map(|tab| SidebarTab {
-                            id: tab.id(),
-                            label: match tab.title().is_empty() {
-                                true => SharedString::new_static("PowerShell"),
-                                false => tab.title().to_string().into(),
+                summaries
+                    .iter()
+                    .map(|ws| {
+                        let Some(tabs) = self.workspaces.tabs_of(ws.summary.id) else {
+                            return Vec::new();
+                        };
+
+                        self.chrome.vertical_tabs.render(
+                            WorkspaceTabs {
+                                index: ws.index,
+                                tabs,
+                                active: ws.summary.active,
+                                closeable: ws.summary.closeable,
+                                fold: ws.summary.tab_fold,
                             },
-                            // Every workspace keeps its own active tab, but
-                            // only one of them is the tab on screen. Marking
-                            // the others would put a selection highlight on
-                            // every workspace's list at once.
-                            active: ws.summary.active && tab.id() == active_id,
-                            unread: unread_tabs.contains(&tab.id()),
-                            busy: busy_agent_tabs.contains(&tab.id()),
-                            bell: tab.bell(),
-                            agent_kind: tab.surface().agent_kind(cx),
-                            icon: tab.surface().icon(cx),
-                            pending: matches!(tab.surface(), TabSurface::Pending(_)),
-                            exited: tab.exited(),
-                            progress: tab.progress(),
-                            terminal: Self::tab_terminal_activity(tab, cx),
-                        })
-                        .collect()
-                })
-                .collect(),
+                            &unread_tabs,
+                            &busy_agent_tabs,
+                            &self.renames,
+                            row_width,
+                            window,
+                            cx,
+                        )
+                    })
+                    .collect()
+            }
         };
+
+        // A remote entry in front shows one session of its host, which that
+        // host's list marks the way a tab row marks the tab on screen.
+        let in_front = (self.workspaces.active_kind() == WorkspaceKind::Remote)
+            .then(|| self.workspaces.active_tabs().active());
+
+        let remote = cx
+            .global::<Remote>()
+            .remote_workspaces(|host| self.remote_workspaces.contains_key(host.as_str()))
+            .into_iter()
+            .map(|mut host| {
+                host.selected = in_front.and_then(|surface| {
+                    host.sessions
+                        .iter()
+                        .find(|session| {
+                            surface.follows_remote(host.id.as_str(), &session.session, cx)
+                        })
+                        .map(|session| session.session.clone())
+                });
+
+                host.followed = host
+                    .sessions
+                    .iter()
+                    .filter(|session| {
+                        self.workspaces
+                            .find_tab_id(|surface| {
+                                surface.follows_remote(host.id.as_str(), &session.session, cx)
+                            })
+                            .is_some()
+                    })
+                    .map(|session| session.session.clone())
+                    .collect();
+
+                host
+            })
+            .collect();
 
         let sidebar = self.sidebar.render(
             summaries,
-            sidebar_tabs,
+            tab_rows,
             &self.renames,
             SidebarUsage {
                 daily: self.chrome.token_usage.clone(),
                 quotas: self.chrome.agent_usage.clone(),
             },
+            remote,
+            window,
             cx,
         );
 
@@ -4145,20 +4312,51 @@ impl Render for Shell {
             .tab_strip
             .reveal_active(active_id, active_index, cx);
 
-        let tab_bar = match vertical_tabs {
-            true => div().into_any_element(),
-            false => self.chrome.tab_strip.render(
+        // The title-bar Git model only refreshes while its setting is on, so
+        // with the setting off its snapshot describes an earlier directory.
+        let show_branch = cx
+            .global::<AppSettings>()
+            .config()
+            .appearance
+            .show_git_status_on_title_bar;
+
+        let title_center = match vertical_tabs {
+            true => TitleCenter::Heading {
+                title: self.active_tab_title().into(),
+                branch: show_branch
+                    .then(|| {
+                        self.panels
+                            .git_model()
+                            .read(cx)
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.branch.clone())
+                    })
+                    .flatten()
+                    .map(SharedString::from),
+            },
+            false => TitleCenter::Tabs(self.chrome.tab_strip.render(
                 self.workspaces.active_tabs(),
                 &unread_tabs,
                 &busy_agent_tabs,
                 &self.renames,
                 cx,
-            ),
+            )),
         };
+
+        let title_bar = self
+            .chrome
+            .title_bar
+            .render(self.title_bar_inputs(title_center, cx), cx);
 
         self.apply_pending_ratios(cx);
 
-        let pane_tree = self.render_active_tree(cx);
+        let pane_tree = tab_surface_view(
+            self.workspaces.active_tabs().active(),
+            self.active_agent(),
+            self.settings.render(cx),
+            cx,
+        );
 
         let background_image = cx
             .global::<AppSettings>()
@@ -4205,18 +4403,12 @@ impl Render for Shell {
             .flex()
             .flex_col()
             // All chrome inherits the configured UI font; terminal panes override it.
-            .font(ui::font_with_default_fallback(
-                cx.global::<AppSettings>()
-                    .config()
-                    .appearance
-                    .ui_font
-                    .clone(),
-            ))
-            .key_context("Shell");
+            .font(ui::chrome_font(cx))
+            .key_context("AppWindow");
 
         Self::bind_actions(shell, cx)
             .children(background_image)
-            .child(self.render_title_bar(tab_bar, cx))
+            .child(title_bar)
             .child(
                 div()
                     .flex_1()
@@ -4235,11 +4427,6 @@ impl Render for Shell {
                             .min_w_0()
                             .relative()
                             .overflow_hidden()
-                            // Gutters only on the two sides that face other
-                            // chrome; the surface runs flush into the window's
-                            // right and bottom edges.
-                            .pl(px(ui::composition::FLOATING_SURFACE_SIDE_INSET))
-                            .pt(px(ui::composition::FLOATING_SURFACE_TOP_INSET))
                             .child(
                                 floating_surface_card(cx)
                                     .id("main-floating-surface")
@@ -4259,122 +4446,22 @@ impl Render for Shell {
     }
 }
 
-pub(super) fn title_bar_leading_region(width: f32) -> Div {
-    // Sidebar alignment yields to the tab strip on narrow windows, while
-    // the minimum width keeps every leading control reachable.
-    h_flex()
-        .w(px(width))
-        .min_w(px(TITLE_BAR_CONTROLS_WIDTH))
-        .flex_initial()
-        .overflow_hidden()
-        .gap(px(TITLE_BAR_BUTTON_GAP))
-}
-
-impl Focusable for Shell {
+impl Focusable for AppWindow {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
 
-/// Titlebar sidebar-toggle icons served by `crate::assets::AppAssets`.
-enum SideBarIcon {
-    Collapse,
-    Expand,
-}
-
-impl IconNamed for SideBarIcon {
-    fn path(self) -> SharedString {
-        match self {
-            Self::Collapse => "icons/side-bar-collapse.svg",
-            Self::Expand => "icons/side-bar-expand.svg",
-        }
-        .into()
-    }
-}
-
-/// The application menu: opening things, then the two application-wide
-/// commands. Every entry here is reachable by keyboard as well, so the menu is
-/// a place to find them rather than the only way to reach them.
-fn app_menu(menu: ModernMenu, shell: &Entity<Shell>, _cx: &mut App) -> ModernMenu {
-    let window_shell = shell.clone();
-    let workspace_shell = shell.clone();
-    let settings_shell = shell.clone();
-
-    let menu = menu
-        .item(t!("shell-menu-new-window"), move |window, cx| {
-            window_shell.update(cx, |this, cx| {
-                this.on_new_window(&NewWindow, window, cx);
-            });
-        })
-        .icon(Icon::new(IconName::Frame))
-        .item(t!("shell-workspace-new-title"), move |window, cx| {
-            workspace_shell.update(cx, |this, cx| {
-                this.on_new_workspace(&NewWorkspace, window, cx);
-            });
-        })
-        .icon(Icon::new(IconName::Folder))
-        .separator()
-        .item(t!("shell-workspace-settings-title"), move |window, cx| {
-            settings_shell.update(cx, |this, cx| {
-                this.on_show_settings(&ShowSettings, window, cx);
-            });
-        })
-        .icon(Icon::new(IconName::Settings));
-
-    // Only a build that can replace itself offers to check.
-    #[cfg(windows)]
-    let menu = menu
-        .item(t!("shell-menu-check-updates"), |_, cx| check(cx))
-        .icon(Icon::new(IconName::ArrowDown));
-
-    menu
-}
-
-struct GitIcon;
-
-impl IconNamed for GitIcon {
-    fn path(self) -> SharedString {
-        "icons/git.svg".into()
-    }
-}
-
-/// Titlebar busy-tab jump icon, backed by the project's `assets/icons/
-/// circle-arrow-right.svg`. The arrow is what separates it from the busy
-/// spinner drawn on the tabs themselves: this control navigates to that work
-/// rather than reporting it.
-struct NextBusyTabIcon;
-
-impl IconNamed for NextBusyTabIcon {
-    fn path(self) -> SharedString {
-        "icons/circle-arrow-right.svg".into()
-    }
-}
-
-/// Clip terminal and agent content within the sidebar-colored backing surface.
-fn floating_surface_card(cx: &App) -> Div {
-    div().size_full().overflow_hidden().bg(cx.theme().sidebar)
-}
-
-/// Borders overlay content so attached tab and navigation bounds share one origin.
-fn surface_border(cx: &App) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .border_l_1()
-        .border_t_1()
-        .border_color(cx.theme().sidebar_border)
-}
-
 const PANE_RESIZE_STEP: Pixels = px(30.0);
 
-impl Shell {
+impl AppWindow {
     pub(super) fn on_toggle_git_sidebar(
         &mut self,
         _: &ToggleGitSidebar,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.leave_settings_workspace();
+        self.leave_pseudo_workspace();
 
         if self.workspaces.active_tabs().active().is_git() {
             let id = self.workspaces.active_tabs().list().active_id();
@@ -4427,11 +4514,7 @@ impl Shell {
             );
         }
 
-        self.on_active_tab_changed(window, cx);
-        self.focus_active(window, cx);
-        self.sync_session_memory(cx);
-
-        cx.notify();
+        self.show_active_tab(window, cx);
     }
 
     pub(super) fn sync_git_tab_visibility(&self, cx: &mut Context<Self>) {
@@ -4458,7 +4541,7 @@ impl Shell {
 
         for (visible, view) in views {
             view.update(cx, |view, cx| {
-                view.set_quote_available(visible && can_quote);
+                view.set_quote_available(visible && can_quote, cx);
                 view.set_visible(visible, cx);
             });
         }
@@ -4488,11 +4571,7 @@ impl Shell {
 
         if let Some(index) = index {
             self.workspaces.active_tabs_mut().list_mut().activate(index);
-            self.on_active_tab_changed(window, cx);
-            self.focus_active(window, cx);
-            self.sync_session_memory(cx);
-
-            cx.notify();
+            self.show_active_tab(window, cx);
         }
     }
 
@@ -4537,7 +4616,6 @@ impl Shell {
         }
 
         self.focus_active(window, cx);
-        self.sync_session_memory(cx);
 
         cx.notify();
     }

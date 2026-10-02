@@ -106,6 +106,11 @@ The pre-commit hook enforces these rules:
   other path. The same independent-commit rule applies to
   `third_party/gpui-kit`.
 - Newly added content containing the repository's AI-slop marker is rejected.
+- A personal Xcode signing identity is rejected: a literal
+  `DEVELOPMENT_TEAM`, provisioning profile, or named certificate added to a
+  `.pbxproj` or `.xcconfig`, and any `Local.xcconfig` or `xcuserdata/` file.
+  The iOS team and bundle ID belong in the gitignored
+  `mobile/ios/Config/Local.xcconfig` or in environment variables.
 - Added code comments are checked for implementation-instruction references;
   comments must explain the underlying technical rationale as described above.
 - If staged files include Rust, the hook runs rustfmt on the staged Rust paths,
@@ -156,15 +161,15 @@ rejects mentions of `cargo check`, `cargo test`, `cargo fmt`, `cargo clippy`,
 
 When an AI coding agent materially contributes to the change, end the
 commit message with a `Co-Authored-By` trailer naming the model that
-performed the work. Write the model ID the agent reports from its runtime,
-followed by a noreply address on the model vendor's domain:
+performed the work, followed by a noreply address on the model vendor's
+domain:
 
 ```text
-Co-Authored-By: <MODEL_ID> <noreply@<vendor>.com>
+Co-Authored-By: <model> <noreply@<vendor>.com>
 ```
 
 Anthropic models use `noreply@anthropic.com` (e.g.
-`claude-opus-5 <noreply@anthropic.com>`), Codex uses `noreply@openai.com`.
+`Claude Opus 5 <noreply@anthropic.com>`), Codex uses `noreply@openai.com`.
 
 ## Local agent instructions
 @AGENTS.local.md

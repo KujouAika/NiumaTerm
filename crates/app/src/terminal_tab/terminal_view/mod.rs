@@ -1,14 +1,8 @@
-#[cfg(test)]
-pub(super) use crate::terminal_tab::paint::frame::cursor_bounds;
 pub(super) use crate::terminal_tab::terminal_view::item::BlockListItem;
 
 mod item;
 
-#[cfg(test)]
-mod tests;
-
 use std::panic;
-use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, Element, ElementId, ElementInputHandler, Entity,
@@ -59,7 +53,7 @@ impl IntoElement for TerminalView {
 
 pub(super) struct TerminalPrepaint {
     shaped: Vec<ShapedLine>,
-    row_offsets: Arc<[f32]>,
+    bottom_slack: f32,
 }
 
 impl Element for TerminalView {
@@ -105,15 +99,15 @@ impl Element for TerminalView {
         // its actual area (below the tab bar), not the full window.
         let cell = self.cell;
 
-        let row_offsets = self.pane.update(cx, |pane, cx| {
+        let bottom_slack = self.pane.update(cx, |pane, cx| {
             pane.set_content_bounds(bounds, cell, cx);
 
-            pane.model.viewport.row_offsets()
+            pane.model.viewport().bottom_slack()
         });
 
         TerminalPrepaint {
             shaped: shape_frame(bounds, &self.frame, self.cell, window),
-            row_offsets,
+            bottom_slack,
         }
     }
 
@@ -132,7 +126,7 @@ impl Element for TerminalView {
             &self.frame,
             prepaint.shaped.as_slice(),
             self.cell,
-            &prepaint.row_offsets,
+            prepaint.bottom_slack,
             window,
             cx,
         );

@@ -6,17 +6,16 @@ use thiserror::Error;
 
 use crate::AgentWorkspace;
 use crate::chat::ThreadSettings;
-use crate::team::attempt::Attempt;
-use crate::team::budget::Budget;
-use crate::team::content::{PublicMessage, Summary, UserInput};
-use crate::team::context::{ContextError, ContextLimits, PreparedContext};
+use crate::team::attempt::{Attempt, AttemptState, BudgetScope};
+use crate::team::budget::TurnPurpose;
 use crate::team::discussion::{
     Discussion, DiscussionError, DiscussionMode, DiscussionState, PublicSnapshot,
 };
-use crate::team::identity::{
-    MemberId, MessageId, OperationId, OwnershipGeneration, RoomId, SummaryId,
+use crate::team::member::{AcceptedCoverage, Member, MemberConfig};
+use crate::team::model::{
+    Author, ContextError, ContextLimits, DiscussionId, MemberId, MessageId, PreparedContext,
+    PublicMessage, RoomId, Summary, SummaryId, UserInput,
 };
-use crate::team::member::{AcceptedCoverage, HistoryScope, Member, MemberConfig};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Room {
@@ -26,10 +25,8 @@ pub struct Room {
     pub(super) discussions: Vec<Discussion>,
     pub(super) messages: Vec<PublicMessage>,
     pub(super) summaries: Vec<Summary>,
-    pub(super) input_history: Vec<UserInput>,
     pub(super) controls: RoomControls,
     pub(super) attempts: Vec<Attempt>,
-    pub(super) direct_allowances: BTreeMap<OperationId, Budget>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,11 +50,15 @@ pub enum MemberError {
     DuplicateName,
     #[error("member no longer belongs to this room")]
     MissingMember,
-    #[error("session ownership has changed")]
-    StaleOwner,
 }
 
 impl Room {
+    pub(super) fn budget_attempts(&self, scope: BudgetScope) -> impl Iterator<Item = &Attempt> {
+        self.attempts.iter().filter(move |attempt| {
+            attempt.intent.budget == scope && attempt.state != AttemptState::Rejected
+        })
+    }
+
     pub fn new(workspace: AgentWorkspace) -> Self {
         Self {
             id: RoomId::new(),
@@ -66,10 +67,8 @@ impl Room {
             discussions: Vec::new(),
             messages: Vec::new(),
             summaries: Vec::new(),
-            input_history: Vec::new(),
             controls: RoomControls::default(),
             attempts: Vec::new(),
-            direct_allowances: BTreeMap::new(),
         }
     }
 
@@ -91,6 +90,18 @@ impl Room {
 
     pub fn discussions(&self) -> &[Discussion] {
         &self.discussions
+    }
+
+    pub(crate) fn discussion(&self, id: DiscussionId) -> Option<&Discussion> {
+        self.discussions
+            .iter()
+            .find(|discussion| discussion.id == id)
+    }
+
+    pub(super) fn discussion_mut(&mut self, id: DiscussionId) -> Option<&mut Discussion> {
+        self.discussions
+            .iter_mut()
+            .find(|discussion| discussion.id == id)
     }
 
     pub fn controls(&self) -> &RoomControls {
@@ -145,12 +156,9 @@ impl Room {
             id,
             name,
             profile: config.profile,
-            ownership: OwnershipGeneration::default(),
             roots: config.roots,
             settings: config.settings,
             role: config.role,
-            history: config.history,
-            coverage: AcceptedCoverage::default(),
             excluded: false,
             provider_id: None,
             moderator_registered: false,
@@ -171,14 +179,9 @@ impl Room {
     pub fn set_member_settings(
         &mut self,
         id: MemberId,
-        ownership: OwnershipGeneration,
         settings: ThreadSettings,
     ) -> Result<(), MemberError> {
         let member = self.member_mut(id)?;
-
-        if member.ownership != ownership {
-            return Err(MemberError::StaleOwner);
-        }
 
         member.settings = settings;
 
@@ -218,6 +221,38 @@ impl Room {
         Ok(name.to_owned())
     }
 
+    /// What `member` has already been given: the context of each of its turns
+    /// the provider accepted, apart from summary turns, and its own replies.
+    /// The room keeps every attempt and message for its lifetime, so this is
+    /// read from them rather than kept beside them.
+    pub fn coverage(&self, member: MemberId) -> AcceptedCoverage {
+        let mut coverage = AcceptedCoverage::default();
+
+        for attempt in &self.attempts {
+            if attempt.intent.recipient == member
+                && attempt.provider_turn.is_some()
+                && attempt.intent.purpose != TurnPurpose::Summary
+            {
+                coverage.messages.extend(&attempt.intent.coverage.messages);
+
+                coverage
+                    .summaries
+                    .extend(&attempt.intent.coverage.summaries);
+            }
+        }
+
+        coverage.messages.extend(
+            self.messages
+                .iter()
+                .filter(
+                    |message| matches!(message.author, Author::Member { id, .. } if id == member),
+                )
+                .map(|message| message.id),
+        );
+
+        coverage
+    }
+
     pub(crate) fn public_snapshot(&self) -> PublicSnapshot {
         PublicSnapshot {
             messages: self.messages.iter().map(|message| message.id).collect(),
@@ -232,8 +267,10 @@ impl Room {
         input: &UserInput,
         limits: &ContextLimits,
     ) -> Result<PreparedContext, ContextError> {
-        let member = self.member(member_id).ok_or(ContextError::MissingSource)?;
-        let eligible = self.eligible_messages(boundary, &member.history)?;
+        self.member(member_id).ok_or(ContextError::MissingSource)?;
+
+        let coverage = self.coverage(member_id);
+        let eligible = self.eligible_messages(boundary)?;
         let eligible_ids: BTreeSet<_> = eligible.iter().map(|message| message.id).collect();
 
         if input
@@ -243,11 +280,6 @@ impl Room {
         {
             return Err(ContextError::MissingSource);
         }
-
-        let explicit_summaries = match &member.history {
-            HistoryScope::Selected { summaries, .. } => summaries.clone(),
-            _ => BTreeSet::new(),
-        };
 
         let mut summaries = Vec::new();
         let mut represented = BTreeSet::new();
@@ -260,7 +292,7 @@ impl Room {
                 .find(|summary| summary.id == *id)
                 .ok_or(ContextError::MissingSource)?;
 
-            if !self.controls.automatic_summaries && !explicit_summaries.contains(id) {
+            if !self.controls.automatic_summaries {
                 continue;
             }
 
@@ -274,7 +306,7 @@ impl Room {
                 continue;
             }
 
-            if !member.coverage.summaries.contains(id) {
+            if !coverage.summaries.contains(id) {
                 summaries.push(summary);
             }
 
@@ -289,7 +321,7 @@ impl Room {
             .iter()
             .enumerate()
             .filter(|(index, message)| {
-                !member.coverage.messages.contains(&message.id)
+                !coverage.messages.contains(&message.id)
                     && (*index >= recent_start || !represented.contains(&message.id))
             })
             .map(|(_, message)| *message)
@@ -317,20 +349,8 @@ impl Room {
         );
 
         if text.len() <= limits.max_bytes {
-            let mut attachments = input.attachments.clone();
-
-            for attachment in messages.iter().flat_map(|message| &message.attachments) {
-                if !attachments
-                    .iter()
-                    .any(|existing| existing.id == attachment.id)
-                {
-                    attachments.push(attachment.clone());
-                }
-            }
-
             return Ok(PreparedContext {
                 text,
-                attachments,
                 coverage: AcceptedCoverage {
                     messages: messages.iter().map(|message| message.id).collect(),
                     summaries: summaries.iter().map(|summary| summary.id).collect(),
@@ -375,37 +395,16 @@ impl Room {
     fn eligible_messages(
         &self,
         boundary: &PublicSnapshot,
-        scope: &HistoryScope,
     ) -> Result<Vec<&PublicMessage>, ContextError> {
-        let start = match scope {
-            HistoryScope::FromMessage(id) => Some(
-                self.messages
-                    .iter()
-                    .position(|message| message.id == *id)
-                    .ok_or(ContextError::MissingSource)?,
-            ),
-            _ => None,
-        };
-
         boundary
             .messages
             .iter()
             .map(|id| {
                 self.messages
                     .iter()
-                    .position(|message| message.id == *id)
+                    .find(|message| message.id == *id)
                     .ok_or(ContextError::MissingSource)
             })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter(|index| start.is_none_or(|start| *index >= start))
-            .filter(|index| match scope {
-                HistoryScope::Selected { messages, .. } => {
-                    messages.contains(&self.messages[*index].id)
-                }
-                _ => true,
-            })
-            .map(|index| Ok(&self.messages[index]))
             .collect()
     }
 }

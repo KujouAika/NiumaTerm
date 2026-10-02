@@ -68,6 +68,12 @@ pub fn record_window_message(_duration: Duration) {}
 #[inline(always)]
 pub fn record_draw(_duration: Duration, _dirty_views: usize) {}
 
+/// Records a draw that ran with every view cache bypassed. Such a frame
+/// re-renders the whole tree without marking any view dirty, so the dirty-view
+/// average alone would report it as the cheapest kind of frame.
+#[inline(always)]
+pub fn record_refresh() {}
+
 /// Records one present (scene submission plus swapchain present) and closes
 /// out the frame, reporting the digest when the period is up.
 #[inline(always)]

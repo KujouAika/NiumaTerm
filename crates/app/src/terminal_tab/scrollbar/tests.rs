@@ -1,32 +1,6 @@
 use crate::terminal_tab::scrollbar::geometry::{
-    SCROLLBAR_AUTO_HIDE_DELAY, SCROLLBAR_FADE_OUT_DURATION, scrollbar_offset_for_thumb,
-    scrollbar_opacity, scrollbar_thumb_geometry,
+    scrollbar_offset_for_thumb, scrollbar_thumb_geometry,
 };
-
-#[test]
-fn scrollbar_opacity_fades_after_linger() {
-    assert_eq!(scrollbar_opacity(true, None), Some(1.0));
-    assert_eq!(
-        scrollbar_opacity(false, Some(SCROLLBAR_AUTO_HIDE_DELAY / 2)),
-        Some(1.0)
-    );
-
-    let fading = scrollbar_opacity(
-        false,
-        Some(SCROLLBAR_AUTO_HIDE_DELAY + SCROLLBAR_FADE_OUT_DURATION / 2),
-    )
-    .unwrap();
-
-    assert!(fading > 0.0 && fading < 1.0);
-
-    assert_eq!(
-        scrollbar_opacity(
-            false,
-            Some(SCROLLBAR_AUTO_HIDE_DELAY + SCROLLBAR_FADE_OUT_DURATION),
-        ),
-        None
-    );
-}
 
 #[test]
 fn scrollbar_thumb_stays_inside_track_with_long_history() {

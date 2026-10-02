@@ -211,14 +211,14 @@ impl ClaudeWorkflowSource {
             return result;
         };
 
-        result.refresh.run_id = dir
+        result.run_id = dir
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_owned);
 
         match read_journal(dir) {
             Ok(journal) => {
-                result.refresh.agents = journal
+                result.agents = journal
                     .into_iter()
                     .map(|entry| WorkflowAgentProgress {
                         agent_id: entry.agent_id,
@@ -231,7 +231,7 @@ impl ClaudeWorkflowSource {
                     })
                     .collect()
             }
-            Err(_) => result.refresh.failed = true,
+            Err(_) => result.failed = true,
         }
 
         if let Some(agent_id) = request.open_agent.as_deref() {
@@ -456,16 +456,12 @@ fn restore_interrupted_agents(dir: &Path) -> Vec<WorkflowAgent> {
             },
             agent_id: Some(agent_id),
             phase_index: None,
-            phase_title: None,
             agent_type: None,
-            isolation: None,
             model: None,
             tokens: None,
             tool_calls: None,
             reused: false,
             error: None,
-            prompt_preview: None,
-            result_preview: None,
         })
         .collect()
 }

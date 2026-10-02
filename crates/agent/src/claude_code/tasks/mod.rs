@@ -20,41 +20,44 @@
 //! therefore still admitted from their own `local_agent` records. Monitors and
 //! workflows appear in the snapshot too and stay out by task type.
 
+pub(crate) use crate::claude_code::tasks::shells::shell_items;
+
+pub(super) use crate::claude_code::tasks::records::{
+    lifecycle_state, record_identifiers, sidechain_preview,
+};
+
+mod children;
 mod records;
 mod shells;
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, VecDeque};
-use std::mem::take;
 use std::time::SystemTime;
 
 use serde_json::Value;
 
 use crate::background_task::{
-    BackgroundTaskDiscoveryState, BackgroundTaskKey, BackgroundTaskKind, BackgroundTaskRefs,
+    BackgroundTaskKey, BackgroundTaskKind, BackgroundTaskLoadState, BackgroundTaskRefs,
     BackgroundTaskRegistry, BackgroundTaskSnapshot, BackgroundTaskState,
     BackgroundTaskTranscriptUpdate, BackgroundTaskUpdate,
 };
-use crate::chat::Item;
 use crate::claude_code::sessions::RestoredTask;
+use crate::claude_code::tasks::children::ChildTranscripts;
 use crate::claude_code::tasks::records::{
-    admits_new_row, lifecycle_state, record_identifiers, refs_from, result_text, sidechain_preview,
-    stop_target,
+    AliasTable, admits_new_row, refs_from, result_text, stop_target,
 };
 use crate::claude_code::tasks::shells::ShellIndex;
-use crate::claude_code::tool_items::{complete_tool_item, tool_item};
 use crate::json::text_field;
 
 /// Tool names that launch a child agent.
-const LAUNCH_TOOLS: [&str; 2] = ["Task", "Agent"];
+pub(super) const LAUNCH_TOOLS: [&str; 2] = ["Task", "Agent"];
 
 /// System subtypes that report one child's lifecycle. Both terminal records
 /// matter: a child stopped through the CLI's own stop path reports `killed`
 /// only in an update patch, and the matching notification can be suppressed
 /// entirely, so watching notifications alone leaves it running forever.
-const LIFECYCLE_RECORDS: [&str; 4] = [
+pub(super) const LIFECYCLE_RECORDS: [&str; 4] = [
     "task_started",
     "task_progress",
     "task_notification",
@@ -64,7 +67,7 @@ const LIFECYCLE_RECORDS: [&str; 4] = [
 /// The task type of delegated agent work. Monitors and workflows travel
 /// through the same lifecycle records, so an explicit type is what keeps them
 /// out of a view that is about child agents and background shells.
-const AGENT_TASK_TYPE: &str = "local_agent";
+pub(super) const AGENT_TASK_TYPE: &str = "local_agent";
 
 /// The task type of a shell command the CLI runs as a task. Every `Bash` call
 /// registers one; only the backgrounded ones belong in this view, which is why
@@ -79,30 +82,11 @@ pub(crate) struct ClaudeTasks {
     /// the row they describe.
     aliases: AliasTable,
 
-    /// Process run each task was first seen in. A task still shown as running
-    /// from an earlier run cannot be alive in the current process.
-    created_epoch: HashMap<String, u64>,
-
-    /// Advanced by each `init`, which the CLI emits once per process.
-    epoch: u64,
-
     /// The conversations of this session's child agents.
     children: ChildTranscripts,
 
     /// Background shell metadata and the `Bash` commands behind it.
     shells: ShellIndex,
-}
-
-/// What one shell's records have said about it so far. No single record
-/// carries all of it: the command comes from the `Bash` block, the description
-/// and tool-use id from `task_started`, and the output file from whichever of
-/// the handoff result and the completion notification arrives first.
-#[derive(Default)]
-pub(crate) struct ShellMeta {
-    tool_use_id: Option<String>,
-    description: Option<String>,
-    command: Option<String>,
-    output_file: Option<String>,
 }
 
 /// One background shell as the detail view reads it. Owned because the caller
@@ -169,7 +153,7 @@ impl ClaudeTasks {
             return 0;
         };
 
-        registry.set_discovery(BackgroundTaskDiscoveryState::Loading);
+        registry.set_discovery(BackgroundTaskLoadState::Loading);
 
         registry.sequence()
     }
@@ -204,13 +188,13 @@ impl ClaudeTasks {
                     changed |= registry.merge_restored(key, task.update, starting_sequence);
                 }
 
-                changed | registry.set_discovery(BackgroundTaskDiscoveryState::Ready)
+                changed | registry.set_discovery(BackgroundTaskLoadState::Ready)
             }
             Err(message) => {
                 if registry.is_empty() {
-                    registry.set_discovery(BackgroundTaskDiscoveryState::Unavailable { message })
+                    registry.set_discovery(BackgroundTaskLoadState::Unavailable { message })
                 } else {
-                    registry.set_discovery(BackgroundTaskDiscoveryState::Ready)
+                    registry.set_discovery(BackgroundTaskLoadState::Ready)
                 }
             }
         }
@@ -228,8 +212,6 @@ impl ClaudeTasks {
         )));
 
         self.aliases.clear();
-
-        self.created_epoch.clear();
 
         self.children.clear();
 
@@ -285,10 +267,6 @@ impl ClaudeTasks {
             kind: shell.then_some(BackgroundTaskKind::Shell),
             state,
             display_name: text_field(record, &["description"]),
-            // A shell has no agent type to report, and writing its task type
-            // into that field would only describe the row as the protocol
-            // spells it rather than as anything a reader recognizes.
-            agent_type: task_type.filter(|_| !shell).map(str::to_owned),
             // `summary` is the child's own account of what it did; the last
             // tool it ran is the best live substitute while it is working.
             status: text_field(record, &["summary", "last_tool_name"]),
@@ -298,7 +276,6 @@ impl ClaudeTasks {
             completed_at: state
                 .filter(|state| state.is_terminal())
                 .map(|_| SystemTime::now()),
-            updated_at: Some(SystemTime::now()),
             ..BackgroundTaskUpdate::default()
         };
 
@@ -329,7 +306,6 @@ impl ClaudeTasks {
             BackgroundTaskUpdate {
                 state: Some(BackgroundTaskState::Done),
                 completed_at: Some(SystemTime::now()),
-                updated_at: Some(SystemTime::now()),
                 ..BackgroundTaskUpdate::default()
             },
         )
@@ -364,12 +340,6 @@ impl ClaudeTasks {
     }
 
     fn apply(&mut self, canonical: &str, update: BackgroundTaskUpdate) -> bool {
-        let epoch = self.epoch;
-
-        self.created_epoch
-            .entry(canonical.to_owned())
-            .or_insert(epoch);
-
         let Some(registry) = self.registry.as_mut() else {
             return false;
         };
@@ -411,7 +381,7 @@ impl ClaudeTasks {
         match subtype {
             // The CLI emits `init` once per process, so it is the only
             // reliable process boundary in the stream.
-            "init" => self.advance_epoch(),
+            "init" => self.stop_active_tasks(),
             "hook_started" | "hook_response" => self.observe_hook(message),
             "background_tasks_changed" => self.observe_background_snapshot(message),
             _ if LIFECYCLE_RECORDS.contains(&subtype) => self.observe_lifecycle(subtype, message),
@@ -419,12 +389,9 @@ impl ClaudeTasks {
         }
     }
 
-    /// A new process cannot still be running the children of the previous one.
-    fn advance_epoch(&mut self) -> bool {
-        self.epoch += 1;
-
-        let epoch = self.epoch;
-
+    /// The CLI emits `init` once per process, and a new process cannot still
+    /// be running the children of the previous one.
+    fn stop_active_tasks(&mut self) -> bool {
         let Some(snapshot) = self.snapshot() else {
             return false;
         };
@@ -434,11 +401,6 @@ impl ClaudeTasks {
             .into_iter()
             .filter(|task| task.state.is_active())
             .map(|task| task.key.id)
-            .filter(|id| {
-                self.created_epoch
-                    .get(id)
-                    .is_none_or(|created| *created < epoch)
-            })
             .collect();
 
         let mut changed = false;
@@ -449,7 +411,6 @@ impl ClaudeTasks {
                 BackgroundTaskUpdate {
                     state: Some(BackgroundTaskState::Stopped),
                     completed_at: Some(SystemTime::now()),
-                    updated_at: Some(SystemTime::now()),
                     ..BackgroundTaskUpdate::default()
                 },
             );
@@ -524,12 +485,8 @@ impl ClaudeTasks {
                     // launched child is visible immediately.
                     state: Some(BackgroundTaskState::Starting),
                     display_name: text_field(input, &["description", "name", "title"]),
-                    agent_type: text_field(input, &["subagent_type", "agent_type", "agent"])
-                        .or_else(|| Some(name.to_owned())),
                     objective: objective.clone(),
-                    model: text_field(input, &["model"]),
                     started_at: Some(SystemTime::now()),
-                    updated_at: Some(SystemTime::now()),
                     ..BackgroundTaskUpdate::default()
                 },
             );
@@ -596,7 +553,6 @@ impl ClaudeTasks {
                         }),
                         status: result_text(block),
                         completed_at: Some(SystemTime::now()),
-                        updated_at: Some(SystemTime::now()),
                         ..BackgroundTaskUpdate::default()
                     },
                 );
@@ -621,7 +577,7 @@ impl ClaudeTasks {
 
         // The same content the parent transcript drops becomes the child's own
         // conversation; it still never reaches the parent.
-        let items = self.child_items(&canonical, message);
+        let items = self.children.sidechain_items(&canonical, message);
 
         self.children.push(&canonical, items);
 
@@ -638,82 +594,9 @@ impl ClaudeTasks {
                 state,
                 status: preview.clone(),
                 last_preview: preview,
-                updated_at: Some(SystemTime::now()),
                 ..BackgroundTaskUpdate::default()
             },
         )
-    }
-
-    /// Transcript items for one sidechain record, using the same item shapes
-    /// the parent conversation renders so a child reads identically.
-    fn child_items(&mut self, canonical: &str, message: &Value) -> Vec<Item> {
-        let mut items = Vec::new();
-
-        if message["type"].as_str() == Some("user") {
-            let text = message["message"]["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|block| block["type"].as_str() == Some("text"))
-                .filter_map(|block| block["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let repeats_launch = self.children.repeats_launch(canonical, &text);
-
-            if !text.trim().is_empty() && !repeats_launch {
-                items.push(Item::UserMessage { text: Some(text) });
-            }
-        }
-
-        for block in message["message"]["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            let Some(id) = block["id"]
-                .as_str()
-                .or_else(|| block["tool_use_id"].as_str())
-                .map(str::to_owned)
-                .or_else(|| message["uuid"].as_str().map(str::to_owned))
-            else {
-                continue;
-            };
-
-            match block["type"].as_str() {
-                Some("text") if message["type"].as_str() != Some("user") => {
-                    items.push(Item::AgentMessage {
-                        id,
-                        text: block["text"].as_str().map(str::to_owned),
-                        questions: None,
-                    })
-                }
-                Some("text") => {}
-                Some("thinking") => items.push(Item::Reasoning {
-                    id,
-                    summary: block["thinking"].as_str().map(str::to_owned),
-                }),
-                Some("tool_use") => {
-                    let item = tool_item(
-                        &id,
-                        block["name"].as_str().unwrap_or("tool"),
-                        &block["input"],
-                    );
-
-                    self.children.open_tool(id, item.clone());
-
-                    items.push(item);
-                }
-                Some("tool_result") => {
-                    if let Some(started) = self.children.close_tool(&id) {
-                        items.push(complete_tool_item(started, block));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        items
     }
 
     /// Admit the background shells the CLI currently reports as running. This
@@ -820,154 +703,5 @@ impl ClaudeTasks {
             output_file: meta.and_then(|meta| meta.output_file.clone()),
             state: task.state,
         })
-    }
-}
-
-// Identifier aliases for one session.
-//
-// One child is named several ways over its life: by task id, by the tool-use
-// id of the call that launched it, and by an agent id. Only a record that
-// carried two of them together proves they describe the same child, so this
-// records exactly those pairings and nothing inferred from recency.
-
-/// Identifier aliases retained per session. One child contributes at most a
-/// handful (task, tool-use, agent), so this only bounds a stream that keeps
-/// inventing identifiers.
-const MAX_ALIASES: usize = 512;
-
-#[derive(Default)]
-struct AliasTable {
-    aliases: HashMap<String, String>,
-    order: VecDeque<String>,
-}
-
-impl AliasTable {
-    fn clear(&mut self) {
-        self.aliases.clear();
-
-        self.order.clear();
-    }
-
-    /// The canonical id this identifier was recorded against, if any.
-    fn lookup(&self, id: &str) -> Option<&str> {
-        self.aliases.get(id).map(String::as_str)
-    }
-
-    /// Record that these identifiers describe the same child. Only called with
-    /// identifiers a single record carried together.
-    fn link_all(&mut self, canonical: &str, ids: &[String]) {
-        for id in ids {
-            if id == canonical || self.aliases.contains_key(id) {
-                continue;
-            }
-
-            if self.order.len() >= MAX_ALIASES
-                && let Some(oldest) = self.order.pop_front()
-            {
-                self.aliases.remove(&oldest);
-            }
-
-            self.order.push_back(id.clone());
-
-            self.aliases.insert(id.clone(), canonical.to_owned());
-        }
-    }
-}
-
-// Child conversations accumulated from the sidechain stream.
-//
-// A child agent has a conversation of its own that the parent transcript
-// never shows. The reducer forwards its content rather than retaining it, so
-// what lives here is only what a later record needs: the items observed since
-// the caller last drained, the tool calls still waiting for their results, and
-// the launch instruction already published as the opening message.
-
-#[derive(Default)]
-struct ChildTranscripts {
-    /// Child conversation content observed since the caller last drained it.
-    pending: Vec<(BackgroundTaskKey, BackgroundTaskTranscriptUpdate)>,
-
-    /// Tool calls a child started, so its matching result completes the same
-    /// row instead of appearing as a second one.
-    open_tools: HashMap<String, Item>,
-
-    /// Launch instructions already published as a child's opening message, by
-    /// canonical id. Claude Code 2.1.2x keeps a child's conversation entirely
-    /// in its own file and streams only the child's assistant output, so the
-    /// launch block is the one place the live stream states what the child was
-    /// asked to do. Older versions also replay that text as a sidechain user
-    /// record, which `repeats_launch` recognizes as the same instruction rather
-    /// than a second one.
-    launch_prompts: HashMap<String, String>,
-}
-
-impl ChildTranscripts {
-    fn clear(&mut self) {
-        self.pending.clear();
-
-        self.open_tools.clear();
-
-        self.launch_prompts.clear();
-    }
-
-    /// Publish a child's launch instruction as the opening message of its
-    /// conversation, reporting whether this is the first time. A second launch
-    /// block for the same call states nothing new.
-    fn open(&mut self, tool_use_id: &str, prompt: String) -> bool {
-        if self.launch_prompts.contains_key(tool_use_id) {
-            return false;
-        }
-
-        self.launch_prompts
-            .insert(tool_use_id.to_owned(), prompt.clone());
-
-        self.pending.push((
-            BackgroundTaskKey::claude_code(tool_use_id),
-            BackgroundTaskTranscriptUpdate::appended(vec![Item::UserMessage {
-                text: Some(prompt),
-            }]),
-        ));
-
-        true
-    }
-
-    /// Add live content to a child's conversation.
-    fn push(&mut self, canonical: &str, items: Vec<Item>) {
-        if items.is_empty() {
-            return;
-        }
-
-        self.pending.push((
-            BackgroundTaskKey::claude_code(canonical),
-            BackgroundTaskTranscriptUpdate::appended(items),
-        ));
-    }
-
-    /// Offer stored history for a child. History predates whatever the live
-    /// stream produced, so it fills a child nothing has been seen for and
-    /// never replaces newer live content.
-    fn push_restored(&mut self, key: BackgroundTaskKey, items: Vec<Item>) {
-        self.pending
-            .push((key, BackgroundTaskTranscriptUpdate::restored(items)));
-    }
-
-    fn drain(&mut self) -> Vec<(BackgroundTaskKey, BackgroundTaskTranscriptUpdate)> {
-        take(&mut self.pending)
-    }
-
-    /// Whether this text is the launch instruction already published as the
-    /// child's opening message.
-    fn repeats_launch(&self, canonical: &str, text: &str) -> bool {
-        self.launch_prompts
-            .get(canonical)
-            .is_some_and(|prompt| prompt.trim() == text.trim())
-    }
-
-    fn open_tool(&mut self, id: String, item: Item) {
-        self.open_tools.insert(id, item);
-    }
-
-    fn close_tool(&mut self, id: &str) -> Option<Item> {
-        self.open_tools.remove(id)
     }
 }

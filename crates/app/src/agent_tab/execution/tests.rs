@@ -1,10 +1,10 @@
 use std::cell::RefCell;
-use std::fs;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{fs, thread};
 
 use gpui::{AppContext as _, Image, ImageFormat, Render, TestAppContext, VisualTestContext};
 use gpui_component::Root;
@@ -13,15 +13,13 @@ use nmt_agent::chat::{Event, Item, SendOutcome, SlashCommandOutcome, ThreadSetti
 use nmt_agent::session::Backend;
 use nmt_agent::session::test_support::TestBackend;
 use nmt_agent::{AgentEventKind, AgentWorkspace};
-use nmt_config::profile::{AgentProfile, AgentProfileKind};
+use nmt_config::profile::AgentProfile;
 
 use crate::agent_tab::composer::attachments::scratch_dir;
 use crate::agent_tab::execution::{AgentSession, SessionRegistry};
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::transcript::TranscriptView;
-use crate::agent_tab::{
-    AgentKind, AgentPane, AgentPaneEvent, AgentThreadDefaults, RecoveryReadiness,
-};
+use crate::agent_tab::{AgentKind, AgentPane, AgentPaneEvent, RecoveryReadiness};
 
 #[gpui::test]
 async fn detached_session_retains_output_and_interaction_until_owner_close(
@@ -32,11 +30,9 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
 
         cx.set_global(AgentSettings::default());
 
-        cx.set_global(AgentThreadDefaults::default());
-
         let owner = AgentSession::create(
             AgentProfile {
-                kind: AgentProfileKind::Codex,
+                kind: AgentKind::Codex,
                 ..AgentProfile::default()
             },
             AgentWorkspace::default(),
@@ -82,7 +78,7 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
 
         backend.approval_accepted = true;
 
-        let epoch = session.controller.borrow_mut().starting(None).epoch;
+        let epoch = session.controller.borrow_mut().starting(None);
 
         assert_eq!(
             session.install(Ok(Backend::Test(backend)), epoch, "test", cx),
@@ -121,7 +117,7 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
             assert!(pane.send_text_inner("accepted image".into(), None, None, cx));
 
             let state = pane.session.borrow();
-            let conversation = state.conversation.borrow();
+            let conversation = state.conversation().borrow();
             let image = &conversation.content.entries()[0].metadata.images[0];
             let scratch = scratch_dir(pane.agent_route(cx).unwrap().as_str());
 
@@ -180,11 +176,11 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
     let second = cx.update(|window, cx| cx.new(|cx| AgentPane::attach(&owner, window, cx)));
 
     second.update(&mut cx, |pane, cx| {
-        assert_eq!(pane.session.borrow().runtime.epoch(), epoch);
+        assert_eq!(pane.session.borrow().runtime().epoch(), epoch);
         assert_eq!(
             pane.session
                 .borrow()
-                .runtime
+                .runtime()
                 .backend()
                 .unwrap()
                 .recovery_identity()
@@ -203,7 +199,7 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
 
         let state = pane.session.borrow();
 
-        let Some(Backend::Test(backend)) = state.runtime.backend() else {
+        let Some(Backend::Test(backend)) = state.runtime().backend() else {
             panic!("test backend");
         };
 
@@ -220,7 +216,7 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
 
     assert_eq!(events.borrow().iter().filter(|event| matches!(event, AgentPaneEvent::Lifecycle(event) if event.kind == AgentEventKind::Stopped)).count(), 1);
 
-    let recovery = cx.update(|_, cx| match host.read(cx).recovery_readiness(cx) {
+    let recovery = cx.update(|_, cx| match host.read(cx).recovery_readiness() {
         RecoveryReadiness::Ready(snapshot) => snapshot,
         _ => panic!("settled retained session is recoverable"),
     });
@@ -257,7 +253,7 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
             host.read(cx)
                 .controller
                 .borrow()
-                .conversation
+                .conversation()
                 .borrow()
                 .content
                 .entries()
@@ -265,12 +261,15 @@ async fn detached_session_retains_output_and_interaction_until_owner_close(
         )
     });
 
-    for _ in 0..100 {
-        if released.load(Ordering::SeqCst) && !scratch.exists() {
-            break;
-        }
+    // Closing shuts the backend down and removes the scratch directory on the
+    // application's tokio runtime, which runs on real threads. The test
+    // executor's timers advance simulated time and return at once, so waiting
+    // on them gives that task no time at all when the machine is busy; the
+    // wait has to be measured on the wall clock.
+    let deadline = Instant::now() + Duration::from_secs(5);
 
-        cx.background_executor.timer(Duration::from_millis(1)).await;
+    while !(released.load(Ordering::SeqCst) && !scratch.exists()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
     }
 
     assert!(released.load(Ordering::SeqCst));

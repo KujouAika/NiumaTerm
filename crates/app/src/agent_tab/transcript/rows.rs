@@ -56,6 +56,27 @@ pub(crate) enum RowSpec {
     },
 }
 
+impl RowSpec {
+    /// Whether `other` describes the row this one does, whatever has since
+    /// changed about it. Equality asks whether a row still measures the same;
+    /// this asks whether it is still there, which is what decides if the list
+    /// may keep the height and the reading position it holds for the row.
+    pub(crate) fn is_same_row(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Entry { index: a, .. }, Self::Entry { index: b, .. })
+            | (Self::Work { index: a, .. }, Self::Work { index: b, .. })
+            | (Self::RunToggle { run_start: a, .. }, Self::RunToggle { run_start: b, .. }) => {
+                a == b
+            }
+            (Self::TurnFold { turn: a, .. }, Self::TurnFold { turn: b, .. })
+            | (Self::Interrupted { turn: a, .. }, Self::Interrupted { turn: b, .. }) => a == b,
+            (Self::TurnSummary { .. }, Self::TurnSummary { .. })
+            | (Self::Working { .. }, Self::Working { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
 /// Whether a row belongs to a run of work steps, and so is drawn inside the
 /// run's grouping rule. The turn fold heads the whole turn rather than one
 /// run, so it stays outside.
@@ -238,6 +259,21 @@ pub(crate) fn entry_fingerprint(
             compaction_accounting(detail).len(),
             detail.user_context.as_ref().map_or(0, String::len) as u64,
         ),
+        SessionItem::TaskList { tasks, .. } => (
+            tasks.explanation.as_ref().map_or(0, String::len)
+                + tasks
+                    .items
+                    .iter()
+                    .map(|task| task.title.len() + task.description.as_ref().map_or(0, String::len))
+                    .sum::<usize>(),
+            tasks.items.len(),
+            tasks.tally().map_or(0, |(done, _)| u64::from(done)),
+        ),
+        SessionItem::SideBoundary {
+            instructions,
+            message,
+            ..
+        } => (instructions.len() + message.len(), 0, 0),
     };
 
     (content_len as u64)

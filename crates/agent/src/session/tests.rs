@@ -1,3 +1,6 @@
+// The only test here drives a PowerShell fixture as the agent CLI.
+#![cfg(windows)]
+
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -21,7 +24,6 @@ impl Drop for Scratch {
     }
 }
 
-#[cfg(windows)]
 #[test]
 fn cli_session_starts_sends_images_and_rejects_cross_provider_recovery_without_a_window() {
     use std::path::Path;
@@ -33,7 +35,9 @@ fn cli_session_starts_sends_images_and_rejects_cross_provider_recovery_without_a
 
     use crate::chat::{Event, SendOutcome, ThreadSettings};
     use crate::session::lifecycle::StartOutcome;
-    use crate::session::{AgentKind, Backend, ImageAttachment, RecoveryIdentity, SessionRuntime};
+    use crate::session::{
+        AgentKind, Backend, ImageAttachment, PromptRequest, RecoveryIdentity, SessionRuntime,
+    };
     use crate::{AgentWorkspace, LaunchConfig};
 
     let scratch = Scratch::new();
@@ -62,17 +66,18 @@ fn cli_session_starts_sends_images_and_rejects_cross_provider_recovery_without_a
 
     let epoch = runtime.begin_start();
 
-    let backend = Backend::spawn(
-        AgentKind::Claude,
-        &launch,
-        &[],
-        &AgentWorkspace::default(),
-        Some(RecoveryIdentity::new(AgentKind::Codex, "unrelated-thread")),
-        move |message| {
-            let _ = sender.send(message);
-        },
-    )
-    .unwrap();
+    let backend = nmt_platform::runtime()
+        .block_on(Backend::spawn(
+            AgentKind::Claude,
+            &launch,
+            &[],
+            &AgentWorkspace::default(),
+            Some(RecoveryIdentity::new(AgentKind::Codex, "unrelated-thread")),
+            move |message| {
+                let _ = sender.send(message);
+            },
+        ))
+        .unwrap();
 
     assert!(backend.recovery_identity().is_none());
     assert!(matches!(
@@ -96,17 +101,17 @@ fn cli_session_starts_sends_images_and_rejects_cross_provider_recovery_without_a
     );
 
     let outcome = runtime.send(|backend| {
-        backend.send_user_message(
-            "picture",
-            &ThreadSettings::default(),
-            None,
-            [ImageAttachment {
+        backend.submit(&PromptRequest {
+            text: "picture",
+            settings: &ThreadSettings::default(),
+            skill: None,
+            images: &[ImageAttachment {
                 bytes: &[1, 2, 3],
                 media_type: "image/png",
-            }]
-            .into_iter(),
-            &scratch.0.join("images"),
-        )
+            }],
+            image_paths: &[],
+            title: None,
+        })
     });
 
     assert!(matches!(outcome, SendOutcome::StartedTurn));
@@ -146,7 +151,9 @@ fn cli_session_starts_sends_images_and_rejects_cross_provider_recovery_without_a
 
     let mut backend = runtime.retire().unwrap();
 
-    backend.shutdown(Duration::from_secs(2), true).unwrap();
+    nmt_platform::runtime()
+        .block_on(backend.shutdown(Duration::from_secs(2), true))
+        .unwrap();
 
     assert!(runtime.process_exit(epoch).is_none());
 }

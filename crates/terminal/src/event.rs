@@ -1,16 +1,20 @@
 use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter};
-use std::sync::{self, Arc};
+use std::sync::Arc;
 use std::{path, time};
 
+use futures::channel::oneshot;
 use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
-use nmt_platform::{Waker, WinsizeBuilder};
+use nmt_platform::WinsizeBuilder;
+use tokio::sync::mpsc::UnboundedSender;
 
+use crate::block_store::SegmentMeta;
 use crate::clipboard::ClipboardType;
-use crate::ghostty;
-use crate::graphics::UpdateQueues;
-use crate::session::request::{CheckpointRequest, Query, Reply};
+use crate::ghostty::{self, BlockHandle};
+use crate::graphics::{GraphicData, UpdateQueues};
+use crate::selection::SelectionType;
+use crate::session::page::{PageSource, RowPage};
 
 /// One PTY-thread block event: a trusted
 /// `;D` freezes the whole command into a finished engine block
@@ -25,11 +29,15 @@ pub enum BlockEvent {
     /// A trusted `;D` froze the command into a finished engine block. The
     /// store keeps only the handle; rendering reads the block through
     /// `BlockRef`. `rows` is the row count at finish time, cached app-side
-    /// so layout never needs an engine query.
+    /// so layout never needs an engine query. `meta` is the complete command
+    /// record: the PTY thread holds command text, launch directory, timing,
+    /// and exit code when it freezes the block, so the item arrives whole
+    /// and the store never joins metadata by sequence number.
     EngineBlock {
         seq: u64,
         handle: ghostty::BlockHandle,
         rows: usize,
+        meta: SegmentMeta,
     },
     /// The engine's current live block list, oldest first, with per-block
     /// row counts. Emitted after resize (eager reflow bumps generations and
@@ -72,12 +80,6 @@ pub struct CommandStart {
     pub started_at: time::SystemTime,
 }
 
-#[derive(Debug, Clone)]
-pub enum TerminalEventType {
-    Terminal(TerminalEvent),
-    Frame,
-}
-
 #[derive(Debug)]
 pub enum Msg {
     /// Data that should be written to the PTY.
@@ -94,33 +96,18 @@ pub enum Msg {
     },
     Query(Query),
     Checkpoint(CheckpointRequest),
+    /// Format a checkpoint and register `sink` for every later byte in the
+    /// same loop step, so the replica sees each byte exactly once.
+    Subscribe {
+        sink: OutputSink,
+        checkpoint: CheckpointRequest,
+    },
     /// Update the local PowerShell resize workaround without waiting behind input.
     PowerShellCompatibility(bool),
 }
 
-/// A `Msg` sender that wakes the PTY event loop's mio `Poll` after each send, so the
-/// loop re-polls and drains the receiver. mio 1.2 has no pollable channel, so the
-/// `std::sync::mpsc` channel is paired with the loop's `Waker`.
-#[derive(Clone)]
-pub struct MsgSender {
-    tx: sync::mpsc::Sender<Msg>,
-    waker: Arc<Waker>,
-}
-
-impl MsgSender {
-    pub fn new(tx: sync::mpsc::Sender<Msg>, waker: Arc<Waker>) -> Self {
-        Self { tx, waker }
-    }
-
-    pub fn send(&self, msg: Msg) -> Result<(), sync::mpsc::SendError<Msg>> {
-        self.tx.send(msg)?;
-
-        // Wake the loop so it drains the receiver. A failed wake means the loop is gone.
-        let _ = self.waker.wake();
-
-        Ok(())
-    }
-}
+/// Sends ordered commands to the owning async terminal task.
+pub type MsgSender = UnboundedSender<Msg>;
 
 #[derive(Clone)]
 pub enum TerminalEvent {
@@ -245,12 +232,6 @@ pub trait EventListener {
 #[derive(Clone)]
 pub struct VoidListener;
 
-impl From<TerminalEvent> for TerminalEventType {
-    fn from(terminal_event: TerminalEvent) -> Self {
-        Self::Terminal(terminal_event)
-    }
-}
-
 impl EventListener for VoidListener {
     fn send_event(&self, _event: TerminalEvent) {}
 }
@@ -278,4 +259,105 @@ pub struct ProgressReport {
 
     /// Optional progress percentage (0-100), only used with Set, Error, and Pause states
     pub progress: Option<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Requests the session sends to the PTY thread
+//
+// The engine lives on the PTY thread, so every read of engine state from the
+// UI side travels as a `Msg::Query` or `Msg::Checkpoint` carrying a oneshot
+// reply. The PTY thread answers between output batches and marks a reply
+// `Stale` when the frame or block it referred to has since moved on.
+// ---------------------------------------------------------------------------
+
+pub type Request<T> = oneshot::Receiver<Result<T, RequestError>>;
+
+pub type Reply<T> = oneshot::Sender<Result<T, RequestError>>;
+
+pub type BlockRange = ((usize, u32), (usize, u32));
+
+#[derive(Debug, Clone)]
+pub enum RequestError {
+    Stale,
+    Unavailable,
+    Engine(String),
+}
+
+#[derive(Debug)]
+pub struct TextPiece {
+    pub handle: BlockHandle,
+    pub start: Option<(usize, u32)>,
+    pub end: Option<(usize, u32)>,
+}
+
+#[derive(Debug)]
+pub enum TextSource {
+    Screen {
+        revision: u64,
+        start: (u16, u32),
+        end: (u16, u32),
+        rectangle: bool,
+    },
+    Blocks(Vec<TextPiece>),
+    BlockSelection {
+        handle: BlockHandle,
+        line: usize,
+        col: u32,
+        kind: SelectionType,
+    },
+}
+
+#[derive(Debug)]
+pub enum Query {
+    Image {
+        handle: BlockHandle,
+        image_id: u32,
+        reply: Reply<GraphicData>,
+    },
+    Rows {
+        source: PageSource,
+        start: usize,
+        reply: Reply<RowPage>,
+    },
+    Text {
+        source: TextSource,
+        reply: Reply<String>,
+    },
+    ExpandSelection {
+        handle: BlockHandle,
+        line: usize,
+        col: u32,
+        kind: SelectionType,
+        reply: Reply<BlockRange>,
+    },
+}
+
+#[derive(Debug)]
+pub struct Checkpoint {
+    pub vt: Vec<u8>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Completion runs on the owner thread before any later output is parsed,
+/// so it is ordered with the bytes subscribers receive. It must not wait for
+/// another thread.
+pub struct CheckpointRequest(pub Box<dyn FnOnce(Result<Checkpoint, RequestError>) + Send>);
+
+impl fmt::Debug for CheckpointRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CheckpointRequest")
+    }
+}
+
+/// Observes the exact VT bytes accepted by the engine, in the owner task.
+/// Returning before the next command preserves checkpoint and output ordering;
+/// observers must not wait for work submitted to this same event loop.
+/// Returning `false` unsubscribes, so a closed stream needs no extra message.
+pub struct OutputSink(pub Box<dyn FnMut(Arc<[u8]>) -> bool + Send>);
+
+impl fmt::Debug for OutputSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OutputSink")
+    }
 }

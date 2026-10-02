@@ -19,6 +19,7 @@ mod usage;
 #[cfg(test)]
 mod tests;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::background_task::{
@@ -28,7 +29,7 @@ use crate::progress::TaskList;
 use crate::workflow::WorkflowSnapshot;
 
 /// Why a context compaction ran.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompactionTrigger {
     /// The backend reached its own context threshold and compacted unprompted.
     Automatic,
@@ -40,7 +41,7 @@ pub enum CompactionTrigger {
 /// a summary. Every field is optional because backends report different subsets
 /// live and in their persisted transcript, and the boundary is worth showing
 /// even when only part of the accounting is known.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compaction {
     pub trigger: Option<CompactionTrigger>,
 
@@ -64,7 +65,7 @@ pub struct Compaction {
 /// A typed view of one transcript item, used for both started and completed
 /// notifications. `Option` fields mean "absent in this payload — keep what
 /// streaming already produced".
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Item {
     /// User text is present for persisted replay and optional for live echoes,
     /// which a UI that already rendered the submitted prompt can skip.
@@ -126,6 +127,24 @@ pub enum Item {
     Error {
         text: String,
     },
+    /// The agent's task list as it stood when a task was completed. The list
+    /// itself lives outside the transcript and changes in place; a snapshot
+    /// in the stream is what lets the reply that closes the work be read
+    /// next to the state of the plan it delivered.
+    TaskList {
+        id: String,
+        tasks: TaskList,
+    },
+    /// What the client wrote into the model's history when it forked a side
+    /// conversation: the developer instructions the fork carries and the
+    /// message marking where the inherited history ends. Neither was typed
+    /// by the user, and both steer every answer that follows, so the
+    /// transcript shows them rather than leaving them invisible.
+    SideBoundary {
+        id: String,
+        instructions: String,
+        message: String,
+    },
 }
 
 impl Item {
@@ -138,7 +157,9 @@ impl Item {
             | Self::CommandExecution { id, .. }
             | Self::FileChange { id, .. }
             | Self::Compaction { id, .. }
-            | Self::Other { id, .. } => Some(id),
+            | Self::Other { id, .. }
+            | Self::TaskList { id, .. }
+            | Self::SideBoundary { id, .. } => Some(id),
             Self::UserMessage { .. } | Self::Error { .. } => None,
         }
     }
@@ -284,6 +305,12 @@ impl Item {
                     detail: completed, ..
                 },
             ) => *detail = completed.clone(),
+            (
+                Self::TaskList { tasks, .. },
+                Self::TaskList {
+                    tasks: completed, ..
+                },
+            ) => *tasks = completed.clone(),
             _ => return false,
         }
 
@@ -309,7 +336,7 @@ pub struct MessageImage {
 /// without naming the individual messages leaves it absent, and the row is
 /// then read-only rather than carrying a control that could not address
 /// anything.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedPrompt {
     pub id: Option<String>,
     pub text: String,
@@ -358,6 +385,14 @@ pub enum Event {
         message: String,
         effort: Option<String>,
     },
+    /// The backend answered a model pick sent as a request of its own. It
+    /// carries what the session runs under now, which is the pick when it was
+    /// taken and the earlier selection beside the reason when it was refused.
+    ModelSelection {
+        model: Option<String>,
+        effort: Option<String>,
+        refusal: Option<String>,
+    },
     /// Replacement snapshot of the execution-permission presets this thread can
     /// switch between, and the one it is on. Reported only by a backend whose
     /// preset table belongs to its deployment rather than to this UI.
@@ -400,6 +435,7 @@ pub enum Event {
     },
     /// Replacement output-token count for the active turn.
     TurnOutputTokensUpdated(u64),
+    GenerationCompleted(GenerationSample),
     /// Replacement snapshot of the current thread's active context window.
     ContextWindowUpdated(ContextWindowUsage),
     /// Replacement breakdown of what fills that window. Reported only by
@@ -522,10 +558,17 @@ pub enum Event {
         /// The handshake itself failed; the session will not become usable.
         fatal: bool,
     },
+    /// The answer to one side question, matched to its request by `id`. A
+    /// side question is answered outside the conversation, so it never opens
+    /// a turn or adds to the transcript.
+    SideQuestionAnswered {
+        id: String,
+        answer: Result<String, String>,
+    },
 }
 
 /// Outcome of a session's `send_user_message`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SendOutcome {
     /// A new turn was started.
     StartedTurn,

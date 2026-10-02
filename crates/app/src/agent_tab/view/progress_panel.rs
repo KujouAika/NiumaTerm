@@ -1,33 +1,66 @@
 #[cfg(test)]
 mod tests;
 
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, FontWeight, Hsla, ScrollHandle, div, px, relative};
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui::{AnyElement, App, Bounds, Context, FontWeight, Pixels, ScrollHandle, Window, div, px};
+use gpui_component::spinner::Spinner;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use nmt_agent::progress::{GoalStatus, Task, TaskList, TaskStatus};
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
-use crate::agent_tab::settings::UI_RADIUS;
+use crate::agent_tab::fade::Fade;
+use crate::agent_tab::view::composer_layout::{composer_panel, composer_panel_slot};
+use crate::design::status_animation_fps;
 
-#[derive(Default)]
+/// Opening the details pushes the transcript up, and a moving edge needs longer
+/// than an opacity change before the eye reads it as travel instead of a jump.
+const DETAILS_DURATION: Duration = Duration::from_millis(160);
+
 pub(crate) struct ProgressPanel {
     expanded: bool,
     scroll: ScrollHandle,
+    details_fade: Fade,
+
+    /// The details' laid-out height, recorded during prepaint. The height ramp
+    /// runs towards it, and the details always lay out at full size so the
+    /// ramp never measures its own animated box.
+    details_height: Rc<Cell<Option<Pixels>>>,
+}
+
+impl Default for ProgressPanel {
+    fn default() -> Self {
+        Self {
+            expanded: false,
+            scroll: ScrollHandle::default(),
+            details_fade: Fade::lasting(DETAILS_DURATION),
+            details_height: Rc::default(),
+        }
+    }
 }
 
 impl ProgressPanel {
     pub(crate) fn render(
-        &self,
+        &mut self,
         goal: Option<&GoalStatus>,
         tasks: Option<&TaskList>,
         plan_mode: bool,
-        background: Hsla,
+        window: &mut Window,
         cx: &mut Context<AgentPane>,
     ) -> Option<AnyElement> {
         let empty = TaskList::default();
-        let tasks = tasks.unwrap_or(&empty);
+        let spinner_fps = status_animation_fps(window);
+
+        // A finished list has nothing left to steer by, and the transcript
+        // already shows it under the reply that finished it.
+        let tasks = tasks
+            .filter(|tasks| !tasks.all_completed())
+            .unwrap_or(&empty);
 
         if goal.is_none() && tasks.items.is_empty() && !plan_mode {
             return None;
@@ -74,43 +107,55 @@ impl ProgressPanel {
         let expanded = self.expanded;
 
         let header = h_flex()
+            .id("agent-progress-toggle")
+            .debug_selector(|| "agent-progress-header".into())
             .w_full()
             .px_3()
-            .pt_1()
-            .pb_1()
+            .py_1()
             .gap_2()
             .items_center()
+            .cursor_pointer()
+            .tooltip(move |window, cx| {
+                Tooltip::new(
+                    t!(if expanded {
+                        "agent-progress-collapse"
+                    } else {
+                        "agent-progress-expand"
+                    })
+                    .into_owned(),
+                )
+                .build(window, cx)
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.progress_panel.expanded = !this.progress_panel.expanded;
+
+                cx.notify();
+            }))
             .child(Icon::new(IconName::Map).size_3().flex_none())
             .child(div().flex_1().min_w_0().truncate().child(summary))
             .children(tally.map(|tally| div().flex_none().child(tally)))
             .child(
-                div()
+                h_flex()
                     .debug_selector(|| "agent-progress-toggle".into())
                     .flex_none()
+                    .size_5()
+                    .justify_center()
                     .child(
-                        Button::new("agent-progress-toggle")
-                            .ghost()
-                            .xsmall()
-                            .icon(if expanded {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronUp
-                            })
-                            .tooltip(t!(if expanded {
-                                "agent-progress-collapse"
-                            } else {
-                                "agent-progress-expand"
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.progress_panel.expanded = !this.progress_panel.expanded;
-
-                                cx.notify();
-                            })),
+                        Icon::new(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronUp
+                        })
+                        .size_3(),
                     ),
             );
 
-        let details = expanded.then(|| {
-            v_flex()
+        let frame = self
+            .details_fade
+            .drive(expanded, Instant::now(), window, cx);
+
+        let details = (!frame.gone()).then(|| {
+            let body = v_flex()
                 .id("agent-progress-details")
                 .debug_selector(|| "agent-progress-details".into())
                 .w_full()
@@ -118,7 +163,7 @@ impl ProgressPanel {
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll)
                 .px_3()
-                .pb_2()
+                .pt_2()
                 .gap_2()
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .when(plan_mode, |this| {
@@ -135,30 +180,61 @@ impl ProgressPanel {
                         .as_ref()
                         .map(|text| div().child(text.clone())),
                 )
-                .children(tasks.items.iter().map(|task| task_row(task, cx)))
+                .children(
+                    tasks
+                        .items
+                        .iter()
+                        .map(|task| task_row(task, Some(spinner_fps), cx)),
+                );
+
+            let recorded = Rc::clone(&self.details_height);
+
+            // Recorded without notifying: only a running ramp reads the value,
+            // and it is already asking for frames.
+            let measure = move |bounds: Vec<Bounds<Pixels>>, _: &mut Window, _: &mut App| {
+                if let Some(bounds) = bounds.first() {
+                    recorded.set(Some(bounds.size.height));
+                }
+            };
+
+            let progress = frame.progress();
+
+            if progress >= 1.0 {
+                return div()
+                    .w_full()
+                    .on_children_prepainted(measure)
+                    .child(body)
+                    .into_any_element();
+            }
+
+            // While the ramp runs, the box is what grows and the details sit
+            // out of flow inside it at their full height. A first opening has
+            // nothing measured yet and starts from zero for one frame.
+            div()
+                .w_full()
+                .relative()
+                .h(self.details_height.get().unwrap_or_default() * progress)
+                .overflow_hidden()
+                .opacity(progress)
+                .on_children_prepainted(measure)
+                .child(div().absolute().top_0().w_full().child(body))
+                .into_any_element()
         });
 
         Some(
-            div()
-                .w_full()
-                .flex()
-                .justify_center()
-                .child(
-                    v_flex()
-                        .debug_selector(|| "agent-progress-panel".into())
-                        .w(relative(0.95))
-                        .rounded_t(UI_RADIUS)
-                        .border_1()
-                        .border_b_0()
-                        .border_color(cx.theme().border.opacity(0.6))
-                        .bg(background.blend(cx.theme().muted))
-                        .pb(px(20.))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(header)
-                        .children(details),
-                )
-                .into_any_element(),
+            composer_panel_slot(
+                // The header sits under the details. The panel grows upward
+                // from the card it stands on, so a header above the details
+                // would move away from the pointer that opened it; below them
+                // it stays where the toggle was clicked.
+                composer_panel(cx)
+                    .debug_selector(|| "agent-progress-panel".into())
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .children(details)
+                    .child(header),
+            )
+            .into_any_element(),
         )
     }
 }
@@ -235,24 +311,41 @@ fn goal_details(goal: &GoalStatus, cx: &Context<AgentPane>) -> AnyElement {
         .into_any_element()
 }
 
-fn task_row(task: &Task, cx: &Context<AgentPane>) -> AnyElement {
-    let (icon, color) = match task.status {
-        TaskStatus::Pending => (IconName::Minus, cx.theme().muted_foreground),
-        TaskStatus::InProgress => (IconName::LoaderCircle, cx.theme().primary),
-        TaskStatus::Completed => (IconName::CircleCheck, cx.theme().success),
+/// Edge of a task's state mark, matching the small icon size.
+const TASK_MARK: f32 = 12.0;
+
+/// One task as a checklist line: its state as a mark, then the title and
+/// whatever else the provider said about it. A live list, given the rate its
+/// spinner turns at, is the one the agent is working through, so its running
+/// task turns; a list recorded in the transcript passes `None`, shows the
+/// state it captured and stays still.
+pub(crate) fn task_row(task: &Task, spinner_fps: Option<f32>, cx: &App) -> AnyElement {
+    let mark = match (&task.status, spinner_fps) {
+        (TaskStatus::InProgress, Some(max_fps)) => Spinner::new()
+            .icon(IconName::LoaderCircle)
+            .with_size(px(TASK_MARK))
+            .color(cx.theme().primary)
+            .max_fps(max_fps)
+            .into_any_element(),
+        (TaskStatus::InProgress, None) => Icon::new(IconName::LoaderCircle)
+            .size(px(TASK_MARK))
+            .text_color(cx.theme().primary)
+            .into_any_element(),
+        (TaskStatus::Pending, _) => Icon::new(IconName::Minus)
+            .size(px(TASK_MARK))
+            .text_color(cx.theme().muted_foreground)
+            .into_any_element(),
+        (TaskStatus::Completed, _) => Icon::new(IconName::Check)
+            .size(px(TASK_MARK))
+            .text_color(cx.theme().success)
+            .into_any_element(),
     };
 
     h_flex()
         .w_full()
         .items_start()
         .gap_2()
-        .child(
-            Icon::new(icon)
-                .size_3()
-                .flex_none()
-                .text_color(color)
-                .mt_0p5(),
-        )
+        .child(div().flex_none().mt_0p5().child(mark))
         .child(
             v_flex()
                 .flex_1()

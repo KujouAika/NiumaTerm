@@ -1,6 +1,7 @@
 use std::slice;
 use std::time::{Duration, Instant};
 
+use crate::event::AgentEventInput;
 use crate::*;
 
 const TOKEN: &str = "hook-secret";
@@ -23,7 +24,7 @@ fn process_routes_are_unique_and_environment_is_exact() {
     assert_eq!(environment[0], (AGENT_ROUTE_ENV.into(), first.0.clone()));
     assert_eq!(
         environment[1],
-        (AGENT_HOOK_TOKEN_ENV.into(), process.hook_token.clone())
+        (AGENT_HOOK_TOKEN_ENV.into(), process.hook_token().into())
     );
     assert_eq!(environment[2], (AGENT_HOOK_VERSION_ENV.into(), "1".into()));
 
@@ -518,10 +519,6 @@ fn aggregation_counts_routes_and_prioritizes_needs_input() {
 
     assert_eq!(projection.status, AgentRuntimeStatus::NeedsInput);
     assert_eq!(projection.unread_count, 2);
-    assert_eq!(
-        projection.latest_unread_text.as_deref(),
-        Some("Agent update")
-    );
 
     monitor.remove_route(&a);
 
@@ -553,10 +550,6 @@ fn tab_activation_keeps_split_sibling_unread_until_exact_acknowledgement() {
     assert_eq!(tab_one.unread_count, 2);
     assert_eq!(tab_two_projection.unread_count, 1);
     assert_eq!(workspace.unread_count, 3);
-    assert_eq!(
-        workspace.latest_unread_text.as_deref(),
-        Some("latest unread")
-    );
 
     let left_id = monitor.notification(&tab_one_left).unwrap().id.clone();
 
@@ -727,7 +720,6 @@ fn background_window_notification_activation_is_exact() {
         .unwrap()
         .clone();
 
-    assert!(request_native_delivery(Some(&foreground), &background));
     assert!(background_monitor.mark_native_requested(&background, &notification.id));
 
     assert!(

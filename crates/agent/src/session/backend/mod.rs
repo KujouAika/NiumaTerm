@@ -1,56 +1,32 @@
 #[cfg(test)]
-#[cfg(windows)]
-mod team_tests;
+mod tests;
 
-#[cfg(test)]
-mod attachment_tests;
-
-use std::path::{Path, PathBuf};
-
+use std::path::PathBuf;
 use std::sync::Arc;
-
 use std::time::Duration;
 
-use std::{fs, io};
-
+use futures::future::{BoxFuture, FutureExt as _, ready};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
 use tracing::trace;
 
-use crate::background_task::{BackgroundTaskKey, BackgroundTaskProvider};
-
+use crate::background_task::BackgroundTaskKey;
 use crate::catalog::adapter_commands;
-
 use crate::chat::{
-    Event as SessionEvent, ForkAnchor, MessageImage, QuestionRequest, QuestionResponse,
-    SendOutcome, SessionScope, SkillReference, SlashCommandInfo, SlashCommandOutcome,
-    TeamDecisionRequest, ThreadSettings,
+    Event, ForkAnchor, MessageImage, QuestionRequest, QuestionResponse, SendOutcome, SessionScope,
+    SkillReference, SlashCommandInfo, SlashCommandOutcome, TeamDecisionRequest, ThreadSettings,
 };
-
-use crate::claude_code::sessions::RestoredTask;
-
+use crate::claude_code::sessions::{RestoredTask, load_task_history};
 use crate::claude_code::stream_json;
-
 use crate::codex::app_server;
-
-use crate::session::capabilities::AgentCapabilities as _;
-
 use crate::session::input::ApprovalOutcome;
-
-use crate::session::team_capabilities::{ModeratorAdmission, TeamLaunch};
-
-use crate::session::team_recovery::RecoveredTeamTurn;
-
+use crate::session::team_capabilities::{ModeratorAdmission, RecoveredTeamTurn, TeamLaunch};
 #[cfg(any(test, feature = "test-support"))]
 use crate::session::test_support::InputResponse;
-
 #[cfg(any(test, feature = "test-support"))]
 use crate::session::test_support::TestBackend;
-
 use crate::session::{AgentKind, ImageAttachment, OperationError, UnsupportedOperation};
-
 use crate::workflow::{WorkflowRefreshRequest, WorkflowRefreshResult, WorkflowRun, WorkflowSource};
-
 use crate::{AgentWorkspace, LaunchConfig, dsh};
 
 /// The conversation a restarted backend should continue, qualified by the
@@ -86,6 +62,21 @@ pub struct ConversationTitleRequest {
     pub provisional_title: String,
 }
 
+/// One user message as composed, borrowed for the length of the submission.
+#[derive(Clone, Copy)]
+pub struct PromptRequest<'a> {
+    pub text: &'a str,
+    pub settings: &'a ThreadSettings,
+    pub skill: Option<&'a SkillReference>,
+    pub images: &'a [ImageAttachment<'a>],
+
+    /// Files prepared before submission for a harness that reads images by path.
+    pub image_paths: &'a [PathBuf],
+
+    /// Present when this message should give the conversation its first title.
+    pub title: Option<&'a ConversationTitleRequest>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenameOutcome {
     Accepted,
@@ -93,12 +84,118 @@ pub enum RenameOutcome {
     Unsupported,
 }
 
+/// What became of a settings pick handed to a live conversation. Each harness
+/// transports picks differently, and the caller needs the result rather than
+/// the transport: whether the session now runs under the pick, will adopt it
+/// with the next prompt, or refused it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettingsOutcome {
+    /// The harness answered the request and the pick is in force. The
+    /// session's own selection is now the authority on what is set.
+    Effective,
+    /// The request is on its way and its answer arrives as an event. The
+    /// caller's recorded settings stand until that event corrects them.
+    Requested,
+    /// Nothing was sent. The pick travels with the next submission, so the
+    /// caller's recorded settings remain the authority until then.
+    RidesNextSubmission,
+    /// The harness refused, in its own words. The session's selection still
+    /// names what it runs under.
+    Refused { message: String },
+}
+
+/// A child-agent history read prepared on the session's thread. It owns
+/// everything the read needs, so it can run on a background thread while the
+/// session keeps processing, and its result only means something to the
+/// session that prepared it.
+pub struct TaskHistoryRead {
+    cwd: Option<String>,
+    session_id: String,
+    starting_sequence: u64,
+}
+
+impl TaskHistoryRead {
+    /// Blocking file reads; meant for a background thread.
+    pub fn run(self) -> TaskHistory {
+        TaskHistory {
+            restored: load_task_history(self.cwd.as_deref(), &self.session_id),
+            starting_sequence: self.starting_sequence,
+        }
+    }
+}
+
+/// How a provider answers a request for one child's conversation.
+pub enum TranscriptLoad {
+    /// The answer is at hand, or arrives later as ordinary session events.
+    Events(Vec<Event>),
+    /// The answer lives in files the harness wrote; read them off the UI
+    /// thread and apply the events it yields.
+    Read(TranscriptRead),
+}
+
+/// Blocking reads of files a harness wrote for one child, meant for a
+/// background thread.
+pub struct TranscriptRead(Box<dyn FnOnce() -> Vec<Event> + Send>);
+
+impl TranscriptRead {
+    pub(crate) fn new(read: impl FnOnce() -> Vec<Event> + Send + 'static) -> Self {
+        Self(Box::new(read))
+    }
+
+    pub fn run(self) -> Vec<Event> {
+        (self.0)()
+    }
+}
+
+/// What a [`TaskHistoryRead`] found, handed back to the session that asked.
+pub struct TaskHistory {
+    restored: Result<Vec<RestoredTask>, String>,
+    starting_sequence: u64,
+}
+
+/// How a live conversation answered a request to continue an earlier one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeOutcome {
+    /// The connection switched conversations and a replay follows on it.
+    SwitchedInPlace,
+    /// The conversation is chosen when the process starts, so its history has
+    /// to be read and the backend restarted with that identity.
+    NeedsReplayRead,
+    Rejected,
+}
+
+impl ResumeOutcome {
+    /// The answer when no session is running to ask. Recent conversations read
+    /// from disk stay listed after a failed start, and a harness that picks
+    /// its conversation at launch can still continue one from there. A harness
+    /// that resumes over its connection has nothing to send the request on.
+    pub fn without_session(kind: AgentKind) -> Self {
+        match kind {
+            AgentKind::Claude => Self::NeedsReplayRead,
+            AgentKind::Codex | AgentKind::DeepSeek => Self::Rejected,
+        }
+    }
+}
+
 impl Backend {
+    pub fn kind(&self) -> AgentKind {
+        match self {
+            Self::Codex(_) => AgentKind::Codex,
+            Self::Claude(_) => AgentKind::Claude,
+            Self::DeepSeek(_) => AgentKind::DeepSeek,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Test(session) => session
+                .recovery
+                .as_ref()
+                .map_or(AgentKind::Codex, |identity| identity.kind),
+        }
+    }
+
     /// Start the harness process for `kind` and wrap it in the matching
     /// variant. Resume differs by harness — Codex asks the running app-server
     /// to reopen a thread, Claude Code takes a session id as a launch flag —
     /// so the caller passes an identity and this decides how to use it.
-    pub fn spawn(
+    pub async fn spawn(
         kind: AgentKind,
         launch: &LaunchConfig,
         host_catalog: &[LaunchConfig],
@@ -115,19 +212,23 @@ impl Backend {
         // costs enough main-thread time to drop frames.
         match kind {
             AgentKind::Codex => match resume {
-                Some(thread_id) => app_server::Session::spawn_resuming(
-                    launch,
-                    host_catalog,
-                    workspace,
-                    thread_id,
-                    true,
-                    deliver,
-                    |line| trace!("codex app-server: {line}"),
-                ),
+                Some(thread_id) => {
+                    app_server::Session::spawn_resuming(
+                        launch,
+                        host_catalog,
+                        workspace,
+                        thread_id,
+                        true,
+                        deliver,
+                        |line| trace!("codex app-server: {line}"),
+                    )
+                    .await
+                }
                 None => {
                     app_server::Session::spawn(launch, host_catalog, workspace, deliver, |line| {
                         trace!("codex app-server: {line}")
                     })
+                    .await
                 }
             }
             .map(Backend::Codex),
@@ -142,12 +243,13 @@ impl Backend {
             // starting it only if no tab holds one yet. `resume` is unused
             // because continuing an earlier conversation is not mapped yet.
             AgentKind::DeepSeek => dsh::Session::create(launch, workspace, deliver)
+                .await
                 .map(Backend::DeepSeek)
                 .map_err(|error| error.message().to_string()),
         }
     }
 
-    pub(super) fn process(&mut self, message: Value) -> Vec<SessionEvent> {
+    pub(super) fn process(&mut self, message: Value) -> Vec<Event> {
         match self {
             Backend::Codex(session) => session.process(message),
             Backend::Claude(session) => session.process(message),
@@ -158,108 +260,86 @@ impl Backend {
     }
 
     /// Send a message and the images it carries. Each harness takes them in
-    /// its own shape: Codex reads files from disk, so the attachments are
-    /// written under `scratch` first, while Claude Code and DeepSeek Harness
-    /// take the bytes inline. A harness with no image input is sent the text
-    /// alone, which is all a pane without `image_input` can have composed.
-    pub fn send_user_message<'a>(
-        &mut self,
-        text: &str,
-        settings: &ThreadSettings,
-        skill: Option<&SkillReference>,
-        attachments: impl Iterator<Item = ImageAttachment<'a>>,
-        scratch: &Path,
-    ) -> SendOutcome {
+    /// its own shape: Codex receives prepared file paths, while Claude Code
+    /// and DeepSeek Harness take the bytes inline.
+    ///
+    /// A request carrying a title gives an unnamed conversation its first
+    /// one, and each harness owns the ordering its persistence model needs:
+    /// Codex names the thread as part of the submission, while Claude Code is
+    /// asked only once the prompt was admitted, so a refused prompt never
+    /// titles a conversation that did not start.
+    pub fn submit(&mut self, request: &PromptRequest<'_>) -> SendOutcome {
+        let PromptRequest {
+            text,
+            settings,
+            skill,
+            images,
+            image_paths,
+            title,
+        } = *request;
+
         match self {
             Backend::Codex(session) => {
-                let paths = match write_attachments(attachments, scratch) {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        return SendOutcome::Rejected {
-                            message: format!("Could not save message attachments: {error}"),
-                        };
-                    }
-                };
+                if image_paths.len() != images.len() {
+                    return SendOutcome::Rejected {
+                        message: "Message images are not ready".into(),
+                    };
+                }
 
-                session.send_user_message_with_skill(text, settings, skill, &paths)
+                match title {
+                    Some(title) => session.send_user_message_with_generated_title(
+                        text,
+                        settings,
+                        skill,
+                        image_paths,
+                        title,
+                    ),
+                    None => {
+                        session.send_user_message_with_skill(text, settings, skill, image_paths)
+                    }
+                }
             }
             Backend::Claude(session) => {
-                session.send_user_message(text, settings, &inline_images(attachments))
-            }
-            // Skills are not mapped for DeepSeek, so a reference cannot reach
-            // it and the prompt goes as the user wrote it.
-            Backend::DeepSeek(session) => {
-                session.send_user_message(text, &inline_images(attachments))
-            }
-            #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(session) => session
-                .send_outcomes
-                .pop_front()
-                .unwrap_or(SendOutcome::NotReady),
-        }
-    }
-
-    /// Submit a message that gives an unnamed conversation its first title.
-    /// Each provider owns the ordering its persistence model needs.
-    pub fn send_user_message_with_title<'a>(
-        &mut self,
-        text: &str,
-        settings: &ThreadSettings,
-        skill: Option<&SkillReference>,
-        attachments: impl Iterator<Item = ImageAttachment<'a>>,
-        scratch: &Path,
-        title: &ConversationTitleRequest,
-    ) -> SendOutcome {
-        match self {
-            Backend::Codex(session) => {
-                let paths = match write_attachments(attachments, scratch) {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        return SendOutcome::Rejected {
-                            message: format!("Could not save message attachments: {error}"),
-                        };
-                    }
-                };
-
-                session.send_user_message_with_generated_title(
+                let outcome = session.send_user_message(
                     text,
                     settings,
-                    skill,
-                    &paths,
-                    &title.provisional_title,
-                )
-            }
-            Backend::Claude(session) => {
-                let outcome =
-                    session.send_user_message(text, settings, &inline_images(attachments));
+                    &inline_images(images.iter().copied()),
+                );
 
-                if matches!(outcome, SendOutcome::StartedTurn | SendOutcome::Steered) {
+                if let Some(title) = title
+                    && matches!(outcome, SendOutcome::StartedTurn | SendOutcome::Steered)
+                {
                     session.request_session_title(&title.description);
                 }
 
                 outcome
             }
+            // Skills are not mapped for DeepSeek, so a reference cannot reach
+            // it and the prompt goes as the user wrote it.
             Backend::DeepSeek(session) => {
-                session.send_user_message(text, &inline_images(attachments))
+                session.send_user_message(text, &inline_images(images.iter().copied()))
             }
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(session) => session
-                .send_outcomes
-                .pop_front()
-                .unwrap_or(SendOutcome::NotReady),
+            Backend::Test(session) => {
+                if let Some(title) = title {
+                    session.title_requests.push(title.description.clone());
+                }
+
+                session
+                    .send_outcomes
+                    .pop_front()
+                    .unwrap_or(SendOutcome::NotReady)
+            }
         }
     }
 
     pub fn adapter_commands(&self) -> Vec<SlashCommandInfo> {
-        let kind = match self {
-            Backend::Codex(_) => AgentKind::Codex,
-            Backend::Claude(_) => AgentKind::Claude,
-            Backend::DeepSeek(_) => AgentKind::DeepSeek,
-            #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(session) => return session.commands.clone(),
-        };
+        #[cfg(any(test, feature = "test-support"))]
+        if let Self::Test(session) = self {
+            return session.commands.clone();
+        }
 
-        adapter_commands(kind)
+        adapter_commands(self.kind())
     }
 
     /// Drop one prompt the backend accepted but has not started. Answers
@@ -273,19 +353,6 @@ impl Backend {
             Backend::Codex(_) | Backend::Claude(_) => false,
             #[cfg(any(test, feature = "test-support"))]
             Backend::Test(_) => false,
-        }
-    }
-
-    /// Pin a title on the conversation, answering with the title the backend
-    /// actually accepted after its own normalization.
-    pub fn rename_conversation(&mut self, title: &str) -> Result<String, OperationError> {
-        match self {
-            Backend::DeepSeek(session) => session.rename(title).map_err(OperationError::Failed),
-            Backend::Codex(_) | Backend::Claude(_) => {
-                Err(OperationError::Unsupported(UnsupportedOperation::Rename))
-            }
-            #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => Err(OperationError::Unsupported(UnsupportedOperation::Rename)),
         }
     }
 
@@ -397,15 +464,12 @@ impl Backend {
     /// provider that minted it, and one harness's task ids mean nothing to
     /// another, so a key from elsewhere reaches no session at all.
     fn owns_task(&self, key: &BackgroundTaskKey) -> bool {
-        let provider = match self {
-            Backend::Codex(_) => BackgroundTaskProvider::Codex,
-            Backend::Claude(_) => BackgroundTaskProvider::Claude,
-            Backend::DeepSeek(_) => BackgroundTaskProvider::DeepSeek,
-            #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => return false,
-        };
+        #[cfg(any(test, feature = "test-support"))]
+        if matches!(self, Self::Test(_)) {
+            return false;
+        }
 
-        provider == key.provider
+        self.kind() == key.provider
     }
 
     /// Ask the provider for one child's conversation. Codex reads the stored
@@ -415,23 +479,23 @@ impl Backend {
         &mut self,
         key: &BackgroundTaskKey,
         cwd: Option<&str>,
-    ) -> Vec<SessionEvent> {
+    ) -> TranscriptLoad {
         if !self.owns_task(key) {
-            return Vec::new();
+            return TranscriptLoad::Events(Vec::new());
         }
 
         match self {
-            Backend::Codex(session) => session.load_background_task_transcript(&key.id),
+            Backend::Codex(session) => {
+                TranscriptLoad::Events(session.load_background_task_transcript(&key.id))
+            }
             Backend::Claude(session) => session.load_background_task_transcript(&key.id, cwd),
-            // The harness answers this one asynchronously, so the read starts
-            // here and its result reaches the pane as an ordinary event.
+            // A child's conversation is answered asynchronously and reaches
+            // the pane as an ordinary event; a job row is answered here.
             Backend::DeepSeek(session) => {
-                session.load_background_task_transcript(&key.id);
-
-                Vec::new()
+                TranscriptLoad::Events(session.load_background_task_transcript(&key.id))
             }
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => Vec::new(),
+            Backend::Test(_) => TranscriptLoad::Events(Vec::new()),
         }
     }
 
@@ -455,24 +519,29 @@ impl Backend {
         }
     }
 
-    /// Take the sequence number a child-agent history read must not overwrite
-    /// past. Live updates that land while the read runs keep their newer state.
-    /// Only Claude Code rebuilds children from files, so Codex has no read to
-    /// bracket and its sequence is unused.
-    pub fn begin_task_restoration(&mut self) -> u64 {
+    /// Prepare the read that rebuilds child agents from files the harness
+    /// keeps, or nothing where children arrive over the connection instead.
+    /// The read records the sequence number it must not overwrite past, so
+    /// live updates that land while it runs keep their newer state.
+    pub fn begin_task_restoration(&mut self, cwd: Option<&str>) -> Option<TaskHistoryRead> {
         match self {
-            Backend::Claude(session) => session.begin_task_restoration(),
-            Backend::Codex(_) | Backend::DeepSeek(_) => 0,
+            Backend::Claude(session) => Some(TaskHistoryRead {
+                cwd: cwd.map(str::to_owned),
+                session_id: session.session_id()?.to_owned(),
+                starting_sequence: session.begin_task_restoration(),
+            }),
+            Backend::Codex(_) | Backend::DeepSeek(_) => None,
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => 0,
+            Backend::Test(_) => None,
         }
     }
 
-    pub fn finish_task_restoration(
-        &mut self,
-        restored: Result<Vec<RestoredTask>, String>,
-        starting_sequence: u64,
-    ) -> Vec<SessionEvent> {
+    pub fn finish_task_restoration(&mut self, history: TaskHistory) -> Vec<Event> {
+        let TaskHistory {
+            restored,
+            starting_sequence,
+        } = history;
+
         match self {
             Backend::Claude(session) => {
                 session.finish_task_restoration(restored, starting_sequence)
@@ -487,16 +556,22 @@ impl Backend {
     /// whether the request reached a backend that can do it: Claude Code has no
     /// in-session resume and must respawn with the session id instead, so the
     /// caller keeps the recent-sessions list open and reports why.
-    pub fn resume_thread(&mut self, thread_id: &str) -> bool {
-        match self {
+    pub fn resume_thread(&mut self, thread_id: &str) -> ResumeOutcome {
+        let switched = match self {
             Backend::Codex(session) => session.resume_thread(thread_id),
             // The harness answers whether it attached, because a conversation
             // rooted in another directory is one this tab cannot adopt.
             Backend::DeepSeek(session) => session.resume_thread(thread_id),
             // Claude selects its conversation only when a process starts.
-            Backend::Claude(_) => false,
+            Backend::Claude(_) => return ResumeOutcome::NeedsReplayRead,
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(session) => session.resume_accepted,
+            Backend::Test(session) => return session.resume_outcome,
+        };
+
+        if switched {
+            ResumeOutcome::SwitchedInPlace
+        } else {
+            ResumeOutcome::Rejected
         }
     }
 
@@ -541,30 +616,34 @@ impl Backend {
     }
 
     pub fn recovery_identity(&self) -> Option<RecoveryIdentity> {
-        match self {
-            Backend::Claude(session) => session
-                .session_id()
-                .map(|id| RecoveryIdentity::new(AgentKind::Claude, id)),
-            Backend::Codex(session) => session
-                .thread_id()
-                .map(|id| RecoveryIdentity::new(AgentKind::Codex, id)),
-            // The id names the conversation on the harness host, which is worth
-            // reporting even though resuming into it is not mapped yet.
-            Backend::DeepSeek(session) => session
-                .session_id()
-                .map(|id| RecoveryIdentity::new(AgentKind::DeepSeek, id)),
+        let id = match self {
+            Self::Claude(session) => session.session_id(),
+            Self::Codex(session) => session.thread_id(),
+            Self::DeepSeek(session) => session.session_id(),
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(session) => session.recovery.clone(),
-        }
+            Self::Test(session) => session
+                .recovery
+                .as_ref()
+                .map(|identity| identity.id.as_str()),
+        };
+
+        id.map(|id| RecoveryIdentity::new(self.kind(), id))
     }
 
     /// Name the conversation this backend holds when its provider stores a
     /// user-authored title of its own.
+    /// Pin `title` on the conversation's record in the harness. A harness
+    /// that normalizes what it stores publishes the result as a title update,
+    /// and DeepSeek reports a refusal in the transcript.
     pub fn rename_session(&mut self, title: &str) -> RenameOutcome {
         let accepted = match self {
             Backend::Claude(session) => session.rename_session(title),
             Backend::Codex(session) => session.rename_thread(title),
-            Backend::DeepSeek(_) => return RenameOutcome::Unsupported,
+            Backend::DeepSeek(session) => {
+                session.rename(title);
+
+                true
+            }
             #[cfg(any(test, feature = "test-support"))]
             Backend::Test(session) => return session.rename_outcome,
         };
@@ -592,24 +671,52 @@ impl Backend {
         }
     }
 
-    pub fn shutdown(&mut self, timeout: Duration, force: bool) -> Result<(), String> {
+    /// Start shutdown now; the returned future waits for the provider process.
+    /// It owns what it needs, so the backend itself may be dropped once it
+    /// resolves.
+    pub fn shutdown(
+        &mut self,
+        timeout: Duration,
+        force: bool,
+    ) -> BoxFuture<'static, Result<(), String>> {
         match self {
-            Backend::Claude(session) => session.shutdown(timeout, force),
+            Backend::Claude(session) => session.shutdown(timeout, force).boxed(),
             Backend::Codex(session) => session.shutdown(timeout, force),
             // Dropping this session releases its hold on the shared host, and
             // the last tab to let go stops it. Nothing here has to wait.
-            Backend::DeepSeek(_) => Ok(()),
+            Backend::DeepSeek(_) => ready(Ok(())).boxed(),
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => Ok(()),
+            Backend::Test(_) => ready(Ok(())).boxed(),
         }
     }
 
-    pub fn process_exit(&mut self) -> Vec<SessionEvent> {
+    pub fn process_exit(&mut self) -> Vec<Event> {
         match self {
             Backend::Claude(session) => session.on_exit(),
             Backend::Codex(_) | Backend::DeepSeek(_) => Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             Backend::Test(_) => Vec::new(),
+        }
+    }
+
+    /// Ask a side question, answering with the request id the answer will
+    /// arrive under. `None` means the harness cannot answer one.
+    pub(crate) fn ask_side_question(
+        &mut self,
+        question: &str,
+        history: &[(&str, &str)],
+    ) -> Option<Result<String, String>> {
+        match self {
+            Backend::Claude(session) => Some(session.ask_side_question(question, history)),
+            Backend::Codex(_) | Backend::DeepSeek(_) => None,
+            #[cfg(any(test, feature = "test-support"))]
+            Backend::Test(_) => None,
+        }
+    }
+
+    pub(crate) fn cancel_side_question(&mut self, id: &str) {
+        if let Backend::Claude(session) = self {
+            session.cancel_side_question(id);
         }
     }
 
@@ -624,21 +731,15 @@ impl Backend {
     }
 
     pub fn respond_approval(&mut self, decision: &str) -> ApprovalOutcome {
+        // Codex and Claude settle an approval by accepting the answer. The
+        // DeepSeek host resolves it later and reports that resolution as its
+        // own event, so an accepted answer there is still pending.
         let (accepted, waits) = match self {
-            Backend::Codex(session) => (
-                session.respond_approval(decision),
-                AgentKind::Codex.caps().async_approval_resolution,
-            ),
-            Backend::Claude(session) => (
-                session.respond_approval(decision),
-                AgentKind::Claude.caps().async_approval_resolution,
-            ),
-            Backend::DeepSeek(session) => (
-                session.respond_approval(decision),
-                AgentKind::DeepSeek.caps().async_approval_resolution,
-            ),
+            Self::Codex(session) => (session.respond_approval(decision), false),
+            Self::Claude(session) => (session.respond_approval(decision), false),
+            Self::DeepSeek(session) => (session.respond_approval(decision), true),
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(session) => {
+            Self::Test(session) => {
                 if session.approval_accepted {
                     session.approval_responses.push(decision.to_owned());
                 }
@@ -691,7 +792,7 @@ impl Backend {
         }
     }
 
-    pub fn apply_workflow_refresh(&mut self, result: WorkflowRefreshResult) -> Vec<SessionEvent> {
+    pub fn apply_workflow_refresh(&mut self, result: WorkflowRefreshResult) -> Vec<Event> {
         match self {
             Backend::Claude(session) => session.apply_workflow_refresh(result),
             Backend::Codex(_) | Backend::DeepSeek(_) => Vec::new(),
@@ -700,7 +801,7 @@ impl Backend {
         }
     }
 
-    pub fn restore_workflows(&mut self, restored: Vec<WorkflowRun>) -> Vec<SessionEvent> {
+    pub fn restore_workflows(&mut self, restored: Vec<WorkflowRun>) -> Vec<Event> {
         match self {
             Backend::Claude(session) => session.restore_workflows(restored),
             Backend::Codex(_) | Backend::DeepSeek(_) => Vec::new(),
@@ -712,24 +813,53 @@ impl Backend {
     /// Point the session at another model. Only DeepSeek applies a pick as its
     /// own request: Codex carries thread settings as overrides on the next
     /// turn, and Claude bakes the model into the launch.
-    pub(crate) fn select_model(&mut self, model: &str, effort: Option<&str>) -> Result<(), String> {
+    pub(crate) fn select_model(&mut self, model: &str, effort: Option<&str>) -> SettingsOutcome {
         match self {
-            Backend::DeepSeek(session) => session.select_model(model, effort),
-            Backend::Codex(_) | Backend::Claude(_) => Ok(()),
+            Backend::DeepSeek(session) => {
+                session.select_model(model, effort);
+
+                SettingsOutcome::Requested
+            }
+            Backend::Codex(_) | Backend::Claude(_) => SettingsOutcome::RidesNextSubmission,
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => Ok(()),
+            Backend::Test(_) => SettingsOutcome::RidesNextSubmission,
+        }
+    }
+
+    /// Switch the conversation's permission preset. Only DeepSeek switches it
+    /// by its own command: Codex carries the approval policy as an override on
+    /// the next turn, and Claude applies its mode through the settings update
+    /// sent with each turn.
+    pub(crate) fn select_approval(&mut self, preset: &str) -> SettingsOutcome {
+        match self {
+            Backend::DeepSeek(session) => {
+                session.select_permission(preset);
+
+                SettingsOutcome::Requested
+            }
+            Backend::Codex(_) | Backend::Claude(_) => SettingsOutcome::RidesNextSubmission,
+            #[cfg(any(test, feature = "test-support"))]
+            Backend::Test(session) => {
+                session.approval_selections.push(preset.to_owned());
+
+                session.approval_selection.clone()
+            }
         }
     }
 
     /// Rebuild the conversation's agent from another composition. Only DeepSeek
     /// composes an agent from a preset at all; the other two launch one CLI
     /// whose capabilities are fixed for the life of the process.
-    pub fn select_agent_preset(&mut self, preset: &str) -> Result<(), String> {
+    pub fn select_agent_preset(&mut self, preset: &str) -> SettingsOutcome {
         match self {
-            Backend::DeepSeek(session) => session.select_agent_preset(preset),
-            Backend::Codex(_) | Backend::Claude(_) => Ok(()),
+            Backend::DeepSeek(session) => {
+                session.select_agent_preset(preset);
+
+                SettingsOutcome::Requested
+            }
+            Backend::Codex(_) | Backend::Claude(_) => SettingsOutcome::RidesNextSubmission,
             #[cfg(any(test, feature = "test-support"))]
-            Backend::Test(_) => Ok(()),
+            Backend::Test(_) => SettingsOutcome::Effective,
         }
     }
 
@@ -786,7 +916,36 @@ impl Backend {
         }
     }
 
-    pub fn spawn_team(
+    /// Open a side conversation forked from `side`'s parent thread. Only
+    /// Codex can fork a live thread into a separate ephemeral one; Claude
+    /// answers side questions inside its own session instead.
+    pub async fn spawn_side(
+        kind: AgentKind,
+        launch: &LaunchConfig,
+        host_catalog: &[LaunchConfig],
+        workspace: &AgentWorkspace,
+        side: app_server::SideStart,
+        deliver: impl Fn(Value) + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        match kind {
+            AgentKind::Codex => app_server::Session::spawn_side(
+                launch,
+                host_catalog,
+                workspace,
+                side,
+                deliver,
+                |line| trace!("codex app-server: {line}"),
+            )
+            .await
+            .map(Self::Codex),
+            AgentKind::Claude | AgentKind::DeepSeek => Err(format!(
+                "{} cannot open a side chat thread.",
+                kind.display()
+            )),
+        }
+    }
+
+    pub async fn spawn_team(
         kind: AgentKind,
         launch: &LaunchConfig,
         host_catalog: &[LaunchConfig],
@@ -812,12 +971,13 @@ impl Backend {
                 deliver,
                 |line| trace!("codex app-server: {line}"),
             )
+            .await
             .map(Self::Codex),
             AgentKind::DeepSeek if recovery.is_some() => Err(
                 "DeepSeek cannot resume this saved Team conversation. Keep its history and explicitly create a new member.".into(),
             ),
             AgentKind::Claude | AgentKind::DeepSeek => {
-                Self::spawn(kind, launch, host_catalog, workspace, recovery, deliver)
+                Self::spawn(kind, launch, host_catalog, workspace, recovery, deliver).await
             }
         }
     }
@@ -857,32 +1017,6 @@ fn inline_images<'a>(attachments: impl Iterator<Item = ImageAttachment<'a>>) -> 
         .map(|attachment| MessageImage {
             bytes: attachment.bytes.to_vec(),
             media_type: attachment.media_type.to_string(),
-        })
-        .collect()
-}
-
-/// All images must be available before sending so a failed write cannot
-/// silently change the message the user composed.
-fn write_attachments<'a>(
-    attachments: impl Iterator<Item = ImageAttachment<'a>>,
-    scratch: &Path,
-) -> io::Result<Vec<PathBuf>> {
-    let mut attachments = attachments.peekable();
-
-    if attachments.peek().is_none() {
-        return Ok(Vec::new());
-    }
-
-    fs::create_dir_all(scratch)?;
-
-    attachments
-        .enumerate()
-        .map(|(index, attachment)| {
-            // Position-based names overwrite matching images on later sends
-            // instead of creating a new set of filenames for every turn.
-            let path = scratch.join(format!("image-{}.png", index + 1));
-
-            fs::write(&path, attachment.bytes).map(|()| path)
         })
         .collect()
 }

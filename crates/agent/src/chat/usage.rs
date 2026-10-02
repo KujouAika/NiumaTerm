@@ -5,10 +5,25 @@
 //! a long conversation affordable, and a reader judging cost needs to see the
 //! two separately.
 
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+/// One completed model response with matching output usage and generation time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenerationSample {
+    pub response_id: String,
+    pub output_tokens: u64,
+    pub elapsed: Duration,
+
+    /// Visible stream timing can omit hidden reasoning and is only an estimate.
+    pub estimated: bool,
+}
+
 /// Whole-log conversation counters, independent of how much history has been
 /// paged in. Reported only by a backend that folds them from its complete log;
 /// a count derived from the visible transcript would disagree with it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionStats {
     pub turns: u64,
     pub steps: u64,
@@ -18,12 +33,17 @@ pub struct SessionStats {
 
     /// Summed tool wall time over matched call/result pairs.
     pub tool_ms: u64,
+
+    /// Output tokens and elapsed decode time over the same completed steps.
+    pub decode_tokens: u64,
+
+    pub decode_ms: u64,
 }
 
 /// Token accounting from one provider reporting scope. The total is
 /// authoritative; optional categories describe parts of that total and stay
 /// absent when a protocol does not expose them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsageBreakdown {
     pub total_tokens: u64,
     pub input_tokens: Option<u64>,
@@ -48,13 +68,13 @@ impl TokenUsageBreakdown {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextUsageScope {
     Thread,
     LastTurn,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedTokenUsage {
     pub scope: ContextUsageScope,
     pub breakdown: TokenUsageBreakdown,
@@ -62,7 +82,7 @@ pub struct ScopedTokenUsage {
 
 /// Latest replacement snapshot of active context usage and any cumulative
 /// accounting that the same provider update can identify precisely.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextWindowUsage {
     pub current: TokenUsageBreakdown,
     pub cumulative: Option<ScopedTokenUsage>,
@@ -77,7 +97,7 @@ impl ContextWindowUsage {
 
 /// One labelled part of what currently fills the context window, such as the
 /// system prompt, the tool definitions, or the conversation itself.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextSegment {
     pub label: String,
     pub tokens: u64,
@@ -94,7 +114,7 @@ pub struct ContextSegment {
 /// How the context window is currently filled, as opposed to how tokens were
 /// billed. A provider that only reports accounting never publishes this, so
 /// its absence is a normal state rather than a failure.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextComposition {
     pub segments: Vec<ContextSegment>,
     pub used_tokens: u64,

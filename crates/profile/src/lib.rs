@@ -1,7 +1,7 @@
 //! Shell profiles, persisted as top-level `[[profiles]]` entries in
 //! `config.toml` by the settings dialog.
 
-pub use crate::kind::{AgentKind, AgentKind as AgentProfileKind};
+pub use crate::kind::AgentKind;
 
 mod kind;
 
@@ -91,7 +91,7 @@ pub struct AgentProfile {
     #[serde(default)]
     pub name: String,
     #[serde(default, serialize_with = "serialize_profile_kind")]
-    pub kind: AgentProfileKind,
+    pub kind: AgentKind,
 
     /// Executable name or path; a bare name resolves via PATH (and PATHEXT on
     /// Windows, so `claude` finds both `claude.exe` and the npm `claude.cmd`).
@@ -146,6 +146,22 @@ pub struct AgentProfile {
     /// is, so this is the only way a custom model name reaches image input.
     #[serde(default, rename = "vision-model")]
     pub vision_model: bool,
+
+    /// Approval setting forced on every conversation this profile starts:
+    /// Claude Code's permission mode or Codex's approval policy, in the
+    /// harness's own serialized value. Tabs keep their own picks and never
+    /// pass them to a tab opened later, so without this each new tab starts
+    /// on the harness's configured value. Empty leaves it to the harness and
+    /// the tab's remembered pick, which is what a profile written before this
+    /// field existed carries.
+    #[serde(default)]
+    pub approval: String,
+
+    /// Codex sandbox policy forced on every conversation this profile
+    /// starts, as its serialized `type` tag. Empty leaves it to Codex and the
+    /// tab's remembered pick.
+    #[serde(default)]
+    pub sandbox: String,
 }
 
 /// On-disk shape of one `[[agent-profiles.list]]` entry. Credentials arrive
@@ -156,7 +172,7 @@ struct PersistedAgentProfile {
     #[serde(default)]
     name: String,
     #[serde(default, deserialize_with = "deserialize_profile_kind")]
-    kind: AgentProfileKind,
+    kind: AgentKind,
     #[serde(default)]
     executable: String,
     #[serde(default)]
@@ -187,6 +203,10 @@ struct PersistedAgentProfile {
     env: Vec<EnvVar>,
     #[serde(default, rename = "vision-model")]
     vision_model: bool,
+    #[serde(default)]
+    approval: String,
+    #[serde(default)]
+    sandbox: String,
 }
 
 impl TryFrom<PersistedAgentProfile> for AgentProfile {
@@ -230,6 +250,8 @@ impl TryFrom<PersistedAgentProfile> for AgentProfile {
             api_key,
             env: persisted.env,
             vision_model: persisted.vision_model,
+            approval: persisted.approval,
+            sandbox: persisted.sandbox,
         })
     }
 }
@@ -313,6 +335,8 @@ pub fn patch_agent_table(
 
         table["env"] = value(env);
         table["vision-model"] = value(profile.vision_model);
+        table["approval"] = value(&profile.approval);
+        table["sandbox"] = value(&profile.sandbox);
 
         tables.push(table);
     }

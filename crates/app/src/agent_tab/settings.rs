@@ -7,7 +7,7 @@
 //! type alone.
 
 use gpui::{Font, FontFallbacks, Global, Hsla, Pixels, SharedString, font, px};
-use nmt_config::agent::{CollapseRows, ModelListStyle};
+use nmt_config::agent::{CollapseRows, ModelListStyle, TokenSpeedMode};
 use nmt_config::profile::AgentProfile;
 use nmt_config::system::NewlineShortcut;
 
@@ -35,6 +35,8 @@ pub struct AgentSettings {
     /// How the composer's model picker spells each model it offers.
     pub model_list_style: ModelListStyle,
 
+    pub token_speed_mode: TokenSpeedMode,
+
     pub smooth_wheel: bool,
 
     /// Put disclosed content on screen at once, skipping the entrance the
@@ -48,6 +50,10 @@ pub struct AgentSettings {
     /// The configured launch profiles, so a restart picks up edits made since
     /// the pane opened.
     pub profiles: Vec<AgentProfile>,
+
+    /// Name of the default launch profile, which continues the conversations
+    /// of a record store several profiles share.
+    pub default_agent_profile: String,
 
     /// Tint opacity of the pane background; the window-backdrop arithmetic
     /// stays with the chrome settings that own it.
@@ -64,6 +70,13 @@ pub struct AgentSettings {
     /// Opaque terminal palette background, resolved by the application when
     /// settings or the selected theme change. Pane opacity is applied at paint.
     pub terminal_background: Hsla,
+
+    /// Step through the questions of a batch one at a time.
+    pub answer_questions_one_at_a_time: bool,
+
+    /// Offer the launch profile as a composer control, so one kind of agent
+    /// tab can become any configured agent before its conversation starts.
+    pub unified_agent_tab: bool,
 }
 
 impl Global for AgentSettings {}
@@ -101,14 +114,18 @@ impl Default for AgentSettings {
             collapse_tool_calls: CollapseRows::default(),
             codex_skill_command_compat: false,
             model_list_style: ModelListStyle::default(),
+            token_speed_mode: TokenSpeedMode::default(),
             smooth_wheel: true,
             reduce_motion: false,
             git_status_refresh_interval: 30,
             profiles: Vec::new(),
+            default_agent_profile: String::new(),
             background_opacity: 1.0,
             font_fallbacks: FontFallbacks::default(),
             human_friendly_layout: true,
             terminal_background: Hsla::black(),
+            answer_questions_one_at_a_time: false,
+            unified_agent_tab: true,
         }
     }
 }

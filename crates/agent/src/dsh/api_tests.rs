@@ -4,11 +4,11 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tungstenite::accept_hdr;
-use tungstenite::handshake::server::Request;
+use tokio_tungstenite::tungstenite::handshake::server::Request;
+use tokio_tungstenite::tungstenite::{accept_hdr, connect};
 
 use crate::dsh::api::{ApiClient, CallError};
-use crate::dsh::commands;
+use crate::dsh::catalogs;
 
 fn read_request(stream: &TcpStream) -> (String, String, Value) {
     stream
@@ -108,16 +108,20 @@ fn startup_token_authenticates_rpc_and_stream_without_corrupting_the_path() {
         let _ = socket.close(None);
     });
 
-    let client = ApiClient::new(format!("http://{address}/?token=startup-secret")).unwrap();
+    let client = nmt_platform::runtime()
+        .block_on(ApiClient::new(format!(
+            "http://{address}/?token=startup-secret"
+        )))
+        .unwrap();
 
     assert_eq!(
-        client
-            .request("session/create", json!({ "cwd": "project" }))
+        nmt_platform::runtime()
+            .block_on(client.request("session/create", json!({ "cwd": "project" })))
             .unwrap()["sessionId"],
         "session-1"
     );
 
-    let _ = tungstenite::connect(client.stream_request().unwrap()).unwrap();
+    let _ = connect(client.stream_request().unwrap()).unwrap();
 
     server.join().unwrap();
 }
@@ -151,14 +155,16 @@ fn event_reply_keeps_the_generation_and_event_ids() {
         .unwrap();
     });
 
-    let client = ApiClient::new(format!("http://{address}")).unwrap();
+    let client = nmt_platform::runtime()
+        .block_on(ApiClient::new(format!("http://{address}")))
+        .unwrap();
 
-    client
-        .respond_event(
+    nmt_platform::runtime()
+        .block_on(client.respond_event(
             "generation-1",
             "approval-1",
             json!({ "kind": "result", "value": "allowed-once" }),
-        )
+        ))
         .unwrap();
 
     server.join().unwrap();
@@ -189,7 +195,12 @@ fn command_server(replies: Vec<(Value, Value)>) -> (ApiClient, thread::JoinHandl
         }
     });
 
-    (ApiClient::new(format!("http://{address}")).unwrap(), server)
+    (
+        nmt_platform::runtime()
+            .block_on(ApiClient::new(format!("http://{address}")))
+            .unwrap(),
+        server,
+    )
 }
 
 #[test]
@@ -216,7 +227,9 @@ fn commands_submit_an_empty_attachment_list_for_every_command_line() {
 
     for line in lines {
         assert_eq!(
-            commands::execute(&client, "session-1", line).unwrap(),
+            nmt_platform::runtime()
+                .block_on(catalogs::execute_command(&client, "session-1", line))
+                .unwrap(),
             value
         );
     }
@@ -245,7 +258,9 @@ fn commands_retry_the_older_attachment_name_after_argument_rejection() {
     ]);
 
     assert_eq!(
-        commands::execute(&client, "session-1", line).unwrap(),
+        nmt_platform::runtime()
+            .block_on(catalogs::execute_command(&client, "session-1", line))
+            .unwrap(),
         value
     );
 
@@ -265,7 +280,11 @@ fn commands_return_unrelated_failures_without_retrying() {
         )]);
 
         assert_eq!(
-            commands::execute(&client, "session-1", "/permission dangerously"),
+            nmt_platform::runtime().block_on(catalogs::execute_command(
+                &client,
+                "session-1",
+                "/permission dangerously"
+            )),
             Err(CallError::Business {
                 code: code.into(),
                 message: message.into()

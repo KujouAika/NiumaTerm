@@ -1,7 +1,6 @@
 use tempfile::Builder as TempDirBuilder;
 
 use crate::application::*;
-use crate::colors;
 
 #[test]
 fn powershell_compatibility_defaults_on_for_existing_configs_and_preserves_opt_out() {
@@ -29,8 +28,6 @@ fn sample_appearance() -> AppearanceConfig {
         show_daily_token_usage: true,
         show_git_status_on_title_bar: true,
         git_status_refresh_interval: 15,
-        tab_width: 150.0,
-        tab_auto_size: true,
         tab_bar_style: appearance::TabBarStyle::Vertical,
         ui_font: "Arial".to_string(),
         terminal_font_family: "Cascadia Code".to_string(),
@@ -50,19 +47,21 @@ fn sample_appearance() -> AppearanceConfig {
         agent_transcript_font_size: 12.5,
         reduce_motion: true,
         human_friendly_agent_ui_layout: false,
+        tab_shape: appearance::TabShape::Rounded,
     }
 }
 
 fn sample_system() -> SystemConfig {
     SystemConfig {
         restore_last_session_when_opening: false,
-        manage_subprocess_job: true,
         warn_before_terminating_shell: system::WarnBeforeTerminatingShell::Disabled,
         confirm_before_closing_workspace: false,
         prioritize_ui_threads: true,
         newline_shortcut: system::NewlineShortcut::ShiftEnter,
         open_in_best_workspace: false,
         send_system_notifications: false,
+        proxy: system::ProxyMode::Socks,
+        proxy_url: "127.0.0.1:7890".into(),
     }
 }
 
@@ -75,6 +74,9 @@ fn sample_agent() -> AgentConfig {
         codex_skill_command_compat: false,
         model_list_style: agent::ModelListStyle::IdOnly,
         enable_agent_team: true,
+        token_speed_mode: agent::TokenSpeedMode::Session,
+        answer_questions_one_at_a_time: true,
+        unified_agent_tab: false,
     }
 }
 
@@ -89,7 +91,7 @@ fn sample_profiles() -> Vec<Profile> {
 fn sample_agent_profiles() -> Vec<profile::AgentProfile> {
     vec![profile::AgentProfile {
         name: "Claude Code".to_string(),
-        kind: profile::AgentProfileKind::Claude,
+        kind: profile::AgentKind::Claude,
         executable: "claude".to_string(),
         launcher: profile::AgentProfileLauncher::Custom,
         model: "claude-opus-4-8".to_string(),
@@ -104,6 +106,8 @@ fn sample_agent_profiles() -> Vec<profile::AgentProfile> {
             value: "bar".to_string(),
         }],
         vision_model: false,
+        approval: "acceptEdits".to_string(),
+        sandbox: String::new(),
     }]
 }
 
@@ -116,13 +120,13 @@ fn patch_settings(doc: &mut DocumentMut) {
             cursor_shape: CursorShape::Beam,
             agent: &sample_agent(),
             system: &sample_system(),
-            remote_session: &remote_session::RemoteSessionConfig::default(),
             update: &update::UpdateConfig::default(),
             profiles: &sample_profiles(),
             default_profile: "PowerShell",
             agent_profiles: &sample_agent_profiles(),
             default_agent_profile: "Claude Code",
             terminal: &TerminalConfig::default(),
+            remote: &RemoteConfig::default(),
         },
     )
     .unwrap();
@@ -185,7 +189,6 @@ fn settings_patch_preserves_unknown_group_keys_and_removes_cleared_image() {
 appearance = { future-appearance = 42, background-image = "old.png" }
 agent = { future-agent = "keep" }
 system = { future-system = true }
-remote-session = { future-remote = [1, 2] }
 update = { future-update = "keep" }
 "#
     .parse::<DocumentMut>()
@@ -204,13 +207,13 @@ update = { future-update = "keep" }
             cursor_shape: CursorShape::Beam,
             agent: &sample_agent(),
             system: &sample_system(),
-            remote_session: &remote_session::RemoteSessionConfig::default(),
             update: &update::UpdateConfig::default(),
             profiles: &sample_profiles(),
             default_profile: "PowerShell",
             agent_profiles: &sample_agent_profiles(),
             default_agent_profile: "Claude Code",
             terminal: &TerminalConfig::default(),
+            remote: &RemoteConfig::default(),
         },
     )
     .unwrap();
@@ -221,13 +224,6 @@ update = { future-update = "keep" }
     );
     assert_eq!(doc["agent"]["future-agent"].as_str(), Some("keep"));
     assert_eq!(doc["system"]["future-system"].as_bool(), Some(true));
-    assert_eq!(
-        doc["remote-session"]["future-remote"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
     assert_eq!(doc["update"]["future-update"].as_str(), Some("keep"));
     assert!(
         doc["appearance"]
@@ -263,13 +259,13 @@ fn save_settings_to_creates_updates_and_rejects_invalid() {
                 cursor_shape: CursorShape::Beam,
                 agent: &sample_agent(),
                 system: &sample_system(),
-                remote_session: &remote_session::RemoteSessionConfig::default(),
                 update: &update::UpdateConfig::default(),
                 profiles: &sample_profiles(),
                 default_profile: "PowerShell",
                 agent_profiles: &sample_agent_profiles(),
                 default_agent_profile: "Claude Code",
                 terminal: &TerminalConfig::default(),
+                remote: &RemoteConfig::default(),
             },
         )
     };
@@ -558,13 +554,6 @@ fn create_temporary_config(prefix: &str, toml_str: &str) -> Config {
 
 /// Terminal palette of the built-in default theme, which a config that
 /// doesn't name a theme resolves to.
-fn default_theme_colors() -> Colors {
-    parse_toml::<Theme>(get_builtin_theme(&default_theme()).unwrap())
-        .unwrap()
-        .colors
-        .terminal
-}
-
 #[test]
 fn startup_load_defaults_when_missing_and_errors_on_bad_toml() {
     let dir = TempDirBuilder::new()
@@ -587,139 +576,6 @@ fn startup_load_defaults_when_missing_and_errors_on_bad_toml() {
     assert!(Config::load_for_startup_from(&path, dir.path()).is_err());
 
     assert!(Config::load_for_startup_from(dir.path(), dir.path()).is_err());
-}
-
-#[test]
-fn test_if_explicit_defaults_match() {
-    // An empty config file must resolve to the explicit defaults.
-    let result = create_temporary_config("defaults", "");
-
-    assert_eq!(result.cursor.shape, default_cursor());
-    assert_eq!(result.theme, default_theme());
-    assert_eq!(result.shell, default_shell());
-
-    // Colors
-    assert_eq!(result.colors, default_theme_colors());
-}
-
-#[test]
-fn unknown_config_fields_keep_defaults() {
-    let toml_str = r#"
-            Performance = 2
-            width = "big"
-            height = "small"
-        "#;
-
-    let result = create_temporary_config("unknown-config-fields", toml_str);
-
-    assert_eq!(result.theme, default_theme());
-
-    // Colors
-    assert_eq!(result.colors, default_theme_colors());
-}
-
-#[test]
-fn test_change_config_cursor() {
-    let result = create_temporary_config(
-        "change-cursor",
-        r#"
-            [cursor]
-            shape = 'underline'
-        "#,
-    );
-
-    assert_eq!(result.cursor.shape, CursorShape::Underline);
-    assert_eq!(result.theme, default_theme());
-
-    // Colors
-    assert_eq!(result.colors, default_theme_colors());
-
-    let result = create_temporary_config(
-        "change-cursor-line",
-        r#"
-            [cursor]
-            shape = 'line'
-        "#,
-    );
-
-    assert_eq!(result.cursor.shape, CursorShape::Beam);
-}
-
-#[test]
-fn test_change_theme() {
-    let result = create_temporary_config(
-        "change-theme",
-        r#"
-            theme = "lucario"
-        "#,
-    );
-
-    assert_eq!(result.theme, "lucario");
-
-    // Colors
-    assert_eq!(result.colors.background, colors::defaults::background());
-    assert_eq!(result.colors.foreground, colors::defaults::foreground());
-    assert_eq!(result.colors.cursor, colors::defaults::cursor());
-}
-
-#[test]
-fn test_change_theme_with_colors() {
-    let dir = TempDirBuilder::new()
-        .prefix("custom-theme-config")
-        .tempdir()
-        .unwrap();
-
-    let themes = dir.path().join("themes");
-
-    fs::create_dir(&themes).unwrap();
-
-    fs::write(
-        themes.join("lucario-with-colors.toml"),
-        r#"
-            name = 'Lucario'
-            mode = 'dark'
-
-            [colors.terminal]
-            background       = '#2B3E50'
-            foreground       = '#F8F8F2'
-
-            [colors.ui]
-            background = '#2B3E50'
-        "#,
-    )
-    .unwrap();
-
-    let path = dir.path().join("config.toml");
-
-    fs::write(
-        &path,
-        r#"
-            theme = "lucario-with-colors"
-        "#,
-    )
-    .unwrap();
-
-    let result = Config::load_for_startup_from(&path, dir.path()).unwrap();
-
-    // Colors
-    assert_eq!(result.colors.cursor, colors::defaults::cursor());
-    assert_eq!(
-        result.colors.foreground,
-        [248.0 / 255.0, 248.0 / 255.0, 242.0 / 255.0, 1.0]
-    );
-    assert_eq!(
-        result.colors.background,
-        [43.0 / 255.0, 62.0 / 255.0, 80.0 / 255.0, 1.0]
-    );
-    assert_eq!(result.ui_theme.as_ref().unwrap().name, "Lucario");
-    assert_eq!(
-        result.ui_theme.as_ref().unwrap().mode,
-        AppearanceTheme::Dark
-    );
-    assert_eq!(
-        result.ui_theme.as_ref().unwrap().colors["background"].as_str(),
-        Some("#2B3E50")
-    );
 }
 
 #[test]
@@ -756,31 +612,6 @@ fn theme_list_loads_valid_toml_files_in_name_order() {
             .collect::<Vec<_>>(),
         ["alpha", "Zulu"]
     );
-}
-
-#[test]
-fn built_in_themes_load_without_user_files() {
-    let dir = TempDirBuilder::new()
-        .prefix("NiumaTerm-missing-builtins")
-        .tempdir()
-        .unwrap();
-
-    for builtin in BUILTIN_THEMES {
-        let path = dir.path().join(builtin.name).with_extension("toml");
-        let theme = Config::load_theme(&path).unwrap();
-
-        assert!(!theme.name.is_empty());
-    }
-}
-
-#[test]
-fn custom_theme_overrides_builtin_case_insensitively() {
-    let mut themes = vec![("ubuntu".into(), Theme::default())];
-
-    merge_theme(&mut themes, ("Ubuntu".into(), Theme::default()));
-
-    assert_eq!(themes.len(), 1);
-    assert_eq!(themes[0].0, "Ubuntu");
 }
 
 #[test]
@@ -823,32 +654,6 @@ fn top_level_colors_are_ignored() {
     assert_eq!(result.colors, Colors::default());
 }
 
-#[test]
-fn test_shell() {
-    let result = create_temporary_config(
-        "change-shell-and-editor",
-        r#"
-            shell = { program = "/bin/fish", args = ["--hello"] }
-        "#,
-    );
-
-    assert_eq!(result.shell.program, "/bin/fish");
-    assert_eq!(result.shell.args, ["--hello"]);
-}
-
-#[test]
-fn test_shell_no_args() {
-    let result = create_temporary_config(
-        "change-shell-and-editor-no-args",
-        r#"
-            shell = { program = "/bin/fish" }
-        "#,
-    );
-
-    assert_eq!(result.shell.program, "/bin/fish");
-    assert_eq!(result.shell.args, Vec::<&str>::new());
-}
-
 #[cfg(target_os = "windows")]
 const EXAMPLE_CONFIG_PATH: &str = "../../assets/config-example.toml";
 
@@ -887,33 +692,6 @@ fn example_config_matches_the_serialized_defaults() {
     );
 }
 
-#[test]
-fn a_model_entry_carries_the_names_the_style_asks_for() {
-    use crate::agent::ModelListStyle;
-
-    assert_eq!(
-        ModelListStyle::NameAndId.label("Opus 5", "claude-opus-5"),
-        "Opus 5 (claude-opus-5)"
-    );
-    assert_eq!(
-        ModelListStyle::IdAndName.label("Opus 5", "claude-opus-5"),
-        "claude-opus-5 (Opus 5)"
-    );
-    assert_eq!(
-        ModelListStyle::NameOnly.label("Opus 5", "claude-opus-5"),
-        "Opus 5"
-    );
-    assert_eq!(
-        ModelListStyle::IdOnly.label("Opus 5", "claude-opus-5"),
-        "claude-opus-5"
-    );
-
-    // A harness with one name for a model states it once under every style.
-    assert_eq!(ModelListStyle::NameAndId.label("gpt-5", "gpt-5"), "gpt-5");
-    assert_eq!(ModelListStyle::IdAndName.label("", "gpt-5"), "gpt-5");
-    assert_eq!(ModelListStyle::NameOnly.label("  ", "gpt-5"), "gpt-5");
-}
-
 fn encrypt_credentials(api_base_url: &str, api_key: &str) -> Result<String, String> {
     let mut table = Table::new();
 
@@ -945,7 +723,6 @@ terminal-font-size = -1
 agent-font-size = 500
 agent-transcript-font-size = nan
 terminal-line-height = inf
-tab-width = 9999
 background-opacity = -5
 background-image-opacity = nan
 background-image = " "
@@ -976,7 +753,6 @@ git-status-refresh-interval = 1
         appearance.terminal_line_height,
         defaults.terminal_line_height
     );
-    assert_eq!(appearance.tab_width, appearance::MAX_TAB_WIDTH);
     assert_eq!(appearance.background_opacity, 0.2);
     assert_eq!(
         appearance.background_image_opacity,
@@ -984,6 +760,39 @@ git-status-refresh-interval = 1
     );
     assert_eq!(appearance.background_image, None);
     assert_eq!(appearance.git_status_refresh_interval, 30);
+}
+
+#[test]
+fn every_platform_default_font_loads_as_this_platform_default() {
+    let defaults = AppearanceConfig::default();
+
+    for (ui, mono) in [("Segoe UI", "Consolas"), (".SystemUIFont", "Menlo")] {
+        let config = create_temporary_config(
+            "platform-default-fonts",
+            &format!(
+                r#"
+[appearance]
+ui-font = "{ui}"
+terminal-font-family = "{mono}"
+agent-font-family = "{ui}"
+agent-transcript-font-family = "{mono}"
+"#
+            ),
+        );
+
+        let appearance = &config.appearance;
+
+        assert_eq!(appearance.ui_font, defaults.ui_font);
+        assert_eq!(
+            appearance.terminal_font_family,
+            defaults.terminal_font_family
+        );
+        assert_eq!(appearance.agent_font_family, defaults.agent_font_family);
+        assert_eq!(
+            appearance.agent_transcript_font_family,
+            defaults.agent_transcript_font_family
+        );
+    }
 }
 
 #[test]

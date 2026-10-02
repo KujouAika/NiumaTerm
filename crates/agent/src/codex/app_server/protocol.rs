@@ -3,14 +3,16 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use crate::CodexProviderConfig;
 use crate::chat::{
     Compaction, ContextUsageScope, ContextWindowUsage, Event, ForkAnchor, ForkCheckpoint, Item,
     ModelInfo, ReplayItem, ReplayTurn, ScopedTokenUsage, SessionScope, SessionSummary,
-    SkillReference, SlashCommandOutcome, ThreadSettings, TokenUsageBreakdown,
+    SkillReference, ThreadSettings, TokenUsageBreakdown, list_selected_model,
 };
+use crate::codex::ProviderConfig;
+use crate::codex::app_server::progress::goal_request;
 use crate::codex::app_server::questions::parse_async_questions;
 use crate::codex::app_server::{PROVIDER_API_FIELD, THREAD_LIST_LIMIT, ThreadProfile};
+use crate::json::{block_text, rfc3339_from_unix_seconds};
 use crate::workspace::AgentWorkspace;
 
 pub(super) fn parse_context_window_usage(value: &Value) -> Option<ContextWindowUsage> {
@@ -45,26 +47,64 @@ pub(super) fn parse_token_usage_breakdown(value: &Value) -> Option<TokenUsageBre
     })
 }
 
-pub(super) fn codex_command_request(rpc_id: u64, thread_id: &str, name: &str) -> Option<Value> {
-    match name {
-        "compact" => Some(json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "method": "thread/compact/start",
-            "params": {"threadId": thread_id},
-        })),
-        "review" => Some(json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "method": "review/start",
-            "params": {
-                "threadId": thread_id,
-                "delivery": "inline",
-                "target": {"type": "uncommittedChanges"},
-            },
-        })),
-        _ => None,
+/// A slash command the app server runs through a dedicated request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CodexCommand {
+    Compact,
+    Review,
+    Goal,
+}
+
+impl CodexCommand {
+    pub(super) fn parse(name: &str) -> Option<Self> {
+        match name {
+            "compact" => Some(Self::Compact),
+            "review" => Some(Self::Review),
+            "goal" => Some(Self::Goal),
+            _ => None,
+        }
     }
+
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Review => "review",
+            Self::Goal => "goal",
+        }
+    }
+
+    pub(super) fn request(self, rpc_id: u64, thread_id: &str, arguments: &str) -> Value {
+        match self {
+            Self::Compact => json!({
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "method": "thread/compact/start",
+                "params": {"threadId": thread_id},
+            }),
+            Self::Review => json!({
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "method": "review/start",
+                "params": {
+                    "threadId": thread_id,
+                    "delivery": "inline",
+                    "target": {"type": "uncommittedChanges"},
+                },
+            }),
+            Self::Goal => goal_request(rpc_id, thread_id, arguments),
+        }
+    }
+}
+
+/// Stop the turn `turn_id` of thread `thread_id`. The request is scoped to
+/// the thread it names, so it ends only that thread's turn.
+pub(super) fn turn_interrupt_request(rpc_id: u64, thread_id: &str, turn_id: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "method": "turn/interrupt",
+        "params": {"threadId": thread_id, "turnId": turn_id},
+    })
 }
 
 pub(super) fn thread_name_request(rpc_id: u64, thread_id: &str, name: &str) -> Value {
@@ -126,19 +166,6 @@ pub(super) fn codex_user_input(
     Value::Array(input)
 }
 
-pub(super) fn codex_command_response(name: &str, error: Option<&str>) -> SlashCommandOutcome {
-    if let Some(error) = error {
-        return SlashCommandOutcome::Rejected {
-            message: format!("/{name} failed: {error}"),
-        };
-    }
-
-    // Dedicated command RPCs acknowledge scheduling before their turn and
-    // item notifications report the actual work. Treating this response as
-    // completion can admit another queued command while the thread is busy.
-    SlashCommandOutcome::Accepted
-}
-
 pub(super) fn delta_event(params: &Value, make: fn(String, String) -> Event) -> Vec<Event> {
     match (params["itemId"].as_str(), params["delta"].as_str()) {
         (Some(item_id), Some(delta)) => vec![make(item_id.to_string(), delta.to_string())],
@@ -146,7 +173,7 @@ pub(super) fn delta_event(params: &Value, make: fn(String, String) -> Event) -> 
     }
 }
 
-pub(super) fn add_provider_config(params: &mut Value, provider: &CodexProviderConfig) {
+pub(super) fn add_provider_config(params: &mut Value, provider: &ProviderConfig) {
     let mut provider_value = json!({
         "name": provider.name.as_str(),
         "base_url": provider.base_url.as_str(),
@@ -282,6 +309,7 @@ pub(super) fn parse_thread_settings(result: &Value) -> ThreadSettings {
         sandbox: result["sandbox"]["type"].as_str().map(str::to_owned),
         effort: result["reasoningEffort"].as_str().map(str::to_owned),
         tier: result["serviceTier"].as_str().map(str::to_owned),
+        agent_preset: None,
     }
 }
 
@@ -404,22 +432,7 @@ pub(super) fn parse_models(result: &Value, selected_model: Option<&str>) -> Vec<
         })
         .unwrap_or_default();
 
-    if let Some(model) = selected_model
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        && !models.iter().any(|entry| entry.model == model)
-    {
-        models.insert(
-            0,
-            ModelInfo {
-                model: model.to_string(),
-                display: model.to_string(),
-                tiers: Vec::new(),
-                default_tier: None,
-                efforts: Vec::new(),
-            },
-        );
-    }
+    list_selected_model(&mut models, selected_model);
 
     models
 }
@@ -514,6 +527,7 @@ fn parse_thread_summary(thread: &Value, own_thread: Option<&str>) -> Option<Sess
             .map(str::to_owned),
         last_active: UNIX_EPOCH + Duration::from_secs(seconds),
         snippet: None,
+        origin: None,
     })
 }
 
@@ -548,7 +562,9 @@ pub(super) fn parse_fork_checkpoints(turns: &Value) -> Vec<ForkCheckpoint> {
 
             Some(ForkCheckpoint {
                 prompt: turn_prompt(opened)?,
-                timestamp: opened["startedAt"].as_i64().map(unix_seconds_to_rfc3339),
+                timestamp: opened["startedAt"]
+                    .as_i64()
+                    .and_then(rfc3339_from_unix_seconds),
                 anchor: ForkAnchor::CodexThrough(kept["id"].as_str()?.to_string()),
             })
         })
@@ -568,14 +584,6 @@ fn turn_prompt(turn: &Value) -> Option<String> {
         .find(|item| item["type"].as_str() == Some("userMessage"))
         .map(|item| user_input_text(&item["content"]))
         .filter(|text| !text.trim().is_empty())
-}
-
-/// Codex dates turns in Unix seconds while the picker renders RFC 3339, which
-/// is what the backends reading their history off disk already record.
-fn unix_seconds_to_rfc3339(seconds: i64) -> String {
-    chrono::DateTime::from_timestamp(seconds, 0)
-        .unwrap_or_default()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 pub(super) fn parse_replay(turns: &Value) -> Vec<ReplayTurn> {
@@ -632,6 +640,7 @@ pub(super) fn parse_replay(turns: &Value) -> Vec<ReplayTurn> {
 
         replay.push(ReplayTurn {
             items,
+            generation_samples: Vec::new(),
             seconds: turn["durationMs"].as_u64().map(|ms| ms / 1000),
             // The response reports no per-turn token total.
             output_tokens: None,
@@ -644,15 +653,9 @@ pub(super) fn parse_replay(turns: &Value) -> Vec<ReplayTurn> {
 
 /// A user message item's `content` is an array of typed `UserInput` blocks.
 pub(super) fn user_input_text(content: &Value) -> String {
-    let parts: Vec<&str> = content
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|block| block["type"].as_str() == Some("text"))
-        .filter_map(|block| block["text"].as_str())
-        .collect();
-
-    parts.join("\n").trim().to_string()
+    block_text(content, true)
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
 }
 
 pub(super) fn parse_item(item: &Value) -> Option<Item> {

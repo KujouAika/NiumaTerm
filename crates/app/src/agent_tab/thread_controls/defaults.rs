@@ -1,36 +1,22 @@
-//! The controls a conversation runs under -- model, preset, effort -- and the
-//! per-profile memory of what the user last picked.
+//! The controls a conversation runs under -- model, preset, effort, approval --
+//! and the
+//! tab's memory of what the user last picked.
 //!
 //! Which of these the pane applies and which the harness replays on its own is
 //! a capability question, so the picks are remembered here and seeded only
 //! where the harness does not restore them itself.
 
-use std::collections::BTreeMap;
+#[cfg(test)]
+#[path = "defaults_tests.rs"]
+mod defaults_tests;
 
-use gpui::{App, Context};
-use nmt_agent::chat::ThreadSettings;
+use gpui::App;
 use nmt_agent::profile::launch_model as effective_launch_model;
-use nmt_agent::session::settings::ConversationSettings;
-use nmt_config::local_state;
+use nmt_agent::session::settings::ProfilePins;
 use nmt_config::profile::AgentProfile;
-use tracing::warn;
 
 use crate::agent_tab::AgentPane;
-use crate::agent_tab::profile::{
-    AgentKind, AgentThreadDefaults, agent_launch, defaults_from_thread_settings,
-};
-
-/// The picks remembered for this profile, falling back to the bucket its
-/// agent kind shares with unnamed profiles.
-pub(crate) fn stored_thread_settings<'a>(
-    kind: AgentKind,
-    profile: &AgentProfile,
-    cx: &'a App,
-) -> Option<&'a ThreadSettings> {
-    let defaults = cx.try_global::<AgentThreadDefaults>()?;
-
-    defaults.0.get(kind, &profile.name)
-}
+use crate::agent_tab::profile::{AgentKind, agent_launch};
 
 /// Effective startup model after protocol mapping and user environment
 /// overrides. Claude resolves `ANTHROPIC_MODEL` with last-value-wins
@@ -39,37 +25,29 @@ pub(crate) fn launch_model(kind: AgentKind, profile: &AgentProfile) -> Option<St
     effective_launch_model(kind, agent_launch(profile))
 }
 
-/// The reasoning effort this pane's profile pins. Claude receives it as a
-/// launch flag and Codex as a thread-start parameter; the picker shows it
-/// either way.
-pub(crate) fn launch_effort(profile: &AgentProfile) -> Option<String> {
-    agent_launch(profile).effort
+/// Every control this pane's profile pins, as a new conversation's Ready
+/// applies them over the thread and the remembered picks.
+pub(crate) fn launch_pins(kind: AgentKind, profile: &AgentProfile) -> ProfilePins {
+    let launch = agent_launch(profile);
+
+    ProfilePins {
+        model: effective_launch_model(kind, launch.clone()),
+        effort: launch.effort,
+        approval: launch.approval,
+        sandbox: launch.sandbox,
+    }
 }
 
-/// Remember the current thread settings as the defaults for future
-/// conversations launched from this profile. Called after every
-/// user-driven settings change (dropdowns and slash commands).
-pub(crate) fn remember_defaults(
-    state: &ConversationSettings,
-    kind: AgentKind,
-    profile: &AgentProfile,
-    cx: &mut Context<AgentPane>,
-) {
-    let stored = {
-        let defaults = cx.default_global::<AgentThreadDefaults>();
-
-        let key = defaults
-            .0
-            .remember(kind, &profile.name, state.settings.clone());
-
-        let mut stored: BTreeMap<_, _> = defaults_from_thread_settings(defaults);
-
-        stored.retain(|name, _| name == &key);
-
-        stored
+/// Remember the conversation's current controls as this tab's own state, so
+/// the next conversation it opens starts on them. Called after every
+/// user-driven settings change (dropdowns and slash commands). Tabs never
+/// share these picks: one opened afterwards starts from its launch profile.
+pub(crate) fn remember_defaults(pane: &AgentPane, cx: &mut App) {
+    let Some(host) = pane.host.upgrade() else {
+        return;
     };
 
-    if let Err(err) = local_state::save_agent_defaults(&stored) {
-        warn!("failed to save agent defaults to local_state.toml: {err}");
-    }
+    let settings = pane.session.borrow().controls.settings.clone();
+
+    host.update(cx, |host, _| host.remember_settings(settings));
 }

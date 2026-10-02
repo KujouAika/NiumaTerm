@@ -13,25 +13,29 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections, ops, sync, time};
 
+use nmt_config::CursorShape;
 use nmt_config::colors::Colors;
-use nmt_terminal::clipboard::{Clipboard, ClipboardType};
+use nmt_platform::AsyncPty;
 use nmt_terminal::event::BlockEvent;
 use nmt_terminal::ghostty::BlockHandle;
 use nmt_terminal::graphics::UpdateQueues;
 use nmt_terminal::render_buffer::RenderBuffer;
+#[cfg(test)]
+use nmt_terminal::session::EngineError;
 use nmt_terminal::session::page::{PAGE_ROWS, PageSource, RowPage};
 use nmt_terminal::session::{
-    BlockPoint, EngineError, SessionChange, SessionObserver, TerminalSession, TerminalSessionConfig,
+    BlockPoint, SessionChange, SessionObserver, TerminalSession, TerminalSessionConfig,
 };
+use nmt_terminal::termio::SessionOptions;
 use parking_lot::Mutex;
 use tracing::trace;
 
 use crate::terminal_tab::block_list::FrozenView;
 use crate::terminal_tab::block_list::chrome::DurationLabels;
-use crate::terminal_tab::frame::{EngineRowBuilder, TerminalColor, TerminalFrame};
+use crate::terminal_tab::frame::{BackgroundColors, EngineRowBuilder, TerminalFrame};
 use crate::terminal_tab::graphics::{FrozenImageCache, GenerationStore, prune_frozen_images};
 use crate::terminal_tab::pane_model::FrameTheme;
-use crate::terminal_tab::wake::{Wake, WakeSender, WakeSignal};
+use crate::terminal_tab::wake::WakeSignal;
 use crate::terminal_tab::{block_list, frame, graphics, metrics};
 
 pub struct TerminalFrameSource {
@@ -39,17 +43,21 @@ pub struct TerminalFrameSource {
     pub(super) images: Arc<SessionBridge>,
     pub(super) snapshot: Arc<RenderBuffer>,
     grid_size: (u16, u16),
+
+    /// Pixel size of the last accepted resize, repeated when the pane takes
+    /// the PTY size back from a remote view.
+    pixels: (u16, u16),
 }
 
 impl TerminalFrameSource {
     pub fn new(
         config: TerminalSessionConfig,
         id: u64,
-        wake: Option<WakeSender>,
+        wake: Option<WakeSignal>,
         colors: Colors,
     ) -> Result<Self, String> {
         let grid_size = (config.cols, config.rows);
-        let images = Arc::new(SessionBridge::new(id, wake));
+        let images = Arc::new(SessionBridge::new(wake));
 
         let session = TerminalSession::new(&config, id, colors, Some(images.clone()))
             .map_err(|error| format!("{:?}: {}", error.code, error))?;
@@ -59,6 +67,7 @@ impl TerminalFrameSource {
             session,
             images,
             grid_size,
+            pixels: (0, 0),
         })
     }
 
@@ -68,24 +77,55 @@ impl TerminalFrameSource {
         launch: TerminalSessionConfig,
         colors: Colors,
     ) -> Result<Self, String> {
-        let wake_sender = WakeSender::from_fn(move |kind: Wake| {
-            wake.signal(kind);
-        });
-
-        Self::new(launch, surface_id, Some(wake_sender), colors)
+        Self::new(launch, surface_id, Some(wake), colors)
     }
 
+    /// A session whose PTY is a terminal on another computer. That host's
+    /// engine, next to the real PTY, already answers terminal queries; a
+    /// second answer from this engine would reach the program as input.
+    pub(super) fn remote<T: AsyncPty + Send + 'static>(
+        wake: WakeSignal,
+        surface_id: u64,
+        pty: T,
+        grid_size: (u16, u16),
+        cursor_shape: CursorShape,
+        colors: Colors,
+    ) -> Result<Self, String> {
+        let images = Arc::new(SessionBridge::new(Some(wake)));
+        let defaults = TerminalSessionConfig::default();
+
+        let session = TerminalSession::from_pty(
+            pty,
+            None,
+            SessionOptions {
+                cols: grid_size.0,
+                rows: grid_size.1,
+                route_id: surface_id as usize,
+                colors,
+                cursor_shape,
+                scrollback_lines: defaults.scrollback_lines,
+                engine_blocks: defaults.engine_blocks,
+                terminal_responses: false,
+            },
+            Some(images.clone()),
+        )
+        .map_err(|error| format!("{:?}: {}", error.code, error))?;
+
+        Ok(Self {
+            snapshot: session.snapshot(),
+            session,
+            images,
+            grid_size,
+            pixels: (0, 0),
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn attach(
         wake: WakeSignal,
-        id: u64,
         connect: impl FnOnce(Arc<dyn SessionObserver>) -> Result<TerminalSession, EngineError>,
     ) -> Result<Self, String> {
-        let images = Arc::new(SessionBridge::new(
-            id,
-            Some(WakeSender::from_fn(move |kind| {
-                wake.signal(kind);
-            })),
-        ));
+        let images = Arc::new(SessionBridge::new(Some(wake)));
 
         let session =
             connect(images.clone()).map_err(|error| format!("{:?}: {}", error.code, error))?;
@@ -98,6 +138,7 @@ impl TerminalFrameSource {
             session,
             images,
             grid_size,
+            pixels: (0, 0),
         })
     }
 
@@ -126,9 +167,21 @@ impl TerminalFrameSource {
 
         if accepted {
             self.grid_size = (cols, rows);
+            self.pixels = (metrics::pixel_u16(width_px), metrics::pixel_u16(height_px));
         }
 
         accepted
+    }
+
+    /// Resize the PTY to this pane's grid even though the grid did not
+    /// change: another view sharing the session resized it.
+    pub(super) fn reassert_size(&mut self) -> bool {
+        self.session.resize(
+            self.grid_size.0,
+            self.grid_size.1,
+            self.pixels.0,
+            self.pixels.1,
+        )
     }
 
     pub(super) fn frame(
@@ -194,7 +247,7 @@ impl TerminalFrameSource {
         viewport: &ItemViewport,
         selection: Option<(BlockPoint, BlockPoint)>,
         labels: &DurationLabels,
-        foreground: TerminalColor,
+        theme: &FrameTheme,
     ) -> FrozenView {
         let Some((info, handle)) = self
             .session
@@ -227,7 +280,7 @@ impl TerminalFrameSource {
             viewport.cell_height,
             viewport.pad_rows,
             selection,
-            foreground,
+            &BackgroundColors::new(self.snapshot.colors(), theme),
         );
 
         let mut seen = HashSet::new();
@@ -267,7 +320,7 @@ impl TerminalFrameSource {
         history_rows: u64,
         cols: u32,
         viewport: &ItemViewport,
-        foreground: TerminalColor,
+        theme: &FrameTheme,
     ) -> FrozenView {
         let visible = block_list::visible_rows(
             viewport.top,
@@ -277,7 +330,7 @@ impl TerminalFrameSource {
             viewport.pad_rows,
         );
 
-        let lines = self.live_history_lines(visible.start as u64..visible.end as u64, foreground);
+        let lines = self.live_history_lines(visible.start as u64..visible.end as u64, theme);
         let selection = self.session.selection_screen_range_in(&self.snapshot);
 
         block_list::live_history_view(
@@ -321,30 +374,43 @@ impl TerminalFrameSource {
     pub(super) fn live_history_lines(
         &self,
         rows: ops::Range<u64>,
-        default_fg: frame::TerminalColor,
+        theme: &FrameTheme,
     ) -> Vec<(u64, frame::TerminalLine)> {
-        rows.filter_map(|row| {
-            let page = self
+        let (Ok(start), Ok(end)) = (usize::try_from(rows.start), usize::try_from(rows.end)) else {
+            return Vec::new();
+        };
+
+        let colors = BackgroundColors::new(self.snapshot.colors(), theme);
+
+        let mut lines = Vec::with_capacity(end.saturating_sub(start));
+
+        // One lookup per page: the worker reply can land between two row
+        // reads, and a page looked up per row could then mix the retained
+        // rows with their replacement inside a single paint.
+        for page_start in (start / PAGE_ROWS * PAGE_ROWS..end).step_by(PAGE_ROWS) {
+            let Some(page) = self
                 .session
-                .screen_page_at(self.snapshot.revision(), usize::try_from(row).ok()?)?;
+                .screen_page_for_display(&self.snapshot, page_start)
+            else {
+                continue;
+            };
 
-            let data = page.row(row as usize)?;
+            for row in start.max(page_start)..end.min(page_start.saturating_add(PAGE_ROWS)) {
+                let Some(data) = page.row(row) else {
+                    continue;
+                };
 
-            let mut builder = EngineRowBuilder::default();
+                let mut builder = EngineRowBuilder::default();
 
-            for cell in &data.cells {
-                builder.push(
-                    cell.x,
-                    cell.text.clone(),
-                    cell.wide,
-                    &cell.style,
-                    default_fg,
-                );
+                for cell in &data.cells {
+                    builder.push(cell.x, cell.text.clone(), cell.wide, &cell.style, &colors);
+                }
+
+                lines.push((row as u64, builder.into()));
             }
+        }
 
-            Some((row, builder.into()))
-        })
-        .collect()
+        lines
     }
 }
 
@@ -352,17 +418,15 @@ pub(super) struct SessionBridge {
     pub(super) generations: Mutex<GenerationStore>,
     pub(super) frozen: FrozenImageCache,
     live_count: AtomicUsize,
-    id: u64,
-    wake: Option<WakeSender>,
+    wake: Option<WakeSignal>,
 }
 
 impl SessionBridge {
-    pub(super) fn new(id: u64, wake: Option<WakeSender>) -> Self {
+    pub(super) fn new(wake: Option<WakeSignal>) -> Self {
         Self {
             generations: Mutex::new(GenerationStore::default()),
             frozen: Arc::default(),
             live_count: AtomicUsize::new(0),
-            id,
             wake,
         }
     }
@@ -391,16 +455,9 @@ impl SessionObserver for SessionBridge {
         prune_frozen_images(&self.frozen, events);
     }
 
-    fn clipboard(&self, kind: ClipboardType, text: String) {
-        Clipboard::default().set(kind, text);
-    }
-
     fn changed(&self, change: SessionChange) {
         if let Some(wake) = &self.wake {
-            wake.send(match change {
-                SessionChange::Content => Wake::Content(self.id),
-                SessionChange::HostEvents => Wake::Chrome(self.id),
-            });
+            wake.signal(change);
         }
     }
 }

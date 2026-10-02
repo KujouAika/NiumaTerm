@@ -25,11 +25,6 @@ pub const DEFAULT_UI_FONT: &str = "Segoe UI";
 #[cfg(not(target_os = "windows"))]
 pub const DEFAULT_UI_FONT: &str = ".SystemUIFont";
 
-pub const MIN_TAB_WIDTH: f64 = 120.0;
-pub const DEFAULT_TAB_WIDTH: f64 = 220.0;
-
-pub const MAX_TAB_WIDTH: f64 = MIN_TAB_WIDTH * 3.0;
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputStyle {
@@ -96,10 +91,22 @@ where
 #[serde(rename_all = "kebab-case")]
 pub enum TabBarStyle {
     /// A row of tabs across the title bar.
-    #[default]
     Horizontal,
     /// Tabs nested under their workspace in the sidebar.
+    #[default]
     Vertical,
+}
+
+/// How each tab in the horizontal strip is drawn.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabShape {
+    /// Pills with four rounded corners floating on the title bar, apart from
+    /// the content below them.
+    Rounded,
+    /// Tabs with rounded top corners that rest on the content edge.
+    #[default]
+    Attached,
 }
 
 /// The window backdrop material. Acrylic honors the opacity slider; the Mica
@@ -162,10 +169,6 @@ where
 
 fn default_git_status_refresh_interval() -> u64 {
     30
-}
-
-fn default_tab_width() -> f64 {
-    DEFAULT_TAB_WIDTH
 }
 
 /// The proportional face the interface is drawn in.
@@ -290,15 +293,6 @@ pub struct AppearanceConfig {
     )]
     pub git_status_refresh_interval: u64,
 
-    /// Fixed tab width in pixels (120–360; clamped on load).
-    #[serde(default = "default_tab_width", rename = "tab-width")]
-    pub tab_width: f64,
-
-    /// Shrink tabs toward a minimum as the strip fills, instead of holding
-    /// `tab_width`.
-    #[serde(default, rename = "tab-auto-size")]
-    pub tab_auto_size: bool,
-
     /// Tab strip placement: a horizontal row in the title bar, or vertical
     /// rows nested under each workspace in the sidebar.
     #[serde(default, rename = "tab-bar-style")]
@@ -405,7 +399,8 @@ pub struct AppearanceConfig {
     pub agent_transcript_font_size: f64,
 
     /// Put disclosed content on screen at once, skipping the entrance the
-    /// transcript otherwise plays for it.
+    /// transcript otherwise plays for it, and the slide a workspace row's
+    /// name makes for its fold mark.
     #[serde(default, rename = "reduce-motion")]
     pub reduce_motion: bool,
 
@@ -416,6 +411,10 @@ pub struct AppearanceConfig {
         rename = "human-friendly-agent-ui-layout"
     )]
     pub human_friendly_agent_ui_layout: bool,
+
+    /// Corner style of the tabs in the horizontal strip.
+    #[serde(default, rename = "tab-shape")]
+    pub tab_shape: TabShape,
 }
 
 fn default_command_blocks() -> bool {
@@ -436,8 +435,6 @@ impl Default for AppearanceConfig {
             show_daily_token_usage: false,
             show_git_status_on_title_bar: false,
             git_status_refresh_interval: default_git_status_refresh_interval(),
-            tab_width: default_tab_width(),
-            tab_auto_size: false,
             tab_bar_style: TabBarStyle::default(),
             ui_font: default_ui_font(),
             terminal_font_family: default_terminal_font_family(),
@@ -457,6 +454,7 @@ impl Default for AppearanceConfig {
             agent_transcript_font_size: default_agent_transcript_font_size(),
             reduce_motion: false,
             human_friendly_agent_ui_layout: true,
+            tab_shape: TabShape::default(),
         }
     }
 }
@@ -571,31 +569,33 @@ pub fn clamp_git_interval(seconds: u64) -> u64 {
     }
 }
 
-/// The configured UI font, or the default when the config leaves it blank
-/// (an empty family would fall back to gpui's default, not Segoe UI).
+/// Every platform's default UI face. The config persists its defaults, so a
+/// file written on Windows names `Segoe UI`, which macOS lacks, and a family
+/// that is not installed silently resolves to Helvetica. Treating any
+/// platform's default as "the default" gives each system its own face.
+const PLATFORM_DEFAULT_UI_FONTS: &[&str] = &["Segoe UI", ".SystemUIFont"];
+
+/// Every platform's default fixed-pitch face, for the same reason.
+const PLATFORM_DEFAULT_TERMINAL_FONTS: &[&str] = &["Consolas", "Menlo", "monospace"];
+
+/// The configured UI font, or this platform's default when the config leaves
+/// it blank (an empty family would fall back to gpui's default) or names
+/// another platform's default.
 pub fn ui_font_or_default(family: &str) -> String {
-    if family.trim().is_empty() {
-        DEFAULT_UI_FONT.into()
-    } else {
-        family.to_string()
-    }
+    font_or_default(family, PLATFORM_DEFAULT_UI_FONTS, DEFAULT_UI_FONT)
 }
 
 pub fn terminal_font_or_default(family: &str) -> String {
-    if family.trim().is_empty() {
-        DEFAULT_FONT_FAMILY.into()
-    } else {
-        family.to_string()
-    }
+    font_or_default(family, PLATFORM_DEFAULT_TERMINAL_FONTS, DEFAULT_FONT_FAMILY)
 }
 
-/// Clamp a persisted tab width to the allowed range, falling back to the
-/// default for non-finite values.
-pub fn clamp_tab_width(width: f64) -> f64 {
-    if width.is_finite() {
-        width.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
+fn font_or_default(family: &str, platform_defaults: &[&str], default: &str) -> String {
+    let family = family.trim();
+
+    if family.is_empty() || platform_defaults.contains(&family) {
+        default.into()
     } else {
-        DEFAULT_TAB_WIDTH
+        family.to_string()
     }
 }
 
@@ -663,7 +663,6 @@ impl AppearanceConfig {
 
         self.terminal_line_height = clamp_terminal_line_height(self.terminal_line_height);
 
-        self.tab_width = clamp_tab_width(self.tab_width);
         self.background_opacity = clamp_background_opacity(self.background_opacity);
 
         self.background_image_opacity =

@@ -31,6 +31,12 @@ pub(crate) struct ProjectionTracker {
 
     /// Execution-permission preset reported for this exact session.
     permission: Option<String>,
+
+    /// The preset table that report came with, kept so a refused switch can
+    /// put a picker back on what the session still runs under.
+    presets: Option<Event>,
+
+    session_stats: Option<SessionStats>,
 }
 
 impl ProjectionTracker {
@@ -118,6 +124,8 @@ impl ProjectionTracker {
             "permissions" => {
                 let event = permission_presets(value);
 
+                self.presets = event.clone();
+
                 self.permission = match &event {
                     Some(Event::ApprovalPresets { current, .. }) => current.clone(),
                     _ => None,
@@ -137,12 +145,20 @@ impl ProjectionTracker {
                 Some(true) => !value["active"].as_bool().unwrap_or_default(),
                 _ => value["active"].as_bool().unwrap_or_default(),
             })],
-            "sessionStats" => vec![Event::SessionStatsUpdated(SessionStats {
-                turns: value["turns"].as_u64().unwrap_or_default(),
-                steps: value["steps"].as_u64().unwrap_or_default(),
-                model_ms: value["llmMs"].as_u64().unwrap_or_default(),
-                tool_ms: value["toolMs"].as_u64().unwrap_or_default(),
-            })],
+            "sessionStats" => {
+                let stats = SessionStats {
+                    turns: value["turns"].as_u64().unwrap_or_default(),
+                    steps: value["steps"].as_u64().unwrap_or_default(),
+                    model_ms: value["llmMs"].as_u64().unwrap_or_default(),
+                    tool_ms: value["toolMs"].as_u64().unwrap_or_default(),
+                    decode_tokens: value["decodeTokens"].as_u64().unwrap_or_default(),
+                    decode_ms: value["decodeMs"].as_u64().unwrap_or_default(),
+                };
+
+                self.session_stats = Some(stats);
+
+                vec![Event::SessionStatsUpdated(stats)]
+            }
             // The host registers whatever projection units the deployment
             // composed; the ones this build does not read are normal traffic.
             _ => Vec::new(),
@@ -202,6 +218,14 @@ impl ProjectionTracker {
     pub(crate) fn permission(&self) -> Option<&str> {
         self.permission.as_deref()
     }
+
+    pub(crate) fn session_stats(&self) -> Option<SessionStats> {
+        self.session_stats
+    }
+
+    pub(crate) fn approval_presets(&self) -> Option<Event> {
+        self.presets.clone()
+    }
 }
 
 /// The presets this session can switch between, and the one it is on.
@@ -257,14 +281,11 @@ fn todo_list(value: &Value) -> TaskList {
             .flatten()
             .enumerate()
             .filter_map(|(index, item)| {
-                Some(Task {
-                    id: index.to_string(),
-                    title: item["content"].as_str()?.to_owned(),
-                    status: TaskStatus::parse(item["status"].as_str()?)?,
-                    description: None,
-                    owner: None,
-                    blocked_by: Vec::new(),
-                })
+                Some(Task::indexed(
+                    index,
+                    item["content"].as_str()?,
+                    TaskStatus::parse(item["status"].as_str()?)?,
+                ))
             })
             .collect(),
         ..TaskList::default()

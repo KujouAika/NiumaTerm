@@ -2,11 +2,14 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{Question, QuestionInput, QuestionMode, QuestionRequest};
 use crate::session::RecoveryIdentity;
 use crate::session::input::{QuestionError, QuestionKey};
+use crate::session::view::{DraftAnswers, DraftView, Since};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionStatus {
     Pending,
     Submitting,
@@ -113,6 +116,70 @@ impl QuestionDraft {
         }
     }
 
+    /// The answers typed so far, for a view that sends them elsewhere.
+    pub fn draft_answers(&self) -> DraftAnswers {
+        DraftAnswers {
+            selected: self.selected.clone(),
+            text: self.text.clone(),
+            custom: self.custom.clone(),
+        }
+    }
+
+    /// Take answers composed in another view. A batch that already left
+    /// the pending state keeps the answers it was settled with.
+    pub fn set_answers(&mut self, answers: DraftAnswers) {
+        let count = self.questions.len();
+
+        if self.status != QuestionStatus::Pending
+            || answers.selected.len() != count
+            || answers.text.len() != count
+            || answers.custom.len() != count
+        {
+            return;
+        }
+
+        self.selected = answers.selected;
+        self.text = answers.text;
+        self.custom = answers.custom;
+
+        self.touch();
+    }
+
+    pub fn view(&self) -> DraftView {
+        DraftView {
+            id: self.id.clone(),
+            questions: self.questions.clone(),
+            mode: self.mode,
+            status: self.status,
+            error: self.error.clone(),
+            selected: self.selected.clone(),
+            text: self.text.clone(),
+            custom: self.custom.clone(),
+            key: self.key,
+            started: Since::of(Some(self.started)),
+            touched: self.touched,
+        }
+    }
+
+    /// A draft mirrored from another process. Its conversation identity
+    /// stays there, with the only code that restores questions.
+    pub fn from_view(view: DraftView) -> Self {
+        Self {
+            id: view.id,
+            identity: None,
+            questions: view.questions,
+            mode: view.mode,
+            status: view.status,
+            error: view.error,
+            selected: view.selected,
+            text: view.text,
+            custom: view.custom,
+            key: view.key,
+            started: view.started.instant().unwrap_or_else(Instant::now),
+            touched: view.touched,
+        }
+    }
+
     pub fn pending(&self) -> bool {
         matches!(
             self.status,
@@ -174,15 +241,22 @@ impl QuestionDraft {
         }
     }
 
+    /// Whether question `question` has an answer: typed text where text was
+    /// chosen or is the only way to answer, a pick otherwise.
+    pub fn is_answered(&self, question: usize) -> bool {
+        let Some(entry) = self.questions.get(question) else {
+            return false;
+        };
+
+        if self.custom[question] || entry.options.is_empty() {
+            !self.text[question].trim().is_empty()
+        } else {
+            !self.selected[question].is_empty()
+        }
+    }
+
     pub fn is_complete(&self) -> bool {
-        !self.questions.is_empty()
-            && self.selected.iter().enumerate().all(|(index, picks)| {
-                if self.custom[index] || self.questions[index].options.is_empty() {
-                    !self.text[index].trim().is_empty()
-                } else {
-                    !picks.is_empty()
-                }
-            })
+        !self.questions.is_empty() && (0..self.questions.len()).all(|index| self.is_answered(index))
     }
 
     pub fn answers(&self) -> Vec<Vec<String>> {

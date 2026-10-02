@@ -1,0 +1,156 @@
+//! One Team member's live agent session and the Team work it is carrying.
+
+use gpui::{App, Subscription};
+use nmt_agent::chat::{SendOutcome, TeamDecisionRequest, ThreadSettings};
+use nmt_agent::session::lifecycle::Status;
+use nmt_agent::session::{AgentKind, PromptRequest, RecoveryIdentity};
+use nmt_agent::team::attempt::DispatchIntent;
+use nmt_agent::team::model::AttemptId;
+
+use crate::agent_tab::execution::SessionOwner;
+use crate::agent_tab::team::dispatch::{WorkStatus, work_status};
+
+pub(super) struct MemberHost {
+    pub(super) owner: SessionOwner,
+
+    /// The attempt this member was last sent and has not finished.
+    pub(super) active: Option<AttemptId>,
+
+    /// The backend epoch the room last recorded this member ready for.
+    pub(super) ready_epoch: Option<u64>,
+
+    _subscriptions: Vec<Subscription>,
+}
+
+impl MemberHost {
+    pub(super) fn new(owner: SessionOwner, subscriptions: Vec<Subscription>) -> Self {
+        Self {
+            owner,
+            active: None,
+            ready_epoch: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// Whether the member still has Team work in flight or its session is
+    /// doing anything at all, either of which rules out sending it more.
+    pub(super) fn is_busy(&self, cx: &App) -> bool {
+        self.active.is_some() || work_status(self.owner.session().read(cx)) != WorkStatus::default()
+    }
+
+    /// Start the member's session, resuming `recovery` when it has one.
+    pub(super) fn start(&self, recovery: Option<RecoveryIdentity>, cx: &mut App) {
+        self.owner.session().update(cx, |session, cx| {
+            session.start(recovery, true, |_, _| {}, cx);
+        });
+    }
+
+    /// Make `settings` the settings the member's next turn runs with. The
+    /// session also keeps them as its own, so a conversation it opens later
+    /// starts on the room's values rather than back on the profile's.
+    pub(super) fn apply_settings(&self, settings: ThreadSettings, cx: &mut App) {
+        self.owner.session().update(cx, |session, cx| {
+            session
+                .controller
+                .borrow_mut()
+                .controls
+                .set_settings(settings.clone());
+
+            session.remember_settings(settings);
+
+            cx.notify();
+        });
+    }
+
+    pub(super) fn interrupt(&self, cx: &mut App) {
+        self.owner.session().update(cx, |session, cx| {
+            session.controller.borrow_mut().interrupt_from_user();
+
+            cx.notify();
+        });
+    }
+
+    /// A session that is busy or suspended for an update is not ready for it.
+    pub(super) fn submit(
+        &self,
+        intent: &DispatchIntent,
+        settings: &ThreadSettings,
+        cx: &mut App,
+    ) -> SendOutcome {
+        self.owner.session().update(cx, |session, cx| {
+            let mut state = session.controller.borrow_mut();
+
+            if state.runtime().status() != Status::Idle
+                || state.runtime().update_suspension().is_some()
+            {
+                return SendOutcome::NotReady;
+            }
+
+            // The member's conversation is named after the user's request,
+            // as an ordinary conversation is named after its first prompt.
+            // The text actually sent opens with the member's role and the
+            // stage instruction, and a title taken from that would show the
+            // scaffolding wherever the provider lists the conversation.
+            let title = state.title_request(&intent.input.text, |_| None);
+
+            let result = state.submit(
+                intent.prepared_text.clone(),
+                |backend, text| {
+                    backend.submit(&PromptRequest {
+                        text,
+                        settings,
+                        skill: None,
+                        images: &[],
+                        image_paths: &[],
+                        title: title.as_ref(),
+                    })
+                },
+                || None,
+            );
+
+            // Both providers generate the final title asynchronously; the
+            // first accepted request claims the name so a failed generation
+            // cannot let a later stage's request name the conversation.
+            if matches!(session.kind, AgentKind::Codex | AgentKind::Claude)
+                && title.is_some()
+                && matches!(result, Ok(SendOutcome::StartedTurn | SendOutcome::Steered))
+            {
+                state.claim_title();
+            }
+
+            cx.notify();
+
+            match result {
+                Ok(outcome) => outcome,
+                Err(blocker) => {
+                    tracing::warn!(?blocker, "team submission was blocked before sending");
+
+                    SendOutcome::NotReady
+                }
+            }
+        })
+    }
+
+    /// Tell the moderator whether the room saved the decision it requested.
+    pub(super) fn respond_decision(
+        &self,
+        request: &TeamDecisionRequest,
+        accepted: bool,
+        cx: &mut App,
+    ) {
+        let explanation = if accepted {
+            "The decision is saved. It will run after this moderator turn finishes."
+        } else {
+            "The decision was rejected. The discussion is paused for user review."
+        };
+
+        self.owner.session().update(cx, |session, cx| {
+            session
+                .controller
+                .borrow_mut()
+                .respond_team_decision(request, accepted, explanation);
+
+            cx.notify();
+        });
+    }
+}

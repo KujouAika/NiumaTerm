@@ -20,14 +20,11 @@ use crate::builtin_themes::{THEMES as BUILTIN_THEMES, get as get_builtin_theme};
 use crate::colors::Colors;
 use crate::defaults::*;
 use crate::profile::Profile;
+use crate::remote::RemoteConfig;
 use crate::system::{self, SystemConfig};
 use crate::terminal::TerminalConfig;
-#[cfg(test)]
-use crate::theme::AppearanceTheme;
 use crate::theme::{Theme, UiTheme};
-use crate::{
-    CursorShape, agent, appearance, persistence, profile, remote_session, set_active_colors, update,
-};
+use crate::{CursorShape, agent, appearance, persistence, profile, set_active_colors, update};
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Shell {
@@ -75,16 +72,16 @@ pub struct Config {
     #[serde(default = "system::SystemConfig::default")]
     pub system: system::SystemConfig,
 
-    /// Remote-session connection settings (settings dialog, Remote Session page).
-    #[serde(default, rename = "remote-session")]
-    pub remote_session: remote_session::RemoteSessionConfig,
-
     /// Update checking settings (settings dialog, About page).
     #[serde(default = "update::UpdateConfig::default")]
     pub update: update::UpdateConfig,
 
     #[serde(default)]
     pub terminal: TerminalConfig,
+
+    /// Remote session hosting (settings dialog, Remote page).
+    #[serde(default)]
+    pub remote: RemoteConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -96,8 +93,8 @@ pub struct CursorConfig {
 static TESTING_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Select the isolated `Test` configuration directory before configuration is loaded.
-pub fn enable_testing_mode() {
-    TESTING_MODE.store(true, Ordering::Relaxed);
+pub fn set_testing_mode(enabled: bool) {
+    TESTING_MODE.store(enabled, Ordering::Relaxed);
 }
 
 fn config_dir_for_mode(path: PathBuf, testing: bool) -> PathBuf {
@@ -282,9 +279,9 @@ impl Default for Config {
             agent_profiles: profile::AgentProfilesConfig::default(),
             agent: agent::AgentConfig::default(),
             system: system::SystemConfig::default(),
-            remote_session: remote_session::RemoteSessionConfig::default(),
             update: update::UpdateConfig::default(),
             terminal: TerminalConfig::default(),
+            remote: RemoteConfig::default(),
         }
     }
 }
@@ -299,7 +296,7 @@ impl Default for CursorConfig {
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
-pub fn init(config: Config) {
+pub fn init_from(config: Config) {
     let colors = config.colors;
 
     assert!(
@@ -321,13 +318,13 @@ pub struct SettingsPatch<'a> {
     pub cursor_shape: CursorShape,
     pub agent: &'a AgentConfig,
     pub system: &'a SystemConfig,
-    pub remote_session: &'a remote_session::RemoteSessionConfig,
     pub update: &'a update::UpdateConfig,
     pub profiles: &'a [Profile],
     pub default_profile: &'a str,
     pub agent_profiles: &'a [profile::AgentProfile],
     pub default_agent_profile: &'a str,
     pub terminal: &'a TerminalConfig,
+    pub remote: &'a RemoteConfig,
 }
 
 /// Save settings to an explicit configuration path using the same locked,
@@ -365,12 +362,12 @@ fn patch_settings_document(doc: &mut DocumentMut, patch: &SettingsPatch<'_>) -> 
         agent,
         system,
         profiles,
-        remote_session,
         update,
         default_profile,
         agent_profiles,
         default_agent_profile,
         terminal,
+        remote,
     } = patch;
 
     doc["theme"] = value(theme);
@@ -392,8 +389,6 @@ fn patch_settings_document(doc: &mut DocumentMut, patch: &SettingsPatch<'_>) -> 
 
     patch_group(doc, "agent", agent)?;
 
-    patch_group(doc, "remote-session", remote_session)?;
-
     patch_group(doc, "update", update)?;
 
     profile::patch_table(
@@ -408,7 +403,9 @@ fn patch_settings_document(doc: &mut DocumentMut, patch: &SettingsPatch<'_>) -> 
         default_agent_profile,
     )?;
 
-    patch_group(doc, "terminal", terminal)
+    patch_group(doc, "terminal", terminal)?;
+
+    patch_group(doc, "remote", remote)
 }
 
 /// Each group's serde names also define the keys edited by the settings UI.

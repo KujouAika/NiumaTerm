@@ -6,14 +6,16 @@
 //! refcounted `BlockRef` and reads rows/images directly, so the store
 //! retains ~695 B/row of engine pages instead of materialized lines.
 //!
-//! Metadata is married to items by the OSC 133 mark sequence number; marks
-//! (`;C` command/cwd, `;D` exit code) fire before the block finishes, so
-//! metadata is stashed in `pending_meta` until the `EngineBlock` event
-//! materializes the item. The metadata itself is written by the embedder's
-//! event handling (`CommandStarted`/`CommandFinished` carry it), not by
-//! this crate. Memory is bounded engine-side (the block byte budget evicts
-//! oldest blocks); `EngineBlocksSync` mirrors those evictions into the
-//! item list.
+//! Each `EngineBlock` event carries the command's complete metadata: the
+//! PTY thread latches the launch directory at `;C` and holds command text,
+//! timing, and exit code when `;D` freezes the block, so items are born
+//! whole and nothing is joined by sequence number later. Memory is bounded
+//! engine-side (the block byte budget evicts oldest blocks);
+//! `EngineBlocksSync` mirrors those evictions into the item list.
+
+#[cfg(test)]
+#[path = "block_store_tests.rs"]
+mod block_store_tests;
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -21,9 +23,8 @@ use std::time::SystemTime;
 use crate::event::BlockEvent;
 use crate::ghostty::BlockHandle;
 
-/// Command metadata for one prompt segment, filled in as OSC 133 marks
-/// arrive (`;A` registers the sequence, `;C` brings command/cwd, `;D` brings
-/// the exit code).
+/// Command metadata for one prompt segment: command text and launch
+/// directory from `;C`, exit code and end time from `;D`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SegmentMeta {
     pub command: Option<String>,
@@ -66,18 +67,26 @@ impl BlockItem {
 pub struct BlockStore {
     items: Vec<BlockItem>,
 
-    /// Metadata that arrived before its block finished (the normal order:
-    /// marks fire at write time, the block at `;D`).
-    pending_meta: HashMap<u64, SegmentMeta>,
-
     /// Items dropped from the front (engine budget eviction), so a list UI
     /// can splice instead of resetting scroll state.
     pub evicted_items: u64,
+
+    /// Counts the events that remove rows from the screen's scrollback: a
+    /// user clear and a finished command frozen into a block. Screen rows
+    /// are addressed from the top of the scrollback, so either event shifts
+    /// the index of every later row. Readers that reuse an earlier screen
+    /// page compare this counter; the row total alone misses a removal that
+    /// the same batch refilled with new output.
+    history_epoch: u64,
 }
 
 impl BlockStore {
     pub fn items(&self) -> &[BlockItem] {
         &self.items
+    }
+
+    pub fn history_epoch(&self) -> u64 {
+        self.history_epoch
     }
 
     /// Apply one PTY-thread block batch.
@@ -86,19 +95,20 @@ impl BlockStore {
             match event {
                 // A trusted `;D` froze the command into a finished engine
                 // block; the item is born complete.
-                BlockEvent::EngineBlock { seq, handle, rows } => {
-                    let mut item = BlockItem {
+                BlockEvent::EngineBlock {
+                    seq,
+                    handle,
+                    rows,
+                    meta,
+                } => {
+                    self.items.push(BlockItem {
                         seq: Some(seq),
-                        meta: SegmentMeta::default(),
+                        meta,
                         handle,
                         rows,
-                    };
+                    });
 
-                    if let Some(meta) = self.pending_meta.remove(&seq) {
-                        item.meta = meta;
-                    }
-
-                    self.items.push(item);
+                    self.history_epoch += 1;
                 }
                 // Prune items whose engine block is gone (byte-budget
                 // eviction is oldest-first, so removals are a prefix — the
@@ -130,24 +140,10 @@ impl BlockStore {
                 // already cleared the engine blocks).
                 BlockEvent::HistoryCleared => {
                     self.items.clear();
+
+                    self.history_epoch += 1;
                 }
             }
-        }
-    }
-
-    /// Attach or update command metadata for the segment registered under
-    /// `seq`. Applied to the materialized item when it exists, stashed for
-    /// its future `EngineBlock` otherwise.
-    pub fn update_meta(&mut self, seq: u64, update: impl FnOnce(&mut SegmentMeta)) {
-        if let Some(item) = self
-            .items
-            .iter_mut()
-            .rev()
-            .find(|item| item.seq == Some(seq))
-        {
-            update(&mut item.meta);
-        } else {
-            update(self.pending_meta.entry(seq).or_default());
         }
     }
 }

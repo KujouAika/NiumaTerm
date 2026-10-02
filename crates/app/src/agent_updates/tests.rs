@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
-use std::{env, process};
+use std::time::{Duration, Instant};
+use std::{env, process, thread};
 
 use app::agent_tab::{AgentKind, RecoveryIdentity, RecoveryReadiness, RecoverySnapshot};
 use chrono::Utc;
@@ -14,9 +14,66 @@ use nmt_agent::update::{
 use semver::Version;
 
 use crate::agent_updates::*;
+use crate::ui::notification_card::NotificationProgress;
+
+#[gpui::test]
+fn snapshot_reads_do_not_register_or_rediscover_profiles(cx: &mut TestAppContext) {
+    let mut profile = AgentProfile {
+        kind: AgentKind::Codex,
+        executable: "settings-read-test-codex".into(),
+        ..AgentProfile::default()
+    };
+
+    cx.update(|cx| {
+        initialize(true, &[], cx);
+
+        assert!(installations_for_profiles(&[profile.clone()], cx).is_empty());
+        assert!(
+            cx.global::<AgentUpdates>()
+                .coordinator
+                .snapshots()
+                .is_empty()
+        );
+
+        reconcile_profiles(&[profile.clone()], cx);
+
+        let initial = installations_for_profiles(&[profile.clone()], cx);
+
+        assert_eq!(initial.len(), 1);
+
+        profile.name = "Renamed profile".into();
+
+        let renamed = installations_for_profiles(&[profile.clone(), profile.clone()], cx);
+
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].identity.key, initial[0].identity.key);
+
+        profile.executable = "settings-read-test-codex-new".into();
+
+        assert!(installations_for_profiles(&[profile.clone()], cx).is_empty());
+        assert_eq!(cx.global::<AgentUpdates>().coordinator.snapshots().len(), 1);
+
+        reconcile_profiles(&[profile.clone()], cx);
+
+        let changed = installations_for_profiles(&[profile], cx);
+
+        assert_eq!(changed.len(), 1);
+        assert_ne!(changed[0].identity.key, initial[0].identity.key);
+
+        // The replaced launcher is no longer checked or shown.
+        let remaining = cx.global::<AgentUpdates>().coordinator.snapshots();
+
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].identity.key, changed[0].identity.key);
+    });
+}
 
 #[gpui::test]
 fn provider_checks_and_updates_notify_registered_views(cx: &mut TestAppContext) {
+    // Provider checks complete on the shared runtime and wake the scheduler
+    // from its worker threads.
+    cx.executor().allow_parking();
+
     let cache = tempfile::tempdir().unwrap();
 
     let profile = AgentProfile {
@@ -51,7 +108,10 @@ fn provider_checks_and_updates_notify_registered_views(cx: &mut TestAppContext) 
 
     cx.update(|cx| manual_check_profiles(&[profile], cx));
 
-    cx.run_until_parked();
+    run_until(
+        || cx.run_until_parked(),
+        || first.borrow().contains(&UpdatePhase::Available),
+    );
 
     assert!(first.borrow().contains(&UpdatePhase::Available));
     assert_eq!(*first.borrow(), *second.borrow());
@@ -67,11 +127,30 @@ fn provider_checks_and_updates_notify_registered_views(cx: &mut TestAppContext) 
         request_update(key, window, cx);
     });
 
-    cx.run_until_parked();
+    run_until(
+        || cx.run_until_parked(),
+        || first.borrow().contains(&UpdatePhase::Updated),
+    );
 
     assert!(first.borrow().contains(&UpdatePhase::WaitingForIdle));
     assert!(first.borrow().contains(&UpdatePhase::Updated));
     assert_eq!(*first.borrow(), *second.borrow());
+}
+
+/// Provider work runs on the shared runtime, outside the test scheduler, so
+/// parking alone cannot observe its completion.
+fn run_until(mut run_until_parked: impl FnMut(), done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        run_until_parked();
+
+        if done() || Instant::now() >= deadline {
+            return;
+        }
+
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn snapshot(phase: UpdatePhase) -> InstallationSnapshot {
@@ -222,11 +301,15 @@ fn testing_mode_uses_only_fake_maintenance_and_a_process_local_cache() {
     let fake = FakeMaintenance::new(ProviderKind::Claude);
     let launcher = AgentCli::new("this-executable-must-never-run", []);
 
-    assert!(fake.probe(&launcher).unwrap().update_available());
+    let block_on = |future| nmt_platform::runtime().block_on(future);
 
-    fake.update(&launcher).unwrap();
+    assert!(block_on(fake.probe(&launcher)).unwrap().update_available());
 
-    assert!(!fake.probe(&launcher).unwrap().update_available());
+    nmt_platform::runtime()
+        .block_on(fake.update(&launcher))
+        .unwrap();
+
+    assert!(!block_on(fake.probe(&launcher)).unwrap().update_available());
 }
 
 #[test]

@@ -6,13 +6,13 @@ use libghostty_vt_sys::{
     KittyGraphicsPlacementData as VtKittyGraphicsPlacementData,
     KittyGraphicsPlacementIterator as VtKittyGraphicsPlacementIterator,
     KittyImageFormat as VtKittyImageFormat, Result as VtResult, Terminal as VtTerminal,
-    TerminalData as VtTerminalData, ghostty_block_ref_placement_pos, ghostty_kitty_graphics_get,
-    ghostty_kitty_graphics_image, ghostty_kitty_graphics_image_get,
-    ghostty_kitty_graphics_placement_get, ghostty_kitty_graphics_placement_grid_size,
-    ghostty_kitty_graphics_placement_iterator_free, ghostty_kitty_graphics_placement_iterator_new,
-    ghostty_kitty_graphics_placement_next, ghostty_kitty_graphics_placement_pixel_size,
-    ghostty_kitty_graphics_placement_source_rect, ghostty_kitty_graphics_placement_viewport_pos,
-    ghostty_terminal_get,
+    TerminalData as VtTerminalData, TerminalOption as VtTerminalOption,
+    ghostty_block_ref_placement_pos, ghostty_kitty_graphics_get, ghostty_kitty_graphics_image,
+    ghostty_kitty_graphics_image_get, ghostty_kitty_graphics_placement_get,
+    ghostty_kitty_graphics_placement_grid_size, ghostty_kitty_graphics_placement_iterator_free,
+    ghostty_kitty_graphics_placement_iterator_new, ghostty_kitty_graphics_placement_next,
+    ghostty_kitty_graphics_placement_pixel_size, ghostty_kitty_graphics_placement_source_rect,
+    ghostty_kitty_graphics_placement_viewport_pos, ghostty_terminal_get, ghostty_terminal_set,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -31,11 +31,13 @@ pub(super) struct KittyState {
     /// storage with no allocation, so a no-graphics batch costs ~3 FFI calls.
     placement_iter: VtKittyGraphicsPlacementIterator,
 
-    /// Kitty image-delta cache: `image_id -> (width, height, data_len)`
-    /// of every image already shipped to the frontend. Owned by the PTY reader
-    /// thread (only `take_image_deltas` mutates it). A key change (re-transmit
-    /// with new size/length) re-ships the pixels; a vanished id is removed.
-    shipped_images: FxHashMap<u32, (u32, u32, usize)>,
+    /// Kitty image-delta cache: `image_id -> generation` of every image
+    /// already shipped to the frontend. Owned by the PTY reader thread (only
+    /// `take_image_deltas` mutates it). The engine stamps a new generation on
+    /// every re-transmit and animation frame, including ones that keep the
+    /// size and byte length, so a changed stamp re-ships the pixels; a vanished
+    /// id is removed.
+    shipped_images: FxHashMap<u32, u64>,
 }
 
 impl Drop for KittyState {
@@ -336,9 +338,17 @@ impl KittyState {
                     );
                 }
 
-                let key = (width, height, data_len);
+                let mut generation: u64 = 0;
 
-                if self.shipped_images.get(&p.image_id) == Some(&key) {
+                unsafe {
+                    ghostty_kitty_graphics_image_get(
+                        image,
+                        VtKittyGraphicsImageData::GENERATION,
+                        (&mut generation as *mut u64).cast(),
+                    );
+                }
+
+                if self.shipped_images.get(&p.image_id) == Some(&generation) {
                     continue; // unchanged — already shipped
                 }
 
@@ -350,7 +360,7 @@ impl KittyState {
 
                 pending.push((p.image_id, data));
 
-                self.shipped_images.insert(p.image_id, key);
+                self.shipped_images.insert(p.image_id, generation);
             }
         }
 
@@ -420,6 +430,18 @@ fn placement_geometry(
 /// # Safety
 /// `image` must be a live image handle from the storage the caller currently
 /// pins (engine lock or an acquired block ref).
+/// Set the kitty image storage limit of `terminal` in bytes. A non-zero limit
+/// also enables the protocol; 0 disables it.
+pub(super) fn set_kitty_storage_limit(terminal: VtTerminal, bytes: u64) {
+    unsafe {
+        ghostty_terminal_set(
+            terminal,
+            VtTerminalOption::KITTY_IMAGE_STORAGE_LIMIT,
+            (&bytes as *const u64).cast(),
+        );
+    }
+}
+
 pub(super) unsafe fn kitty_image_graphic_data(
     image: VtKittyGraphicsImage,
     image_id: u32,

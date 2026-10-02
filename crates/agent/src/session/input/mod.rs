@@ -9,37 +9,45 @@ mod tests;
 
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 use crate::chat::{
     Question, QuestionMode, QuestionRequest, QuestionResolution, QuestionResponse, ThreadSettings,
 };
 use crate::session::SessionRuntime;
 use crate::session::lifecycle::Status;
+use crate::session::view::{ApprovalView, PendingView};
 
 /// Distinguishes a draft from a later request reusing its provider ID or list position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct QuestionKey {
     index: usize,
     generation: u64,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionError {
     Disconnected,
     Rejected(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuestionAction {
     Answer,
     Skip,
     Timeout,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Submission {
     Ignored,
     Waiting,
-    Settled,
+    /// `waiting_finished` reports that this answer released the last thing
+    /// the conversation was waiting on, which the host reports as the tool
+    /// finishing.
+    Settled {
+        waiting_finished: bool,
+    },
     Failed,
 }
 
@@ -103,7 +111,11 @@ impl SessionInput {
         }
     }
 
-    pub fn receive(&mut self, runtime: &SessionRuntime, request: QuestionRequest) -> Option<usize> {
+    pub(crate) fn receive(
+        &mut self,
+        runtime: &SessionRuntime,
+        request: QuestionRequest,
+    ) -> Option<usize> {
         let existing = self.batches.iter().position(|draft| draft.id == request.id);
 
         if let Some(index) = existing
@@ -153,7 +165,7 @@ impl SessionInput {
         self.batches.len() - 1
     }
 
-    pub fn can_submit(&self, runtime: &SessionRuntime, key: QuestionKey) -> bool {
+    pub(crate) fn can_submit(&self, runtime: &SessionRuntime, key: QuestionKey) -> bool {
         self.epoch == runtime.epoch()
             && !self.disconnected
             && matches!(runtime.status(), Status::Idle | Status::Running)
@@ -165,7 +177,7 @@ impl SessionInput {
                 .is_some_and(|draft| draft.key == key && draft.status == QuestionStatus::Pending)
     }
 
-    pub fn submit(
+    pub(crate) fn submit(
         &mut self,
         runtime: &mut SessionRuntime,
         key: QuestionKey,
@@ -176,6 +188,8 @@ impl SessionInput {
         if !self.can_submit(runtime, key) {
             return Submission::Ignored;
         }
+
+        let waiting = self.waiting();
 
         let Some(draft) = self.draft_mut(key) else {
             return Submission::Ignored;
@@ -211,7 +225,9 @@ impl SessionInput {
                     QuestionStatus::Skipped
                 });
 
-                Submission::Settled
+                Submission::Settled {
+                    waiting_finished: waiting && !self.waiting(),
+                }
             }
             Ok(QuestionResponse::Pending) => {
                 draft.error = None;
@@ -227,7 +243,7 @@ impl SessionInput {
         }
     }
 
-    pub fn resolve(
+    pub(crate) fn resolve(
         &mut self,
         epoch: u64,
         id: &str,
@@ -283,13 +299,13 @@ impl SessionInput {
         true
     }
 
-    pub fn starting(&mut self, epoch: u64) {
+    pub(crate) fn starting(&mut self, epoch: u64) {
         self.epoch = epoch;
 
         self.disconnect();
     }
 
-    pub fn disconnect(&mut self) {
+    pub(crate) fn disconnect(&mut self) {
         self.disconnected = true;
         self.approval = None;
 
@@ -307,7 +323,7 @@ impl SessionInput {
         }
     }
 
-    pub fn restore(&mut self, runtime: &mut SessionRuntime) {
+    pub(crate) fn restore(&mut self, runtime: &mut SessionRuntime) {
         let Some(backend) = runtime.backend_mut() else {
             return;
         };
@@ -347,8 +363,38 @@ impl SessionInput {
         self.disconnected = false;
     }
 
-    pub fn clear_questions(&mut self) {
+    pub(crate) fn clear_questions(&mut self) {
         self.batches.clear();
+    }
+
+    pub fn view(&self) -> PendingView {
+        PendingView {
+            epoch: self.epoch,
+            sequence: self.sequence,
+            disconnected: self.disconnected,
+            approval: self.approval.as_ref().map(|approval| ApprovalView {
+                description: approval.description.clone(),
+                submitted: approval.submitted,
+            }),
+            drafts: self.batches.iter().map(QuestionDraft::view).collect(),
+        }
+    }
+
+    pub fn replace(&mut self, view: PendingView) {
+        self.epoch = view.epoch;
+        self.sequence = view.sequence;
+        self.disconnected = view.disconnected;
+
+        self.approval = view.approval.map(|approval| Approval {
+            description: approval.description,
+            submitted: approval.submitted,
+        });
+
+        self.batches = view
+            .drafts
+            .into_iter()
+            .map(QuestionDraft::from_view)
+            .collect();
     }
 
     pub fn approval(&self) -> Option<&str> {
@@ -372,7 +418,7 @@ impl SessionInput {
         epoch == self.epoch && !self.disconnected && self.approval.take().is_some()
     }
 
-    pub fn respond_approval(
+    pub(crate) fn respond_approval(
         &mut self,
         runtime: &mut SessionRuntime,
         decision: &str,
@@ -414,7 +460,7 @@ struct Approval {
     submitted: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalOutcome {
     Ignored,
     Rejected,

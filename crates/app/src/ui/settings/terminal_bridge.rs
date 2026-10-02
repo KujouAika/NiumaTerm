@@ -12,9 +12,9 @@ use app::agent_tab::settings::AgentSettings;
 use app::terminal_tab::settings::{TerminalSettings, theme_default_background};
 use gpui::{App, rgb};
 
+use crate::ui::default_font_fallbacks;
 use crate::ui::settings::opacity::main_view_background_opacity;
 use crate::ui::settings::state::AppSettings;
-use crate::ui::{UI_RADIUS, default_font_fallbacks};
 
 pub(crate) fn install_terminal_settings(cx: &mut App) {
     cx.set_global(terminal_snapshot(cx));
@@ -64,6 +64,7 @@ fn agent_snapshot(cx: &App) -> AgentSettings {
         collapse_tool_calls: settings.config().agent.collapse_tool_calls,
         codex_skill_command_compat: settings.config().agent.codex_skill_command_compat,
         model_list_style: settings.config().agent.model_list_style,
+        token_speed_mode: settings.config().agent.token_speed_mode,
         smooth_wheel: settings
             .config()
             .appearance
@@ -73,9 +74,12 @@ fn agent_snapshot(cx: &App) -> AgentSettings {
         human_friendly_layout: settings.config().appearance.human_friendly_agent_ui_layout,
         git_status_refresh_interval: settings.config().appearance.git_status_refresh_interval,
         profiles: settings.config().agent_profiles.list.clone(),
+        default_agent_profile: settings.config().agent_profiles.default.clone(),
         background_opacity: main_view_background_opacity(cx),
         font_fallbacks: default_font_fallbacks(),
         terminal_background: rgb(theme_default_background().into()).into(),
+        answer_questions_one_at_a_time: settings.config().agent.answer_questions_one_at_a_time,
+        unified_agent_tab: settings.config().agent.unified_agent_tab,
     }
 }
 
@@ -85,7 +89,6 @@ fn terminal_snapshot(cx: &App) -> TerminalSettings {
     TerminalSettings {
         input_style: settings.config().appearance.input_style,
         cursor_shape: settings.config().cursor.shape,
-        manage_subprocess_job: settings.config().system.manage_subprocess_job,
         command_blocks: settings.config().appearance.command_blocks,
         smooth_wheel: settings
             .config()
@@ -103,7 +106,6 @@ fn terminal_snapshot(cx: &App) -> TerminalSettings {
         font_size: settings.config().appearance.terminal_font_size as f32,
         line_height: settings.config().appearance.terminal_line_height as f32,
         background_opacity: main_view_background_opacity(cx),
-        corner_radius: UI_RADIUS,
         font_fallbacks: default_font_fallbacks(),
         improve_powershell_compatibility: settings
             .config()

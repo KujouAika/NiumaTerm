@@ -1,16 +1,15 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write as _};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nmt_platform::filesystem::replace_file;
+use nmt_platform::durable_file;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 use uuid::Uuid;
 
-use crate::input_history::InputHistoryScope;
+use crate::input_history::{InputHistoryScope, current_cwd_key};
 
 const HISTORY_FILE_VERSION: u32 = 2;
 const MAX_ENTRIES_PER_SCOPE: usize = 100;
@@ -158,10 +157,12 @@ pub(super) fn load_from_path(path: &Path) -> io::Result<HistoryStore> {
 
                     // Every process migrating the same legacy row must assign
                     // the same identity, including repeated nonadjacent text.
+                    // The stored spelling, not the current key, so identities
+                    // match those assigned before keys were migrated.
                     let identity = serde_json::to_vec(&(
                         &key.target,
                         &key.backend,
-                        &key.cwd,
+                        &scope.cwd,
                         &key.additional,
                         index,
                         text,
@@ -232,15 +233,7 @@ pub(super) fn save_to_path(path: &Path, history: &StoredHistory) -> io::Result<(
     let content =
         serde_json::to_vec_pretty::<StoredHistory>(&(&merged).into()).map_err(io::Error::other)?;
 
-    let mut temporary = NamedTempFile::new_in(parent)?;
-
-    temporary.write_all(&content)?;
-
-    temporary.as_file().sync_all()?;
-
-    let temporary = temporary.into_temp_path();
-
-    replace_file(&temporary, path)
+    durable_file::write(path, &content)
 }
 
 impl From<&HistoryStore> for StoredHistory {
@@ -266,7 +259,7 @@ fn history_scope<E>(value: &StoredScope<E>) -> InputHistoryScope {
     InputHistoryScope {
         target: value.target.clone(),
         backend: value.backend.clone(),
-        cwd: value.cwd.clone(),
+        cwd: current_cwd_key(&value.cwd),
         additional: value.additional.clone(),
     }
 }

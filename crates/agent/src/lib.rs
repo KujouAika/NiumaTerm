@@ -1,17 +1,17 @@
-pub use crate::codex::ProviderConfig as CodexProviderConfig;
 pub use crate::event::{
-    AgentEvent, AgentEventInput, AgentEventKind, AgentOwner, AgentRuntimeStatus,
-    AgentValidationError, RawAgentHookMessage, normalize_body, normalize_title,
+    AgentEvent, AgentEventKind, AgentRuntimeStatus, AgentValidationError, RawAgentHookMessage,
+    normalize_body, normalize_title,
 };
-pub use crate::hook_command::{HookInstallStatus, build_hook_command, hook_command_contains};
+pub use crate::hook_store::{HookInstallStatus, build_hook_command, hook_command_contains};
 pub use crate::monitor::{
     AgentActivityPolicy, AgentMonitor, AgentNotification, AgentProjection, COMPLETION_QUIET_WINDOW,
-    MonitorMutation, request_native_delivery,
+    MonitorMutation,
 };
 pub use crate::process::{
     AGENT_HOOK_EXE_ENV, AGENT_HOOK_PROTOCOL_VERSION, AGENT_HOOK_TOKEN_ENV, AGENT_HOOK_VERSION_ENV,
     AGENT_ROUTE_ENV, AGENT_TESTING_ENV, AgentProcess, agent_process,
 };
+pub use crate::subprocess::OUTPUT_FAILURE_METHOD;
 pub use crate::workspace::{AgentWorkspace, MultiRootAccess};
 
 pub mod background_task;
@@ -24,7 +24,6 @@ pub mod git;
 pub mod images;
 pub mod input_history;
 pub mod launcher;
-pub mod message_memory;
 pub mod profile;
 pub mod progress;
 pub mod session;
@@ -35,20 +34,17 @@ pub mod usage;
 pub mod workflow;
 pub mod workspace;
 
-mod deadline_timer;
-mod hook_store;
-mod request_policy;
-mod subprocess;
-
 mod event;
-mod hook_command;
+mod hook_store;
 mod json;
 mod monitor;
 mod process;
+mod subprocess;
 
 #[cfg(test)]
 mod tests;
 
+use crate::codex::ProviderConfig;
 #[cfg(test)]
 use crate::event::MAX_TITLE_CHARS;
 use crate::event::{MAX_ROUTE_BYTES, validate_identity};
@@ -73,7 +69,7 @@ pub struct LaunchConfig {
     /// settings. Each adapter maps it to its own surface.
     pub effort: Option<String>,
 
-    pub provider: Option<CodexProviderConfig>,
+    pub provider: Option<ProviderConfig>,
     pub env: Vec<(String, String)>,
 
     /// Declare [`Self::model`] as an image-capable model in the harness's own
@@ -81,6 +77,21 @@ pub struct LaunchConfig {
     /// such a catalog: it refuses an image unless the selected model is listed
     /// there as taking one, and a model named by hand is never listed.
     pub declares_image_input: bool,
+
+    /// The agent composition a new DeepSeek Harness conversation is created
+    /// from. `None` leaves the deployment's default. The shared host is keyed
+    /// without it, because the composition belongs to a conversation.
+    pub agent_preset: Option<String>,
+
+    /// Approval setting the profile pins for every conversation it starts,
+    /// already checked against the harness's own values. `None` leaves it to
+    /// the agent's configuration and the remembered thread settings. Claude
+    /// Code takes it as a launch flag; Codex receives it with every turn.
+    pub approval: Option<String>,
+
+    /// Sandbox policy the profile pins, with the same meaning of `None`.
+    /// Only Codex has one, and it receives it with every turn.
+    pub sandbox: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

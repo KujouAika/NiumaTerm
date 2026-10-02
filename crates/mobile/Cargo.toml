@@ -1,0 +1,31 @@
+[package]
+name = "nmt_mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+# `staticlib` is what the iOS app links; `lib` serves the tests and the
+# bindgen, which reads the exported interface from the compiled library.
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+anyhow.workspace = true
+nmt_agent.workspace = true
+nmt_config.workspace = true
+nmt_input.workspace = true
+nmt_platform.workspace = true
+nmt_remote = { workspace = true, default-features = false }
+nmt_remote_core.workspace = true
+# The engine only; the default `x11` clipboard backend has no iOS counterpart.
+nmt_terminal = { workspace = true, default-features = false }
+parking_lot.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uniffi.workspace = true

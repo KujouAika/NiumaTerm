@@ -1,10 +1,21 @@
+use gpui::{App, Styled as _};
+#[cfg(windows)]
+use gpui::{IntoElement as _, ParentElement as _};
+use gpui_component::Disableable as _;
+use gpui_component::button::Button;
+#[cfg(windows)]
+use gpui_component::button::ButtonVariants as _;
+use gpui_component::label::Label;
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+#[cfg(windows)]
+use gpui_component::{ActiveTheme as _, h_flex, v_flex};
+#[cfg(windows)]
+use nmt_updater::windows::{CheckError, Status};
 use rust_i18n::t;
 
-#[cfg(target_os = "macos")]
-use crate::sparkle;
-use crate::ui::settings::*;
-#[cfg(windows)]
-use crate::update::{self, CheckError, InstallError, Status};
+use crate::ui::settings::fields::{settings_choice, settings_switch};
+use crate::ui::settings::{APP_INTERNAL_VERSION, APP_VERSION, RELEASE_PAGE_URL};
+use crate::update;
 
 pub(super) fn about_page() -> SettingPage {
     // One untitled group. A page holding a single group drops its subcategory
@@ -35,22 +46,18 @@ pub(super) fn about_page() -> SettingPage {
     // itself can still be replaced by hand.
     #[cfg(any(windows, target_os = "macos"))]
     let group = group
-        .item(
-            SettingItem::new(
-                t!("settings-about-check-updates"),
-                SettingField::switch(
-                    |cx| cx.global::<AppSettings>().config().update.check_updates,
-                    |value, cx| {
-                        cx.global_mut::<AppSettings>()
-                            .edit_update(|section| section.check_updates = value);
-                    },
-                ),
-            )
-            .description(t!("settings-about-check-updates-description").into_owned()),
-        )
+        .item(SettingItem::new(
+            t!("settings-about-check-updates"),
+            settings_switch(
+                |config| config.update.check_updates,
+                |settings, value| {
+                    settings.edit_update(|section| section.check_updates = value);
+                },
+            ),
+        ))
         .item(SettingItem::new(
             t!("settings-about-channel"),
-            SettingField::dropdown(
+            settings_choice(
                 vec![
                     ("stable".into(), t!("settings-about-channel-stable").into()),
                     (
@@ -58,14 +65,9 @@ pub(super) fn about_page() -> SettingPage {
                         t!("settings-about-channel-nightly").into(),
                     ),
                 ],
-                |cx| {
-                    let key: &str = cx.global::<AppSettings>().config().update.channel.into();
-
-                    key.into()
-                },
-                |value, cx| {
-                    cx.global_mut::<AppSettings>()
-                        .edit_update(|section| section.channel = value.as_str().into());
+                |config| config.update.channel.into(),
+                |settings, value| {
+                    settings.edit_update(|section| section.channel = value.into());
                 },
             )
             .default_value("stable"),
@@ -90,8 +92,8 @@ fn update_check_item() -> SettingItem {
             Button::new("app-update-check")
                 .outline()
                 .label(t!("settings-about-check-button"))
-                .disabled(options.is_disabled() || !sparkle::can_check(cx))
-                .on_click(|_, _, cx: &mut App| sparkle::check_now(cx))
+                .disabled(options.is_disabled() || !update::can_check(cx))
+                .on_click(|_, _, cx: &mut App| update::check(cx))
         }),
     )
 }
@@ -134,6 +136,16 @@ fn update_check_item() -> SettingItem {
                 .on_click(|_, window, cx: &mut App| update::install_now(window, cx))
         });
 
+        // Running work holds the restart back; this button is the override
+        // for work that never ends on its own, such as a development server.
+        let restart = matches!(status, Status::WaitingForIdle(_)).then(|| {
+            Button::new("app-update-restart-now")
+                .primary()
+                .label(t!("settings-about-restart-now"))
+                .disabled(options.is_disabled())
+                .on_click(|_, _, cx: &mut App| update::resume_install(cx))
+        });
+
         // The status line reports the result of a check the user just ran and
         // changes while it runs, so it sits under the label instead of behind
         // the hover hint the static row descriptions use: watching a check
@@ -158,6 +170,7 @@ fn update_check_item() -> SettingItem {
                     .gap_2()
                     .children(open)
                     .children(install)
+                    .children(restart)
                     .child(check),
             )
             .into_any_element()
@@ -177,6 +190,9 @@ fn status_text(status: &Status) -> String {
         Status::Installing(release) => {
             t!("settings-about-installing", version = &release.label).into_owned()
         }
+        Status::WaitingForIdle(release) => {
+            t!("settings-about-waiting-for-idle", version = &release.label).into_owned()
+        }
         Status::InspectingFileUse(release) => {
             t!("settings-about-file-use-checking", version = &release.label).into_owned()
         }
@@ -191,24 +207,10 @@ fn status_text(status: &Status) -> String {
             applications = &applications.join(", ")
         )
         .into_owned(),
-        Status::InstallFailed(error) => install_error_text(error),
+        Status::InstallFailed(error) => update::install_error_text(error),
         Status::Failed(CheckError::Unreachable) => {
             t!("settings-about-check-unreachable").to_string()
         }
         Status::Failed(CheckError::Unreadable) => t!("settings-about-check-unreadable").to_string(),
     }
-}
-
-#[cfg(windows)]
-fn install_error_text(error: &InstallError) -> String {
-    match error {
-        InstallError::NoPackage => t!("settings-about-install-no-package"),
-        InstallError::Unreachable => t!("settings-about-install-unreachable"),
-        InstallError::Checksum => t!("settings-about-install-checksum"),
-        InstallError::Unpack => t!("settings-about-install-unpack"),
-        InstallError::NotWritable => t!("settings-about-install-not-writable"),
-        InstallError::Replace => t!("settings-about-install-replace"),
-        InstallError::Relaunch => t!("settings-about-install-relaunch"),
-    }
-    .to_string()
 }

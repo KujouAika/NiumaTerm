@@ -12,7 +12,9 @@ workspace = true
 name = "NmtAgentHook"
 path = "src/main.rs"
 
-[dependencies]
+# Only the Windows entry point forwards hook events; other hosts build an
+# inert binary that never reads the hook protocol.
+[target.'cfg(windows)'.dependencies]
 nmt_agent.workspace = true
 nmt_platform.workspace = true
 

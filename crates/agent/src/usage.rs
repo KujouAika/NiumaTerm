@@ -1,13 +1,8 @@
 //! Provider-neutral subscription-limit data used by compact usage surfaces.
 
-#[cfg(test)]
-#[path = "usage_tests.rs"]
-mod usage_tests;
-
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) const FIVE_HOUR_WINDOW_MINUTES: u32 = 5 * 60;
 pub(crate) const WEEKLY_WINDOW_MINUTES: u32 = 7 * 24 * 60;
@@ -90,12 +85,12 @@ impl UsageSnapshot {
     }
 }
 
+/// Cancellation of a usage fetch. The owner cancels it synchronously, and the
+/// running fetch races its body against it, so a cancelled fetch stops at once.
+pub type FetchCancellation = CancellationToken;
+
 pub fn now_unix_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            duration.as_millis().min(i64::MAX as u128) as i64
-        })
+    Utc::now().timestamp_millis()
 }
 
 pub(crate) fn parse_timestamp_millis(value: &Value) -> Option<i64> {

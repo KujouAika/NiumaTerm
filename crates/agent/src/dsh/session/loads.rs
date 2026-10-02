@@ -5,12 +5,11 @@
 mod tests;
 
 use std::sync::Arc;
-use std::thread;
 
 use serde_json::{Value, json};
 
 use crate::background_task::{
-    BackgroundTaskKey, BackgroundTaskTranscriptState, BackgroundTaskTranscriptUpdate,
+    BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskTranscriptUpdate,
 };
 use crate::chat::{Event, Item, QueuedPrompt};
 use crate::dsh::api::{ApiClient, CallError};
@@ -18,10 +17,10 @@ use crate::dsh::events::session_address;
 use crate::dsh::models::ModelDirectory;
 use crate::dsh::session::{
     COMMANDS_FRAME, FORK_CHECKPOINT_MESSAGES, FORK_CHECKPOINTS_FRAME, HISTORY_FRAME, MODELS_FRAME,
-    PRESETS_FRAME, REPLAY_MESSAGES, SEARCH_FRAME, SKILLS_FRAME, SUBAGENT_TRANSCRIPT_FRAME,
-    SUBAGENTS_FRAME, WORKFLOW_TRANSCRIPT_FRAME,
+    OpenedConversation, PRESETS_FRAME, REPLAY_MESSAGES, SEARCH_FRAME, SESSION_STATUS, SKILLS_FRAME,
+    SUBAGENT_TRANSCRIPT_FRAME, SUBAGENTS_FRAME, WORKFLOW_TRANSCRIPT_FRAME,
 };
-use crate::dsh::{commands, events, frames, history};
+use crate::dsh::{catalogs, events, frames, history};
 
 fn deliver_read(
     mut payload: Value,
@@ -50,14 +49,12 @@ pub(super) fn failed_read_events(payload: &Value, session_id: &str) -> Option<Ve
     let mut events = match payload["type"].as_str()? {
         MODELS_FRAME => return None,
         COMMANDS_FRAME => vec![Event::Commands(Vec::new())],
-        SKILLS_FRAME => vec![Event::Skills(commands::skills(&Value::Null))],
+        SKILLS_FRAME => vec![Event::Skills(catalogs::skill_catalog(&Value::Null))],
         SUBAGENT_TRANSCRIPT_FRAME => vec![Event::BackgroundTaskTranscript {
             key: BackgroundTaskKey::deepseek(payload["childSessionId"].as_str()?),
-            update: BackgroundTaskTranscriptUpdate::state(
-                BackgroundTaskTranscriptState::Unavailable {
-                    message: message.to_string(),
-                },
-            ),
+            update: BackgroundTaskTranscriptUpdate::state(BackgroundTaskLoadState::Unavailable {
+                message: message.to_string(),
+            }),
         }],
         HISTORY_FRAME | PRESETS_FRAME | SUBAGENTS_FRAME | WORKFLOW_TRANSCRIPT_FRAME => Vec::new(),
         _ => return None,
@@ -72,6 +69,59 @@ pub(super) fn failed_read_events(payload: &Value, session_id: &str) -> Option<Ve
     Some(events)
 }
 
+/// The model a profile starts its conversations on.
+pub(super) struct ModelProfile {
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<String>,
+
+    /// Whether that model is declared image-capable in the provider's
+    /// configured catalog when a conversation starts.
+    pub(super) declares_image_input: bool,
+}
+
+/// Read what a conversation just opened or reattached to offers: its model
+/// directory with `profile`'s pick applied, the session list, its commands,
+/// skills and agent presets. Each is scoped to the session rather than the
+/// tab, since a resumed conversation may have been composed from a different
+/// preset or rooted elsewhere, so every open asks afresh. The session list is
+/// read now rather than when the picker opens, because the picker refuses to
+/// open on an empty list and cannot wait for one.
+pub(super) fn load_conversation(
+    client: &ApiClient,
+    opened: &OpenedConversation,
+    preset_refusal: Option<String>,
+    cwd: Option<String>,
+    snapshot: &Value,
+    profile: &ModelProfile,
+    deliver: &Arc<dyn Fn(Value) + Send + Sync>,
+) {
+    let session_id = &opened.session_id;
+
+    load_models(
+        client.clone(),
+        session_id.clone(),
+        snapshot["projections"]["values"]["modelSelection"]["next"].clone(),
+        profile.model.clone(),
+        profile.effort.clone(),
+        profile.declares_image_input,
+        Arc::clone(deliver),
+    );
+
+    load_sessions(client.clone(), cwd, Arc::clone(deliver));
+
+    load_commands(client.clone(), session_id.clone(), Arc::clone(deliver));
+
+    load_skills(client.clone(), session_id.clone(), Arc::clone(deliver));
+
+    load_agent_presets(
+        client.clone(),
+        session_id.clone(),
+        opened.agent_preset.clone(),
+        preset_refusal,
+        Arc::clone(deliver),
+    );
+}
+
 /// Read the conversations this tab's directory can continue.
 ///
 /// The result is one page: the harness returns every visible session and
@@ -82,13 +132,41 @@ pub(super) fn load_sessions(
     cwd: Option<String>,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         deliver_read(
             json!({ "type": HISTORY_FRAME, "cwd": cwd }),
             "sessions",
-            client.call("session/list", json!({ "_request": {} })),
+            client.call("session/list", json!({ "_request": {} })).await,
             deliver.as_ref(),
         );
+    });
+}
+
+/// Report through the session status frame when the harness lists
+/// `session_id` as not running. A failed or inconclusive read reports
+/// nothing, leaving the turn as the log describes it.
+pub(super) fn check_running(
+    client: ApiClient,
+    session_id: String,
+    deliver: Arc<dyn Fn(Value) + Send + Sync>,
+) {
+    nmt_platform::runtime().spawn(async move {
+        let Ok(listed) = client.call("session/list", json!({ "_request": {} })).await else {
+            return;
+        };
+
+        let idle = listed["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| item["sessionId"] == session_id.as_str())
+            .is_some_and(|item| item["running"] == false);
+
+        if idle {
+            deliver(json!({ "payload": {
+                "type": SESSION_STATUS, "sessionId": session_id, "running": false,
+            } }));
+        }
     });
 }
 
@@ -121,14 +199,21 @@ pub(crate) fn queued_prompts(items: &Value) -> Vec<QueuedPrompt> {
 }
 
 /// Frame decoders with no session state of their own: each turns one bridge
-/// frame into the events it announces. They are addressed to this tab by the
-/// request that provoked them, so they carry no session id to check.
-pub(crate) fn workflow_transcript_events(payload: &Value) -> Vec<Event> {
+/// frame into the events it announces.
+///
+/// A read that was asked for before the tab switched conversations answers
+/// after it, so frames about one conversation name it and a frame for any
+/// other than `session_id` is dropped.
+pub(crate) fn workflow_transcript_events(payload: &Value, session_id: &str) -> Vec<Event> {
     let Some(frame) =
         frames::parse::<frames::WorkflowTranscriptFrame>(WORKFLOW_TRANSCRIPT_FRAME, payload)
     else {
         return Vec::new();
     };
+
+    if frame.session_id != session_id {
+        return Vec::new();
+    }
 
     vec![Event::WorkflowAgentTranscript {
         task_id: frame.task_id,
@@ -168,12 +253,18 @@ pub(crate) fn search_events(payload: &Value) -> Vec<Event> {
     ))]
 }
 
-pub(crate) fn fork_checkpoint_events(payload: &Value) -> Vec<Event> {
+/// Forking applies a checkpoint to the conversation on screen, so a list
+/// read from the conversation this tab left must not reach the picker.
+pub(crate) fn fork_checkpoint_events(payload: &Value, session_id: &str) -> Vec<Event> {
     let Some(frame) =
         frames::parse::<frames::ForkCheckpointsFrame>(FORK_CHECKPOINTS_FRAME, payload)
     else {
         return Vec::new();
     };
+
+    if frame.session_id != session_id {
+        return Vec::new();
+    }
 
     vec![Event::ForkCheckpoints(match frame.error {
         Some(message) => Err(message),
@@ -192,9 +283,13 @@ pub(super) fn load_search(
     query: String,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
-        let payload = match client.request("session/search", json!({ "query": query })) {
-            Ok(matches) => match client.call("session/list", json!({ "_request": {} })) {
+    nmt_platform::runtime().spawn(async move {
+        let searched = client
+            .request("session/search", json!({ "query": query }))
+            .await;
+
+        let payload = match searched {
+            Ok(matches) => match client.call("session/list", json!({ "_request": {} })).await {
                 Ok(listed) => json!({
                     "type": SEARCH_FRAME,
                     "matches": matches,
@@ -223,11 +318,16 @@ pub(super) fn load_commands(
     session_id: String,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         deliver_read(
             json!({ "type": COMMANDS_FRAME, "sessionId": session_id }),
             "commands",
-            client.call(commands::LIST_METHOD, commands::agent_args(&session_id)),
+            client
+                .call(
+                    catalogs::COMMAND_LIST_METHOD,
+                    json!({ "agentId": session_id }),
+                )
+                .await,
             deliver.as_ref(),
         );
     });
@@ -239,11 +339,13 @@ pub(super) fn load_skills(
     session_id: String,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         deliver_read(
             json!({ "type": SKILLS_FRAME, "sessionId": session_id }),
             "skills",
-            client.request("skills/list", json!({ "sessionId": session_id })),
+            client
+                .request("skills/list", json!({ "sessionId": session_id }))
+                .await,
             deliver.as_ref(),
         );
     });
@@ -255,18 +357,27 @@ pub(super) fn load_skills(
 /// The roster belongs to the deployment rather than to the session, but the
 /// current pick belongs to the session, so both are read here: reattaching to a
 /// conversation composed from another preset has to move the picker with it.
+/// `refusal` travels with them because it explains why `current` is not the
+/// preset that was asked for.
 pub(super) fn load_agent_presets(
     client: ApiClient,
     session_id: String,
     current: Option<String>,
+    refusal: Option<String>,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         deliver_read(
-            json!({ "type": PRESETS_FRAME, "sessionId": session_id, "current": current }),
+            json!({
+                "type": PRESETS_FRAME,
+                "sessionId": session_id,
+                "current": current,
+                "refusal": refusal,
+            }),
             "presets",
             client
                 .call("agentPresets/list", json!({}))
+                .await
                 .map(|listed| listed["presets"].clone()),
             deliver.as_ref(),
         );
@@ -280,13 +391,13 @@ pub(super) fn load_subagents(
     activity: u64,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         let payload = json!({ "parentSessionId": session_id });
 
         deliver_read(
             json!({ "type": SUBAGENTS_FRAME, "sessionId": session_id, "activity": activity }),
             "catalog",
-            client.call("subagents/list", payload),
+            client.call("subagents/list", payload).await,
             deliver.as_ref(),
         );
     });
@@ -300,7 +411,7 @@ pub(super) fn load_subagent_transcript(
     continuable: bool,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         let address = json!({
             "kind": "subagent",
             "parentSessionId": parent_session_id,
@@ -311,7 +422,7 @@ pub(super) fn load_subagent_transcript(
         deliver_read(
             json!({ "type": SUBAGENT_TRANSCRIPT_FRAME, "sessionId": parent_session_id, "childSessionId": child }),
             "page",
-            events::snapshot(&client, address, REPLAY_MESSAGES),
+            events::snapshot(&client, address, REPLAY_MESSAGES).await,
             deliver.as_ref(),
         );
     });
@@ -326,15 +437,19 @@ pub(super) fn load_subagent_transcript(
 /// registering there as well.
 pub(super) fn load_workflow_transcript(
     client: ApiClient,
+    session_id: String,
     task_id: String,
     child: String,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         deliver_read(
-            json!({ "type": WORKFLOW_TRANSCRIPT_FRAME, "taskId": task_id, "agentId": child }),
+            json!({
+                "type": WORKFLOW_TRANSCRIPT_FRAME, "sessionId": session_id,
+                "taskId": task_id, "agentId": child,
+            }),
             "page",
-            events::snapshot(&client, session_address(&child), REPLAY_MESSAGES),
+            events::snapshot(&client, session_address(&child), REPLAY_MESSAGES).await,
             deliver.as_ref(),
         );
     });
@@ -352,18 +467,24 @@ pub(super) fn load_fork_checkpoints(
     session_id: String,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         // A failure is delivered rather than only logged: the picker waits on
         // this page, so a read that reported nothing would hold it open on a
         // list never arriving.
-        let payload = match events::snapshot(
+        let page = events::snapshot(
             &client,
             session_address(&session_id),
             FORK_CHECKPOINT_MESSAGES,
-        ) {
-            Ok(page) => json!({ "type": FORK_CHECKPOINTS_FRAME, "page": page }),
+        )
+        .await;
+
+        let payload = match page {
+            Ok(page) => json!({
+                "type": FORK_CHECKPOINTS_FRAME, "sessionId": session_id, "page": page,
+            }),
             Err(error) => json!({
                 "type": FORK_CHECKPOINTS_FRAME,
+                "sessionId": session_id,
                 "error": error.message(),
             }),
         };
@@ -379,7 +500,7 @@ pub(super) fn load_fork_checkpoints(
 /// and a tab must not wait on a slow provider before it can be typed in. The
 /// selection is applied here rather than reported and applied later, so what
 /// the pane displays is what the harness will actually route.
-pub(super) fn load_models(
+fn load_models(
     client: ApiClient,
     session_id: String,
     selected: Value,
@@ -388,7 +509,7 @@ pub(super) fn load_models(
     declares_image_input: bool,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
-    thread::spawn(move || {
+    nmt_platform::runtime().spawn(async move {
         let payload = reconcile_models(
             &client,
             &session_id,
@@ -396,13 +517,14 @@ pub(super) fn load_models(
             wanted_model,
             wanted_effort,
             declares_image_input,
-        );
+        )
+        .await;
 
         deliver(json!({ "payload": payload }));
     });
 }
 
-fn reconcile_models(
+async fn reconcile_models(
     client: &ApiClient,
     session_id: &str,
     selected: &Value,
@@ -410,7 +532,7 @@ fn reconcile_models(
     wanted_effort: Option<String>,
     declares_image_input: bool,
 ) -> Value {
-    let mut catalog = match read_model_catalog(client, selected) {
+    let mut catalog = match read_model_catalog(client, selected).await {
         Ok(catalog) => catalog,
         Err(error) => {
             return json!({
@@ -433,11 +555,11 @@ fn reconcile_models(
             let (provider, id) = directory.route(&model);
             let (provider, id) = (provider.to_string(), id.to_string());
 
-            match declare_image_input(client, &provider, &id) {
+            match declare_image_input(client, &provider, &id).await {
                 // A catalog that gained an entry is a different catalog:
                 // the model now has a name and a reasoning-effort list
                 // instead of the bare id a selection alone would show.
-                Ok(true) => match read_model_catalog(client, selected) {
+                Ok(true) => match read_model_catalog(client, selected).await {
                     Ok(refreshed) => {
                         catalog = refreshed;
                         directory = ModelDirectory::parse(&catalog);
@@ -484,7 +606,7 @@ fn reconcile_models(
                 payload["reasoningEffort"] = json!(effort);
             }
 
-            match client.request("session/selectModel", payload) {
+            match client.request("session/selectModel", payload).await {
                 Ok(selected) => catalog["current"] = selected["selected"].clone(),
                 Err(error) => refusal = Some(error.message().to_string()),
             }
@@ -500,8 +622,8 @@ fn reconcile_models(
     payload
 }
 
-fn read_model_catalog(client: &ApiClient, selected: &Value) -> Result<Value, CallError> {
-    let mut catalog = client.call("session/modelCatalog", json!({}))?;
+async fn read_model_catalog(client: &ApiClient, selected: &Value) -> Result<Value, CallError> {
+    let mut catalog = client.call("session/modelCatalog", json!({})).await?;
 
     catalog["current"] = if selected.is_null() {
         catalog["default"].clone()
@@ -532,9 +654,14 @@ const MODALITY_FIELDS: [(&str, &str); 2] =
 ///
 /// `Ok(false)` means the catalog already offered the model to images, which is
 /// the ordinary state once this has run for a profile.
-fn declare_image_input(client: &ApiClient, provider: &str, model: &str) -> Result<bool, String> {
+async fn declare_image_input(
+    client: &ApiClient,
+    provider: &str,
+    model: &str,
+) -> Result<bool, String> {
     let providers = client
         .call("llm/listConfigurableProviders", json!({}))
+        .await
         .map_err(|error| error.message().to_string())?;
 
     let route = providers
@@ -568,6 +695,7 @@ fn declare_image_input(client: &ApiClient, provider: &str, model: &str) -> Resul
 
     let described = client
         .call("settings/describe", json!({}))
+        .await
         .map_err(|error| error.message().to_string())?;
 
     if described["writable"] != Value::Bool(true) {
@@ -602,6 +730,7 @@ fn declare_image_input(client: &ApiClient, provider: &str, model: &str) -> Resul
 
     let written = client
         .call("settings/mutate", payload)
+        .await
         .map_err(|error| error.message().to_string())?;
 
     // The answer is the namespace as the harness now reads it, which is the

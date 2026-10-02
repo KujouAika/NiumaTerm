@@ -1,24 +1,30 @@
 pub(crate) use app::design::SURFACE_RADIUS as UI_RADIUS;
+pub(crate) use app::platform_style;
 pub(crate) use gpui_component::modern_menu::dismiss_modern_menu;
 
 pub(crate) use crate::ui::active_list::{ActiveList, HasId};
 pub(crate) use crate::ui::modern_dropdown::modern_dropdown;
+// The native application menu saves settings from outside the view tree, and
+// only macOS builds that menu.
+#[cfg(target_os = "macos")]
+pub(crate) use crate::ui::settings::save_settings;
 pub(crate) use crate::ui::settings::{
     AppSettings, apply_ui_theme, apply_window_translucency, background_image_layer_opacity,
-    install_agent_settings, install_terminal_settings, main_view_background_opacity, save_settings,
-    watch_themes, window_background_appearance,
+    install_agent_settings, install_terminal_settings, main_view_background_opacity,
+    window_background_appearance,
 };
-// Remote sessions connect to a Windows host, so only the Windows key table
-// names the action that opens one.
-#[cfg(windows)]
-pub(crate) use crate::ui::shell::NewRemoteTab;
-#[cfg(target_os = "macos")]
-pub(crate) use crate::ui::shell::TITLE_BAR_HEIGHT;
 pub(crate) use crate::ui::shell::{
-    CloseTab, NewAgentTab, NewTab, NewWindow, NewWorkspace, NextTab, NextWorkspace, PrevTab,
-    PrevWorkspace, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, Shell,
-    ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp, TabSurface, ToggleSidebar,
+    AppWindow, CloseTab, DeviceClose, LastActiveWindow, NewAgentTab, NewTab, NewWindow,
+    NewWorkspace, NextTab, NextWorkspace, PrevTab, PrevWorkspace, ResizePaneDown, ResizePaneLeft,
+    ResizePaneRight, ResizePaneUp, ShowSettings, SplitDown, SplitLeft, SplitRight, SplitUp,
+    TabSurface, ToggleSidebar, WindowRegistry, open_window, selected_window_appearance,
 };
+
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_menu;
+pub(crate) mod notification_card;
+pub(crate) mod pane_tree;
+pub(crate) mod remote;
 
 mod active_list;
 mod background_tasks;
@@ -34,14 +40,15 @@ mod settings;
 mod shell;
 mod sidebar_resize;
 mod tab_bar;
+// Terminal helpers that use the executable's window and workspace types;
+// the reusable terminal renderer is compiled in the app library.
+mod terminal_launch;
 mod terminal_layout;
 mod terminal_status;
-
+mod title_bar;
 mod token_usage;
 mod workflows;
 mod workspace_sidebar;
-
-mod terminal_launch;
 
 #[cfg(test)]
 mod tests;
@@ -50,6 +57,7 @@ use std::sync::LazyLock;
 
 use gpui::{App, Font, FontFallbacks, SharedString, font};
 use gpui_component::modern_menu::{prewarm_modern_menu, set_default_font};
+use nmt_config::appearance::DEFAULT_UI_FONT;
 
 pub(crate) const UI_BORDER_OPACITY: f32 = 0.5;
 
@@ -76,6 +84,32 @@ pub(crate) fn font_with_default_fallback(family: impl Into<SharedString>) -> Fon
     font
 }
 
+/// The font every chrome surface inherits: the configured UI family when this
+/// system has it, otherwise the platform's default UI face.
+///
+/// A family that is not installed does not fail to load; GPUI quietly draws it
+/// in Helvetica. A config carried over from Windows names `Segoe UI`, which
+/// macOS lacks, and Helvetica's short ascent then centers every line box below
+/// the glyphs, so chrome text rides visibly above the icons beside it.
+pub(crate) fn chrome_font(cx: &App) -> Font {
+    let configured = font_with_default_fallback(
+        cx.global::<AppSettings>()
+            .config()
+            .appearance
+            .ui_font
+            .clone(),
+    );
+
+    let text_system = cx.text_system();
+    let resolved = text_system.get_font_for_id(text_system.resolve_font(&configured));
+
+    if resolved.is_some_and(|resolved| resolved.family == configured.family) {
+        configured
+    } else {
+        font_with_default_fallback(DEFAULT_UI_FONT)
+    }
+}
+
 /// Keep the context menu window built and carrying the chrome font.
 ///
 /// The menu is drawn in a window of its own, so it inherits no text style from
@@ -84,13 +118,7 @@ pub(crate) fn font_with_default_fallback(family: impl Into<SharedString>) -> Fon
 /// this is called from the shell's render and follows a font setting that
 /// changes underneath it.
 pub(crate) fn sync_modern_menu(cx: &mut App) {
-    let font = font_with_default_fallback(
-        cx.global::<AppSettings>()
-            .config()
-            .appearance
-            .ui_font
-            .clone(),
-    );
+    let font = chrome_font(cx);
 
     set_default_font(cx, font);
 

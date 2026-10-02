@@ -113,11 +113,12 @@ uuid = { workspace = true, features = ["js"] }
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-video.workspace = true
 font-kit = { workspace = true, optional = true }
 log.workspace = true
 objc2 = { workspace = true, optional = true }
 objc2-metal = { workspace = true, optional = true }
+objc2-core-foundation.workspace = true
+objc2-core-video.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies]
 scap = { workspace = true, optional = true }
@@ -148,12 +149,8 @@ wasm-bindgen = { workspace = true }
 [build-dependencies]
 embed-resource = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "macos")'.build-dependencies]
-bindgen.workspace = true
-
 [package.metadata.cargo-shear]
 ignored = [
-    "bindgen",
     "font-kit",
     "getrandom",
     "objc2",

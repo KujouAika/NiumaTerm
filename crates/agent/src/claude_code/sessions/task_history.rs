@@ -14,33 +14,20 @@ use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::DateTime;
 use serde_json::Value;
 
 use crate::background_task::{BackgroundTaskRefs, BackgroundTaskState, BackgroundTaskUpdate};
 use crate::chat::Item;
+use crate::claude_code::records::child_content_items;
 use crate::claude_code::sessions::index::TranscriptIndex;
-use crate::claude_code::sessions::paths::project_dir;
+use crate::claude_code::sessions::project_dir;
 use crate::claude_code::sessions::replay::parse_child_replay;
 use crate::claude_code::sessions::titles::conversation_user_text;
-use crate::claude_code::tool_items::{complete_tool_item, tool_item};
-use crate::json::{condense, text_field};
-
-/// Tool names whose launch creates a child agent.
-const LAUNCH_TOOLS: [&str; 2] = ["Task", "Agent"];
-
-/// System subtypes that report a task's lifecycle. A stopped task reports
-/// `killed` only in a `task_updated` patch, so both terminal records matter.
-const LIFECYCLE_RECORDS: [&str; 4] = [
-    "task_started",
-    "task_progress",
-    "task_notification",
-    "task_updated",
-];
-
-/// The task type of delegated agent work; shells, monitors, and workflows share
-/// these records and must not become rows.
-const AGENT_TASK_TYPE: &str = "local_agent";
+use crate::claude_code::tasks::{
+    AGENT_TASK_TYPE, LAUNCH_TOOLS, LIFECYCLE_RECORDS, lifecycle_state, record_identifiers,
+    sidechain_preview,
+};
+use crate::json::{text_field, unix_seconds_from_rfc3339};
 
 /// One child agent rebuilt from history, keyed by the identity the live
 /// reducer uses so the two merge into a single row.
@@ -154,18 +141,8 @@ fn attach_child_transcripts(project: &Path, session_id: &str, tasks: &mut [Resto
             task.items = parse_child_replay(BufReader::new(file));
         }
 
-        if task.update.agent_type.is_none() {
-            task.update.agent_type = text_field(&meta, &["agentType"]);
-        }
-
         if task.update.display_name.is_none() {
             task.update.display_name = text_field(&meta, &["description"]);
-        }
-
-        if task.update.depth.is_none() {
-            task.update.depth = meta["spawnDepth"]
-                .as_u64()
-                .and_then(|d| u32::try_from(d).ok());
         }
     }
 }
@@ -255,12 +232,12 @@ fn collect_launches(
             continue;
         }
 
-        let Some(name) = block["name"]
+        if !block["name"]
             .as_str()
-            .filter(|name| LAUNCH_TOOLS.contains(name))
-        else {
+            .is_some_and(|name| LAUNCH_TOOLS.contains(&name))
+        {
             continue;
-        };
+        }
 
         let Some(tool_use_id) = block["id"].as_str() else {
             continue;
@@ -285,12 +262,8 @@ fn collect_launches(
                 }),
                 state: Some(BackgroundTaskState::Starting),
                 display_name: text_field(input, &["description", "name", "title"]),
-                agent_type: text_field(input, &["subagent_type", "agent_type", "agent"])
-                    .or_else(|| Some(name.to_owned())),
                 objective: text_field(input, &["prompt", "task", "instructions"]),
-                model: text_field(input, &["model"]),
                 started_at: timestamp(record),
-                updated_at: timestamp(record),
                 ..BackgroundTaskUpdate::default()
             },
         });
@@ -324,7 +297,6 @@ fn collect_results(record: &Value, tasks: &mut [RestoredTask], index: &HashMap<S
         });
 
         update.completed_at = timestamp(record);
-        update.updated_at = timestamp(record).or(update.updated_at);
     }
 }
 
@@ -349,10 +321,6 @@ fn enrich_from_sidechain(
 
     task.update.status = Some(preview.clone());
     task.update.last_preview = Some(preview);
-
-    if let Some(observed) = timestamp(record) {
-        task.update.updated_at = Some(observed);
-    }
 }
 
 /// Transcript items for one persisted sidechain record, using the same item
@@ -364,52 +332,7 @@ fn child_items(record: &Value, open_tools: &mut HashMap<String, Item>) -> Vec<It
         items.push(Item::UserMessage { text: Some(text) });
     }
 
-    for block in record["message"]["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        let Some(id) = block["id"]
-            .as_str()
-            .or_else(|| block["tool_use_id"].as_str())
-            .map(str::to_owned)
-            .or_else(|| record["uuid"].as_str().map(str::to_owned))
-        else {
-            continue;
-        };
-
-        match block["type"].as_str() {
-            Some("text") if record["type"].as_str() != Some("user") => {
-                items.push(Item::AgentMessage {
-                    id,
-                    text: block["text"].as_str().map(str::to_owned),
-                    questions: None,
-                })
-            }
-            Some("text") => {}
-            Some("thinking") => items.push(Item::Reasoning {
-                id,
-                summary: block["thinking"].as_str().map(str::to_owned),
-            }),
-            Some("tool_use") => {
-                let item = tool_item(
-                    &id,
-                    block["name"].as_str().unwrap_or("tool"),
-                    &block["input"],
-                );
-
-                open_tools.insert(id, item.clone());
-
-                items.push(item);
-            }
-            Some("tool_result") => {
-                if let Some(started) = open_tools.remove(&id) {
-                    items.push(complete_tool_item(started, block));
-                }
-            }
-            _ => {}
-        }
-    }
+    items.extend(child_content_items(record, open_tools));
 
     items
 }
@@ -451,10 +374,6 @@ fn collect_lifecycle(record: &Value, tasks: &mut [RestoredTask], index: &HashMap
     if let Some(status) = text_field(record, &["summary", "last_tool_name"]) {
         update.status = Some(status);
     }
-
-    if let Some(observed) = timestamp(record) {
-        update.updated_at = Some(observed);
-    }
 }
 
 /// A record that starts a new CLI process for the same conversation.
@@ -472,62 +391,11 @@ fn linked_parent(record: &Value) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-fn record_identifiers(record: &Value) -> Vec<String> {
-    ["task_id", "tool_use_id", "agent_id"]
-        .iter()
-        .filter_map(|key| record[*key].as_str().filter(|id| !id.is_empty()))
-        .map(str::to_owned)
-        .collect()
-}
-
-fn lifecycle_state(kind: &str, record: &Value) -> Option<BackgroundTaskState> {
-    let status = match kind {
-        "task_started" | "task_progress" => return Some(BackgroundTaskState::Working),
-        "task_notification" => record["status"].as_str()?,
-        "task_updated" => record["patch"]["status"]
-            .as_str()
-            .or_else(|| record["status"].as_str())?,
-        _ => return None,
-    };
-
-    Some(match status {
-        "pending" => BackgroundTaskState::Starting,
-        "running" => BackgroundTaskState::Working,
-        "paused" => BackgroundTaskState::NeedsInput,
-        "completed" => BackgroundTaskState::Done,
-        "failed" => BackgroundTaskState::Failed,
-        "stopped" | "killed" => BackgroundTaskState::Stopped,
-        _ => return None,
-    })
-}
-
-fn sidechain_preview(record: &Value) -> Option<String> {
-    for block in record["message"]["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        let text = match block["type"].as_str() {
-            Some("text") => block["text"].as_str(),
-            Some("thinking") => block["thinking"].as_str(),
-            Some("tool_use") => block["name"].as_str(),
-            _ => None,
-        };
-
-        if let Some(condensed) = text.and_then(condense) {
-            return Some(condensed);
-        }
-    }
-
-    None
-}
-
 /// Transcript records carry RFC 3339 timestamps. A record without a usable one
 /// still restores its row; only the elapsed and completion labels are lost.
 fn timestamp(record: &Value) -> Option<SystemTime> {
-    let raw = record["timestamp"].as_str()?;
-    let parsed = DateTime::parse_from_rfc3339(raw).ok()?;
-    let seconds = u64::try_from(parsed.timestamp()).ok()?;
+    let seconds = unix_seconds_from_rfc3339(record["timestamp"].as_str()?)?;
+    let seconds = u64::try_from(seconds).ok()?;
 
     Some(UNIX_EPOCH + Duration::from_secs(seconds))
 }

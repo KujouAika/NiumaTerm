@@ -1,81 +1,57 @@
 //! Durable room operations and live dispatch readiness owned by one Team.
 
 pub use crate::team::session::dispatch::DispatchError;
-
 pub use crate::team::session::outcomes::AttemptEventKey;
-
-pub(super) mod attachments;
 
 pub(super) mod dispatch;
 
-mod controls;
-
 mod outcomes;
-
 mod planning;
 
 #[cfg(test)]
 mod planning_tests;
-
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
-
-use std::fs;
-
 use std::path::Path;
-
-use serde_json::json;
 
 use thiserror::Error;
 
 use crate::chat::{SendOutcome, ThreadSettings};
-
 use crate::session::team_capabilities::ModeratorAdmission;
-
-use crate::team::attempt::{Attempt, AttemptState, BudgetScope, DispatchIntent, Invocation};
-
+use crate::team::attempt::{Attempt, AttemptState, BudgetScope, DispatchIntent};
 use crate::team::budget::{BudgetError, TurnPurpose};
-
-use crate::team::content::{AttachmentReference, Author, PublicMessage, Publication, UserInput};
-
-use crate::team::context::{ContextError, ContextLimits};
-
 use crate::team::discussion::{
-    Arrangement, ArrangementState, Discussion, DiscussionError, DiscussionMode, DiscussionState,
-    PauseReason, PublicSnapshot, Stage, StageKind,
+    ArrangementState, DiscussionError, DiscussionMode, DiscussionState, ModeratorAction,
+    ModeratorDecision, PauseReason, PublicSnapshot, Stage, StageKind,
 };
-
-use crate::team::execution_slots::{ExecutionKey, ExecutionSlots, WorkStatus};
-
-use crate::team::identity::{
-    AttemptId, DiscussionId, MemberId, MessageId, OperationId, OwnershipGeneration, RoomId, StageId,
-};
-
 use crate::team::member::MemberConfig;
-
-use crate::team::moderation::{ModeratorAction, ModeratorDecision};
-
+use crate::team::model::{
+    AttemptId, ContextError, ContextLimits, DiscussionId, MemberId, MessageId, OperationId, RoomId,
+    StageId, UserInput,
+};
 use crate::team::room::{MemberError, Room};
-
-use crate::team::session::attachments::read_attachment;
-
-use crate::team::session::controls::cancel_pending_reservations;
-
-use crate::team::session::planning::{DispatchPlan, public_request};
-
+use crate::team::session::outcomes::{
+    abandon, accept, accepts, complete, completes, event_attempt, fail, in_flight,
+};
+use crate::team::session::planning::{
+    DispatchPlan, NextStage, build_intent, next_stage, public_request, stage_purpose,
+};
 use crate::team::storage::{RoomStore, StorageError};
 
 pub struct TeamSession {
     store: RoomStore,
     readiness: BTreeMap<MemberId, MemberReadiness>,
-    slots: ExecutionSlots,
-    restored_uncertainty: BTreeSet<AttemptId>,
+
+    /// Uncertain attempts no provider event can settle anymore: restored from
+    /// disk, or sent under a backend generation that has since ended. Only
+    /// the member's recovered history or the user abandoning them resolves
+    /// them, so they block dispatch until then.
+    unresolved: BTreeSet<AttemptId>,
 }
 
 struct MemberReadiness {
-    ownership: OwnershipGeneration,
     backend_generation: u64,
     capabilities: ModeratorAdmission,
 }
@@ -113,37 +89,37 @@ impl TeamSession {
         Ok(Self {
             store: RoomStore::create(data_directory, room)?,
             readiness: BTreeMap::new(),
-            slots: ExecutionSlots::default(),
-            restored_uncertainty: BTreeSet::new(),
+            unresolved: BTreeSet::new(),
         })
     }
 
-    pub fn open(data_directory: &Path, id: RoomId) -> Result<(Self, bool), TeamError> {
-        let (mut store, truncated) = RoomStore::open(data_directory, id)?;
+    pub fn open(data_directory: &Path, id: RoomId) -> Result<Self, TeamError> {
+        let mut store = RoomStore::open(data_directory, id)?;
         let mut room = store.room().clone();
 
         for discussion in &mut room.discussions {
+            // An interaction pause describes a member session that did not
+            // survive the reopen; a member still waiting raises it again.
+            discussion
+                .pauses
+                .retain(|reason| !matches!(reason, PauseReason::Interaction(_)));
+
             discussion.pause(PauseReason::Reopened);
         }
 
         for attempt in &mut room.attempts {
             if matches!(
                 attempt.state,
-                AttemptState::Sending | AttemptState::Accepted { .. }
+                AttemptState::Sending | AttemptState::Accepted
             ) {
                 attempt.state = AttemptState::Uncertain;
             }
         }
 
-        let restored_uncertainty = room
+        let unresolved = room
             .attempts
             .iter()
-            .filter(|attempt| {
-                matches!(
-                    attempt.state,
-                    AttemptState::Sending | AttemptState::Accepted { .. } | AttemptState::Uncertain
-                )
-            })
+            .filter(|attempt| in_flight(&attempt.state))
             .map(|attempt| attempt.id)
             .collect();
 
@@ -159,15 +135,11 @@ impl TeamSession {
 
         store.commit(room)?;
 
-        Ok((
-            Self {
-                store,
-                readiness: BTreeMap::new(),
-                slots: ExecutionSlots::default(),
-                restored_uncertainty,
-            },
-            truncated,
-        ))
+        Ok(Self {
+            store,
+            readiness: BTreeMap::new(),
+            unresolved,
+        })
     }
 
     pub fn member_ready(
@@ -182,13 +154,34 @@ impl TeamSession {
             return Err(TeamError::Unavailable);
         }
 
-        let ownership = member.ownership();
-
         let mut room = self.store.room().clone();
         let mut changed = false;
 
         for discussion in &mut room.discussions {
             changed |= discussion.resolve_pause(&PauseReason::MemberUnavailable(id));
+        }
+
+        // Events for work sent under an earlier backend generation are
+        // rejected, so that work can only settle through recovery.
+        let orphaned: Vec<usize> = room
+            .attempts
+            .iter()
+            .enumerate()
+            .filter(|(_, attempt)| {
+                attempt.intent.recipient == id
+                    && attempt.intent.backend_generation != backend_generation
+                    && in_flight(&attempt.state)
+                    && !self.unresolved.contains(&attempt.id)
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        for &index in &orphaned {
+            fail(&mut room, index, true)?;
+
+            self.unresolved.insert(room.attempts[index].id);
+
+            changed = true;
         }
 
         if changed {
@@ -198,7 +191,6 @@ impl TeamSession {
         self.readiness.insert(
             id,
             MemberReadiness {
-                ownership,
                 backend_generation,
                 capabilities,
             },
@@ -213,10 +205,6 @@ impl TeamSession {
     ) -> Result<Vec<AttemptId>, TeamError> {
         for intent in &intents {
             self.validate_recipient(intent)?;
-
-            for attachment in intent.input.attachments.iter().chain(&intent.attachments) {
-                self.read_attachment(attachment)?;
-            }
         }
 
         Ok(dispatch::reserve_dispatches(&mut self.store, intents)?)
@@ -227,6 +215,16 @@ impl TeamSession {
         id: AttemptId,
         send: impl FnOnce(&DispatchIntent) -> SendOutcome,
     ) -> Result<SendOutcome, TeamError> {
+        let intent = self.prepare_dispatch(id)?;
+        let outcome = send(&intent);
+
+        self.finish_dispatch(id, &outcome)?;
+
+        Ok(outcome)
+    }
+
+    /// Persist the charged attempt before handing its request to a transport.
+    pub fn prepare_dispatch(&mut self, id: AttemptId) -> Result<DispatchIntent, TeamError> {
         let attempt = self
             .store
             .room()
@@ -241,71 +239,38 @@ impl TeamSession {
             let run = self
                 .store
                 .room()
-                .discussions()
-                .iter()
-                .find(|run| run.id() == id)
+                .discussion(id)
                 .ok_or(TeamError::Unavailable)?;
 
-            if !matches!(
-                run.state(),
-                DiscussionState::Running | DiscussionState::Finishing
-            ) || !run.pauses().is_empty()
-            {
+            if !run.is_dispatchable() {
                 return Err(TeamError::Paused);
             }
         }
 
-        let key = ExecutionKey {
-            member: attempt.intent.recipient,
-            ownership: attempt.intent.ownership,
-            attempt: id,
-        };
-
-        if !self.slots.reserve(key) {
+        if self.store.room().attempts.iter().any(|active| {
+            active.intent.recipient == attempt.intent.recipient && in_flight(&active.state)
+        }) {
             return Err(TeamError::Busy);
         }
 
-        let mut sent = false;
-
-        let result = dispatch::dispatch(&mut self.store, id, |intent| {
-            sent = true;
-
-            send(intent)
-        });
-
-        match &result {
-            Ok(SendOutcome::NotReady) => {
-                self.slots.update(key, WorkStatus::default());
-            }
-            Ok(SendOutcome::StartedTurn) => {}
-            Ok(SendOutcome::Steered | SendOutcome::Rejected { .. }) => {
-                self.slots.update(
-                    key,
-                    WorkStatus {
-                        uncertain: true,
-                        ..WorkStatus::default()
-                    },
-                );
-            }
-            Err(_) if !sent => {
-                self.slots.update(key, WorkStatus::default());
-            }
-            Err(_) => {
-                self.slots.update(
-                    key,
-                    WorkStatus {
-                        uncertain: true,
-                        ..WorkStatus::default()
-                    },
-                );
-            }
-        }
-
-        Ok(result?)
+        Ok(dispatch::prepare(&mut self.store, id)?)
     }
 
-    pub fn update_work(&mut self, key: ExecutionKey, status: WorkStatus) -> bool {
-        self.slots.update(key, status)
+    /// Record the transport result before processing provider events for it.
+    pub fn finish_dispatch(
+        &mut self,
+        id: AttemptId,
+        outcome: &SendOutcome,
+    ) -> Result<(), TeamError> {
+        Ok(dispatch::finish(&mut self.store, id, outcome)?)
+    }
+
+    fn has_live_attempts(&self) -> bool {
+        self.store
+            .room()
+            .attempts
+            .iter()
+            .any(|attempt| in_flight(&attempt.state) && !self.unresolved.contains(&attempt.id))
     }
 
     pub fn member_unavailable(&mut self, member: MemberId) -> Result<(), TeamError> {
@@ -328,9 +293,7 @@ impl TeamSession {
             .get(&intent.recipient)
             .ok_or(TeamError::Unavailable)?;
 
-        if readiness.ownership != intent.ownership
-            || readiness.backend_generation != intent.backend_generation
-        {
+        if readiness.backend_generation != intent.backend_generation {
             return Err(TeamError::Unavailable);
         }
 
@@ -338,14 +301,15 @@ impl TeamSession {
     }
 
     pub(super) fn validate_member(&self, id: MemberId) -> Result<(), TeamError> {
-        if !self.restored_uncertainty.is_empty() {
+        if !self.unresolved.is_empty() {
             return Err(TeamError::Unavailable);
         }
 
         let member = self.store.room().member(id).ok_or(TeamError::Unavailable)?;
-        let readiness = self.readiness.get(&id).ok_or(TeamError::Unavailable)?;
 
-        if member.excluded() || member.ownership() != readiness.ownership {
+        self.readiness.get(&id).ok_or(TeamError::Unavailable)?;
+
+        if member.excluded() {
             return Err(TeamError::Unavailable);
         }
 
@@ -368,17 +332,11 @@ impl TeamSession {
             .create_discussion(input.text.clone(), participants, mode)?
             .id();
 
-        room.input_history.push(input.clone());
-
         let request = input.clone();
 
         room.messages.push(public_request(input));
 
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .ok_or(TeamError::Unavailable)?;
+        let discussion = room.discussion_mut(id).ok_or(TeamError::Unavailable)?;
 
         discussion.state = DiscussionState::Running;
         discussion.request = request;
@@ -392,8 +350,6 @@ impl TeamSession {
         self.validate_input(&input)?;
 
         let mut room = self.store.room().clone();
-
-        room.input_history.push(input.clone());
 
         let message = public_request(input);
         let id = message.id;
@@ -460,59 +416,41 @@ impl TeamSession {
 
         let snapshot = room.public_snapshot();
 
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .ok_or(TeamError::Unavailable)?;
+        let discussion = room.discussion_mut(id).ok_or(TeamError::Unavailable)?;
 
         if discussion.state == DiscussionState::Completed {
             return Ok(Vec::new());
         }
 
-        if !discussion.pauses.is_empty()
-            || !matches!(
-                discussion.state,
-                DiscussionState::Running | DiscussionState::Finishing
-            )
-        {
+        if !discussion.is_dispatchable() {
             return Err(TeamError::Paused);
         }
 
         self.validate_mode(discussion.mode)?;
 
-        let stage_complete = discussion.stages.last().is_none_or(|stage| {
-            stage.arrangements.iter().all(|arrangement| {
-                matches!(
-                    arrangement.state,
-                    ArrangementState::Completed(_)
-                        | ArrangementState::Skipped
-                        | ArrangementState::Cancelled
-                )
-            })
-        });
-
-        if stage_complete {
-            if !self.slots.is_idle() {
+        if discussion.stages.last().is_none_or(Stage::is_settled) {
+            if self.has_live_attempts() {
                 return Ok(Vec::new());
             }
 
-            let (kind, recipients) = self.next_stage(discussion)?;
+            let excluded = excluded_members(self.store.room());
 
-            discussion.stages.push(Stage {
-                decision: None,
-                id: StageId::new(),
-                kind,
-                arrangements: recipients
-                    .into_iter()
-                    .map(|recipient| Arrangement {
-                        operation: OperationId::new(),
-                        recipient,
-                        state: ArrangementState::Pending,
-                    })
-                    .collect(),
-                segments: vec![snapshot],
-            });
+            let (kind, recipients) = match next_stage(
+                discussion,
+                discussion.remaining_non_report_turns(self.store.room().attempts()),
+                &excluded,
+            )? {
+                NextStage::Schedule(kind, recipients) => (kind, recipients),
+                NextStage::InvalidModeration(operation) => {
+                    self.pause_discussion(id, PauseReason::InvalidModeration(operation))?;
+
+                    return Err(TeamError::Paused);
+                }
+            };
+
+            discussion
+                .stages
+                .push(Stage::pending(kind, recipients, snapshot));
 
             self.store.commit(room)?;
         }
@@ -520,20 +458,14 @@ impl TeamSession {
         let discussion = self
             .store
             .room()
-            .discussions
-            .iter()
-            .find(|run| run.id == id)
+            .discussion(id)
             .ok_or(TeamError::Unavailable)?;
 
         let stage = discussion.stages.last().ok_or(TeamError::Unavailable)?;
 
         let snapshot = stage.segments.last().ok_or(TeamError::Unavailable)?;
 
-        let purpose = match stage.kind {
-            StageKind::Report => TurnPurpose::Report,
-            StageKind::ModeratorDecision => TurnPurpose::Moderation,
-            _ => TurnPurpose::Response,
-        };
+        let purpose = stage_purpose(stage.kind);
 
         let input = discussion.request.clone();
 
@@ -595,93 +527,6 @@ impl TeamSession {
         }
     }
 
-    fn next_stage(
-        &mut self,
-        discussion: &Discussion,
-    ) -> Result<(StageKind, Vec<MemberId>), TeamError> {
-        Ok(
-            if discussion.budget.remaining_non_report_turns() == 0
-                && discussion
-                    .stages
-                    .last()
-                    .is_none_or(|stage| stage.kind != StageKind::ModeratorDecision)
-            {
-                (StageKind::Report, vec![discussion.mode.report_author()])
-            } else {
-                match discussion.mode {
-                    DiscussionMode::Fixed { report_author } => {
-                        let kind = if !discussion
-                            .stages
-                            .iter()
-                            .any(|stage| stage.kind == StageKind::InitialAnswers)
-                        {
-                            StageKind::InitialAnswers
-                        } else if !discussion
-                            .stages
-                            .iter()
-                            .any(|stage| stage.kind == StageKind::PeerResponses)
-                        {
-                            StageKind::PeerResponses
-                        } else {
-                            StageKind::Report
-                        };
-
-                        let recipients = if kind == StageKind::Report {
-                            vec![report_author]
-                        } else {
-                            discussion.participants.clone()
-                        };
-
-                        (kind, recipients)
-                    }
-                    DiscussionMode::Moderated { moderator } => {
-                        self.moderated_next_stage(discussion, moderator)?
-                    }
-                }
-            },
-        )
-    }
-
-    fn moderated_next_stage(
-        &mut self,
-        discussion: &Discussion,
-        moderator: MemberId,
-    ) -> Result<(StageKind, Vec<MemberId>), TeamError> {
-        Ok(
-            match discussion.stages.last().filter(|stage| {
-                stage.kind == StageKind::ModeratorDecision
-                    && stage.arrangements.iter().any(|entry| {
-                        entry.recipient == moderator
-                            && matches!(entry.state, ArrangementState::Completed(_))
-                    })
-            }) {
-                Some(stage) => match &stage.decision {
-                    Some(decision) => match &decision.action {
-                        ModeratorAction::Invite { recipients } => {
-                            (StageKind::InvitedResponses, recipients.clone())
-                        }
-                        ModeratorAction::Report => (StageKind::Report, vec![moderator]),
-                    },
-                    None => {
-                        let operation = stage
-                            .arrangements
-                            .first()
-                            .ok_or(TeamError::Unavailable)?
-                            .operation;
-
-                        self.pause_discussion(
-                            discussion.id,
-                            PauseReason::InvalidModeration(operation),
-                        )?;
-
-                        return Err(TeamError::Paused);
-                    }
-                },
-                None => (StageKind::ModeratorDecision, vec![moderator]),
-            },
-        )
-    }
-
     fn pause_dispatch_error(
         &mut self,
         id: DiscussionId,
@@ -736,99 +581,19 @@ impl TeamSession {
         snapshot: &PublicSnapshot,
         limits: &ContextLimits,
     ) -> Result<DispatchIntent, TeamError> {
-        let DispatchPlan {
-            recipient,
-            operation,
-            stage,
-            budget,
-            purpose,
-        } = plan;
-
-        let member = self
-            .store
-            .room()
-            .member(recipient)
-            .ok_or(TeamError::Unavailable)?;
-
         let readiness = self
             .readiness
-            .get(&recipient)
+            .get(&plan.recipient)
             .ok_or(TeamError::Unavailable)?;
 
-        let instruction = match stage.map(|(_, kind)| kind) {
-            Some(StageKind::InitialAnswers) => {
-                "Give your initial answer to the user's objective. Identify assumptions and reasons."
-            }
-            Some(StageKind::PeerResponses | StageKind::InvitedResponses) => {
-                "Respond to the preceding public contributions. Explain agreement, disagreement, and any changed view."
-            }
-            Some(StageKind::Report) => {
-                "Conclude with separate agreements, disagreements, each member's attributed reasons, and suggested next steps. Cite public message IDs. Do not present one member's preference as consensus."
-            }
-            Some(StageKind::ModeratorDecision) => {
-                "Review public progress and call team_decide exactly once. Invite eligible member IDs or request a report with an empty recipients list. Prose alone cannot schedule work."
-            }
-            _ => {
-                "Answer this one request. Further Team turns require a separate scheduling decision."
-            }
-        };
-
-        let mut instructions = format!(
-            "Team role: {}\n{instruction}\n",
-            json!({"name": member.name(), "role": member.role()})
-        );
-
-        if purpose == TurnPurpose::Moderation
-            && let BudgetScope::Discussion(id) = budget
-        {
-            let discussion = self
-                .store
-                .room()
-                .discussions()
-                .iter()
-                .find(|discussion| discussion.id() == id)
-                .ok_or(TeamError::Unavailable)?;
-
-            let members: Vec<_> = discussion
-                .participants()
-                .iter()
-                .filter_map(|id| self.store.room().member(*id))
-                .map(|member| json!({"id": member.id(), "name": member.name()}))
-                .collect();
-
-            instructions.push_str(&format!("Application scheduling context: {}\n", json!({"operation": operation, "stage": stage.map(|(id, _)| id), "eligible_members": members, "remaining_non_report_turns": discussion.budget().remaining_non_report_turns()})));
-        }
-
-        let body_limits = ContextLimits {
-            max_bytes: limits
-                .max_bytes
-                .checked_sub(instructions.len())
-                .ok_or(ContextError::OversizedInput)?,
-            recent_messages: limits.recent_messages,
-        };
-
-        let prepared =
-            self.store
-                .room()
-                .prepare_context(recipient, snapshot, &input, &body_limits)?;
-
-        instructions.push_str(&prepared.text);
-
-        let intent = DispatchIntent {
-            invocation: Invocation::MemberConversation,
-            recipient,
-            ownership: member.ownership,
-            backend_generation: readiness.backend_generation,
-            operation,
-            stage: stage.map(|(id, _)| id),
-            budget,
-            purpose,
+        let intent = build_intent(
+            self.store.room(),
+            plan,
+            readiness.backend_generation,
             input,
-            attachments: prepared.attachments,
-            prepared_text: instructions,
-            snapshot: snapshot.clone(),
-            coverage: prepared.coverage,
-        };
+            snapshot,
+            limits,
+        )?;
 
         self.validate_recipient(&intent)?;
 
@@ -847,24 +612,31 @@ impl TeamSession {
             return Err(TeamError::Unavailable);
         }
 
-        for attachment in &input.attachments {
-            self.read_attachment(attachment)?;
-        }
-
         Ok(())
     }
 
+    /// Hold `id` on `reason`. Hosts re-assert live conditions on every
+    /// refresh, so an unchanged pause returns early without cloning or
+    /// writing the room.
     pub fn pause_discussion(
         &mut self,
         id: DiscussionId,
         reason: PauseReason,
     ) -> Result<bool, TeamError> {
+        let discussion = self
+            .store
+            .room()
+            .discussion(id)
+            .ok_or(TeamError::Unavailable)?;
+
+        if discussion.state == DiscussionState::Completed || discussion.pauses.contains(&reason) {
+            return Ok(false);
+        }
+
         let mut room = self.store.room().clone();
 
         let changed = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
+            .discussion_mut(id)
             .ok_or(TeamError::Unavailable)?
             .pause(reason);
 
@@ -878,12 +650,20 @@ impl TeamSession {
         id: DiscussionId,
         reason: &PauseReason,
     ) -> Result<bool, TeamError> {
+        let discussion = self
+            .store
+            .room()
+            .discussion(id)
+            .ok_or(TeamError::Unavailable)?;
+
+        if !discussion.pauses.contains(reason) {
+            return Ok(false);
+        }
+
         let mut room = self.store.room().clone();
 
         let changed = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
+            .discussion_mut(id)
             .ok_or(TeamError::Unavailable)?
             .resolve_pause(reason);
 
@@ -893,7 +673,7 @@ impl TeamSession {
     }
 
     pub fn continue_discussion(&mut self, id: DiscussionId) -> Result<(), TeamError> {
-        if !self.slots.is_idle() || !self.restored_uncertainty.is_empty() {
+        if self.has_live_attempts() || !self.unresolved.is_empty() {
             return Err(TeamError::Busy);
         }
 
@@ -913,16 +693,9 @@ impl TeamSession {
 
         self.validate_mode(discussion.mode)?;
 
-        discussion.pauses.retain(|reason| {
-            !matches!(
-                reason,
-                PauseReason::User
-                    | PauseReason::UserInput(_)
-                    | PauseReason::ModeChange
-                    | PauseReason::Reopened
-                    | PauseReason::Closed
-            )
-        });
+        discussion
+            .pauses
+            .retain(|reason| !reason.cleared_by_continue());
 
         if !discussion.pauses.is_empty() {
             return Err(TeamError::Paused);
@@ -933,7 +706,27 @@ impl TeamSession {
         let snapshot = room.public_snapshot();
         let discussion = &mut room.discussions[index];
 
-        if let Some(stage) = discussion.stages.last_mut() {
+        // A moderator whose decision stage ended without a valid decision is
+        // asked again; re-planning the same stage would only reproduce the
+        // invalid-moderation pause.
+        let undecided = match (discussion.mode, discussion.stages.last()) {
+            (DiscussionMode::Moderated { moderator }, Some(stage))
+                if stage.kind == StageKind::ModeratorDecision
+                    && stage.decision.is_none()
+                    && stage.is_settled() =>
+            {
+                Some(moderator)
+            }
+            _ => None,
+        };
+
+        if let Some(moderator) = undecided {
+            discussion.stages.push(Stage::pending(
+                StageKind::ModeratorDecision,
+                vec![moderator],
+                snapshot,
+            ));
+        } else if let Some(stage) = discussion.stages.last_mut() {
             stage.segments.push(snapshot);
         }
 
@@ -947,11 +740,7 @@ impl TeamSession {
     pub fn add_turns(&mut self, id: DiscussionId, turns: u32) -> Result<(), TeamError> {
         let mut room = self.store.room().clone();
 
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .ok_or(TeamError::Unavailable)?;
+        let discussion = room.discussion_mut(id).ok_or(TeamError::Unavailable)?;
 
         discussion.budget.add_turns(turns)?;
 
@@ -965,7 +754,7 @@ impl TeamSession {
     pub fn change_mode(&mut self, id: DiscussionId, mode: DiscussionMode) -> Result<(), TeamError> {
         self.pause_discussion(id, PauseReason::ModeChange)?;
 
-        if !self.slots.is_idle() {
+        if self.has_live_attempts() {
             return Err(TeamError::Busy);
         }
 
@@ -975,13 +764,17 @@ impl TeamSession {
 
         cancel_pending_reservations(&mut room, id)?;
 
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .ok_or(TeamError::Unavailable)?;
+        let excluded = excluded_members(&room);
+
+        let discussion = room.discussion_mut(id).ok_or(TeamError::Unavailable)?;
 
         discussion.change_mode(mode)?;
+
+        // The new mode's report author was just validated; an excluded member
+        // never becomes ready again, so waiting on one would never end.
+        discussion.pauses.retain(|reason| {
+            !matches!(reason, PauseReason::MemberUnavailable(member) if excluded.contains(member))
+        });
 
         for stage in &mut discussion.stages {
             if matches!(stage.kind, StageKind::ModeratorDecision | StageKind::Report) {
@@ -998,55 +791,10 @@ impl TeamSession {
         Ok(())
     }
 
-    pub fn skip_arrangement(
-        &mut self,
-        id: DiscussionId,
-        operation: OperationId,
-    ) -> Result<(), TeamError> {
-        if !self.slots.is_idle() || !self.restored_uncertainty.is_empty() {
-            return Err(TeamError::Unresolved);
-        }
-
-        let mut room = self.store.room().clone();
-
-        cancel_pending_reservations(&mut room, id)?;
-
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .ok_or(TeamError::Unavailable)?;
-
-        let arrangement = discussion
-            .stages
-            .iter_mut()
-            .flat_map(|stage| &mut stage.arrangements)
-            .find(|entry| entry.operation == operation)
-            .ok_or(TeamError::Unavailable)?;
-
-        match arrangement.state {
-            ArrangementState::Pending => {}
-            ArrangementState::Failed(attempt) => {
-                discussion
-                    .pauses
-                    .remove(&PauseReason::AttemptFailed(attempt));
-            }
-            _ => return Err(TeamError::Unresolved),
-        }
-
-        arrangement.state = ArrangementState::Skipped;
-
-        discussion.pause(PauseReason::User);
-
-        self.store.commit(room)?;
-
-        Ok(())
-    }
-
     pub fn finish_with_report(&mut self, id: DiscussionId) -> Result<(), TeamError> {
         self.pause_discussion(id, PauseReason::User)?;
 
-        if !self.slots.is_idle() || !self.restored_uncertainty.is_empty() {
+        if self.has_live_attempts() || !self.unresolved.is_empty() {
             return Err(TeamError::Unresolved);
         }
 
@@ -1056,11 +804,7 @@ impl TeamSession {
 
         let snapshot = room.public_snapshot();
 
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == id)
-            .ok_or(TeamError::Unavailable)?;
+        let discussion = room.discussion_mut(id).ok_or(TeamError::Unavailable)?;
 
         if discussion.state == DiscussionState::Completed {
             return Err(TeamError::Unavailable);
@@ -1079,24 +823,17 @@ impl TeamSession {
             }
         }
 
-        discussion.pauses.retain(|reason| {
-            !matches!(
-                reason,
-                PauseReason::Budget | PauseReason::AttemptFailed(_) | PauseReason::User
-            )
-        });
+        discussion
+            .pauses
+            .retain(|reason| !reason.cleared_by_finish());
 
-        discussion.stages.push(Stage {
-            decision: None,
-            id: StageId::new(),
-            kind: StageKind::Report,
-            arrangements: vec![Arrangement {
-                operation: OperationId::new(),
-                recipient: discussion.mode.report_author(),
-                state: ArrangementState::Pending,
-            }],
-            segments: vec![snapshot],
-        });
+        let report_author = discussion.mode.report_author();
+
+        discussion.stages.push(Stage::pending(
+            StageKind::Report,
+            vec![report_author],
+            snapshot,
+        ));
 
         discussion.state = if discussion.pauses.is_empty() {
             DiscussionState::Finishing
@@ -1116,52 +853,17 @@ impl TeamSession {
         key: AttemptEventKey,
         provider_turn: &str,
     ) -> Result<bool, TeamError> {
-        let Some(index) = self.event_attempt(key) else {
+        let Some(index) = event_attempt(self.store.room(), key) else {
             return Ok(false);
         };
 
-        let attempt = &self.store.room().attempts[index];
-
-        if provider_turn.is_empty()
-            || !matches!(
-                attempt.state,
-                AttemptState::Sending | AttemptState::Uncertain
-            )
-            || attempt
-                .provider_turn
-                .as_deref()
-                .is_some_and(|id| id != provider_turn)
-        {
+        if !accepts(&self.store.room().attempts[index], provider_turn) {
             return Ok(false);
         }
 
         let mut room = self.store.room().clone();
 
-        let attempt = &mut room.attempts[index];
-
-        attempt.provider_turn = Some(provider_turn.to_owned());
-
-        attempt.state = AttemptState::Accepted {
-            provider_turn: provider_turn.to_owned(),
-        };
-
-        if attempt.intent.purpose != TurnPurpose::Summary {
-            let member = room
-                .members
-                .iter_mut()
-                .find(|member| member.id == key.member)
-                .ok_or(TeamError::Unavailable)?;
-
-            member
-                .coverage
-                .messages
-                .extend(&attempt.intent.coverage.messages);
-
-            member
-                .coverage
-                .summaries
-                .extend(&attempt.intent.coverage.summaries);
-        }
+        accept(&mut room, index, provider_turn)?;
 
         self.store.commit(room)?;
 
@@ -1173,90 +875,22 @@ impl TeamSession {
         key: AttemptEventKey,
         provider_turn: &str,
         text: String,
-        remaining_work: WorkStatus,
     ) -> Result<Option<MessageId>, TeamError> {
-        let Some(index) = self.event_attempt(key) else {
+        let Some(index) = event_attempt(self.store.room(), key) else {
             return Ok(None);
         };
 
-        let attempt = &self.store.room().attempts[index];
-
-        if !matches!(&attempt.state, AttemptState::Accepted { provider_turn: accepted } if accepted == provider_turn)
-            || attempt.intent.purpose == TurnPurpose::Summary
-        {
+        if !completes(&self.store.room().attempts[index], provider_turn) {
             return Ok(None);
         }
 
         let mut room = self.store.room().clone();
 
-        let member = room
-            .members
-            .iter_mut()
-            .find(|member| member.id == key.member)
-            .ok_or(TeamError::Unavailable)?;
-
-        let id = MessageId::new();
-
-        let publication = match attempt.intent.purpose {
-            TurnPurpose::Report => Publication::Report,
-            TurnPurpose::Moderation => Publication::ModeratorDecision,
-            _ => Publication::RootReply,
-        };
-
-        room.messages.push(PublicMessage {
-            id,
-            author: Author::Member {
-                id: member.id,
-                name: member.name.clone(),
-            },
-            publication,
-            text,
-            replies_to: attempt.intent.input.references.clone(),
-            attachments: Vec::new(),
-        });
-
-        member.coverage.messages.insert(id);
-
-        room.attempts[index].state = AttemptState::Completed { message: id };
-
-        if let BudgetScope::Discussion(discussion_id) = attempt.intent.budget {
-            let discussion = room
-                .discussions
-                .iter_mut()
-                .find(|discussion| discussion.id == discussion_id)
-                .ok_or(TeamError::Unavailable)?;
-
-            for arrangement in discussion
-                .stages
-                .iter_mut()
-                .flat_map(|stage| &mut stage.arrangements)
-            {
-                if arrangement.operation == attempt.intent.operation {
-                    arrangement.state = ArrangementState::Completed(key.attempt);
-                }
-            }
-
-            discussion.resolve_pause(&PauseReason::UncertainAttempt(key.attempt));
-
-            if attempt.intent.purpose == TurnPurpose::Report {
-                discussion.state = DiscussionState::Completed;
-            } else if !discussion.pauses.is_empty() {
-                discussion.settle_pause();
-            }
-        }
+        let id = complete(&mut room, index, text)?;
 
         self.store.commit(room)?;
 
-        self.restored_uncertainty.remove(&key.attempt);
-
-        self.slots.update(
-            ExecutionKey {
-                member: key.member,
-                ownership: key.ownership,
-                attempt: key.attempt,
-            },
-            remaining_work,
-        );
+        self.unresolved.remove(&key.attempt);
 
         Ok(Some(id))
     }
@@ -1266,108 +900,33 @@ impl TeamSession {
         key: AttemptEventKey,
         uncertain: bool,
     ) -> Result<bool, TeamError> {
-        let Some(index) = self.event_attempt(key) else {
+        let Some(index) = event_attempt(self.store.room(), key) else {
             return Ok(false);
         };
 
-        let attempt = &self.store.room().attempts[index];
-
-        if !matches!(
-            attempt.state,
-            AttemptState::Sending | AttemptState::Accepted { .. } | AttemptState::Uncertain
-        ) {
+        if !in_flight(&self.store.room().attempts[index].state) {
             return Ok(false);
         }
 
         let mut room = self.store.room().clone();
 
-        room.attempts[index].state = if uncertain {
-            AttemptState::Uncertain
-        } else {
-            AttemptState::Failed
-        };
-
-        if let BudgetScope::Discussion(id) = attempt.intent.budget {
-            let discussion = room
-                .discussions
-                .iter_mut()
-                .find(|run| run.id == id)
-                .ok_or(TeamError::Unavailable)?;
-
-            for arrangement in discussion
-                .stages
-                .iter_mut()
-                .flat_map(|stage| &mut stage.arrangements)
-            {
-                if arrangement.operation == attempt.intent.operation {
-                    arrangement.state = if uncertain {
-                        ArrangementState::Uncertain(key.attempt)
-                    } else {
-                        ArrangementState::Failed(key.attempt)
-                    };
-                }
-            }
-
-            discussion.pause(if uncertain {
-                PauseReason::UncertainAttempt(key.attempt)
-            } else if attempt.intent.purpose == TurnPurpose::Summary {
-                PauseReason::SummaryFailed(key.attempt)
-            } else {
-                PauseReason::AttemptFailed(key.attempt)
-            });
-        }
+        fail(&mut room, index, uncertain)?;
 
         self.store.commit(room)?;
 
-        if !uncertain {
-            self.restored_uncertainty.remove(&key.attempt);
+        // A host reports an uncertain outcome when the member's session ended
+        // with the attempt in flight; no later event can settle it.
+        if uncertain {
+            self.unresolved.insert(key.attempt);
+        } else {
+            self.unresolved.remove(&key.attempt);
         }
 
-        // A failed response says nothing about surviving background commands.
-        // Their confirmed status must arrive before the execution slot is free.
         Ok(true)
     }
 
-    fn event_attempt(&self, key: AttemptEventKey) -> Option<usize> {
-        let member = self.store.room().member(key.member)?;
-
-        if member.ownership != key.ownership {
-            return None;
-        }
-
-        self.store.room().attempts.iter().position(|attempt| {
-            attempt.id == key.attempt
-                && attempt.intent.recipient == key.member
-                && attempt.intent.ownership == key.ownership
-                && attempt.intent.backend_generation == key.backend_generation
-        })
-    }
-
     pub fn saved_rooms(data_directory: &Path) -> Result<Vec<RoomId>, TeamError> {
-        let directory = data_directory.join("agent-teams");
-
-        if !directory.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut rooms = Vec::new();
-
-        for entry in fs::read_dir(directory).map_err(StorageError::from)? {
-            let entry = entry.map_err(StorageError::from)?;
-
-            if entry.file_type().map_err(StorageError::from)?.is_dir()
-                && let Some(id) = entry
-                    .file_name()
-                    .to_str()
-                    .and_then(|name| name.parse().ok())
-            {
-                rooms.push(id);
-            }
-        }
-
-        rooms.sort();
-
-        Ok(rooms)
+        Ok(RoomStore::saved_rooms(data_directory)?)
     }
 
     pub fn add_member(&mut self, config: MemberConfig) -> Result<MemberId, TeamError> {
@@ -1383,12 +942,11 @@ impl TeamSession {
     pub fn set_member_settings(
         &mut self,
         id: MemberId,
-        ownership: OwnershipGeneration,
         settings: ThreadSettings,
     ) -> Result<(), TeamError> {
         let mut room = self.store.room().clone();
 
-        room.set_member_settings(id, ownership, settings)?;
+        room.set_member_settings(id, settings)?;
 
         self.store.commit(room)?;
 
@@ -1398,7 +956,6 @@ impl TeamSession {
     pub fn record_provider_identity(
         &mut self,
         id: MemberId,
-        ownership: OwnershipGeneration,
         provider_id: &str,
         moderator_registered: bool,
     ) -> Result<(), TeamError> {
@@ -1407,7 +964,7 @@ impl TeamSession {
         let member = room
             .members
             .iter_mut()
-            .find(|member| member.id == id && member.ownership == ownership)
+            .find(|member| member.id == id)
             .ok_or(TeamError::Unavailable)?;
 
         if provider_id.trim().is_empty()
@@ -1434,7 +991,7 @@ impl TeamSession {
     }
 
     pub fn exclude_member(&mut self, id: MemberId) -> Result<(), TeamError> {
-        if !self.slots.is_idle() || !self.restored_uncertainty.is_empty() {
+        if self.has_live_attempts() || !self.unresolved.is_empty() {
             return Err(TeamError::Busy);
         }
 
@@ -1443,7 +1000,25 @@ impl TeamSession {
         room.exclude_member(id)?;
 
         for discussion in &mut room.discussions {
-            if discussion.participants.contains(&id) || discussion.mode.report_author() == id {
+            if discussion.state == DiscussionState::Completed {
+                continue;
+            }
+
+            // Stages planned later leave the member out; work already planned
+            // for it will not be sent.
+            for arrangement in discussion
+                .stages
+                .iter_mut()
+                .flat_map(|stage| &mut stage.arrangements)
+            {
+                if arrangement.recipient == id && arrangement.state == ArrangementState::Pending {
+                    arrangement.state = ArrangementState::Cancelled;
+                }
+            }
+
+            // Only a mode that needs the member cannot go on without it; that
+            // pause ends when the user picks another report author.
+            if discussion.mode.report_author() == id {
                 discussion.pause(PauseReason::MemberUnavailable(id));
             }
         }
@@ -1455,51 +1030,11 @@ impl TeamSession {
         Ok(())
     }
 
-    pub fn read_attachment(&self, reference: &AttachmentReference) -> Result<Vec<u8>, TeamError> {
-        Ok(read_attachment(self.store.directory(), reference)?)
-    }
-
     pub fn close(&mut self) -> Result<(), TeamError> {
         let mut room = self.store.room().clone();
 
         for discussion in &mut room.discussions {
             discussion.pause(PauseReason::Closed);
-        }
-
-        self.store.commit(room)?;
-
-        self.store.checkpoint()?;
-
-        Ok(())
-    }
-
-    pub fn set_automatic_summaries(&mut self, enabled: bool) -> Result<(), TeamError> {
-        let mut room = self.store.room().clone();
-
-        room.controls.automatic_summaries = enabled;
-
-        if !enabled {
-            for attempt in &mut room.attempts {
-                if attempt.state != AttemptState::Reserved
-                    || !matches!(attempt.intent.invocation, Invocation::PublicSummary(_))
-                {
-                    continue;
-                }
-
-                let budget = match attempt.intent.budget {
-                    BudgetScope::Discussion(id) => room
-                        .discussions
-                        .iter_mut()
-                        .find(|run| run.id == id)
-                        .map(|run| &mut run.budget),
-                    BudgetScope::Direct(id) => room.direct_allowances.get_mut(&id),
-                }
-                .ok_or(TeamError::Unavailable)?;
-
-                budget.cancel_unsent(attempt.id)?;
-
-                attempt.state = AttemptState::Rejected;
-            }
         }
 
         self.store.commit(room)?;
@@ -1512,48 +1047,23 @@ impl TeamSession {
             .room()
             .attempts()
             .iter()
-            .filter(|attempt| self.restored_uncertainty.contains(&attempt.id))
+            .filter(|attempt| self.unresolved.contains(&attempt.id))
     }
 
     /// The user can end tracking restored work without claiming that the
     /// provider never ran it. Its consumed budget and provider identity remain.
     pub fn abandon_restored_attempt(&mut self, id: AttemptId) -> Result<(), TeamError> {
-        if !self.slots.is_idle() || !self.restored_uncertainty.contains(&id) {
+        if self.has_live_attempts() || !self.unresolved.contains(&id) {
             return Err(TeamError::Unresolved);
         }
 
         let mut room = self.store.room().clone();
 
-        let attempt = room
-            .attempts
-            .iter_mut()
-            .find(|attempt| attempt.id == id)
-            .ok_or(TeamError::Unavailable)?;
-
-        attempt.state = AttemptState::Abandoned;
-
-        for discussion in &mut room.discussions {
-            for arrangement in discussion
-                .stages
-                .iter_mut()
-                .flat_map(|stage| &mut stage.arrangements)
-            {
-                if matches!(arrangement.state, ArrangementState::Active(attempt) | ArrangementState::Uncertain(attempt) if attempt == id)
-                {
-                    arrangement.state = ArrangementState::Skipped;
-                }
-            }
-
-            discussion.resolve_pause(&PauseReason::UncertainAttempt(id));
-
-            discussion.pause(PauseReason::User);
-
-            discussion.settle_pause();
-        }
+        abandon(&mut room, id)?;
 
         self.store.commit(room)?;
 
-        self.restored_uncertainty.remove(&id);
+        self.unresolved.remove(&id);
 
         Ok(())
     }
@@ -1584,9 +1094,7 @@ impl TeamSession {
         let discussion = self
             .store
             .room()
-            .discussions
-            .iter()
-            .find(|run| run.id == discussion_id)
+            .discussion(discussion_id)
             .ok_or(TeamError::Unavailable)?;
 
         let Some(stage) = discussion.stages.last() else {
@@ -1607,14 +1115,9 @@ impl TeamSession {
             && attempt.intent.operation == operation
             && attempt.intent.stage == Some(stage_id)
             && attempt.intent.recipient == key.member
-            && attempt.intent.ownership == key.ownership
             && attempt.intent.backend_generation == key.backend_generation
-            && matches!(attempt.state, AttemptState::Accepted { .. })
-            && self
-                .store
-                .room()
-                .member(key.member)
-                .is_some_and(|member| member.ownership == key.ownership);
+            && matches!(attempt.state, AttemptState::Accepted)
+            && self.store.room().member(key.member).is_some();
 
         if !valid {
             self.pause_discussion(discussion_id, PauseReason::InvalidModeration(operation))?;
@@ -1626,7 +1129,7 @@ impl TeamSession {
 
         self.validate_member(key.member)?;
 
-        let reservations = match &action {
+        let purposes = match &action {
             ModeratorAction::Invite { recipients } => {
                 let unique: BTreeSet<_> = recipients.iter().copied().collect();
 
@@ -1647,15 +1150,18 @@ impl TeamSession {
 
                 recipients
                     .iter()
-                    .map(|_| (AttemptId::new(), TurnPurpose::Response))
+                    .map(|_| TurnPurpose::Response)
                     .collect::<Vec<_>>()
             }
-            ModeratorAction::Report => vec![(AttemptId::new(), TurnPurpose::Report)],
+            ModeratorAction::Report => vec![TurnPurpose::Report],
         };
 
-        let mut budget = discussion.budget.clone();
-
-        if let Err(error) = budget.reserve(&reservations) {
+        if let Err(error) = discussion.budget.check_batch(
+            self.store
+                .room()
+                .budget_attempts(BudgetScope::Discussion(discussion_id)),
+            purposes.into_iter(),
+        ) {
             self.pause_discussion(discussion_id, PauseReason::Budget)?;
 
             return Err(error.into());
@@ -1663,13 +1169,12 @@ impl TeamSession {
 
         let mut room = self.store.room().clone();
 
-        let discussion = room
-            .discussions
-            .iter_mut()
-            .find(|run| run.id == discussion_id)
+        let stage = room
+            .discussion_mut(discussion_id)
+            .ok_or(TeamError::Unavailable)?
+            .stages
+            .last_mut()
             .ok_or(TeamError::Unavailable)?;
-
-        let stage = discussion.stages.last_mut().ok_or(TeamError::Unavailable)?;
 
         stage.decision = Some(ModeratorDecision {
             operation,
@@ -1682,4 +1187,26 @@ impl TeamSession {
 
         Ok(true)
     }
+}
+
+fn excluded_members(room: &Room) -> BTreeSet<MemberId> {
+    room.members()
+        .iter()
+        .filter(|member| member.excluded())
+        .map(|member| member.id())
+        .collect()
+}
+
+fn cancel_pending_reservations(room: &mut Room, id: DiscussionId) -> Result<(), TeamError> {
+    room.discussion(id).ok_or(TeamError::Unavailable)?;
+
+    for attempt in &mut room.attempts {
+        if attempt.intent.budget == BudgetScope::Discussion(id)
+            && attempt.state == AttemptState::Reserved
+        {
+            attempt.state = AttemptState::Rejected;
+        }
+    }
+
+    Ok(())
 }

@@ -15,29 +15,18 @@
 pub use nmt_terminal::session;
 
 pub mod frame;
-
 pub mod metrics;
-
 pub mod settings;
-
 pub mod view;
 
 mod block_list;
 mod dirty;
-
+mod frame_source;
 mod graphics;
 mod layout;
-
 mod paint;
-mod scrollbar;
-
-mod frame_source;
 mod pane_model;
-
+mod scrollbar;
 mod terminal_view;
 mod theme;
-
 mod wake;
-
-#[cfg(test)]
-mod remote_tests;

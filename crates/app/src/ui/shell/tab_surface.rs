@@ -1,15 +1,19 @@
+use std::path::Path;
+
 use app::agent_tab::execution::{AgentSession, SessionOwner};
 use app::agent_tab::team::TeamPane;
 use app::agent_tab::{AgentKind, AgentPane};
 use app::terminal_tab::view::TerminalPane;
-use gpui::{App, Entity};
+use gpui::{App, Entity, EntityId};
 use gpui_component::{Icon, IconName, Sizable as _};
-use nmt_config::local_state::TabState;
+use nmt_agent::AgentRoute;
+use nmt_config::local_state::{PaneNodeState, TabState};
+use nmt_platform::filesystem::path_identity;
 use tracing::warn;
 
-use crate::pane_tree::PaneId;
 use crate::tabs::TabId;
 use crate::ui::git_sidebar::GitSidebar;
+use crate::ui::pane_tree::PaneId;
 use crate::ui::tab_bar::menu::tab_icon;
 use crate::ui::terminal_layout::TerminalLayout;
 
@@ -48,6 +52,58 @@ pub(crate) enum TabSurface {
 }
 
 impl TabSurface {
+    /// The matching terminal leaf in display order. Saved leaves use the same
+    /// order as restored panes, so activation can focus the selected directory.
+    pub(super) fn terminal_in_directory(&self, target: &[String], cx: &App) -> Option<usize> {
+        let matches = |cwd: &str| path_identity(Path::new(cwd)) == target;
+
+        match self {
+            Self::Live(tree) => tree.tree().leaves().iter().position(|(_, pane)| {
+                pane.read(cx)
+                    .tab_state()
+                    .cwd
+                    .as_deref()
+                    .is_some_and(matches)
+            }),
+            Self::Pending(state)
+                if state.git_cwd.is_none()
+                    && state.team_room.is_none()
+                    && state
+                        .agent
+                        .as_deref()
+                        .and_then(AgentKind::from_id)
+                        .is_none() =>
+            {
+                if let Some(panes) = &state.panes {
+                    let mut directories = Vec::new();
+
+                    saved_terminal_directories(panes, &mut directories);
+
+                    directories.iter().position(|cwd| cwd.is_some_and(matches))
+                } else {
+                    state.cwd.as_deref().is_some_and(matches).then_some(0)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Every agent route this surface holds: one per terminal pane, and the
+    /// Agent session's when it has one.
+    pub(crate) fn agent_routes(&self, cx: &App) -> Vec<AgentRoute> {
+        let mut routes: Vec<_> = self
+            .leaves()
+            .into_iter()
+            .map(|(_, pane)| pane.read(cx).agent_route().clone())
+            .collect();
+
+        if let Some(session) = self.agent_session() {
+            routes.push(session.read(cx).agent_route().clone());
+        }
+
+        routes
+    }
+
     pub(crate) fn icon(&self, cx: &App) -> Icon {
         match self {
             Self::Git(_) => Icon::new(IconName::GitBranch).xsmall(),
@@ -83,9 +139,16 @@ impl TabSurface {
 
         let runtime = pane.read(cx).runtime().clone();
 
-        if let Err(error) = runtime.update(cx, |runtime, cx| runtime.close(cx)) {
-            warn!("could not save disabled Team: {error}");
-        }
+        let closed = runtime.update(cx, |runtime, cx| runtime.close(cx));
+
+        cx.spawn(async move |_| {
+            if let Err(error) = closed.await {
+                warn!("could not save disabled Team: {error}");
+            }
+
+            drop(runtime);
+        })
+        .detach();
 
         *self = Self::TeamDisabled(Box::new(saved));
 
@@ -119,6 +182,36 @@ impl TabSurface {
             | Self::Team(_)
             | Self::TeamUnavailable { .. }
             | Self::TeamDisabled(_) => false,
+        }
+    }
+
+    /// Whether this tab follows `session` on the paired host `host`.
+    pub(crate) fn follows_remote(&self, host: &str, session: &str, cx: &App) -> bool {
+        let terminal = self.leaves().into_iter().any(|(_, pane)| {
+            pane.read(cx).remote_tab().is_some_and(|remote| {
+                remote.host.id().as_str() == host && remote.session == session
+            })
+        });
+
+        let agent = self.agent().is_some_and(|pane| {
+            pane.read(cx)
+                .remote_address()
+                .is_some_and(|(followed_host, followed)| {
+                    followed_host == host && followed == session
+                })
+        });
+
+        terminal || agent
+    }
+
+    /// The id paired devices know a still-pending agent or terminal tab by.
+    pub(crate) fn pending_session(&self) -> Option<&str> {
+        match self {
+            Self::Pending(state) => state
+                .shared_agent
+                .as_deref()
+                .or(state.shared_terminal.as_deref()),
+            _ => None,
         }
     }
 
@@ -168,6 +261,15 @@ impl TabSurface {
         }
     }
 
+    /// Entity ids of the panes this tab shows, terminal and agent alike.
+    pub(crate) fn pane_ids(&self) -> Vec<EntityId> {
+        self.leaves()
+            .into_iter()
+            .map(|(_, pane)| pane.entity_id())
+            .chain(self.agent().map(Entity::entity_id))
+            .collect()
+    }
+
     pub(super) fn agent(&self) -> Option<&Entity<AgentPane>> {
         match self {
             TabSurface::Agent(tab) => Some(&tab.pane),
@@ -192,5 +294,16 @@ impl TabSurface {
 
     pub(crate) fn contains(&self, id: PaneId) -> bool {
         self.tree().is_some_and(|tree| tree.tree().contains(id))
+    }
+}
+
+fn saved_terminal_directories<'a>(node: &'a PaneNodeState, directories: &mut Vec<Option<&'a str>>) {
+    match node {
+        PaneNodeState::Leaf { cwd, .. } => directories.push(cwd.as_deref()),
+        PaneNodeState::Split { children, .. } => {
+            for child in children {
+                saved_terminal_directories(child, directories);
+            }
+        }
     }
 }

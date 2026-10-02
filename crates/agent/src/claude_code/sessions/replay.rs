@@ -2,33 +2,35 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 
-use chrono::DateTime;
 use serde_json::Value;
 use tracing::warn;
 
 use crate::chat::{Compaction, Item, ReplayItem, ReplayTurn};
-use crate::claude_code::compaction::{compaction_metadata, parse_compaction};
-use crate::claude_code::sessions::ClaudeCheckpoint;
-use crate::claude_code::sessions::index::TranscriptIndex;
-use crate::claude_code::sessions::paths::session_path;
-use crate::claude_code::sessions::titles::{
-    clean_prompt, compaction_summary_text, conversation_user_text, is_interruption,
+use crate::claude_code::records::{
+    AssistantBlock, assistant_block, compaction_metadata, complete_tool_item, is_api_error,
+    parse_compaction,
 };
-use crate::claude_code::tool_items::{complete_tool_item, tool_item};
+use crate::claude_code::sessions::index::TranscriptIndex;
+use crate::claude_code::sessions::titles::{
+    clean_prompt, compaction_summary_text, conversation_user_text, is_interruption, session_title,
+};
+use crate::claude_code::sessions::{ClaudeCheckpoint, session_path};
+use crate::json::unix_seconds_from_rfc3339;
+use crate::session::restore::LoadedReplay;
 
 /// Opening a selected conversation must distinguish unreadable history from an
 /// empty transcript, so a failed read cannot replace the visible conversation.
-pub(crate) fn try_load_replay(
-    cwd: Option<&str>,
-    session_id: &str,
-) -> Result<Vec<ReplayTurn>, String> {
+pub(crate) fn try_load_replay(cwd: Option<&str>, session_id: &str) -> Result<LoadedReplay, String> {
     let path = session_path(cwd, session_id)
         .ok_or_else(|| format!("Claude session {session_id} has no project directory"))?;
 
-    let file = fs::File::open(path)
+    let file = fs::File::open(&path)
         .map_err(|error| format!("could not read Claude session {session_id}: {error}"))?;
 
-    Ok(parse_replay(BufReader::new(file)))
+    Ok(LoadedReplay {
+        turns: parse_replay(BufReader::new(file)),
+        title: session_title(&path),
+    })
 }
 
 /// Rewindable human prompts from the current active branch, newest first.
@@ -230,15 +232,13 @@ fn parse_transcript(reader: impl BufRead, sidechain: bool) -> Vec<ReplayTurn> {
                     continue;
                 };
 
-                let is_api_error = record["isApiErrorMessage"].as_bool() == Some(true);
+                let api_error = is_api_error(record);
 
                 for block in blocks {
-                    match block["type"].as_str() {
-                        Some("text") => {
-                            let text = block["text"].as_str().unwrap_or_default().trim();
-
+                    match assistant_block(block) {
+                        Some(AssistantBlock::Text(text)) => {
                             if !text.is_empty() {
-                                let item = if is_api_error {
+                                let item = if api_error {
                                     Item::Error {
                                         text: text.to_string(),
                                     }
@@ -257,9 +257,7 @@ fn parse_transcript(reader: impl BufRead, sidechain: bool) -> Vec<ReplayTurn> {
                                 items.push(ReplayItem { item, at });
                             }
                         }
-                        Some("thinking") => {
-                            let summary = block["thinking"].as_str().unwrap_or_default().trim();
-
+                        Some(AssistantBlock::Thinking(summary)) => {
                             if summary.is_empty() {
                                 continue;
                             }
@@ -280,22 +278,12 @@ fn parse_transcript(reader: impl BufRead, sidechain: bool) -> Vec<ReplayTurn> {
                                 },
                             });
                         }
-                        Some("tool_use") | Some("server_tool_use") | Some("mcp_tool_use") => {
-                            let Some(id) = block["id"].as_str() else {
-                                continue;
-                            };
-
-                            let item = tool_item(
-                                id,
-                                block["name"].as_str().unwrap_or("tool"),
-                                &block["input"],
-                            );
-
+                        Some(AssistantBlock::ToolUse { id, item }) => {
                             pending_tools.insert(id.to_string(), items.len());
 
                             items.push(ReplayItem { item, at });
                         }
-                        _ => {}
+                        None => {}
                     }
                 }
             }
@@ -338,6 +326,7 @@ fn slice_turns(items: Vec<ReplayItem>, turns: Vec<TurnBuilder>) -> Vec<ReplayTur
 
         replay.push(ReplayTurn {
             items,
+            generation_samples: Vec::new(),
             seconds: turn.seconds,
             output_tokens: turn.output_tokens,
             interrupted: turn.interrupted,
@@ -374,11 +363,7 @@ fn output_tokens(record: &Value) -> Option<u64> {
 
 /// Wall-clock time of a record as Unix seconds.
 fn record_time(record: &Value) -> Option<i64> {
-    let stamp = record["timestamp"].as_str()?;
-
-    DateTime::parse_from_rfc3339(stamp)
-        .ok()
-        .map(|time| time.timestamp())
+    unix_seconds_from_rfc3339(record["timestamp"].as_str()?)
 }
 
 /// Stable transcript id for a replayed compaction. The record's own uuid keeps

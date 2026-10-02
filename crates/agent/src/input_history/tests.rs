@@ -7,6 +7,8 @@ use std::{env, fs, process};
 
 use nmt_platform::process::hidden_command;
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
+use tokio::time::timeout;
 
 use crate::AgentWorkspace;
 use crate::input_history::store::{HistoryStore, StoredHistory, load_from_path, save_to_path};
@@ -374,8 +376,7 @@ fn slow_storage_coalesces_saves_and_flush_waits_for_latest_write() {
         release_rx.recv().unwrap();
 
         save_to_path(&saved_path, snapshot)
-    })
-    .unwrap();
+    });
 
     let mut store = HistoryStore::default();
 
@@ -391,7 +392,7 @@ fn slow_storage_coalesces_saves_and_flush_waits_for_latest_write() {
         writer.save((&store).into()).unwrap();
     }
 
-    let (flushed_tx, flushed_rx) = mpsc::sync_channel(0);
+    let (flushed_tx, mut flushed_rx) = oneshot::channel();
 
     writer.queue((&store).into(), Some(flushed_tx)).unwrap();
 
@@ -405,8 +406,9 @@ fn slow_storage_coalesces_saves_and_flush_waits_for_latest_write() {
 
     release_tx.send(()).unwrap();
 
-    flushed_rx
-        .recv_timeout(Duration::from_secs(5))
+    nmt_platform::runtime()
+        .block_on(async { timeout(Duration::from_secs(5), flushed_rx).await })
+        .unwrap()
         .unwrap()
         .unwrap();
 
@@ -448,19 +450,21 @@ fn background_writer_flushes_the_latest_snapshot_in_order() {
     let directory = TestDirectory::new();
     let path = directory.path().join("agent-input-history.json");
     let scope = scope("local", AgentKind::Codex, directory.path());
-    let writer = HistoryWriter::spawn(path.clone()).expect("start history writer");
+    let writer = HistoryWriter::spawn(path.clone());
 
     let mut history = AgentInputHistory {
         store: HistoryStore::default(),
         path: path.clone(),
-        writer: Some(writer),
+        writer,
     };
 
     history.record(&scope, "first".into());
 
     history.record(&scope, "second".into());
 
-    history.flush().expect("flush history");
+    nmt_platform::runtime()
+        .block_on(history.flush())
+        .expect("flush history");
 
     assert_eq!(
         load_from_path(&path).expect("load history").entries(&scope),
@@ -477,17 +481,17 @@ fn service_keeps_entries_when_background_writes_fail() {
 
     let path = blocker.join("agent-input-history.json");
     let scope = scope("local", AgentKind::Codex, directory.path());
-    let writer = HistoryWriter::spawn(path.clone()).expect("start history writer");
+    let writer = HistoryWriter::spawn(path.clone());
 
     let mut history = AgentInputHistory {
         store: HistoryStore::default(),
         path,
-        writer: Some(writer),
+        writer,
     };
 
     history.record(&scope, "still available".into());
 
-    assert!(history.flush().is_err());
+    assert!(nmt_platform::runtime().block_on(history.flush()).is_err());
     assert_eq!(&*history.entries(&scope), ["still available"]);
 }
 
@@ -535,4 +539,50 @@ fn workspaces_sharing_a_primary_directory_keep_separate_histories() {
     assert_eq!(history.entries(&alone), ["alone"]);
     assert_eq!(history.entries(&with_web), ["with web"]);
     assert_eq!(history.entries(&both), ["both"]);
+}
+
+/// A directory keys the same whether it exists or is missing, and history
+/// saved under the verbatim spelling Windows canonicalization used to leave
+/// in keys is still found under today's key.
+#[cfg(windows)]
+#[test]
+fn existing_and_missing_directories_share_a_key_and_old_keys_migrate() {
+    let directory = TestDirectory::new();
+    let cwd = directory.path().join("workspace");
+    let missing = scope("local", AgentKind::Codex, &cwd);
+
+    fs::create_dir_all(&cwd).expect("create workspace directory");
+
+    let existing = scope("local", AgentKind::Codex, &cwd);
+
+    assert_eq!(existing, missing);
+    assert!(!existing.cwd.starts_with("//?/"));
+
+    let path = directory.path().join("history.json");
+
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "version": 2,
+            "scopes": [{
+                "target": "local",
+                "backend": existing.backend,
+                "cwd": format!("//?/{}", existing.cwd),
+                "entries": [{
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "created_at": 1,
+                    "text": "saved before the key changed",
+                }],
+            }],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let restored = load_from_path(&path).expect("restore migrated history");
+
+    assert_eq!(
+        restored.entries(&existing),
+        ["saved before the key changed"]
+    );
 }

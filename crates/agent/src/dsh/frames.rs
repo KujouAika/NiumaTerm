@@ -37,6 +37,14 @@ pub(crate) struct SubagentsFrame {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct JobsFrame {
+    pub(crate) session_id: String,
+    #[serde(default)]
+    pub(crate) jobs: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SubagentTranscriptFrame {
     pub(crate) session_id: String,
     pub(crate) child_session_id: String,
@@ -47,6 +55,7 @@ pub(crate) struct SubagentTranscriptFrame {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkflowTranscriptFrame {
+    pub(crate) session_id: String,
     pub(crate) task_id: String,
     pub(crate) agent_id: String,
     #[serde(default)]
@@ -69,6 +78,8 @@ pub(crate) struct PresetsFrame {
     pub(crate) presets: Value,
     #[serde(default)]
     pub(crate) current: Option<String>,
+    #[serde(default)]
+    pub(crate) refusal: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -131,9 +142,64 @@ pub(crate) struct SearchFrame {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ForkCheckpointsFrame {
+    pub(crate) session_id: String,
     #[serde(default)]
     pub(crate) error: Option<String>,
     #[serde(default)]
     pub(crate) page: Value,
+}
+
+/// The answer to a command this adapter issued on the session's behalf.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SettledFrame {
+    pub(crate) session_id: String,
+    pub(crate) command: SettledCommand,
+}
+
+/// Commands report only what the stream itself will not: an accepted prompt,
+/// rename or queue removal shows up as the log event, title or inbox snapshot
+/// it caused, so those carry their failure and nothing else.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum SettledCommand {
+    PromptRefused {
+        /// Whether the prompt was aimed at a running turn rather than
+        /// opening one, which decides what has to be taken back.
+        steering: bool,
+
+        error: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ModelSelected {
+        /// The model that was asked for, recorded only once it is in force.
+        model: String,
+
+        #[serde(default)]
+        reasoning_effort: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    Slash {
+        name: String,
+        arguments: String,
+        #[serde(default)]
+        value: Value,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    QueueRemovalRefused {
+        error: String,
+    },
+    RenameRefused {
+        error: String,
+    },
+    /// A conversation change finished opening; the streams it opened wait in
+    /// the session's hand-over slot.
+    Switched,
+    SwitchFailed {
+        error: String,
+    },
 }

@@ -6,16 +6,15 @@ use gpui::{
 };
 
 use crate::{
-    LMGetKbdType, NSStringExt, TISCopyCurrentKeyboardLayoutInputSource, TISGetInputSourceProperty,
-    UCKeyTranslate, kTISPropertyUnicodeKeyLayoutData,
+    LMGetKbdType, TISCopyCurrentKeyboardLayoutInputSource, TISGetInputSourceProperty,
+    UCKeyTranslate, id, kTISPropertyUnicodeKeyLayoutData,
 };
-use cocoa::{
-    appkit::{NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType},
-    base::{YES, id},
+use core_foundation::{
+    base::CFRelease,
+    data::{CFDataGetBytePtr, CFDataRef},
 };
-use core_foundation::data::{CFDataGetBytePtr, CFDataRef};
 use core_graphics::event::CGKeyCode;
-use objc::{msg_send, sel, sel_impl};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType};
 use std::{borrow::Cow, ffi::c_void};
 
 const BACKSPACE_KEY: u16 = 0x7f;
@@ -26,8 +25,69 @@ pub(crate) const ESCAPE_KEY: u16 = 0x1b;
 const TAB_KEY: u16 = 0x09;
 const SHIFT_TAB_KEY: u16 = 0x19;
 
+// AppKit declares the function-key characters as `unsigned int`, but they are
+// single UTF-16 code units of `-[NSEvent characters]`. Narrowing them to `u16`
+// lets them be matched against the first code unit of a key event and encoded
+// with `String::from_utf16`.
+macro_rules! function_keys {
+    ($($name:ident),* $(,)?) => {
+        $(
+            #[allow(non_upper_case_globals)]
+            const $name: u16 = objc2_app_kit::$name as u16;
+        )*
+    };
+}
+
+function_keys!(
+    NSUpArrowFunctionKey,
+    NSDownArrowFunctionKey,
+    NSLeftArrowFunctionKey,
+    NSRightArrowFunctionKey,
+    NSPageUpFunctionKey,
+    NSPageDownFunctionKey,
+    NSHomeFunctionKey,
+    NSEndFunctionKey,
+    NSDeleteFunctionKey,
+    NSHelpFunctionKey,
+    NSModeSwitchFunctionKey,
+    NSF1FunctionKey,
+    NSF2FunctionKey,
+    NSF3FunctionKey,
+    NSF4FunctionKey,
+    NSF5FunctionKey,
+    NSF6FunctionKey,
+    NSF7FunctionKey,
+    NSF8FunctionKey,
+    NSF9FunctionKey,
+    NSF10FunctionKey,
+    NSF11FunctionKey,
+    NSF12FunctionKey,
+    NSF13FunctionKey,
+    NSF14FunctionKey,
+    NSF15FunctionKey,
+    NSF16FunctionKey,
+    NSF17FunctionKey,
+    NSF18FunctionKey,
+    NSF19FunctionKey,
+    NSF20FunctionKey,
+    NSF21FunctionKey,
+    NSF22FunctionKey,
+    NSF23FunctionKey,
+    NSF24FunctionKey,
+    NSF25FunctionKey,
+    NSF26FunctionKey,
+    NSF27FunctionKey,
+    NSF28FunctionKey,
+    NSF29FunctionKey,
+    NSF30FunctionKey,
+    NSF31FunctionKey,
+    NSF32FunctionKey,
+    NSF33FunctionKey,
+    NSF34FunctionKey,
+    NSF35FunctionKey,
+);
+
 pub fn key_to_native(key: &str) -> Cow<'_, str> {
-    use cocoa::appkit::*;
     let code = match key {
         "space" => SPACE_KEY,
         "backspace" => BACKSPACE_KEY,
@@ -82,22 +142,20 @@ pub fn key_to_native(key: &str) -> Cow<'_, str> {
     Cow::Owned(String::from_utf16(&[code]).unwrap())
 }
 
-unsafe fn read_modifiers(native_event: id) -> Modifiers {
-    unsafe {
-        let modifiers = native_event.modifierFlags();
-        let control = modifiers.contains(NSEventModifierFlags::NSControlKeyMask);
-        let alt = modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask);
-        let shift = modifiers.contains(NSEventModifierFlags::NSShiftKeyMask);
-        let command = modifiers.contains(NSEventModifierFlags::NSCommandKeyMask);
-        let function = modifiers.contains(NSEventModifierFlags::NSFunctionKeyMask);
+fn read_modifiers(native_event: &NSEvent) -> Modifiers {
+    let modifiers = native_event.modifierFlags();
+    let control = modifiers.contains(NSEventModifierFlags::Control);
+    let alt = modifiers.contains(NSEventModifierFlags::Option);
+    let shift = modifiers.contains(NSEventModifierFlags::Shift);
+    let command = modifiers.contains(NSEventModifierFlags::Command);
+    let function = modifiers.contains(NSEventModifierFlags::Function);
 
-        Modifiers {
-            control,
-            alt,
-            shift,
-            platform: command,
-            function,
-        }
+    Modifiers {
+        control,
+        alt,
+        shift,
+        platform: command,
+        function,
     }
 }
 
@@ -106,11 +164,12 @@ pub(crate) unsafe fn platform_input_from_native(
     window_height: Option<Pixels>,
 ) -> Option<PlatformInput> {
     unsafe {
-        let event_type = native_event.eventType();
+        let native_event: &NSEvent = &*native_event.cast::<NSEvent>();
+        let event_type = native_event.r#type();
 
         // Filter out event types that aren't in the NSEventType enum.
         // See https://github.com/servo/cocoa-rs/issues/155#issuecomment-323482792 for details.
-        match event_type as u64 {
+        match event_type.0 {
             0 | 21 | 32 | 33 | 35 | 36 | 37 => {
                 return None;
             }
@@ -118,27 +177,27 @@ pub(crate) unsafe fn platform_input_from_native(
         }
 
         match event_type {
-            NSEventType::NSFlagsChanged => {
+            NSEventType::FlagsChanged => {
                 Some(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
                     modifiers: read_modifiers(native_event),
                     capslock: Capslock {
                         on: native_event
                             .modifierFlags()
-                            .contains(NSEventModifierFlags::NSAlphaShiftKeyMask),
+                            .contains(NSEventModifierFlags::CapsLock),
                     },
                 }))
             }
-            NSEventType::NSKeyDown => Some(PlatformInput::KeyDown(KeyDownEvent {
+            NSEventType::KeyDown => Some(PlatformInput::KeyDown(KeyDownEvent {
                 keystroke: parse_keystroke(native_event),
-                is_held: native_event.isARepeat() == YES,
+                is_held: native_event.isARepeat(),
                 prefer_character_input: false,
             })),
-            NSEventType::NSKeyUp => Some(PlatformInput::KeyUp(KeyUpEvent {
+            NSEventType::KeyUp => Some(PlatformInput::KeyUp(KeyUpEvent {
                 keystroke: parse_keystroke(native_event),
             })),
-            NSEventType::NSLeftMouseDown
-            | NSEventType::NSRightMouseDown
-            | NSEventType::NSOtherMouseDown => {
+            NSEventType::LeftMouseDown
+            | NSEventType::RightMouseDown
+            | NSEventType::OtherMouseDown => {
                 let button = match native_event.buttonNumber() {
                     0 => MouseButton::Left,
                     1 => MouseButton::Right,
@@ -162,9 +221,7 @@ pub(crate) unsafe fn platform_input_from_native(
                     })
                 })
             }
-            NSEventType::NSLeftMouseUp
-            | NSEventType::NSRightMouseUp
-            | NSEventType::NSOtherMouseUp => {
+            NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp => {
                 let button = match native_event.buttonNumber() {
                     0 => MouseButton::Left,
                     1 => MouseButton::Right,
@@ -187,7 +244,7 @@ pub(crate) unsafe fn platform_input_from_native(
                     })
                 })
             }
-            NSEventType::NSEventTypePressure => {
+            NSEventType::Pressure => {
                 let stage = native_event.stage();
                 let pressure = native_event.pressure();
 
@@ -208,9 +265,9 @@ pub(crate) unsafe fn platform_input_from_native(
                 })
             }
             // Some mice (like Logitech MX Master) send navigation buttons as swipe events
-            NSEventType::NSEventTypeSwipe => {
+            NSEventType::Swipe => {
                 let navigation_direction = match native_event.phase() {
-                    NSEventPhase::NSEventPhaseEnded => match native_event.deltaX() {
+                    NSEventPhase::Ended => match native_event.deltaX() {
                         x if x > 0.0 => Some(NavigationDirection::Back),
                         x if x < 0.0 => Some(NavigationDirection::Forward),
                         _ => return None,
@@ -234,12 +291,10 @@ pub(crate) unsafe fn platform_input_from_native(
                     _ => None,
                 }
             }
-            NSEventType::NSEventTypeMagnify => window_height.map(|window_height| {
+            NSEventType::Magnify => window_height.map(|window_height| {
                 let phase = match native_event.phase() {
-                    NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => {
-                        TouchPhase::Started
-                    }
-                    NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
+                    NSEventPhase::MayBegin | NSEventPhase::Began => TouchPhase::Started,
+                    NSEventPhase::Ended => TouchPhase::Ended,
                     _ => TouchPhase::Moved,
                 };
 
@@ -255,12 +310,10 @@ pub(crate) unsafe fn platform_input_from_native(
                     phase,
                 })
             }),
-            NSEventType::NSScrollWheel => window_height.map(|window_height| {
+            NSEventType::ScrollWheel => window_height.map(|window_height| {
                 let phase = match native_event.phase() {
-                    NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => {
-                        TouchPhase::Started
-                    }
-                    NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
+                    NSEventPhase::MayBegin | NSEventPhase::Began => TouchPhase::Started,
+                    NSEventPhase::Ended => TouchPhase::Ended,
                     _ => TouchPhase::Moved,
                 };
 
@@ -269,7 +322,7 @@ pub(crate) unsafe fn platform_input_from_native(
                     native_event.scrollingDeltaY() as f32,
                 );
 
-                let delta = if native_event.hasPreciseScrollingDeltas() == YES {
+                let delta = if native_event.hasPreciseScrollingDeltas() {
                     ScrollDelta::Pixels(raw_data.map(px))
                 } else {
                     ScrollDelta::Lines(raw_data)
@@ -285,9 +338,9 @@ pub(crate) unsafe fn platform_input_from_native(
                     modifiers: read_modifiers(native_event),
                 })
             }),
-            NSEventType::NSLeftMouseDragged
-            | NSEventType::NSRightMouseDragged
-            | NSEventType::NSOtherMouseDragged => {
+            NSEventType::LeftMouseDragged
+            | NSEventType::RightMouseDragged
+            | NSEventType::OtherMouseDragged => {
                 let pressed_button = match native_event.buttonNumber() {
                     0 => MouseButton::Left,
                     1 => MouseButton::Right,
@@ -309,7 +362,7 @@ pub(crate) unsafe fn platform_input_from_native(
                     })
                 })
             }
-            NSEventType::NSMouseMoved => window_height.map(|window_height| {
+            NSEventType::MouseMoved => window_height.map(|window_height| {
                 PlatformInput::MouseMove(MouseMoveEvent {
                     position: point(
                         px(native_event.locationInWindow().x as f32),
@@ -319,7 +372,7 @@ pub(crate) unsafe fn platform_input_from_native(
                     modifiers: read_modifiers(native_event),
                 })
             }),
-            NSEventType::NSMouseExited => window_height.map(|window_height| {
+            NSEventType::MouseExited => window_height.map(|window_height| {
                 PlatformInput::MouseExited(MouseExitEvent {
                     position: point(
                         px(native_event.locationInWindow().x as f32),
@@ -335,164 +388,159 @@ pub(crate) unsafe fn platform_input_from_native(
     }
 }
 
-unsafe fn parse_keystroke(native_event: id) -> Keystroke {
-    unsafe {
-        use cocoa::appkit::*;
+fn parse_keystroke(native_event: &NSEvent) -> Keystroke {
+    let characters = native_event
+        .charactersIgnoringModifiers()
+        .map(|characters| characters.to_string())
+        .unwrap_or_default();
+    let mut key_char = None;
+    let first_char = characters.chars().next().map(|ch| ch as u16);
+    let modifiers = native_event.modifierFlags();
 
-        let characters = native_event
-            .charactersIgnoringModifiers()
-            .to_str()
-            .to_string();
-        let mut key_char = None;
-        let first_char = characters.chars().next().map(|ch| ch as u16);
-        let modifiers = native_event.modifierFlags();
+    let control = modifiers.contains(NSEventModifierFlags::Control);
+    let alt = modifiers.contains(NSEventModifierFlags::Option);
+    let mut shift = modifiers.contains(NSEventModifierFlags::Shift);
+    let command = modifiers.contains(NSEventModifierFlags::Command);
+    let function = modifiers.contains(NSEventModifierFlags::Function)
+        && first_char
+            .is_none_or(|ch| !(NSUpArrowFunctionKey..=NSModeSwitchFunctionKey).contains(&ch));
 
-        let control = modifiers.contains(NSEventModifierFlags::NSControlKeyMask);
-        let alt = modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask);
-        let mut shift = modifiers.contains(NSEventModifierFlags::NSShiftKeyMask);
-        let command = modifiers.contains(NSEventModifierFlags::NSCommandKeyMask);
-        let function = modifiers.contains(NSEventModifierFlags::NSFunctionKeyMask)
-            && first_char
-                .is_none_or(|ch| !(NSUpArrowFunctionKey..=NSModeSwitchFunctionKey).contains(&ch));
-
-        #[allow(non_upper_case_globals)]
-        let key = match first_char {
-            Some(SPACE_KEY) => {
-                key_char = Some(" ".to_string());
-                "space".to_string()
-            }
-            Some(TAB_KEY) => {
-                key_char = Some("\t".to_string());
-                "tab".to_string()
-            }
-            Some(ENTER_KEY) | Some(NUMPAD_ENTER_KEY) => {
-                key_char = Some("\n".to_string());
-                "enter".to_string()
-            }
-            Some(BACKSPACE_KEY) => "backspace".to_string(),
-            Some(ESCAPE_KEY) => "escape".to_string(),
-            Some(SHIFT_TAB_KEY) => "tab".to_string(),
-            Some(NSUpArrowFunctionKey) => "up".to_string(),
-            Some(NSDownArrowFunctionKey) => "down".to_string(),
-            Some(NSLeftArrowFunctionKey) => "left".to_string(),
-            Some(NSRightArrowFunctionKey) => "right".to_string(),
-            Some(NSPageUpFunctionKey) => "pageup".to_string(),
-            Some(NSPageDownFunctionKey) => "pagedown".to_string(),
-            Some(NSHomeFunctionKey) => "home".to_string(),
-            Some(NSEndFunctionKey) => "end".to_string(),
-            Some(NSDeleteFunctionKey) => "delete".to_string(),
-            // Observed Insert==NSHelpFunctionKey not NSInsertFunctionKey.
-            Some(NSHelpFunctionKey) => "insert".to_string(),
-            Some(NSF1FunctionKey) => "f1".to_string(),
-            Some(NSF2FunctionKey) => "f2".to_string(),
-            Some(NSF3FunctionKey) => "f3".to_string(),
-            Some(NSF4FunctionKey) => "f4".to_string(),
-            Some(NSF5FunctionKey) => "f5".to_string(),
-            Some(NSF6FunctionKey) => "f6".to_string(),
-            Some(NSF7FunctionKey) => "f7".to_string(),
-            Some(NSF8FunctionKey) => "f8".to_string(),
-            Some(NSF9FunctionKey) => "f9".to_string(),
-            Some(NSF10FunctionKey) => "f10".to_string(),
-            Some(NSF11FunctionKey) => "f11".to_string(),
-            Some(NSF12FunctionKey) => "f12".to_string(),
-            Some(NSF13FunctionKey) => "f13".to_string(),
-            Some(NSF14FunctionKey) => "f14".to_string(),
-            Some(NSF15FunctionKey) => "f15".to_string(),
-            Some(NSF16FunctionKey) => "f16".to_string(),
-            Some(NSF17FunctionKey) => "f17".to_string(),
-            Some(NSF18FunctionKey) => "f18".to_string(),
-            Some(NSF19FunctionKey) => "f19".to_string(),
-            Some(NSF20FunctionKey) => "f20".to_string(),
-            Some(NSF21FunctionKey) => "f21".to_string(),
-            Some(NSF22FunctionKey) => "f22".to_string(),
-            Some(NSF23FunctionKey) => "f23".to_string(),
-            Some(NSF24FunctionKey) => "f24".to_string(),
-            Some(NSF25FunctionKey) => "f25".to_string(),
-            Some(NSF26FunctionKey) => "f26".to_string(),
-            Some(NSF27FunctionKey) => "f27".to_string(),
-            Some(NSF28FunctionKey) => "f28".to_string(),
-            Some(NSF29FunctionKey) => "f29".to_string(),
-            Some(NSF30FunctionKey) => "f30".to_string(),
-            Some(NSF31FunctionKey) => "f31".to_string(),
-            Some(NSF32FunctionKey) => "f32".to_string(),
-            Some(NSF33FunctionKey) => "f33".to_string(),
-            Some(NSF34FunctionKey) => "f34".to_string(),
-            Some(NSF35FunctionKey) => "f35".to_string(),
-            _ => {
-                // Cases to test when modifying this:
-                //
-                //           qwerty key | none | cmd   | cmd-shift
-                // * Armenian         s | ս    | cmd-s | cmd-shift-s  (layout is non-ASCII, so we use cmd layout)
-                // * Dvorak+QWERTY    s | o    | cmd-s | cmd-shift-s  (layout switches on cmd)
-                // * Ukrainian+QWERTY s | с    | cmd-s | cmd-shift-s  (macOS reports cmd-s instead of cmd-S)
-                // * Czech            7 | ý    | cmd-ý | cmd-7        (layout has shifted numbers)
-                // * Norwegian        7 | 7    | cmd-7 | cmd-/        (macOS reports cmd-shift-7 instead of cmd-/)
-                // * Russian          7 | 7    | cmd-7 | cmd-&        (shift-7 is . but when cmd is down, should use cmd layout)
-                // * German QWERTZ    ; | ö    | cmd-ö | cmd-Ö        (Zed's shift special case only applies to a-z)
-                //
-                let mut chars_ignoring_modifiers =
-                    chars_for_modified_key(native_event.keyCode(), NO_MOD);
-                let mut chars_with_shift =
-                    chars_for_modified_key(native_event.keyCode(), SHIFT_MOD);
-                let always_use_cmd_layout = always_use_command_layout();
-
-                // Handle Dvorak+QWERTY / Russian / Armenian
-                if command || always_use_cmd_layout {
-                    let chars_with_cmd = chars_for_modified_key(native_event.keyCode(), CMD_MOD);
-                    let chars_with_both =
-                        chars_for_modified_key(native_event.keyCode(), CMD_MOD | SHIFT_MOD);
-
-                    // We don't do this in the case that the shifted command key generates
-                    // the same character as the unshifted command key (Norwegian, e.g.)
-                    if chars_with_both != chars_with_cmd {
-                        chars_with_shift = chars_with_both;
-
-                    // Handle edge-case where cmd-shift-s reports cmd-s instead of
-                    // cmd-shift-s (Ukrainian, etc.)
-                    } else if chars_with_cmd.to_ascii_uppercase() != chars_with_cmd {
-                        chars_with_shift = chars_with_cmd.to_ascii_uppercase();
-                    }
-                    chars_ignoring_modifiers = chars_with_cmd;
-                }
-
-                if !control && !command && !function {
-                    let mut mods = NO_MOD;
-                    if shift {
-                        mods |= SHIFT_MOD;
-                    }
-                    if alt {
-                        mods |= OPTION_MOD;
-                    }
-
-                    key_char = Some(chars_for_modified_key(native_event.keyCode(), mods));
-                }
-
-                if shift
-                    && chars_ignoring_modifiers
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase())
-                {
-                    chars_ignoring_modifiers
-                } else if shift {
-                    shift = false;
-                    chars_with_shift
-                } else {
-                    chars_ignoring_modifiers
-                }
-            }
-        };
-
-        Keystroke {
-            modifiers: Modifiers {
-                control,
-                alt,
-                shift,
-                platform: command,
-                function,
-            },
-            key,
-            key_char,
+    #[allow(non_upper_case_globals)]
+    let key = match first_char {
+        Some(SPACE_KEY) => {
+            key_char = Some(" ".to_string());
+            "space".to_string()
         }
+        Some(TAB_KEY) => {
+            key_char = Some("\t".to_string());
+            "tab".to_string()
+        }
+        Some(ENTER_KEY) | Some(NUMPAD_ENTER_KEY) => {
+            key_char = Some("\n".to_string());
+            "enter".to_string()
+        }
+        Some(BACKSPACE_KEY) => "backspace".to_string(),
+        Some(ESCAPE_KEY) => "escape".to_string(),
+        Some(SHIFT_TAB_KEY) => "tab".to_string(),
+        Some(NSUpArrowFunctionKey) => "up".to_string(),
+        Some(NSDownArrowFunctionKey) => "down".to_string(),
+        Some(NSLeftArrowFunctionKey) => "left".to_string(),
+        Some(NSRightArrowFunctionKey) => "right".to_string(),
+        Some(NSPageUpFunctionKey) => "pageup".to_string(),
+        Some(NSPageDownFunctionKey) => "pagedown".to_string(),
+        Some(NSHomeFunctionKey) => "home".to_string(),
+        Some(NSEndFunctionKey) => "end".to_string(),
+        Some(NSDeleteFunctionKey) => "delete".to_string(),
+        // Observed Insert==NSHelpFunctionKey not NSInsertFunctionKey.
+        Some(NSHelpFunctionKey) => "insert".to_string(),
+        Some(NSF1FunctionKey) => "f1".to_string(),
+        Some(NSF2FunctionKey) => "f2".to_string(),
+        Some(NSF3FunctionKey) => "f3".to_string(),
+        Some(NSF4FunctionKey) => "f4".to_string(),
+        Some(NSF5FunctionKey) => "f5".to_string(),
+        Some(NSF6FunctionKey) => "f6".to_string(),
+        Some(NSF7FunctionKey) => "f7".to_string(),
+        Some(NSF8FunctionKey) => "f8".to_string(),
+        Some(NSF9FunctionKey) => "f9".to_string(),
+        Some(NSF10FunctionKey) => "f10".to_string(),
+        Some(NSF11FunctionKey) => "f11".to_string(),
+        Some(NSF12FunctionKey) => "f12".to_string(),
+        Some(NSF13FunctionKey) => "f13".to_string(),
+        Some(NSF14FunctionKey) => "f14".to_string(),
+        Some(NSF15FunctionKey) => "f15".to_string(),
+        Some(NSF16FunctionKey) => "f16".to_string(),
+        Some(NSF17FunctionKey) => "f17".to_string(),
+        Some(NSF18FunctionKey) => "f18".to_string(),
+        Some(NSF19FunctionKey) => "f19".to_string(),
+        Some(NSF20FunctionKey) => "f20".to_string(),
+        Some(NSF21FunctionKey) => "f21".to_string(),
+        Some(NSF22FunctionKey) => "f22".to_string(),
+        Some(NSF23FunctionKey) => "f23".to_string(),
+        Some(NSF24FunctionKey) => "f24".to_string(),
+        Some(NSF25FunctionKey) => "f25".to_string(),
+        Some(NSF26FunctionKey) => "f26".to_string(),
+        Some(NSF27FunctionKey) => "f27".to_string(),
+        Some(NSF28FunctionKey) => "f28".to_string(),
+        Some(NSF29FunctionKey) => "f29".to_string(),
+        Some(NSF30FunctionKey) => "f30".to_string(),
+        Some(NSF31FunctionKey) => "f31".to_string(),
+        Some(NSF32FunctionKey) => "f32".to_string(),
+        Some(NSF33FunctionKey) => "f33".to_string(),
+        Some(NSF34FunctionKey) => "f34".to_string(),
+        Some(NSF35FunctionKey) => "f35".to_string(),
+        _ => {
+            // Cases to test when modifying this:
+            //
+            //           qwerty key | none | cmd   | cmd-shift
+            // * Armenian         s | ս    | cmd-s | cmd-shift-s  (layout is non-ASCII, so we use cmd layout)
+            // * Dvorak+QWERTY    s | o    | cmd-s | cmd-shift-s  (layout switches on cmd)
+            // * Ukrainian+QWERTY s | с    | cmd-s | cmd-shift-s  (macOS reports cmd-s instead of cmd-S)
+            // * Czech            7 | ý    | cmd-ý | cmd-7        (layout has shifted numbers)
+            // * Norwegian        7 | 7    | cmd-7 | cmd-/        (macOS reports cmd-shift-7 instead of cmd-/)
+            // * Russian          7 | 7    | cmd-7 | cmd-&        (shift-7 is . but when cmd is down, should use cmd layout)
+            // * German QWERTZ    ; | ö    | cmd-ö | cmd-Ö        (Zed's shift special case only applies to a-z)
+            //
+            let mut chars_ignoring_modifiers =
+                chars_for_modified_key(native_event.keyCode(), NO_MOD);
+            let mut chars_with_shift = chars_for_modified_key(native_event.keyCode(), SHIFT_MOD);
+            let always_use_cmd_layout = always_use_command_layout();
+
+            // Handle Dvorak+QWERTY / Russian / Armenian
+            if command || always_use_cmd_layout {
+                let chars_with_cmd = chars_for_modified_key(native_event.keyCode(), CMD_MOD);
+                let chars_with_both =
+                    chars_for_modified_key(native_event.keyCode(), CMD_MOD | SHIFT_MOD);
+
+                // We don't do this in the case that the shifted command key generates
+                // the same character as the unshifted command key (Norwegian, e.g.)
+                if chars_with_both != chars_with_cmd {
+                    chars_with_shift = chars_with_both;
+
+                // Handle edge-case where cmd-shift-s reports cmd-s instead of
+                // cmd-shift-s (Ukrainian, etc.)
+                } else if chars_with_cmd.to_ascii_uppercase() != chars_with_cmd {
+                    chars_with_shift = chars_with_cmd.to_ascii_uppercase();
+                }
+                chars_ignoring_modifiers = chars_with_cmd;
+            }
+
+            if !control && !command && !function {
+                let mut mods = NO_MOD;
+                if shift {
+                    mods |= SHIFT_MOD;
+                }
+                if alt {
+                    mods |= OPTION_MOD;
+                }
+
+                key_char = Some(chars_for_modified_key(native_event.keyCode(), mods));
+            }
+
+            if shift
+                && chars_ignoring_modifiers
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase())
+            {
+                chars_ignoring_modifiers
+            } else if shift {
+                shift = false;
+                chars_with_shift
+            } else {
+                chars_ignoring_modifiers
+            }
+        }
+    };
+
+    Keystroke {
+        modifiers: Modifiers {
+            control,
+            alt,
+            shift,
+            platform: command,
+            function,
+        },
+        key,
+        key_char,
     }
 }
 
@@ -535,7 +583,7 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
     };
     if layout_data.is_null() {
         unsafe {
-            let _: () = msg_send![keyboard, release];
+            CFRelease(keyboard as _);
         }
         return "".to_string();
     }
@@ -568,7 +616,7 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
                 &mut buffer as *mut u16,
             );
         }
-        let _: () = msg_send![keyboard, release];
+        CFRelease(keyboard as _);
     }
     String::from_utf16(&buffer[..buffer_size]).unwrap_or_default()
 }

@@ -89,3 +89,28 @@ C ABI (`ghostty_terminal_finish_block` / `clear_blocks` / `remove_block` /
 OS-gated — pure additive engine feature. Developed on the `per-block-grid`
 branch of a local fork checkout (`.worktrees/ghostty`); regenerate with
 `git diff <patched-baseline>..per-block-grid` there.
+
+## 0006-formatter-primary-under-alt-screen.patch
+
+Upstream `TerminalFormatter` formats only the active screen. A whole-terminal
+VT dump taken while a full-screen program holds the alternate screen therefore
+carries no primary screen: a replica replaying it sees the alternate screen,
+but once the program exits it reveals an empty primary screen with no
+scrollback. The patch writes the primary screen (content, then cursor and
+style extras) first, then the alternate-screen modes that are set, then the
+alternate screen, and keeps those modes out of the generic mode pass so they
+are not applied before the primary content. It only engages for VT output of
+the whole terminal with modes enabled and no pin map; every other formatter
+use is byte-for-byte upstream. Regressions: the Zig test `TerminalFormatter vt
+restores primary screen under alternate screen` and
+`ghostty::tests::vt_state_checkpoint_keeps_primary_screen_under_alt_screen`.
+
+## 0007-block-format-vt.patch
+
+`ghostty_block_ref_format_alloc` exported finished blocks as plain text only,
+so a VT checkpoint that re-emits frozen command history would lose its colors
+and attributes. The patch appends a `vt` flag to `GhosttyBlockFormatOptions`
+that switches the block's screen formatter to VT output. The field sits in the
+struct's existing tail padding, so the struct size and the sized-struct check
+are unchanged and callers that leave it zero keep the plain export.
+Regression: `ghostty::tests::vt_state_checkpoint_carries_finished_blocks`.

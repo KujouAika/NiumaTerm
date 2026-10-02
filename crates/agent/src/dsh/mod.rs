@@ -16,23 +16,23 @@ pub use crate::dsh::session::Session;
 pub(crate) use crate::dsh::host::{
     NPX_ARGUMENTS, NPX_EXECUTABLE, PNPM_DLX_ARGUMENTS, PNPM_DLX_EXECUTABLE,
 };
+pub(crate) use crate::dsh::listing::list_sessions;
 
 mod api;
-mod commands;
+mod catalogs;
 mod events;
 mod frames;
+mod generation;
 mod history;
 mod host;
+mod listing;
 mod mapping;
 mod models;
-mod presets;
 mod projections;
 mod session;
-mod subagents;
 mod workflows;
 
 #[cfg(test)]
 mod tests;
-
 #[cfg(test)]
 mod version_tests;

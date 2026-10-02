@@ -14,7 +14,8 @@ use serde_json::Value;
 use crate::chat::{
     Event, ForkAnchor, ForkCheckpoint, Item, ReplayItem, ReplayTurn, SessionSummary,
 };
-use crate::dsh::mapping::{ToolTracker, map_session_event};
+use crate::dsh::mapping::{EventTracker, map_session_event};
+use crate::json::rfc3339_from_unix_seconds;
 
 /// Read a `session.list` result into the resumable conversations of one
 /// working directory.
@@ -58,6 +59,7 @@ pub(crate) fn sessions(value: &Value, cwd: Option<&str>) -> Vec<SessionSummary> 
                     .map(|millis| UNIX_EPOCH + Duration::from_millis(millis))
                     .unwrap_or(UNIX_EPOCH),
                 snippet: None,
+                origin: None,
             })
         })
         .collect()
@@ -105,7 +107,7 @@ pub(crate) fn search_results(
 /// Rebuild turns from the follow stream's opening snapshot or a history page.
 /// Packed delta records and live events share the same item identities.
 pub(crate) fn replay(value: &Value) -> Vec<ReplayTurn> {
-    let mut tools = ToolTracker::default();
+    let mut tools = EventTracker::default();
     let mut turns: Vec<ReplayTurn> = Vec::new();
     let mut current = ReplayTurn::default();
     let mut started_at: Option<u64> = None;
@@ -114,11 +116,15 @@ pub(crate) fn replay(value: &Value) -> Vec<ReplayTurn> {
         let event = &entry["event"];
         let time = event["time"].as_u64();
 
+        current
+            .generation_samples
+            .extend(tools.generation.apply(event));
+
         match event["type"].as_str() {
             Some("turn/start") => {
                 // A page can begin mid-turn, and those items belong to a turn
                 // whose start is on an older page rather than to this one.
-                if !current.items.is_empty() {
+                if !current.items.is_empty() || !current.generation_samples.is_empty() {
                     turns.push(take(&mut current));
                 }
 
@@ -209,7 +215,7 @@ pub(crate) fn replay(value: &Value) -> Vec<ReplayTurn> {
         }
     }
 
-    if !current.items.is_empty() {
+    if !current.items.is_empty() || !current.generation_samples.is_empty() || started_at.is_some() {
         turns.push(current);
     }
 
@@ -240,7 +246,7 @@ pub(crate) fn fork_checkpoints(page: &Value) -> Vec<ForkCheckpoint> {
             // rule stays in one place: the log records more than the person's
             // own messages under this type. A prompt maps to exactly one item,
             // and anything else the mapper produced is not one.
-            let mut mapped = map_session_event(event, &Value::Null, &mut ToolTracker::default());
+            let mut mapped = map_session_event(event, &Value::Null, &mut EventTracker::default());
 
             let Some(Event::ItemStarted(Item::UserMessage { text: Some(text) })) = mapped.pop()
             else {
@@ -260,7 +266,11 @@ pub(crate) fn fork_checkpoints(page: &Value) -> Vec<ForkCheckpoint> {
 
             Some(ForkCheckpoint {
                 prompt: prompt.clone(),
-                timestamp: at.and_then(unix_millis_to_rfc3339),
+                timestamp: at.and_then(|millis| {
+                    // The picker shows second precision, so the sub-second
+                    // part is dropped before the conversion.
+                    rfc3339_from_unix_seconds(i64::try_from(millis / 1_000).ok()?)
+                }),
                 anchor: ForkAnchor::DeepSeekThrough(*kept),
             })
         })
@@ -269,15 +279,6 @@ pub(crate) fn fork_checkpoints(page: &Value) -> Vec<ForkCheckpoint> {
     checkpoints.reverse();
 
     checkpoints
-}
-
-/// The harness dates its events in Unix milliseconds while the picker renders
-/// RFC 3339, which is what a backend reading its history off disk records.
-fn unix_millis_to_rfc3339(millis: u64) -> Option<String> {
-    let millis = i64::try_from(millis).ok()?;
-
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map(|date| date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
 /// Flatten a rebuilt page into one stream of items.

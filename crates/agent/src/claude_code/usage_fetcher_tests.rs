@@ -1,7 +1,8 @@
+use crate::claude_code::config_home_from;
 use crate::claude_code::usage_fetcher::*;
 
 #[test]
-fn credentials_path_prefers_an_explicit_claude_config_dir() {
+fn config_home_prefers_an_explicit_claude_config_dir() {
     // Built through `join` rather than written out, so the expectation uses
     // whatever separator the platform's `PathBuf` produces.
     let profiles: PathBuf = "profiles".into();
@@ -10,12 +11,16 @@ fn credentials_path_prefers_an_explicit_claude_config_dir() {
     let home = home.join("test");
 
     assert_eq!(
-        credentials_path(Some(config_dir.as_os_str()), Some(&home)),
-        Some(config_dir.join(".credentials.json"))
+        config_home_from(Some(config_dir.as_os_str()), Some(&home)),
+        Some(config_dir.clone())
     );
     assert_eq!(
-        credentials_path(None, Some(&home)),
-        Some(home.join(".claude").join(".credentials.json"))
+        config_home_from(Some("".as_ref()), Some(&home)),
+        Some(home.join(".claude"))
+    );
+    assert_eq!(
+        config_home_from(None, Some(&home)),
+        Some(home.join(".claude"))
     );
 }
 
@@ -36,7 +41,10 @@ fn reads_only_a_nonempty_claude_oauth_access_token() {
 fn the_panel_supplement_runs_only_for_a_live_reading_without_fable() {
     // Cancelled up front, so the guard is exercised without an
     // interactive Claude process: reaching the panel returns immediately.
-    let cancelled = AtomicBool::new(true);
+    let cancelled = FetchCancellation::default();
+
+    cancelled.cancel();
+
     let five_hour = Some(UsageWindow::new(88, FIVE_HOUR_WINDOW_MINUTES));
     let fable = Some(UsageWindow::new(35, WEEKLY_WINDOW_MINUTES));
 
@@ -47,13 +55,19 @@ fn the_panel_supplement_runs_only_for_a_live_reading_without_fable() {
         ..UsageSnapshot::default()
     };
 
-    assert_eq!(supplement_from_cli(complete.clone(), &cancelled), complete);
+    assert_eq!(
+        nmt_platform::runtime().block_on(supplement_from_cli(complete.clone(), &cancelled)),
+        complete
+    );
 
     // An endpoint that described no window at all describes an account the
     // panel cannot be trusted to describe either.
     let empty = UsageSnapshot::default();
 
-    assert_eq!(supplement_from_cli(empty.clone(), &cancelled), empty);
+    assert_eq!(
+        nmt_platform::runtime().block_on(supplement_from_cli(empty.clone(), &cancelled)),
+        empty
+    );
 
     // A supplement that cannot run leaves the reading it was adding to.
     let partial = UsageSnapshot {
@@ -61,7 +75,10 @@ fn the_panel_supplement_runs_only_for_a_live_reading_without_fable() {
         ..UsageSnapshot::default()
     };
 
-    assert_eq!(supplement_from_cli(partial.clone(), &cancelled), partial);
+    assert_eq!(
+        nmt_platform::runtime().block_on(supplement_from_cli(partial.clone(), &cancelled)),
+        partial
+    );
 }
 
 #[test]
@@ -97,19 +114,6 @@ fn maps_oauth_windows_to_remaining_integer_percentages() {
             ..UsageSnapshot::default()
         }
     );
-}
-
-#[test]
-fn oauth_fallback_is_limited_to_recoverable_statuses() {
-    assert!(oauth_status_allows_cli_fallback(StatusCode::UNAUTHORIZED));
-    assert!(oauth_status_allows_cli_fallback(
-        StatusCode::INTERNAL_SERVER_ERROR
-    ));
-    assert!(!oauth_status_allows_cli_fallback(StatusCode::FORBIDDEN));
-    assert!(!oauth_status_allows_cli_fallback(
-        StatusCode::TOO_MANY_REQUESTS
-    ));
-    assert!(!oauth_status_allows_cli_fallback(StatusCode::NOT_FOUND));
 }
 
 #[test]
@@ -170,7 +174,12 @@ fn keeps_cli_output_bounded_to_the_newest_bytes() {
 /// second, and it reaches neither the network nor an interactive CLI here.
 #[test]
 fn a_cancelled_request_reports_cancellation_not_failure() {
-    let error = fetch_with_cancel(&AtomicBool::new(true))
+    let cancelled = FetchCancellation::default();
+
+    cancelled.cancel();
+
+    let error = nmt_platform::runtime()
+        .block_on(fetch_with_cancel(&cancelled))
         .expect_err("a cancelled fetch produces no snapshot");
 
     assert!(

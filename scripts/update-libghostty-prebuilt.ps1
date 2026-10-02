@@ -143,7 +143,7 @@ function Copy-StrippedArchive {
 Push-Location $repoRoot
 try {
     # 1. Force a clean vendored build in the requested optimize mode so the
-    #    simdutf-localized archive is regenerated from the current sources/patches.
+    #    static archive is regenerated from the current sources/patches.
     Write-Host "==> Building libghostty-vt from source (optimize=$Optimize, target=$Target)"
     Remove-Item Env:NMT_USE_PREBUILT_LIBGHOSTTY -ErrorAction SilentlyContinue
     $env:LIBGHOSTTY_VT_SYS_OPTIMIZE = $Optimize
@@ -151,16 +151,15 @@ try {
     Invoke-Checked cargo @("clean", "-p", "libghostty-vt-sys")
     Invoke-Checked cargo @("build", "-p", "libghostty-vt-sys", "--target", $Target)
 
-    # 2. Locate the freshly-built simdutf-localized static archive. The prebuilt
-    #    link path ships simdutf/highway separately and does not re-localize, so
-    #    the localized variant (not ghostty-install/lib) is the correct source.
+    # 2. Locate the freshly-built static archive and headers in the Zig install
+    #    prefix. The prebuilt package ships simdutf/highway as separate archives.
     Write-Host "==> Locating built artifacts under $buildDir"
     $lib = Get-ChildItem -Path $buildDir -Recurse -Filter "ghostty-vt-static.lib" -ErrorAction Stop |
-        Where-Object { $_.FullName -match "simdutf-localized" } |
+        Where-Object { $_.FullName -match "ghostty-install" } |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if (-not $lib) {
-        throw "Could not find a simdutf-localized ghostty-vt-static.lib under $buildDir"
+        throw "Could not find a ghostty-install ghostty-vt-static.lib under $buildDir"
     }
 
     $incDir = Get-ChildItem -Path $buildDir -Recurse -Directory -Filter "include" -ErrorAction Stop |

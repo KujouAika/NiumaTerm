@@ -88,6 +88,7 @@ struct Stats {
     vsync_ticks: u64,
     vsync_short_waits: u64,
     dirty_views: u64,
+    refreshes: u64,
     primitives: u64,
     draw: Series,
     present: Series,
@@ -111,6 +112,7 @@ impl Stats {
             vsync_ticks: 0,
             vsync_short_waits: 0,
             dirty_views: 0,
+            refreshes: 0,
             primitives: 0,
             draw: Series::EMPTY,
             present: Series::EMPTY,
@@ -240,6 +242,17 @@ pub fn record_draw(duration: Duration, dirty_views: usize) {
     stats.dirty_views += dirty_views as u64;
 }
 
+/// Records a draw that ran with every view cache bypassed. Such a frame
+/// re-renders the whole tree without marking any view dirty, so the dirty-view
+/// average alone would report it as the cheapest kind of frame.
+pub fn record_refresh() {
+    if !enabled() {
+        return;
+    }
+
+    STATS.lock().refreshes += 1;
+}
+
 /// Records one present (scene submission plus swapchain present) and closes
 /// out the frame, reporting the digest when the period is up.
 pub fn record_present(duration: Duration, primitives: usize) {
@@ -343,7 +356,7 @@ fn report_if_due(stats: &mut Stats, now: Instant) {
          gpu-wait avg {:.2}ms max {:.2}ms | interval avg {:.2}ms max {:.2}ms | \
          arm-lag avg {:.2}ms max {:.2}ms (n {}) | \
          main-busy tasks {:.0}ms/s (n {}) msgs {:.0}ms/s (n {}) | \
-         long {} | throttled {} | views/frame {:.1} | prims/frame {}",
+         long {} | throttled {} | views/frame {:.1} | refreshes {} | prims/frame {}",
         stats.frames as f64 / seconds,
         vsync_hz,
         stats.vsync_ticks as f64 / seconds,
@@ -367,6 +380,7 @@ fn report_if_due(stats: &mut Stats, now: Instant) {
         stats.long_frames,
         stats.throttled,
         stats.dirty_views as f64 / stats.frames.max(1) as f64,
+        stats.refreshes,
         stats.primitives / stats.frames.max(1),
     );
 

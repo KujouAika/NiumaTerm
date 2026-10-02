@@ -3,15 +3,17 @@
 mod conpty_tests;
 
 use std::ffi::{self, OsString};
+use std::future::Future;
 use std::io::{Error, ErrorKind, Result};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
-use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::time::Duration;
-use std::{env, mem, ptr, thread};
+use std::{env, mem, ptr};
 
 use libc::c_ushort;
-use miow::pipe::anonymous;
+use tokio::task::spawn_blocking;
+use tokio::time::timeout;
 use tracing::*;
 use windows_sys::Win32::Foundation::{HANDLE, S_OK};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
@@ -26,20 +28,14 @@ use windows_sys::core::{HRESULT, PWSTR};
 use windows_sys::{s, w};
 
 use crate::windows::child::ChildExitWatcher;
-use crate::windows::pipes::{EventedAnonRead, EventedAnonWrite};
+use crate::windows::pipes::{conin_pair, conout_pair};
 use crate::windows::process::{KillOnCloseJob, ProcessTree};
 use crate::windows::{Pty, command_line, win32_string};
 use crate::{PtyOptions, Winsize};
 
-/// Load the pseudoconsole API from conpty.dll if possible, otherwise use the
-/// standard Windows API.
-///
-/// The conpty.dll from the Windows Terminal project
-/// supports loading OpenConsole.exe, which offers many improvements and
-/// bugfixes compared to the standard conpty that ships with Windows.
-///
-/// The conpty.dll and OpenConsole.exe files will be searched in PATH and in
-/// the directory where the NiumaTerm executable is located.
+/// Pseudoconsole entry points of the bundled Windows Terminal ConPTY. Its
+/// conpty.dll starts OpenConsole.exe, which keeps scrollback intact across a
+/// resize where the in-box system ConPTY repaints the whole buffer.
 type CreatePseudoConsoleFn =
     unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
 
@@ -54,6 +50,19 @@ struct ConptyApi {
 }
 
 impl ConptyApi {
+    /// The API loaded once per process. Every tab shares the same module, so
+    /// loading it per pseudoconsole would only raise the module's refcount.
+    fn get() -> Result<&'static Self> {
+        static API: OnceLock<Option<ConptyApi>> = OnceLock::new();
+
+        API.get_or_init(|| Self::new().ok()).as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorKind::NotFound,
+                "bundled ConPTY failed to load: conpty.dll and OpenConsole.exe must be                  available beside the executable; system ConPTY is not supported",
+            )
+        })
+    }
+
     fn new() -> Result<Self> {
         // The bundled Windows Terminal ConPTY is mandatory: it implements the resize
         // quirk (no full-buffer repaint), so scrollback survives a window resize. The
@@ -134,7 +143,7 @@ impl ConptyApi {
 /// RAII Pseudoconsole.
 pub struct Conpty {
     pub handle: HPCON,
-    api: ConptyApi,
+    api: &'static ConptyApi,
 
     /// Job object holding the shell's process tree (`KILL_ON_JOB_CLOSE`),
     /// present when job management is enabled. Closing the handle on drop
@@ -144,41 +153,16 @@ pub struct Conpty {
 
 /// How long the pseudoconsole close is given before the shell tree is ended
 /// out from under it. A console whose client leaves closes in milliseconds, so
-/// this only bounds the wait described on [`Conpty::drop`].
+/// this only bounds the wait described on [`Conpty::close`].
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Drop for Conpty {
     fn drop(&mut self) {
-        // ClosePseudoConsole returns once the console host has finished, which
-        // needs the client to detach and the conout pipe to drain. This thread
-        // is the one that was draining conout, so a shell that does not leave
-        // on the console's close event blocks the call with nothing left to
-        // release it: the job whose closure ends that shell is only reached
-        // after the call returns, so the wait outlives its own remedy.
-        //
-        // See https://docs.microsoft.com/en-us/windows/console/closepseudoconsole.
-        //
-        // The close therefore runs on a scratch thread and the job is closed
-        // whether or not it came back. Ending the tree is what frees a close
-        // still waiting on it, and going in this order still lets a shell that
-        // does leave on its own finish first.
-        let (closed_tx, closed) = mpsc::channel();
-        let handle = self.handle;
-        let close = self.api.close;
-
-        thread::spawn(move || {
-            unsafe { close(handle) };
-
-            let _ = closed_tx.send(());
-        });
-
-        if closed.recv_timeout(CLOSE_TIMEOUT).is_err() {
-            warn!("conpty: the pseudoconsole is still closing; ending the shell tree");
+        // An owner that did not await `close` still must not leak the console
+        // or its tree. Dropping never waits, so the close continues detached.
+        if self.handle != 0 {
+            crate::runtime().spawn(self.begin_close());
         }
-
-        // After the console teardown, closing the job reaps whatever is left
-        // of the tree (detached/GUI descendants included).
-        drop(self.job.take());
     }
 }
 
@@ -202,16 +186,12 @@ pub fn new(options: PtyOptions<'_>, job: Option<KillOnCloseJob>) -> Result<Pty> 
         ..
     } = options;
 
-    let api = ConptyApi::new()?;
+    let api = ConptyApi::get()?;
 
     let mut pty_handle: HPCON = 0;
 
-    // Passing 0 as the size parameter allows the "system default" buffer
-    // size to be used. There may be small performance and memory advantages
-    // to be gained by tuning this in the future, but it's likely a reasonable
-    // start point.
-    let (conout, conout_pty_handle) = anonymous(0)?;
-    let (conin_pty_handle, conin) = anonymous(0)?;
+    let (conout, conout_pty_handle) = conout_pair()?;
+    let (conin_pty_handle, conin) = conin_pair()?;
 
     let winsize = Winsize {
         ws_row: rows as c_ushort,
@@ -220,22 +200,26 @@ pub fn new(options: PtyOptions<'_>, job: Option<KillOnCloseJob>) -> Result<Pty> 
         ws_ypixel: 0 as c_ushort,
     };
 
-    // Create the Pseudo Console, using the pipes. Prefer Windows Terminal's
-    // OpenConsoleProxy.dll (newer ConPTY) over the in-box one (loaded in
-    // `ConptyApi::new`): its console rewrite no longer repaints the whole buffer
-    // on resize the way the in-box ConPTY does, so the engine's scrollback
-    // survives a window resize (in-box ConPTY clears it — Microsoft bug #3490).
+    // Create the pseudoconsole on the pipes, through the API chosen in
+    // `ConptyApi::load_conpty`.
     let coord: COORD = winsize.into();
 
     let result = unsafe {
         (api.create)(
             coord,
-            conin_pty_handle.into_raw_handle() as HANDLE,
-            conout_pty_handle.into_raw_handle() as HANDLE,
+            conin_pty_handle.as_raw_handle() as HANDLE,
+            conout_pty_handle.as_raw_handle() as HANDLE,
             0,
             &mut pty_handle as *mut _,
         )
     };
+
+    // The console host duplicates both pipe ends it was given. Keeping our
+    // copies open would leak two handles per console and hold the output
+    // pipe's write end in this process, so the reader could never observe the
+    // hangup when the host goes away.
+    drop(conin_pty_handle);
+    drop(conout_pty_handle);
 
     if result != S_OK {
         return Err(Error::other(format!(
@@ -383,9 +367,6 @@ pub fn new(options: PtyOptions<'_>, job: Option<KillOnCloseJob>) -> Result<Pty> 
 
     drop(primary_thread);
 
-    let conin = EventedAnonWrite::new(conin);
-    let conout = EventedAnonRead::new(conout);
-
     let child_watcher = ChildExitWatcher::new(process.into_raw_handle())?;
 
     Ok(Pty::new(conpty, conout, conin, child_watcher))
@@ -447,6 +428,41 @@ fn build_environment_block(overrides: &[(String, String)]) -> Vec<u16> {
 }
 
 impl Conpty {
+    /// Close the console without occupying a runtime worker. The owner keeps
+    /// draining output meanwhile, which the console host needs to finish.
+    pub(crate) fn close(mut self) -> impl Future<Output = ()> + Send + use<> {
+        self.begin_close()
+    }
+
+    fn begin_close(&mut self) -> impl Future<Output = ()> + Send + use<> {
+        let handle = mem::replace(&mut self.handle, 0);
+        let close = self.api.close;
+        let job = self.job.take();
+
+        async move {
+            // ClosePseudoConsole returns once the console host has finished,
+            // which needs the client to detach. A shell that does not leave on
+            // the console's close event blocks the call, and the job whose
+            // closure ends that shell is only reached after the call returns.
+            //
+            // See https://docs.microsoft.com/en-us/windows/console/closepseudoconsole.
+            //
+            // The call therefore runs on the blocking pool and the job is
+            // closed whether or not it came back. Ending the tree frees a close
+            // still waiting on it, and this order still lets a shell that does
+            // leave on its own finish first.
+            let closing = spawn_blocking(move || unsafe { close(handle) });
+
+            if timeout(CLOSE_TIMEOUT, closing).await.is_err() {
+                warn!("conpty: the pseudoconsole is still closing; ending the shell tree");
+            }
+
+            // After the console teardown, closing the job reaps whatever is left
+            // of the tree (detached/GUI descendants included).
+            drop(job);
+        }
+    }
+
     pub(crate) fn process_tree(&self) -> Option<ProcessTree> {
         self.job.as_ref().map(KillOnCloseJob::process_tree)
     }

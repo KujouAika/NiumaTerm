@@ -1,6 +1,17 @@
+use gpui::{
+    App, FileDialogFilter, ParentElement as _, PathPromptOptions, SharedString, Styled as _,
+    relative,
+};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::group_box::{GroupBox, GroupBoxVariants as _};
+use gpui_component::input::Input;
+use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_component::{Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use rust_i18n::t;
 
-use crate::ui::settings::*;
+use crate::ui::settings::agent_profile_page::{agent_profile_list, open_agent_profile_dialog};
+use crate::ui::settings::card::{card_row, card_text_input};
+use crate::ui::settings::state::{AgentProfile, AppSettings, Profile};
 
 /// The Profiles page: exactly two groups — Terminal Profile and Agent
 /// Profile — so the sidebar shows two stable entries. Profile cards render
@@ -202,6 +213,7 @@ fn terminal_profile_card(ix: usize, count: usize) -> SettingItem {
 
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
+                        .centered(true)
                         .confirm()
                         .title(t!("settings-profiles-remove-title"))
                         .description(

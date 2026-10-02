@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use app::agent_tab::profile::{ClaudeIcon, CodexIcon};
+use app::utils::on_runtime;
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, FontWeight, Hsla, Window, div, px, relative};
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -17,6 +18,7 @@ use rust_i18n::t;
 use tracing::warn;
 
 use crate::ui::AppSettings;
+use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::usage_refresh::{Completion, Refresh};
 use crate::usage_sources::{account_sources, codex_source, codex_usage_launcher};
 
@@ -112,10 +114,8 @@ impl AgentUsageView {
 
         cx.notify();
 
-        let worker = cx.background_executor().spawn(async move { fetch.run() });
-
         cx.spawn(async move |view, cx| {
-            let fetched = worker.await;
+            let fetched = on_runtime(fetch.run()).await;
 
             let _ = view.update(cx, |this, cx| {
                 match this.providers[index].complete(fetched) {
@@ -219,9 +219,7 @@ impl Render for AgentUsageView {
             .small()
             .w_full()
             .h(px(QUOTA_ROW_HEIGHT))
-            .pl_0()
-            .pr_1()
-            .border_0()
+            .map(Host::agent_usage_row)
             .accessibility_label(self.accessibility_label())
             // Opacity communicates in-flight work without replacing or moving
             // the last successful values in this tightly packed status line.

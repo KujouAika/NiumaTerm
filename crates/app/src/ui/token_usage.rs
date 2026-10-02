@@ -11,6 +11,7 @@ mod token_usage_tests;
 use std::borrow::Cow;
 use std::time::Duration;
 
+use app::utils::on_runtime;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, IntoElement, Pixels, SharedString, Window, div,
@@ -28,6 +29,7 @@ use tracing::warn;
 use crate::daily_usage::{DailyTokenUsage, TokenCounts};
 use crate::ui::AppSettings;
 use crate::ui::composition::{framed_region, table_header as table_header_style};
+use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::usage_refresh::{Completion, Refresh, UsageSource};
 
 /// Shown before the first successful fetch and retained after fetch errors.
@@ -127,10 +129,8 @@ impl TokenUsageView {
 
         cx.notify();
 
-        let worker = cx.background_executor().spawn(async move { fetch.run() });
-
         cx.spawn(async move |view, cx| {
-            let fetched = worker.await;
+            let fetched = on_runtime(fetch.run()).await;
 
             let _ = view.update(cx, |this, cx| {
                 this.user_requested = false;
@@ -189,7 +189,7 @@ impl Render for TokenUsageView {
             .small()
             .w_full()
             .h(px(STATUS_ROW_HEIGHT))
-            .px_1()
+            .map(Host::token_usage_row)
             .justify_start()
             .accessibility_label(self.accessibility_label())
             .loading(self.user_requested)

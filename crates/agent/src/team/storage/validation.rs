@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::team::attempt::{AttemptState, BudgetScope};
-use crate::team::budget::ReservationState;
-use crate::team::content::Author;
+use crate::team::budget::Budget;
 use crate::team::discussion::DiscussionState;
+use crate::team::model::Author;
 use crate::team::room::Room;
 use crate::team::storage::StorageError;
 
@@ -110,7 +110,10 @@ pub(super) fn validate(room: &Room) -> Result<(), StorageError> {
             return Err(invalid("invalid discussion participants"));
         }
 
-        if !discussion.budget.validate() {
+        if !discussion
+            .budget
+            .validate(room.budget_attempts(BudgetScope::Discussion(discussion.id)))
+        {
             return Err(invalid("budget exceeds scheduled turn limit"));
         }
 
@@ -144,11 +147,7 @@ pub(super) fn validate(room: &Room) -> Result<(), StorageError> {
         return Err(invalid("multiple active discussions"));
     }
 
-    for budget in room.direct_allowances.values() {
-        if !budget.validate() {
-            return Err(invalid("direct request exceeds scheduled turn limit"));
-        }
-    }
+    let mut direct_operations = BTreeSet::new();
 
     let mut attempts = BTreeSet::new();
     let mut provider_turns = BTreeSet::new();
@@ -195,50 +194,80 @@ pub(super) fn validate(room: &Room) -> Result<(), StorageError> {
         }
 
         match &attempt.state {
-            AttemptState::Accepted { provider_turn } if attempt.provider_turn.as_ref() != Some(provider_turn) => return Err(invalid("accepted provider identity changed")),
+            AttemptState::Accepted if attempt.provider_turn.is_none() => return Err(invalid("accepted provider identity changed")),
             AttemptState::Completed { message } if !room.messages.iter().any(|entry| entry.id == *message && matches!(entry.author, Author::Member { id, .. } if id == attempt.intent.recipient)) => return Err(invalid("completed reply or its author is missing")),
             _ => {}
         }
 
-        let budget = match attempt.intent.budget {
-            BudgetScope::Discussion(id) => room
-                .discussions
-                .iter()
-                .find(|run| run.id == id)
-                .map(|run| &run.budget),
-            BudgetScope::Direct(id) => room.direct_allowances.get(&id),
-        }
-        .ok_or(invalid("attempt has no budget"))?;
-
-        let reservation = budget.reservations().get(&attempt.id);
-
-        match attempt.state {
-            AttemptState::Rejected if reservation.is_none() => {}
-            AttemptState::Reserved
-                if reservation.is_some_and(|entry| {
-                    entry.state == ReservationState::Unsent
-                        && entry.purpose == attempt.intent.purpose
-                }) => {}
-            AttemptState::Sending
-            | AttemptState::Accepted { .. }
-            | AttemptState::Completed { .. }
-            | AttemptState::Summarized { .. }
-            | AttemptState::Failed
-            | AttemptState::Uncertain
-            | AttemptState::Abandoned
-                if reservation.is_some_and(|entry| {
-                    entry.state == ReservationState::Charged
-                        && entry.purpose == attempt.intent.purpose
-                }) => {}
-            _ => return Err(invalid("attempt and budget reservation disagree")),
+        match attempt.intent.budget {
+            BudgetScope::Discussion(id) if !discussions.contains(&id) => {
+                return Err(invalid("attempt has no discussion budget"));
+            }
+            BudgetScope::Direct(id)
+                if direct_operations.insert(id)
+                    && !Budget::direct()
+                        .validate(room.budget_attempts(BudgetScope::Direct(id))) =>
+            {
+                return Err(invalid("direct request exceeds scheduled turn limit"));
+            }
+            _ => {}
         }
     }
 
-    for member in &room.members {
-        if !member.coverage.messages.is_subset(&messages)
-            || !member.coverage.summaries.is_subset(&summaries)
+    Ok(())
+}
+
+pub(super) fn validate_update(previous: &Room, next: &Room) -> Result<(), StorageError> {
+    if previous.id != next.id || previous.workspace != next.workspace {
+        return Err(StorageError::Invalid("room identity or workspace changed"));
+    }
+
+    if !next.messages.starts_with(&previous.messages)
+        || !next.summaries.starts_with(&previous.summaries)
+        || previous
+            .members
+            .iter()
+            .any(|old| next.member(old.id).is_none())
+        || previous
+            .discussions
+            .iter()
+            .any(|old| !next.discussions.iter().any(|new| new.id == old.id))
+        || previous
+            .attempts
+            .iter()
+            .any(|old| !next.attempts.iter().any(|new| new.id == old.id))
+    {
+        return Err(StorageError::Invalid(
+            "retained history was removed or replaced",
+        ));
+    }
+
+    for member in &previous.members {
+        let new = next
+            .member(member.id)
+            .ok_or(StorageError::Invalid("member is missing"))?;
+
+        if member.roots != new.roots {
+            return Err(StorageError::Invalid("existing conversation roots changed"));
+        }
+    }
+
+    for old in &previous.attempts {
+        let new = next
+            .attempts
+            .iter()
+            .find(|attempt| attempt.id == old.id)
+            .ok_or(StorageError::Invalid("attempt is missing"))?;
+
+        if old.intent != new.intent
+            || old
+                .provider_turn
+                .as_ref()
+                .is_some_and(|id| new.provider_turn.as_ref() != Some(id))
         {
-            return Err(invalid("accepted context source is missing"));
+            return Err(StorageError::Invalid(
+                "attempt input or accepted provider identity changed",
+            ));
         }
     }
 

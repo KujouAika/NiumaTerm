@@ -7,32 +7,34 @@ mod tests;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Entity, EntityInputHandler, EventEmitter,
-    ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollDelta, ScrollWheelEvent, Size, UTF16Selection, Window, actions, div, list,
-    point, px, rgb, size,
+    AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, EntityInputHandler,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, KeyUpEvent,
+    Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Role, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    UTF16Selection, Window, actions, div, list, point, px, rgb, size,
 };
-use gpui_component::WindowExt as _;
-use gpui_component::notification::Notification;
 use nmt_agent::AgentRoute;
-use nmt_config::active_colors;
 use nmt_config::local_state::TabState;
+use nmt_config::{CursorShape, active_colors};
+use nmt_remote::NetworkPty;
+use nmt_remote::connection::{RemoteHost, Status};
+use nmt_remote::local_view::LocalView;
+use nmt_remote_core::rpc::EndReason;
 use nmt_terminal::clipboard::{Clipboard, ClipboardType};
+use nmt_terminal::event::MsgSender;
 use nmt_terminal::input::{KeyPhase, WheelDelta};
 use nmt_terminal::session::interaction::{CopyCompletion, PendingCopy};
-use nmt_terminal::session::{
-    EngineError, HostEvent, SessionObserver, SurfaceMouseButton, TerminalSession,
-    TerminalSessionConfig,
-};
+use nmt_terminal::session::{HostEvent, SessionChange, SurfaceMouseButton, TerminalSessionConfig};
 use rust_i18n::t;
 use tracing::warn;
 
+use crate::copy_toast::show_text_copied;
+use crate::remote_control::{CloseTab, ControlSheet, HostControl};
 use crate::terminal_tab::block_list::live::LiveItemState;
 use crate::terminal_tab::frame::TerminalFrame;
 use crate::terminal_tab::frame_source::TerminalFrameSource;
@@ -80,6 +82,34 @@ struct PaneIdentity {
     profile_name: String,
     restorable: TabState,
     agent_route: AgentRoute,
+
+    /// The PTY runs on another computer. Such a tab is restored by
+    /// reattaching to its session, not by relaunching a shell here.
+    remote: Option<RemoteTab>,
+
+    /// The session id of a terminal a paired device started on this
+    /// computer, when the PTY is a view of it. Paired devices already see
+    /// that terminal, so the pane is not offered to them a second time.
+    remote_created: Option<String>,
+}
+
+/// A terminal session on another computer, shown in this pane.
+pub struct RemoteTab {
+    pub host: Arc<RemoteHost>,
+    pub session: String,
+
+    /// Closing the tab ends the session: this client started it, and nothing
+    /// else would show it afterwards. A host tab, or another client's
+    /// session, only loses this view.
+    pub ends_with_tab: bool,
+}
+
+/// A host tab offered to paired devices. Remote views may resize the shared
+/// PTY; the tab takes the size back when its user types, and reports its
+/// own resizes so remote views can do the same.
+pub struct HostShare {
+    pub claimed_remotely: Arc<AtomicBool>,
+    pub on_size: Box<dyn Fn(u16, u16)>,
 }
 
 pub struct TerminalPane {
@@ -95,13 +125,24 @@ pub struct TerminalPane {
     wake: wake::WakeSignal,
     image_releases_attached: bool,
     pub(super) block_list: BlockListState,
+    host_share: Option<HostShare>,
+
+    /// Who controls this host tab from another computer, and taking it
+    /// back. While anyone does, a sheet covers the pane and refuses input;
+    /// the output underneath keeps drawing so the host can watch.
+    host_control: Option<HostControl>,
+
+    close_tab: Option<CloseTab>,
+
+    /// Holds the keyboard while a control sheet covers the pane.
+    sheet_focus: FocusHandle,
+
+    /// Whether the last frame showed a control sheet. Input is refused
+    /// while it did: the session belongs to the other side.
+    sheet_shown: bool,
 }
 
 pub struct AgentInterrupted;
-
-pub struct TerminalGridResized;
-
-struct TextCopiedNotification;
 
 struct DesktopClipboard;
 
@@ -112,14 +153,12 @@ impl ClipboardAccess for DesktopClipboard {
         (!text.is_empty()).then_some(text)
     }
 
-    fn write(&mut self, text: String) -> bool {
-        Clipboard::default().set(ClipboardType::Clipboard, text)
+    fn write(&mut self, kind: ClipboardType, text: String) -> bool {
+        Clipboard::default().set(kind, text)
     }
 }
 
 impl EventEmitter<AgentInterrupted> for TerminalPane {}
-
-impl EventEmitter<TerminalGridResized> for TerminalPane {}
 
 impl TerminalPane {
     pub fn spawn(
@@ -155,28 +194,109 @@ impl TerminalPane {
             profile_name: launch.profile_name,
             restorable: launch.restorable,
             agent_route: launch.agent_route,
+            remote: None,
+            remote_created: None,
         };
 
         Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
     }
 
-    /// Install the observer before starting the session so its first output,
-    /// images and wake notifications reach the pane being constructed.
-    pub fn attach(
+    /// A pane showing a terminal that runs on another computer. Layout
+    /// resizes the host PTY to the pane.
+    pub fn spawn_remote(
         cx: &mut impl AppContext,
         surface_id: u64,
-        profile_name: String,
+        pty: NetworkPty,
+        ends_with_tab: bool,
         agent_route: AgentRoute,
-        connect: impl FnOnce(Arc<dyn SessionObserver>) -> Result<TerminalSession, EngineError>,
+        cursor_shape: CursorShape,
     ) -> Result<Entity<Self>, String> {
         let (wake, wake_rx) = wake::wake_channel();
-        let source = TerminalFrameSource::attach(wake.clone(), surface_id, connect)?;
+        let host = Arc::clone(pty.host());
+        let session = pty.session().to_owned();
+        let title = host.name();
+
+        let mut status = host.status();
+        let mut ended = host.ended_changes();
+
+        let source = TerminalFrameSource::remote(
+            wake.clone(),
+            surface_id,
+            pty,
+            (metrics::COLS, metrics::ROWS),
+            cursor_shape,
+            active_colors(),
+        )?;
 
         let identity = PaneIdentity {
             id: surface_id,
-            profile_name,
+            profile_name: title,
             restorable: TabState::default(),
             agent_route,
+            remote: Some(RemoteTab {
+                host,
+                session,
+                ends_with_tab,
+            }),
+            remote_created: None,
+        };
+
+        Ok(cx.new(|cx| {
+            // The connection banner follows the link, whose changes come
+            // from the network runtime rather than a frame.
+            cx.spawn(async move |this, cx| {
+                while status.changed().await.is_ok() {
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+
+            // The host ending or taking back this view changes what covers
+            // the pane.
+            cx.spawn(async move |this, cx| {
+                while ended.changed().await.is_ok() {
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+
+            Self::from_source(cx, identity, wake, wake_rx, source)
+        }))
+    }
+
+    /// A pane showing a terminal a paired device started on this computer.
+    /// Closing it leaves the terminal running for that device.
+    pub fn spawn_local_view(
+        cx: &mut impl AppContext,
+        surface_id: u64,
+        pty: LocalView,
+        title: String,
+        agent_route: AgentRoute,
+        cursor_shape: CursorShape,
+    ) -> Result<Entity<Self>, String> {
+        let (wake, wake_rx) = wake::wake_channel();
+        let session = pty.session().to_owned();
+
+        let source = TerminalFrameSource::remote(
+            wake.clone(),
+            surface_id,
+            pty,
+            (metrics::COLS, metrics::ROWS),
+            cursor_shape,
+            active_colors(),
+        )?;
+
+        let identity = PaneIdentity {
+            id: surface_id,
+            profile_name: title,
+            restorable: TabState::default(),
+            agent_route,
+            remote: None,
+            remote_created: Some(session),
         };
 
         Ok(cx.new(|cx| Self::from_source(cx, identity, wake, wake_rx, source)))
@@ -220,6 +340,11 @@ impl TerminalPane {
             wake,
             image_releases_attached: false,
             block_list: BlockListState::new(block_list_alignment(fixed_bottom_requested)),
+            host_share: None,
+            host_control: None,
+            close_tab: None,
+            sheet_focus: cx.focus_handle(),
+            sheet_shown: false,
         }
     }
 
@@ -250,10 +375,10 @@ impl TerminalPane {
         cx.notify();
     }
 
-    fn on_wake(&mut self, wake: wake::Wake, cx: &mut Context<Self>) {
-        match wake {
-            wake::Wake::Content(_) => self.invalidate(cx),
-            wake::Wake::Chrome(_) => {
+    fn on_wake(&mut self, change: SessionChange, cx: &mut Context<Self>) {
+        match change {
+            SessionChange::Content => self.invalidate(cx),
+            SessionChange::HostEvents => {
                 self.model.invalidate();
 
                 // Background panes cannot clear their dirty bit by rendering, but the
@@ -269,6 +394,15 @@ impl TerminalPane {
 
     pub fn profile_name(&self) -> &str {
         &self.identity.profile_name
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.identity.remote.is_some()
+    }
+
+    /// The remote-created terminal this pane views, if any.
+    pub fn remote_created_session(&self) -> Option<&str> {
+        self.identity.remote_created.as_deref()
     }
 
     fn cell_metrics(&mut self, window: &mut Window, cx: &App) -> metrics::CellMetrics {
@@ -299,10 +433,198 @@ impl TerminalPane {
             bounds.size.height.as_f32(),
             cell,
         ) {
-            cx.emit(TerminalGridResized);
+            if let Some(share) = &self.host_share {
+                let (cols, rows) = self.model.source.grid_size();
+
+                (share.on_size)(cols, rows);
+            }
 
             cx.notify();
         }
+    }
+
+    /// Offer this tab's terminal to paired devices.
+    pub fn share_with_host(&mut self, share: HostShare) {
+        self.host_share = Some(share);
+    }
+
+    /// The handle that drives this pane's PTY loop from other threads.
+    pub fn session_messenger(&self) -> MsgSender {
+        self.model.source.session.messenger()
+    }
+
+    pub fn grid_size(&self) -> (u16, u16) {
+        self.model.source.grid_size()
+    }
+
+    pub fn remote_tab(&self) -> Option<&RemoteTab> {
+        self.identity.remote.as_ref()
+    }
+
+    /// The tab is closing: end its remote session if this client owns it.
+    /// A session the host ended or took back is no longer this client's.
+    /// Leave the session this pane follows running on its host when the
+    /// pane closes, as when its user disconnects from it rather than ends it.
+    pub fn keep_remote_session(&mut self) {
+        if let Some(remote) = &mut self.identity.remote {
+            remote.ends_with_tab = false;
+        }
+    }
+
+    pub fn end_remote_session(&self) {
+        if let Some(remote) = &self.identity.remote
+            && remote.ends_with_tab
+            && remote.host.ended(&remote.session).is_none()
+        {
+            remote.host.terminate(&remote.session);
+        }
+    }
+
+    /// Follow who controls this shared host tab from another computer.
+    pub fn control_from_host(&mut self, control: HostControl, cx: &mut Context<Self>) {
+        let mut changes = control.changes.clone();
+
+        cx.spawn(async move |this, cx| {
+            while changes.changed().await.is_ok() {
+                if this.update(cx, |this, cx| this.invalidate(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        self.host_control = Some(control);
+    }
+
+    /// How the sheets' close buttons close this pane's tab.
+    pub fn close_tab_with(&mut self, close: CloseTab) {
+        self.close_tab = Some(close);
+    }
+
+    /// Take the session back from the devices controlling it, and the PTY
+    /// size with it.
+    fn take_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(control) = &self.host_control {
+            (control.take_back)();
+        }
+
+        if let Some(share) = &self.host_share {
+            share.claimed_remotely.store(true, Ordering::Relaxed);
+        }
+
+        self.reclaim_shared_size();
+
+        self.invalidate(cx);
+    }
+
+    /// The sheet over the pane, if one belongs there: another computer
+    /// controls this host tab, or the host ended this view of its session.
+    fn control_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let close = self.close_tab.clone();
+
+        let close_tab = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            if let Some(close) = &close {
+                close(window, cx);
+            }
+        };
+
+        let controllers = self
+            .host_control
+            .as_ref()
+            .map(|control| (control.controllers)())
+            .unwrap_or_default();
+
+        let sheet = if !controllers.is_empty() {
+            Some(
+                ControlSheet::new(
+                    t!("remote-controlled-by", devices = controllers.join(", ")).into_owned(),
+                    self.sheet_focus.clone(),
+                )
+                .button(
+                    t!("remote-take-back"),
+                    true,
+                    cx.listener(|this, _, _, cx| this.take_back(cx)),
+                )
+                .button(t!("remote-end-session"), false, close_tab),
+            )
+        } else if let Some(remote) = &self.identity.remote
+            && let Some(reason) = remote.host.ended(&remote.session)
+        {
+            let name = remote.host.name();
+
+            match reason {
+                EndReason::Closed => Some(
+                    ControlSheet::new(
+                        t!("remote-session-closed", name = name).into_owned(),
+                        self.sheet_focus.clone(),
+                    )
+                    .button(t!("remote-close-tab"), true, close_tab),
+                ),
+                EndReason::TakenBack | EndReason::Unknown => {
+                    let host = Arc::clone(&remote.host);
+                    let session = remote.session.clone();
+
+                    Some(
+                        ControlSheet::new(
+                            t!("remote-taken-back", name = name).into_owned(),
+                            self.sheet_focus.clone(),
+                        )
+                        .button(t!("remote-reconnect"), true, move |_, _, _| {
+                            host.reconnect(&session)
+                        })
+                        .button(t!("remote-end-session"), false, close_tab),
+                    )
+                }
+            }
+        } else {
+            None
+        };
+
+        // The sheet takes the keyboard from the terminal while it is up and
+        // gives it back when it goes, if the terminal had it.
+        match (sheet.is_some(), self.sheet_shown) {
+            (true, false) if self.focus.contains_focused(window, cx) => {
+                window.focus(&self.sheet_focus, cx)
+            }
+            (false, true) if self.sheet_focus.is_focused(window) => window.focus(&self.focus, cx),
+            _ => {}
+        }
+
+        self.sheet_shown = sheet.is_some();
+
+        sheet.map(|sheet| sheet.render(cx))
+    }
+
+    /// A remote view resized this shared terminal; typing here takes the
+    /// size back so the person at the host sees the terminal fit.
+    fn reclaim_shared_size(&mut self) {
+        let Some(share) = &self.host_share else {
+            return;
+        };
+
+        if share.claimed_remotely.swap(false, Ordering::Relaxed)
+            && self.model.source.reassert_size()
+        {
+            let (cols, rows) = self.model.source.grid_size();
+
+            (share.on_size)(cols, rows);
+        }
+    }
+
+    /// What the remote tab's banner says, or `None` while connected.
+    fn remote_banner(&self) -> Option<SharedString> {
+        let remote = self.identity.remote.as_ref()?;
+        let name = remote.host.name();
+
+        let text = match *remote.host.status().borrow() {
+            Status::Connected => return None,
+            Status::Idle | Status::Connecting => t!("remote-banner-connecting", name = name),
+            Status::Reconnecting => t!("remote-banner-reconnecting", name = name),
+            Status::Refused => t!("remote-banner-refused", name = name),
+            Status::Unreachable => t!("remote-banner-unreachable", name = name),
+        };
+
+        Some(text.into_owned().into())
     }
 
     fn invalidate(&mut self, cx: &mut Context<Self>) {
@@ -340,6 +662,15 @@ impl TerminalPane {
     }
 
     pub fn tab_state(&self) -> TabState {
+        if let Some(remote) = &self.identity.remote {
+            return TabState {
+                remote_host: Some(remote.host.id().as_str().to_owned()),
+                remote_session: Some(remote.session.clone()),
+                grid_size: Some(self.model.source.grid_size()),
+                ..TabState::default()
+            };
+        }
+
         let mut state = self.identity.restorable.clone();
 
         state.grid_size = Some(self.model.source.grid_size());
@@ -398,10 +729,13 @@ impl TerminalPane {
         }
 
         if !self.block_list.scroll_handler_set {
-            let pane = cx.entity();
+            // The list state lives in this pane, so a strong handle here would
+            // keep the pane, and with it the session and its shell, alive after
+            // its tab closes.
+            let pane = cx.entity().downgrade();
 
             self.block_list.list.set_scroll_handler(move |_, _, cx| {
-                pane.update(cx, |pane, cx| pane.mark_scrollbar_activity(cx));
+                let _ = pane.update(cx, |pane, cx| pane.mark_scrollbar_activity(cx));
             });
 
             self.block_list.scroll_handler_set = true;
@@ -488,17 +822,7 @@ impl TerminalPane {
         cx: &mut Context<Self>,
     ) {
         if self.model.finish_copy(text, completion) {
-            window.push_notification(
-                Notification::new()
-                    .message(t!("terminal-text-copied"))
-                    .id::<TextCopiedNotification>()
-                    .autohide_after(Duration::from_millis(1500))
-                    .show_close(false)
-                    .w_auto()
-                    .px_3()
-                    .py_2(),
-                cx,
-            );
+            show_text_copied(window, cx);
 
             self.invalidate(cx);
 
@@ -543,9 +867,11 @@ impl TerminalPane {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.prefer_character_input {
+        if event.prefer_character_input || self.sheet_shown {
             return;
         }
+
+        self.reclaim_shared_size();
 
         let interrupts_agent = matches!(event.keystroke.key.as_str(), "escape" | "esc")
             && !event.keystroke.modifiers.modified();
@@ -570,6 +896,10 @@ impl TerminalPane {
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         let mut key = terminal_key(&event.keystroke);
 
         key.phase = KeyPhase::Release;
@@ -624,6 +954,10 @@ impl TerminalPane {
     /// dispatch before the pane's `on_key_down` listener. These actions are
     /// bound in the deeper `Terminal` context, which wins over `Root`.
     fn on_send_tab(&mut self, _: &SendTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         self.feed_terminal_key(
             &Keystroke {
                 modifiers: Modifiers::none(),
@@ -636,6 +970,10 @@ impl TerminalPane {
     }
 
     fn on_send_shift_tab(&mut self, _: &SendShiftTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         self.feed_terminal_key(
             &Keystroke {
                 modifiers: Modifiers::shift(),
@@ -648,6 +986,10 @@ impl TerminalPane {
     }
 
     fn on_file_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown {
+            return;
+        }
+
         window.focus(&self.focus, cx);
 
         if self
@@ -851,6 +1193,12 @@ impl EntityInputHandler for TerminalPane {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.sheet_shown {
+            return;
+        }
+
+        self.reclaim_shared_size();
+
         if self.model.write_text_input(TextInput::Commit(text)) {
             self.react_to_pty_input(cx);
 
@@ -871,7 +1219,7 @@ impl EntityInputHandler for TerminalPane {
         // `element_bounds` is the terminal leaf's content rect (padding already
         // excluded), so the cursor cell offsets from its origin directly — plus
         // the inter-block gap offset for the cursor's row.
-        let cursor_y = self.model.viewport.cursor_y(cursor.row, cell.height_px);
+        let cursor_y = self.model.viewport().cursor_y(cursor.row, cell.height_px);
 
         Some(Bounds::new(
             point(
@@ -953,7 +1301,7 @@ impl Render for TerminalPane {
             self.attach_image_releases(window, cx);
         }
 
-        self.wake.mark_delivered(self.identity.id);
+        self.wake.mark_delivered();
 
         // Host events are drained by the shell pump (observer), and the surface
         // is resized from the leaf's actual bounds in paint — neither happens
@@ -961,6 +1309,7 @@ impl Render for TerminalPane {
         let cell = self.cell_metrics(window, cx);
 
         let frame = self.model.begin_frame();
+
         let show_block_chrome = self.model.settings.command_blocks;
 
         self.block_list
@@ -983,27 +1332,27 @@ impl Render for TerminalPane {
             window.request_animation_frame();
         }
 
-        let scrollbar_info = self.model.viewport.scrollbar_info();
+        let scrollbar_info = self.model.viewport().scrollbar_info();
 
         // Keep the transparent track hit-testable so hovering the scrollbar
         // region can reveal it after the activity fade has completed.
         let scrollbar = scrollbar_element(scrollbar_info, scrollbar_opacity.unwrap_or(0.0), cx);
 
+        let sheet = self.control_sheet(window, cx);
+
         div()
             // Stateful id: hover-end tracking (the link-underline clear
             // below) needs element state.
             .id(("terminal-pane", self.identity.id as usize))
+            // The pane holds keyboard focus, so it needs its own node for
+            // screen readers to announce a terminal rather than the window.
+            .role(Role::Terminal)
             .size_full()
             .relative()
             // This is the terminal region's single full-bleed background;
             // cells with explicit background colors stay opaque on top.
             .bg(rgb(self.model.theme.background.into())
                 .opacity(cx.global::<TerminalSettings>().background_opacity))
-            // The shell frames each pane as a 1px-bordered rounded card; the
-            // fill is rounded to the card's inner radius so its corners don't
-            // paint square over the frame. The cell padding below keeps glyphs
-            // clear of the rounded corners.
-            .rounded(cx.global::<TerminalSettings>().corner_radius - px(1.))
             .text_color(rgb(self.model.theme.foreground.into()))
             .font(cx.global::<TerminalSettings>().font())
             .text_size(px(metrics::font_size_px(cx)))
@@ -1049,9 +1398,22 @@ impl Render for TerminalPane {
                 TerminalView::new(frame, cell, self.focus.clone(), cx.entity()).into_any_element()
             })
             .children(scrollbar)
+            .children(sheet)
             // Ctrl-hover link underline. Rects are content-origin-relative;
             // absolute children position from the padding box, so shift by
             // the content padding.
+            .children(self.remote_banner().map(|text| {
+                div()
+                    .absolute()
+                    .top(px(metrics::PADDING_PX))
+                    .right(px(metrics::PADDING_PX))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(self.model.theme.foreground.into()).opacity(0.85))
+                    .text_color(rgb(self.model.theme.background.into()))
+                    .child(text)
+            }))
             .when_some(self.model.hovered_link(), |this, link| {
                 this.cursor_pointer()
                     .children(link.rects.iter().map(|rect| {

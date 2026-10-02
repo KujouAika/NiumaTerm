@@ -5,7 +5,6 @@ use std::sync::atomic::Ordering;
 
 use tracing::debug;
 
-use crate::block_store::SegmentMeta;
 use crate::event::{BlockEvent, EventListener, TerminalEvent};
 use crate::session::{
     HostEvent, InFlightBlock, SessionChange, SessionObserver, SessionSharedState,
@@ -109,13 +108,7 @@ impl EventListener for TerminalEventProxy {
             TerminalEvent::Bell => HostEvent::Bell,
             TerminalEvent::Cwd(cwd) => HostEvent::Cwd(cwd),
             TerminalEvent::ProgressReport(report) => HostEvent::Progress(report),
-            TerminalEvent::ClipboardStore(ty, text) => {
-                if let Some(observer) = &self.observer {
-                    observer.clipboard(ty, text);
-                }
-
-                return;
-            }
+            TerminalEvent::ClipboardStore(kind, text) => HostEvent::Clipboard { kind, text },
             TerminalEvent::CloseTerminal(_) => {
                 self.shared.exited.store(true, Ordering::Release);
 
@@ -167,17 +160,6 @@ impl EventListener for TerminalEventProxy {
             TerminalEvent::CommandStarted(cmd) => {
                 self.shared.open_prompt.store(false, Ordering::Release);
 
-                // Marry the command metadata to its block item; the
-                // segment materializes later, when its rows scroll out.
-                self.shared
-                    .block_store
-                    .lock()
-                    .update_meta(cmd.seq, |m: &mut SegmentMeta| {
-                        m.command = cmd.command.clone();
-                        m.cwd = cmd.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
-                        m.started_at = Some(cmd.started_at);
-                    });
-
                 let block = InFlightBlock {
                     command: cmd.command,
                     started_at: cmd.started_at,
@@ -191,14 +173,6 @@ impl EventListener for TerminalEventProxy {
                 self.shared.selection.clear();
 
                 *self.shared.in_flight.lock() = None;
-
-                self.shared
-                    .block_store
-                    .lock()
-                    .update_meta(cmd.seq, |m: &mut SegmentMeta| {
-                        m.exit_code = cmd.exit_code;
-                        m.ended_at = Some(cmd.ended_at);
-                    });
 
                 debug!(
                     command = ?cmd.command,
