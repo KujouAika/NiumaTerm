@@ -5,7 +5,7 @@ mod list;
 mod remote_list;
 mod status;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::*;
 use gpui::{
@@ -84,10 +84,12 @@ pub(super) struct Sidebar {
     /// missing here lists every session.
     remote_folds: HashMap<(String, String), TabFold>,
 
-    /// How much each connected host lists under its row, by host id. Kept
-    /// for the run only like the workspace folds, so a host shows in full
-    /// whenever this computer starts. A host missing here lists everything.
-    remote_host_folds: HashMap<String, TabFold>,
+    /// The hosts whose rows hide everything listed under them, by host id.
+    /// Hiding a host leaves its workspaces' own folds as they are, so
+    /// showing it again brings each workspace back the way it was. Kept for
+    /// the run only like the workspace folds, so every host shows whenever
+    /// this computer starts.
+    remote_collapsed_hosts: HashSet<String>,
 }
 
 impl Sidebar {
@@ -98,7 +100,7 @@ impl Sidebar {
             width,
             list: WorkspaceList::new(),
             remote_folds: HashMap::default(),
-            remote_host_folds: HashMap::default(),
+            remote_collapsed_hosts: HashSet::default(),
         }
     }
 
@@ -109,11 +111,11 @@ impl Sidebar {
         *fold = fold.next();
     }
 
-    /// Step what a host lists under its row on to its next fold.
-    pub(super) fn cycle_remote_host_fold(&mut self, host: String) {
-        let fold = self.remote_host_folds.entry(host).or_default();
-
-        *fold = fold.next();
+    /// Show or hide everything a host lists under its row.
+    pub(super) fn toggle_remote_host(&mut self, host: String) {
+        if !self.remote_collapsed_hosts.remove(&host) {
+            self.remote_collapsed_hosts.insert(host);
+        }
     }
 
     /// Width of a tab row in the vertical tab-bar style: the sidebar width
@@ -158,7 +160,7 @@ impl Sidebar {
                     .into_any_element(),
                 &remote,
                 &self.remote_folds,
-                &self.remote_host_folds,
+                &self.remote_collapsed_hosts,
                 renames,
                 self.width,
                 window,

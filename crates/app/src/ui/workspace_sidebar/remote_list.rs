@@ -2,7 +2,7 @@
 //! local workspaces: each host heads the workspaces it offers, and each of
 //! those heads the sessions its tabs show.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
@@ -42,7 +42,7 @@ pub(super) fn remote_workspace_blocks(
     heading: AnyElement,
     remote: &[RemoteWorkspace],
     folds: &HashMap<(String, String), TabFold>,
-    host_folds: &HashMap<String, TabFold>,
+    collapsed_hosts: &HashSet<String>,
     renames: &InlineRenameSession,
     width: f32,
     window: &mut Window,
@@ -51,26 +51,26 @@ pub(super) fn remote_workspace_blocks(
     let mut blocks = vec![heading];
 
     for (index, host) in remote.iter().enumerate() {
-        let host_fold = host_folds
-            .get(host.id.as_str())
-            .copied()
-            .unwrap_or_default();
-
-        let host_shows = |session: &SessionInfo| match host_fold {
-            TabFold::All => true,
-            TabFold::Awake => !session.pending,
-            TabFold::Collapsed => false,
-        };
+        // A hidden host hides its workspaces and every session under it, but
+        // never touches the workspaces' own folds, which apply again once
+        // the host shows.
+        let host_shown = !collapsed_hosts.contains(host.id.as_str());
 
         let is_selected =
             |session: &SessionInfo| host.selected.as_deref() == Some(session.session.as_str());
 
-        // With the session on screen folded away along with the whole host,
-        // the host row takes over the selection it would show.
-        let host_highlight =
-            host_fold == TabFold::Collapsed && host.sessions.iter().any(is_selected);
+        // With the session on screen hidden along with the whole host, the
+        // host row takes over the selection it would show.
+        let host_highlight = !host_shown && host.sessions.iter().any(is_selected);
 
-        let mut rows = vec![host_row(index, host, host_fold, host_highlight, window, cx)];
+        let mut rows = vec![host_row(
+            index,
+            host,
+            host_shown,
+            host_highlight,
+            window,
+            cx,
+        )];
 
         let workspaces: &[WorkspaceInfo] = host
             .offers
@@ -115,7 +115,7 @@ pub(super) fn remote_workspace_blocks(
         if !loose.is_empty() {
             rows.extend(list_gap(
                 ElementId::Name(format!("remote-loose-gap:{}", host.id.as_str()).into()),
-                loose.iter().any(|(_, session)| host_shows(session)),
+                host_shown,
                 window,
                 cx,
             ));
@@ -123,7 +123,7 @@ pub(super) fn remote_workspace_blocks(
             rows.extend(loose.into_iter().filter_map(|(row, session)| {
                 fold_row(
                     session_fold_id(host, session),
-                    host_shows(session),
+                    host_shown,
                     window,
                     cx,
                     |cx| session_row(index, row, host, session, renames, cx),
@@ -145,7 +145,7 @@ pub(super) fn remote_workspace_blocks(
                 .enumerate()
                 .filter(|(_, session)| in_workspace(session, workspace, label))
                 .filter_map(|(row, session)| {
-                    let shown = host_shows(session)
+                    let shown = host_shown
                         && match fold {
                             TabFold::All => true,
                             TabFold::Awake => !session.pending,
@@ -160,8 +160,8 @@ pub(super) fn remote_workspace_blocks(
 
             // With the session on screen folded away, its workspace row takes
             // over the selection it would show, unless the host row already
-            // has because the whole host is folded.
-            let highlight = host_fold != TabFold::Collapsed
+            // has because the whole host is hidden.
+            let highlight = host_shown
                 && fold == TabFold::Collapsed
                 && host
                     .sessions
@@ -180,11 +180,9 @@ pub(super) fn remote_workspace_blocks(
                 highlight,
             };
 
-            // Every host fold but the collapsed one keeps the workspaces
-            // listed, since new tabs start from their rows.
             rows.extend(fold_block(
                 fold_id,
-                host_fold != TabFold::Collapsed,
+                host_shown,
                 WORKSPACE_LIST_GAP + WORKSPACE_ROW_HEIGHT,
                 window,
                 cx,
@@ -240,13 +238,13 @@ fn session_fold_id(host: &RemoteWorkspace, session: &SessionInfo) -> ElementId {
 }
 
 /// A host heading its workspaces. New tabs start from a workspace row, so
-/// what they open is tied to a place on the host. The row folds what the
-/// host lists the way a workspace row folds its sessions, and still reads
-/// as a heading at rest: it takes no fill until the pointer is on it.
+/// what they open is tied to a place on the host. The row shows or hides
+/// everything the host lists, and still reads as a heading at rest: it
+/// takes no fill until the pointer is on it.
 fn host_row(
     index: usize,
     host: &RemoteWorkspace,
-    fold: TabFold,
+    shown: bool,
     highlight: bool,
     window: &mut Window,
     cx: &mut Context<AppWindow>,
@@ -259,7 +257,11 @@ fn host_row(
     // this one does not hand this row another's reveal.
     let disclosure = Disclosure::new(
         ElementId::Name(format!("remote-host-disclosure:{host_id}").into()),
-        fold,
+        if shown {
+            TabFold::All
+        } else {
+            TabFold::Collapsed
+        },
         window,
         cx,
     );
@@ -311,7 +313,7 @@ fn host_row(
                 ),
         )
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.sidebar.cycle_remote_host_fold(host_id.clone());
+            this.sidebar.toggle_remote_host(host_id.clone());
 
             cx.notify();
         }));
