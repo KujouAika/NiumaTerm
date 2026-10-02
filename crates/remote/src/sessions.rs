@@ -234,14 +234,7 @@ impl SessionRegistry {
         rows: u16,
         control: TerminalControl,
     ) {
-        let workspace = self
-            .inner
-            .lock()
-            .pending
-            .remove(&session)
-            .and_then(|info| info.workspace);
-
-        self.insert_with_id(
+        let mut entry = Entry::new(
             session.clone(),
             Origin::Tab,
             title,
@@ -251,7 +244,21 @@ impl SessionRegistry {
             None,
         );
 
-        self.set_workspace(&session, workspace);
+        // The pending listing and the live entry swap under one lock, so a
+        // device listing or attaching meanwhile sees the session either
+        // asleep or live with its workspace, never missing or ungrouped.
+        let mut inner = self.inner.lock();
+
+        entry.info.workspace = inner
+            .pending
+            .remove(&session)
+            .and_then(|info| info.workspace);
+
+        inner.sessions.insert(session, entry);
+
+        drop(inner);
+
+        self.notify();
     }
 
     /// Whether `session` is a host tab still waiting to be started.
@@ -775,9 +782,32 @@ impl SessionRegistry {
         control: TerminalControl,
         worker: Option<SessionWorker>,
     ) {
-        let entry = Entry {
+        let entry = Entry::new(session.clone(), origin, title, cols, rows, control, worker);
+
+        self.inner.lock().sessions.insert(session, entry);
+
+        self.notify();
+    }
+
+    fn notify(&self) {
+        self.changed.send_modify(|version| *version += 1);
+    }
+}
+
+impl Entry {
+    /// A live terminal listed outside any workspace.
+    fn new(
+        session: String,
+        origin: Origin,
+        title: String,
+        cols: u16,
+        rows: u16,
+        control: TerminalControl,
+        worker: Option<SessionWorker>,
+    ) -> Self {
+        Self {
             info: SessionInfo {
-                session: session.clone(),
+                session,
                 title,
                 origin,
                 cols,
@@ -790,15 +820,7 @@ impl SessionRegistry {
             control,
             size: watch::channel((cols, rows)).0,
             _worker: worker,
-        };
-
-        self.inner.lock().sessions.insert(session, entry);
-
-        self.notify();
-    }
-
-    fn notify(&self) {
-        self.changed.send_modify(|version| *version += 1);
+        }
     }
 }
 
