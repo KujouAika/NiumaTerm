@@ -21,7 +21,9 @@ use nmt_platform::runtime;
 use nmt_remote_core::channel::{Channel, HostHandshake};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
-use nmt_remote_core::messages::{DeviceInfo, HostHello, PairAccepted, RelayAccess};
+use nmt_remote_core::messages::{
+    DeviceInfo, HostHello, MAX_DEVICE_NAME_CHARS, PairAccepted, RelayAccess, device_name,
+};
 #[cfg(test)]
 use nmt_remote_core::pairing::CODE_LIFETIME_MS;
 use nmt_remote_core::pairing::{HostPairing, IssuedCode, PairingCode};
@@ -30,8 +32,9 @@ use nmt_remote_core::push::{
     PUSH_FEATURE, PUSH_REGISTER, PUSH_UNREGISTER, PushKind, PushMessage, PushRegistration, seal,
 };
 use nmt_remote_core::rpc::{
-    self, AgentAttached, AgentCall, AgentOps, Attached, Control, ErrorCode, Origin, RpcError,
-    SessionEnded, SessionList, SessionRef, SessionRename, StreamRef, TerminalOpen, TerminalResize,
+    self, AgentAttached, AgentCall, AgentOps, Attached, Control, ErrorCode, HostName, Origin,
+    RpcError, SessionEnded, SessionList, SessionRef, SessionRename, StreamRef, TerminalOpen,
+    TerminalResize,
 };
 use nmt_remote_core::{Error as CoreError, PROTO_MINOR};
 use parking_lot::Mutex;
@@ -121,6 +124,11 @@ struct Shared {
     key: DeviceKey,
     dir: PathBuf,
     config: HostConfig,
+
+    /// The name devices see. It starts as `config.device.name` and changes
+    /// without a restart, so connected devices keep their sessions.
+    name: watch::Sender<String>,
+
     state: Mutex<State>,
     unauthenticated: Arc<Semaphore>,
 
@@ -223,6 +231,7 @@ impl HostService {
             }),
             key,
             dir,
+            name: watch::channel(config.device.name.clone()).0,
             config,
             unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED)),
             advertiser: Mutex::new(advertiser),
@@ -311,7 +320,41 @@ impl HostService {
             return;
         }
 
-        let started = start_advertiser(&shared.config.device.name, &shared.key, shared.lan_port);
+        *advertiser = self.start_advertiser();
+    }
+
+    /// Go by `name` from now on without restarting, reporting whether it
+    /// changed. Connected devices receive the new name at once, the DNS-SD
+    /// record names it, and devices offline now read it from the handshake
+    /// when they next connect.
+    pub fn set_device_name(&self, name: String) -> bool {
+        let changed = self.shared.name.send_if_modified(|current| {
+            if *current == name {
+                return false;
+            }
+
+            *current = name;
+
+            true
+        });
+
+        if changed {
+            let mut advertiser = self.shared.advertiser.lock();
+
+            // An instance name is fixed once registered, so the record goes
+            // and a new one takes its place.
+            if advertiser.take().is_some() {
+                *advertiser = self.start_advertiser();
+            }
+        }
+
+        changed
+    }
+
+    fn start_advertiser(&self) -> Option<Advertiser> {
+        let shared = &self.shared;
+        let name = shared.name.borrow().clone();
+        let started = start_advertiser(&name, &shared.key, shared.lan_port);
 
         // A code shown while the record was withdrawn still needs its slot,
         // or a client searching for it would never find this host.
@@ -319,7 +362,7 @@ impl HostService {
             started.set_pairing_slot(Some(code.slot()));
         }
 
-        *advertiser = started;
+        started
     }
 
     /// Replace a code that outlived its lifetime with a fresh one, reporting
@@ -573,6 +616,7 @@ impl Connection {
                             | rpc::TERMINAL_OPEN_TAB
                             | rpc::SESSION_CLOSE
                             | rpc::SESSION_RENAME
+                            | rpc::HOST_RENAME
                     ) =>
                 {
                     self.agent_request(id, &method, params);
@@ -910,6 +954,54 @@ impl Connection {
                         });
                     }
                 }
+            }
+            rpc::HOST_RENAME => {
+                let name = match parse::<HostName>(params) {
+                    Ok(HostName { name }) => name,
+                    Err(error) => return respond(&queue, id, Err(error)),
+                };
+
+                let Some(name) = device_name(&name) else {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(
+                            ErrorCode::InvalidParams,
+                            format!(
+                                "a name must not be empty or longer than {MAX_DEVICE_NAME_CHARS} \
+                                 characters"
+                            ),
+                        )),
+                    );
+                };
+
+                let Some(host) = registry.host_requests() else {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(ErrorCode::Unsupported, method)),
+                    );
+                };
+
+                let (reply, answer) = oneshot::channel();
+
+                if host.send(HostRequest::RenameHost { name, reply }).is_err() {
+                    return respond(
+                        &queue,
+                        id,
+                        Err(RpcError::new(ErrorCode::Unsupported, method)),
+                    );
+                }
+
+                tokio::spawn(async move {
+                    let outcome = match answer.await {
+                        Ok(Ok(())) => Ok(done()),
+                        Ok(Err(message)) => Err(RpcError::new(ErrorCode::Denied, message)),
+                        Err(_) => Err(RpcError::new(ErrorCode::Internal, "the host stopped")),
+                    };
+
+                    respond(&queue, id, outcome);
+                });
             }
             rpc::SESSION_RENAME => {
                 let SessionRename { session, title } = match parse(params) {
@@ -1387,7 +1479,10 @@ where
     store::save_devices(&shared.dir, &devices)?;
 
     let accepted = request.accept(&PairAccepted {
-        host: shared.config.device.clone(),
+        host: DeviceInfo {
+            name: shared.name.borrow().clone(),
+            ..shared.config.device.clone()
+        },
         relay: shared.config.relay.clone(),
         lan_hints: shared.lan_hints(),
     })?;
@@ -1448,7 +1543,7 @@ where
         proto_minor,
         app_version: shared.config.device.app_version.clone(),
         features: FEATURES.iter().map(|&feature| feature.into()).collect(),
-        name: shared.config.device.name.clone(),
+        name: shared.name.borrow().clone(),
         lan_hints: shared.lan_hints(),
     };
 
@@ -1481,16 +1576,32 @@ where
     let pump = tokio::spawn(pump(ws, channel, queue_rx, in_tx, Arc::default()));
     let pump_id = pump.id();
 
-    // Clients that listed sessions refresh when the list changes.
+    // Clients that listed sessions refresh when the list changes, and
+    // every client receives a new host name.
     let mut changes = shared.config.registry.subscribe();
+    let mut names = shared.name.subscribe();
 
     let notices = queue.clone();
 
     let watcher = tokio::spawn(async move {
-        while changes.changed().await.is_ok() {
-            let notice = Control::Notification {
-                method: rpc::SESSIONS_CHANGED.into(),
-                params: Value::Null,
+        loop {
+            let notice = tokio::select! {
+                changed = changes.changed() => match changed {
+                    Ok(()) => Control::Notification {
+                        method: rpc::SESSIONS_CHANGED.into(),
+                        params: Value::Null,
+                    },
+                    Err(_) => break,
+                },
+                changed = names.changed() => match changed {
+                    Ok(()) => Control::Notification {
+                        method: rpc::HOST_RENAMED.into(),
+                        params: serde_json::json!(HostName {
+                            name: names.borrow_and_update().clone(),
+                        }),
+                    },
+                    Err(_) => break,
+                },
             };
 
             if !notices.send(Outbound::new(

@@ -61,6 +61,15 @@ pub const SESSION_RENAME: &str = "session.rename";
 /// the person at the host and every device. The reply names the new session.
 pub const TERMINAL_OPEN_TAB: &str = "terminal.open_tab";
 
+/// Rename the host itself. The host takes the name as if its user had set
+/// it in settings, and sends `host.renamed` to every connected device. Hosts
+/// from before this method answer `unsupported`.
+pub const HOST_RENAME: &str = "host.rename";
+
+/// Notification: the host goes by a new name. Devices that were offline
+/// read it from the next handshake's `HostHello` instead.
+pub const HOST_RENAMED: &str = "host.renamed";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {
@@ -262,6 +271,12 @@ pub struct SessionRef {
 pub struct SessionRename {
     pub session: String,
     pub title: String,
+}
+
+/// The parameters of `host.rename` and `host.renamed`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostName {
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

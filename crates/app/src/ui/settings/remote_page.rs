@@ -24,6 +24,7 @@ use rust_i18n::t;
 
 use crate::ui::AppSettings;
 use crate::ui::remote::{self, Nearby, Remote};
+use crate::ui::remote_rename::{RenameTarget, open_rename_dialog};
 use crate::ui::settings::fields::settings_switch;
 
 pub(super) fn remote_page(cx: &App) -> SettingPage {
@@ -76,7 +77,8 @@ fn hosting_group(state: &Remote) -> SettingGroup {
                 ),
             )
             .description(t!("settings-remote-lan-announce-description").into_owned()),
-        );
+        )
+        .item(device_name_item());
 
     let Some(addresses) = state.hosting_addresses() else {
         return group;
@@ -107,6 +109,32 @@ fn hosting_group(state: &Remote) -> SettingGroup {
     }
 
     group
+}
+
+/// The name paired devices show for this computer, renamed through a
+/// confirmation because the change reaches every one of them.
+fn device_name_item() -> SettingItem {
+    SettingItem::new(
+        t!("settings-remote-device-name"),
+        SettingField::render(|options, _, cx| {
+            let name = remote::device_name(cx);
+
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(Label::new(name.clone()).text_sm())
+                .child(
+                    Button::new("remote-device-rename")
+                        .outline()
+                        .label(t!("settings-remote-rename"))
+                        .disabled(options.is_disabled())
+                        .on_click(move |_, window, cx: &mut App| {
+                            open_rename_dialog(RenameTarget::ThisComputer, name.clone(), window, cx)
+                        }),
+                )
+        }),
+    )
+    .description(t!("settings-remote-device-name-description").into_owned())
 }
 
 struct RelayKeyInput {
@@ -764,6 +792,7 @@ fn confirm_forget(host: &PairedHost, window: &mut Window, cx: &mut App) {
 fn host_item(host: PairedHost) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         let forget_host = host.clone();
+        let rename_host = host.clone();
 
         let status = match cx.global::<Remote>().host_status(&host.id) {
             Status::Idle => t!("settings-remote-status-idle"),
@@ -792,13 +821,35 @@ fn host_item(host: PairedHost) -> SettingItem {
                     ),
             )
             .child(
-                Button::new(SharedString::from(format!(
-                    "remote-forget-{}",
-                    host.id.as_str()
-                )))
-                .outline()
-                .label(t!("settings-remote-forget"))
-                .on_click(move |_, window, cx: &mut App| confirm_forget(&forget_host, window, cx)),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "remote-host-rename-{}",
+                            host.id.as_str()
+                        )))
+                        .outline()
+                        .label(t!("settings-remote-rename"))
+                        .on_click(move |_, window, cx: &mut App| {
+                            open_rename_dialog(
+                                RenameTarget::Host(rename_host.id.clone()),
+                                rename_host.name.clone(),
+                                window,
+                                cx,
+                            )
+                        }),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "remote-forget-{}",
+                            host.id.as_str()
+                        )))
+                        .outline()
+                        .label(t!("settings-remote-forget"))
+                        .on_click(move |_, window, cx: &mut App| {
+                            confirm_forget(&forget_host, window, cx)
+                        }),
+                    ),
             )
             .into_any_element()
     })

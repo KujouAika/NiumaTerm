@@ -207,7 +207,7 @@ impl AppSettings {
         edit(&mut self.config.terminal);
     }
 
-    pub(super) fn edit_remote(&mut self, edit: impl FnOnce(&mut RemoteConfig)) {
+    pub(crate) fn edit_remote(&mut self, edit: impl FnOnce(&mut RemoteConfig)) {
         edit(&mut self.config.remote);
     }
 

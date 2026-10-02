@@ -33,6 +33,10 @@ const SERVICE_TYPE: &str = "_niumaterm._tcp.local.";
 #[cfg(feature = "lan")]
 const RECORD_VERSION: &str = "1";
 
+/// The longest DNS label, which an instance name has to fit.
+#[cfg(feature = "host")]
+const MAX_LABEL_BYTES: usize = 63;
+
 /// A host's DNS-SD record, kept current while it lives.
 #[cfg(feature = "host")]
 pub(crate) struct Advertiser {
@@ -77,11 +81,18 @@ pub enum Target<'a> {
 #[cfg(feature = "host")]
 impl Advertiser {
     pub(crate) fn start(name: &str, id: DeviceId, port: u16) -> Result<Self> {
+        let suffix = format!(" {}", &id.as_str()[..4]);
+
         let advertiser = Self {
             daemon: ServiceDaemon::new()?,
             // Two installs can share a computer name; the id prefix keeps
-            // their instance names apart.
-            name: format!("{name} {}", &id.as_str()[..4]),
+            // their instance names apart. A DNS label holds 63 bytes, so a
+            // long or non-ASCII name is cut on a character boundary to leave
+            // the suffix room.
+            name: format!(
+                "{}{suffix}",
+                truncate_bytes(name, MAX_LABEL_BYTES - suffix.len())
+            ),
             id,
             port,
             fullname: Mutex::new(None),
@@ -131,6 +142,20 @@ impl Advertiser {
 
         Ok(())
     }
+}
+
+/// The longest prefix of `text` that fits `max` bytes without splitting a
+/// character.
+#[cfg(feature = "host")]
+fn truncate_bytes(text: &str, max: usize) -> &str {
+    let end = text
+        .char_indices()
+        .map(|(start, c)| start + c.len_utf8())
+        .take_while(|&end| end <= max)
+        .last()
+        .unwrap_or(0);
+
+    &text[..end]
 }
 
 #[cfg(feature = "host")]

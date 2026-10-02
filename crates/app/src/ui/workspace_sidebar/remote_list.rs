@@ -22,6 +22,7 @@ use crate::ui::composition::{
 };
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::remote::{self, RemoteWorkspace};
+use crate::ui::remote_rename::{RenameTarget, open_rename_dialog};
 use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle, pending_tab_icon};
 use crate::ui::tab_bar::menu::tab_icon;
 use crate::ui::tab_bar::{fold_block, fold_row, tab_row, tab_row_icon};
@@ -318,9 +319,20 @@ fn host_row(
             cx.notify();
         }));
 
+    let renamed = (host.id.clone(), host.name.clone());
+
     div()
+        .id(("remote-host-menu", index))
         .w_full()
         .relative()
+        .modern_context_menu(move |menu, _, _| {
+            let (id, name) = renamed.clone();
+
+            menu.item(t!("remote-host-rename"), move |window, cx| {
+                open_rename_dialog(RenameTarget::Host(id.clone()), name.clone(), window, cx)
+            })
+            .icon(IconName::PenLine)
+        })
         .child(disclosure.hover_area(("remote-host-hover", index), item))
         // After the row itself, because the row's selected fill would
         // otherwise paint over the bar's lane.

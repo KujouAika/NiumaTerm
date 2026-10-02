@@ -1,7 +1,17 @@
 pub use crate::environment_override::override_value;
 
+use std::ffi::CStr;
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::ptr::{null, null_mut};
 use std::{env, fs};
+
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
 
 use crate::APP_ID;
 
@@ -61,6 +71,60 @@ pub fn config_dir(home: &Path) -> PathBuf {
         .map(|value| -> PathBuf { value.into() })
         .unwrap_or_else(|_| home.join(".config"))
         .join(APP_ID)
+}
+
+/// The name this computer goes by. `HOSTNAME` cannot serve: shells keep it
+/// unexported, and an application started from Finder or the Dock inherits
+/// launchd's environment, which never had it.
+#[cfg(target_os = "macos")]
+pub fn computer_name() -> Option<String> {
+    sharing_name().or_else(kernel_host_name)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn computer_name() -> Option<String> {
+    kernel_host_name()
+}
+
+/// The name set under System Settings > General > Sharing, the one AirDrop
+/// and Finder show. Unlike the kernel host name it keeps spaces and
+/// non-ASCII letters, and DHCP does not replace it.
+#[cfg(target_os = "macos")]
+fn sharing_name() -> Option<String> {
+    #[link(name = "SystemConfiguration", kind = "framework")]
+    unsafe extern "C" {
+        fn SCDynamicStoreCopyComputerName(
+            store: *const c_void,
+            encoding: *mut u32,
+        ) -> *mut NSString;
+    }
+
+    // SAFETY: a null store selects the system store; a null encoding pointer is
+    // allowed. The result is a +1 CFString, toll-free bridged to NSString, so
+    // `Retained` takes over the reference the copy returned.
+    let name = unsafe { Retained::from_raw(SCDynamicStoreCopyComputerName(null(), null_mut())) }?;
+
+    Some(name.to_string()).filter(|name| !name.is_empty())
+}
+
+/// The kernel's host name without the domain of a fully qualified name.
+fn kernel_host_name() -> Option<String> {
+    let mut buffer = [0 as libc::c_char; 256];
+
+    // SAFETY: the buffer outlives the call and the length leaves room for
+    // the terminator.
+    if unsafe { libc::gethostname(buffer.as_mut_ptr(), buffer.len() - 1) } != 0 {
+        return None;
+    }
+
+    // SAFETY: `gethostname` succeeded, and the reserved final byte guarantees
+    // a terminator even when the name filled the buffer.
+    let name = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().ok()?;
+
+    name.split('.')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
 pub const DEFAULT_EDITOR: &str = "vi";

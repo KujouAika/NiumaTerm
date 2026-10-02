@@ -89,6 +89,13 @@ pub enum HostRequest {
         session: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Make `name` this host's name, as if its user had set it in settings.
+    /// The application stores it and hands it back through
+    /// `HostService::set_device_name`. The error explains a refusal.
+    RenameHost {
+        name: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 struct AgentEntry {

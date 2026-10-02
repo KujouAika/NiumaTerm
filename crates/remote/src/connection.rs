@@ -29,8 +29,8 @@ use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::push::{PUSH_REGISTER, PUSH_UNREGISTER, PushRegistration};
 use nmt_remote_core::rpc::{
     self, AgentAttached, AgentCall, AgentOpen, AgentOps, Control, EndReason, ErrorCode, HostInfo,
-    RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, SessionRename, StreamRef,
-    TerminalOpen, TerminalOpenTab, TerminalResize,
+    HostName, RpcError, SessionEnded, SessionInfo, SessionList, SessionRef, SessionRename,
+    StreamRef, TerminalOpen, TerminalOpenTab, TerminalResize,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
@@ -615,6 +615,33 @@ impl RemoteHost {
         Ok(())
     }
 
+    /// Give the host a new name, and return once the host took it. The
+    /// host then sends it to every connected device, this one included, which
+    /// updates the stored record. The error holds the host's reason for
+    /// refusing.
+    pub async fn rename_host(&self, name: String) -> Result<()> {
+        let _: Value = self.call(rpc::HOST_RENAME, &HostName { name }).await?;
+
+        Ok(())
+    }
+
+    /// Store a name the host announced while connected.
+    fn renamed(&self, name: String) {
+        let record = {
+            let mut record = self.record.lock();
+
+            if record.name == name {
+                return;
+            }
+
+            record.name = name;
+
+            record.clone()
+        };
+
+        (self.on_record)(record);
+    }
+
     pub(crate) fn send_input(&self, session: &str, bytes: Vec<u8>) {
         let stream = {
             let mut views = self.views.lock();
@@ -1182,6 +1209,11 @@ impl RemoteHost {
                 }
                 Ok(Control::Notification { method, .. }) if method == rpc::SESSIONS_CHANGED => {
                     self.sessions.send_modify(|version| *version += 1);
+                }
+                Ok(Control::Notification { method, params }) if method == rpc::HOST_RENAMED => {
+                    if let Ok(HostName { name }) = serde_json::from_value(params) {
+                        self.renamed(name);
+                    }
                 }
                 Ok(Control::Notification { method, params }) if method == rpc::SESSION_ENDED => {
                     let Ok(SessionEnded { session, reason }) = serde_json::from_value(params)

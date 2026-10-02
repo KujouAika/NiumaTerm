@@ -25,6 +25,8 @@ mod frame_tests;
 #[cfg(test)]
 mod identity_tests;
 #[cfg(test)]
+mod messages_tests;
+#[cfg(test)]
 mod pairing_tests;
 #[cfg(test)]
 mod preface_tests;

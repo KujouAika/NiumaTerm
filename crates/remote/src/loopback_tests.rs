@@ -997,7 +997,8 @@ fn a_device_lists_what_it_may_start_and_opens_tabs_on_the_host() {
                     HostRequest::StartTab { reply, .. } => {
                         let _ = reply.send(Err("not started in this test".into()));
                     }
-                    HostRequest::RenameSession { reply, .. } => {
+                    HostRequest::RenameSession { reply, .. }
+                    | HostRequest::RenameHost { reply, .. } => {
                         let _ = reply.send(Err("not renamed in this test".into()));
                     }
                 }
@@ -1209,6 +1210,93 @@ fn a_device_renames_host_tabs_through_the_application_and_its_own_terminals_dire
 
         assert_eq!(listed(&sessions, &terminal).as_deref(), Some("Build"));
         assert!(asked_rx.try_recv().is_err());
+    });
+}
+
+/// Collect each host record a connection stores.
+fn recording_remote(
+    paired: PairedHost,
+    key: Arc<DeviceKey>,
+) -> (Arc<RemoteHost>, UnboundedReceiver<PairedHost>) {
+    let (records, records_rx) = mpsc::unbounded_channel();
+
+    let remote = RemoteHost::new(paired, key, "0.0.0".into(), Retry::Forever, move |record| {
+        let _ = records.send(record);
+    });
+
+    (remote, records_rx)
+}
+
+async fn wait_named(records: &mut UnboundedReceiver<PairedHost>, name: &str) {
+    timeout(WAIT, async {
+        while records.recv().await.expect("records keep coming").name != name {}
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the host record never took the name {name}"));
+}
+
+#[test]
+fn a_device_renames_the_host_and_every_device_stores_the_new_name() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = Arc::new(start_host(&host_dir, Arc::clone(&registry)));
+
+    runtime().block_on(async {
+        let (renamer_record, renamer_key) = paired_client(&host).await;
+        let (watcher_record, watcher_key) = paired_client(&host).await;
+        let offline_record = watcher_record.clone();
+        let offline_key = Arc::clone(&watcher_key);
+
+        let (renamer, mut renamer_records) = recording_remote(renamer_record, renamer_key);
+        let (watcher, mut watcher_records) = recording_remote(watcher_record, watcher_key);
+
+        watcher.keep_connected();
+
+        wait_named(&mut watcher_records, "Host").await;
+
+        let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+        registry.serve_host_requests(requests);
+
+        // The application stores the name and hands it back to the host,
+        // and the host then sends it to the devices.
+        let (asked, mut asked_rx) = mpsc::unbounded_channel();
+
+        let renamed = Arc::clone(&host);
+
+        runtime().spawn(async move {
+            while let Some(request) = requests_rx.recv().await {
+                if let HostRequest::RenameHost { name, reply } = request {
+                    let _ = asked.send(name.clone());
+
+                    renamed.set_device_name(name);
+
+                    let _ = reply.send(Ok(()));
+                }
+            }
+        });
+
+        renamer.rename_host("  Studio  ".into()).await.unwrap();
+
+        // The host trims the name before the application sees it.
+        assert_eq!(asked_rx.recv().await.as_deref(), Some("Studio"));
+
+        wait_named(&mut renamer_records, "Studio").await;
+        wait_named(&mut watcher_records, "Studio").await;
+
+        // A blank name is refused without asking the application.
+        assert!(renamer.rename_host(" ".into()).await.is_err());
+        assert!(asked_rx.try_recv().is_err());
+
+        // A device that was away holds the old name until its next
+        // handshake brings the new one.
+        drop(watcher);
+
+        let (returning, mut returning_records) = recording_remote(offline_record, offline_key);
+
+        returning.keep_connected();
+
+        wait_named(&mut returning_records, "Studio").await;
     });
 }
 

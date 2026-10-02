@@ -35,6 +35,7 @@ mod git_sidebar;
 mod git_status;
 mod modern_dropdown;
 mod persistence;
+mod remote_rename;
 mod right_panel;
 mod settings;
 mod shell;

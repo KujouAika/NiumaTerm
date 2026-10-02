@@ -24,6 +24,23 @@ pub struct DeviceInfo {
     pub app_version: String,
 }
 
+/// The longest device name, in characters, so a name fits one sidebar row.
+/// The DNS-SD record cuts a name further to fit its 63-byte label.
+pub const MAX_DEVICE_NAME_CHARS: usize = 64;
+
+/// A device name as it may be stored and shown: trimmed, with no control
+/// characters, neither empty nor longer than [`MAX_DEVICE_NAME_CHARS`].
+/// `None` rejects the input.
+pub fn device_name(input: &str) -> Option<String> {
+    let name = input.trim();
+
+    let valid = !name.is_empty()
+        && name.chars().count() <= MAX_DEVICE_NAME_CHARS
+        && !name.chars().any(char::is_control);
+
+    valid.then(|| name.to_owned())
+}
+
 /// Payload of the client's first channel handshake message. That message is
 /// replayable and not forward secret, so it carries no application data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

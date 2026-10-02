@@ -22,6 +22,7 @@ use gpui::{
 };
 use gpui_component::notification::{Notification, NotificationType};
 use gpui_component::{Root, WindowExt as _};
+use nmt_platform::environment::computer_name;
 use nmt_platform::runtime;
 use nmt_remote::client::pair;
 use nmt_remote::connection::{RemoteHost, Retry, Status};
@@ -345,9 +346,14 @@ pub(crate) fn sync_hosting(cx: &mut App) {
     }
 
     let announce = cx.global::<AppSettings>().config().remote.lan_announce;
+    let name = device_name(cx);
 
     if let Some(host) = &cx.global::<Remote>().host {
         host.set_announced(announce);
+
+        // Connected devices keep their sessions through a rename, so the
+        // host takes the name in place instead of restarting.
+        host.set_device_name(name);
     }
 }
 
@@ -616,7 +622,7 @@ fn start_host(relay: Option<RelayAccess>, cx: &mut App) -> Result<HostService> {
         DeviceKey::from_parts(*key.private(), *key.public()),
         HostConfig {
             port: config.remote.lan_port,
-            device: device_info(&config.remote.device_name),
+            device: device_info(cx),
             shell,
             args,
             registry,
@@ -1259,7 +1265,7 @@ pub(crate) fn pair_with(code: &str, typed_address: &str, cx: &mut App) {
         }
     };
 
-    let device = device_info(&cx.global::<AppSettings>().config().remote.device_name);
+    let device = device_info(cx);
     let remote = cx.global_mut::<Remote>();
 
     remote.busy = true;
@@ -1547,6 +1553,14 @@ fn answer_host(request: HostRequest, cx: &mut App) {
         } => {
             let _ = reply.send(rename_for_device(&session, title, cx));
         }
+        HostRequest::RenameHost { name, reply } => {
+            // Stored like a rename made in settings; the settings observer
+            // then passes the name to the host, which sends it to every device.
+            cx.global_mut::<AppSettings>()
+                .edit_remote(|section| section.device_name = name);
+
+            let _ = reply.send(Ok(()));
+        }
     }
 }
 
@@ -1809,6 +1823,32 @@ pub(crate) fn rename_session(
         .detach();
 }
 
+/// Give the paired host `id` a new name. The host sends it to every
+/// connected device, this one included, which stores the record the sidebar
+/// reads;
+/// a refusal shows in `window`.
+pub(crate) fn rename_host(id: &DeviceId, name: String, window: &mut Window, cx: &mut App) {
+    let connection = match connection(id, cx) {
+        Ok(connection) => connection,
+        Err(error) => return notify_failure(&error, window, cx),
+    };
+
+    let task = runtime().spawn(async move { connection.rename_host(name).await });
+
+    window
+        .spawn(cx, async move |cx| {
+            let result = task
+                .await
+                .context("renaming stopped")
+                .and_then(|renamed| renamed);
+
+            if let Err(error) = result {
+                let _ = cx.update(|window, cx| notify_failure(&error, window, cx));
+            }
+        })
+        .detach();
+}
+
 /// End `session` on the paired host `id`, for every device viewing it.
 /// `closed` runs once the host ended it; a refusal shows in `window`.
 pub(crate) fn close_session(
@@ -2020,17 +2060,31 @@ fn device_key(cx: &mut App) -> Result<Arc<DeviceKey>> {
     Ok(key)
 }
 
-fn device_info(configured_name: &str) -> DeviceInfo {
-    let name = if configured_name.is_empty() {
-        env::var("COMPUTERNAME")
-            .or_else(|_| env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "NiumaTerm".into())
-    } else {
-        configured_name.to_owned()
-    };
+/// The name this computer goes by when the settings name none.
+pub(crate) fn default_device_name() -> String {
+    computer_name().unwrap_or_else(|| "NiumaTerm".into())
+}
 
+/// The name paired devices see for this computer: the one in the settings,
+/// or the computer's own.
+pub(crate) fn device_name(cx: &App) -> String {
+    let configured = cx
+        .global::<AppSettings>()
+        .config()
+        .remote
+        .device_name
+        .trim();
+
+    if configured.is_empty() {
+        default_device_name()
+    } else {
+        configured.to_owned()
+    }
+}
+
+fn device_info(cx: &App) -> DeviceInfo {
     DeviceInfo {
-        name,
+        name: device_name(cx),
         kind: DeviceKind::Desktop,
         platform: env::consts::OS.into(),
         app_version: APP_VERSION.into(),

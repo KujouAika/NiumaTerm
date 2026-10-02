@@ -387,6 +387,19 @@ impl MobileCore {
 
         Ok(())
     }
+
+    /// Give the host a new name. The host takes it as if its user had set
+    /// it and sends it to every connected device, which stores it in its host
+    /// record; its refusal comes back as the error.
+    pub async fn rename_host(&self, host: String, name: String) -> Result<(), CoreError> {
+        let remote = self.remote(&host)?;
+
+        runtime()
+            .spawn(async move { remote.rename_host(name).await })
+            .await??;
+
+        Ok(())
+    }
 }
 
 impl MobileCore {
