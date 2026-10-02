@@ -23,7 +23,7 @@ const PARAMS: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const PROLOGUE_LABEL: &[u8] = b"NiumaTerm remote";
 
 /// Largest plaintext one transport message can carry.
-pub const MAX_PLAINTEXT: usize = MAX_NOISE_MESSAGE - TAG_LEN;
+pub(crate) const MAX_PLAINTEXT: usize = MAX_NOISE_MESSAGE - TAG_LEN;
 
 /// Client side between msg1 and msg2.
 pub struct ClientHandshake {
@@ -105,21 +105,13 @@ impl HostHandshake {
 /// message, in order.
 pub struct Channel {
     transport: TransportState,
-    remote_key: [u8; 32],
 }
 
 impl Channel {
     fn new(noise: HandshakeState) -> Result<Self, Error> {
-        let remote_key = remote_static(&noise)?;
-
         Ok(Self {
             transport: noise.into_transport_mode()?,
-            remote_key,
         })
-    }
-
-    pub fn remote_key(&self) -> &[u8; 32] {
-        &self.remote_key
     }
 
     pub fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {

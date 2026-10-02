@@ -85,7 +85,7 @@ impl BlockStore {
         &self.items
     }
 
-    pub fn history_epoch(&self) -> u64 {
+    pub(crate) fn history_epoch(&self) -> u64 {
         self.history_epoch
     }
 

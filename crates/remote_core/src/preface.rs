@@ -9,7 +9,7 @@ use crate::{Error, PAIR_MAJOR, PROTO_MAJOR, PROTO_MIN_MAJOR};
 
 const MAGIC: &[u8; 4] = b"NMTR";
 
-pub const PREFACE_LEN: usize = 7;
+pub(crate) const PREFACE_LEN: usize = 7;
 
 const KIND_CHANNEL: u8 = 0x01;
 const KIND_PAIRING: u8 = 0x02;

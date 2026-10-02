@@ -165,7 +165,7 @@ impl RenderBuffer {
     }
 
     /// Whether visible row `y` soft-wraps into the next row.
-    pub fn row_wrapped(&self, y: usize) -> bool {
+    pub(crate) fn row_wrapped(&self, y: usize) -> bool {
         self.row_wrapped.get(y).copied().unwrap_or(false)
     }
 
@@ -174,7 +174,7 @@ impl RenderBuffer {
     }
 
     /// Per-row soft-wrap flags (length == `rows`), for the selection searches.
-    pub fn row_wrapped_all(&self) -> &[bool] {
+    pub(crate) fn row_wrapped_all(&self) -> &[bool] {
         &self.row_wrapped
     }
 

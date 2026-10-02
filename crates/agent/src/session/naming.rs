@@ -20,7 +20,7 @@ pub struct ConversationNaming {
     pub title: Option<String>,
 }
 
-pub fn conversation_title_request(
+pub(crate) fn conversation_title_request(
     kind: AgentKind,
     text: &str,
     fallback: impl FnOnce(&str) -> Option<String>,

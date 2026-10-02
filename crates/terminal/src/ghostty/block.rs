@@ -107,7 +107,7 @@ impl BlockRef {
 
     /// Materializing form of [`Self::read_row_visit`], read from the snapshot
     /// without the engine lock.
-    pub fn read_row(&self, row: usize, palette: &Palette) -> Result<Option<ScreenRowRead>> {
+    pub(crate) fn read_row(&self, row: usize, palette: &Palette) -> Result<Option<ScreenRowRead>> {
         let mut cells = Vec::with_capacity(self.cols as usize);
 
         let meta = self.read_row_visit(row, palette, |x, text, wide, style| {
@@ -126,7 +126,7 @@ impl BlockRef {
     /// iteration and lazy pixel upload of frozen images. Valid while this
     /// reference is held. `None` if kitty graphics are disabled at build
     /// time.
-    pub fn kitty_graphics_raw(&self) -> Option<VtKittyGraphics> {
+    pub(crate) fn kitty_graphics_raw(&self) -> Option<VtKittyGraphics> {
         let mut graphics: VtKittyGraphics = ptr::null_mut();
 
         (unsafe { ghostty_block_ref_kitty_graphics(self.raw, &mut graphics) } == VtResult::SUCCESS
@@ -138,7 +138,7 @@ impl BlockRef {
     /// the block edge, and rows/columns clamp into the snapshot's bounds —
     /// the shape a selection copy produces. `None` for an
     /// empty block.
-    pub fn format_range_clamped(
+    pub(crate) fn format_range_clamped(
         &self,
         start: Option<(usize, u32)>,
         end: Option<(usize, u32)>,
@@ -167,7 +167,7 @@ impl BlockRef {
     /// Export an inclusive cell range of the snapshot as plain text — the
     /// copy/deep-search floor. Cross-block copy concatenates per-block
     /// exports so no cross-block engine lock is needed.
-    pub fn format_range(
+    pub(crate) fn format_range(
         &self,
         tl: (usize, u16),
         br: (usize, u16),
@@ -181,7 +181,7 @@ impl BlockRef {
     /// Export the whole block as a VT stream with styles and hyperlinks.
     /// Soft-wrapped rows are joined so a replay at the same width wraps them
     /// again instead of turning them into hard line breaks.
-    pub fn format_vt(&self) -> Result<Vec<u8>> {
+    pub(crate) fn format_vt(&self) -> Result<Vec<u8>> {
         let rows = self.row_count();
 
         if rows == 0 {

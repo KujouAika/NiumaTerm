@@ -4,7 +4,7 @@ use crate::Colors;
 use crate::colors::{ColorArray, ColorRgb, NamedColor, Rgba};
 
 /// Number of terminal colors.
-pub const COUNT: usize = 269;
+pub(crate) const COUNT: usize = 269;
 
 /// Factor for automatic computation of dim colors.
 pub const DIM_FACTOR: f32 = 0.66;
@@ -98,7 +98,7 @@ impl From<&Colors> for List {
 }
 
 impl List {
-    pub fn fill_named(&mut self, colors: &Colors) {
+    pub(crate) fn fill_named(&mut self, colors: &Colors) {
         self[NamedColor::Black] = colors.black;
         self[NamedColor::Red] = colors.red;
         self[NamedColor::Green] = colors.green;
@@ -205,7 +205,7 @@ impl List {
         }
     }
 
-    pub fn fill_cube(&mut self) {
+    pub(crate) fn fill_cube(&mut self) {
         let mut index: usize = 16;
 
         // Build colors.
@@ -229,7 +229,7 @@ impl List {
         debug_assert!(index == 232);
     }
 
-    pub fn fill_gray_ramp(&mut self) {
+    pub(crate) fn fill_gray_ramp(&mut self) {
         let mut index: usize = 232;
 
         for i in 0..24 {

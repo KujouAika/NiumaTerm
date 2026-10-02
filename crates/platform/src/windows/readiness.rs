@@ -30,7 +30,7 @@ impl SoftReady {
     /// Completion side: mark this source ready and wake the registered task.
     /// If no task is registered yet, the flag is still set and the first
     /// check after registration observes it.
-    pub fn set_ready(&self) {
+    pub(crate) fn set_ready(&self) {
         self.inner.ready.store(true, Ordering::SeqCst);
 
         self.inner.task_waker.wake();
@@ -46,7 +46,7 @@ impl SoftReady {
     }
 
     /// Install before checking completion so a concurrent callback cannot be lost.
-    pub fn register_task_waker(&self, waker: &Waker) {
+    pub(crate) fn register_task_waker(&self, waker: &Waker) {
         self.inner.task_waker.register(waker);
     }
 }

@@ -113,7 +113,7 @@ impl NamedKey {
     /// control/whitespace keys map to text; navigation/function keys return
     /// `None`. The encoder uses this to decide whether to build an escape
     /// sequence (no text) or take the text path.
-    pub fn to_text(&self) -> Option<&str> {
+    pub(crate) fn to_text(self) -> Option<&'static str> {
         match self {
             NamedKey::Enter => Some("\r"),
             NamedKey::Backspace => Some("\u{8}"),

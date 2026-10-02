@@ -3,7 +3,7 @@ use nmt_platform::environment::DEFAULT_EDITOR;
 use crate::{CursorShape, Shell};
 
 #[inline]
-pub fn default_bool_true() -> bool {
+pub(crate) fn default_bool_true() -> bool {
     true
 }
 
@@ -15,12 +15,12 @@ pub fn default_shell() -> Shell {
 }
 
 #[inline]
-pub fn default_working_dir() -> Option<String> {
+pub(crate) fn default_working_dir() -> Option<String> {
     None
 }
 
 #[inline]
-pub fn default_cursor() -> CursorShape {
+pub(crate) fn default_cursor() -> CursorShape {
     CursorShape::default()
 }
 
@@ -30,7 +30,7 @@ pub fn default_theme() -> String {
 }
 
 #[inline]
-pub fn default_editor() -> Shell {
+pub(crate) fn default_editor() -> Shell {
     Shell {
         program: DEFAULT_EDITOR.into(),
         args: vec![],

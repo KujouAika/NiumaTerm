@@ -356,7 +356,7 @@ impl TerminalSession {
         self.shared.open_prompt.load(Ordering::Acquire)
     }
 
-    pub fn block_selection_text(
+    pub(crate) fn block_selection_text(
         &self,
         handle: BlockHandle,
         line: usize,
@@ -401,7 +401,7 @@ impl TerminalSession {
         }])))
     }
 
-    pub fn expand_frozen_selection(
+    pub(crate) fn expand_frozen_selection(
         &self,
         at: BlockPoint,
         kind: SelectionType,
@@ -420,7 +420,7 @@ impl TerminalSession {
         Some(request)
     }
 
-    pub fn frozen_selection_text(&self, a: BlockPoint, b: BlockPoint) -> Request<String> {
+    pub(crate) fn frozen_selection_text(&self, a: BlockPoint, b: BlockPoint) -> Request<String> {
         let pieces = frozen_selection_pieces(&self.shared.block_store.lock(), a, b);
 
         self.request_text(TextSource::Blocks(
@@ -467,12 +467,7 @@ impl TerminalSession {
         self.paste_text(&text)
     }
 
-    pub fn rerun_block(&self, item: usize) -> bool {
-        self.block_command(item)
-            .is_some_and(|command| self.write_text(&format!("{command}\r")))
-    }
-
-    pub fn write_text(&self, text: &str) -> bool {
+    pub(crate) fn write_text(&self, text: &str) -> bool {
         self.write_input(text.as_bytes())
     }
 
@@ -645,7 +640,7 @@ impl TerminalSession {
             .take_image(handle, image_id, &self.messenger)
     }
 
-    pub fn screen_page_at(&self, revision: u64, row: usize) -> Option<Arc<RowPage>> {
+    pub(crate) fn screen_page_at(&self, revision: u64, row: usize) -> Option<Arc<RowPage>> {
         self.pages
             .borrow_mut()
             .read(PageSource::Screen { revision }, row, &self.messenger)

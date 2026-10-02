@@ -27,10 +27,4 @@ pub fn config_dir(home: &Path) -> PathBuf {
     home.join("AppData").join("Local").join(APP_ID)
 }
 
-pub fn computer_name() -> Option<String> {
-    env::var("COMPUTERNAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-}
-
 pub const DEFAULT_EDITOR: &str = "notepad";

@@ -33,7 +33,7 @@ struct Translation {
 /// language and code page naming it are read from the translation table rather
 /// than assumed to be the resource compiler's default: a file built by another
 /// toolchain, such as a vendored Microsoft binary, names its block differently.
-pub fn version_string(path: &Path, key: &str) -> Option<String> {
+pub(crate) fn version_string(path: &Path, key: &str) -> Option<String> {
     let path = wide(path.as_os_str());
     let block = read_block(&path)?;
 

@@ -20,7 +20,7 @@ use crate::hook_store::{HookRegistration, invalid};
 use crate::{AgentEvent, AgentEventKind, HookInstallStatus, agent_process, build_hook_command};
 
 /// Every Codex event that contributes to the pane lifecycle.
-pub const HOOK_EVENTS: [&str; 6] = [
+pub(crate) const HOOK_EVENTS: [&str; 6] = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",

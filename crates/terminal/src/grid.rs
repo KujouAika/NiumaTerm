@@ -262,8 +262,7 @@ ops!(Line, Line, i32);
 //
 // bits 0..20 (21): codepoint (Unicode scalar value, max 0x10_FFFF)
 // bits 21..22 (2): wide (Wide enum)
-// bits 23..29 (7): per-cell flag bits (CellFlags), incl WRAPLINE at bit 0
-// bits 30..31 (2): reserved
+// bits 23..31 (9): reserved
 // bits 32..47 (16): style_id
 // bits 48..63 (16): extras_id
 //
@@ -278,9 +277,6 @@ const CODEPOINT_MASK: u64 = (1 << 21) - 1;
 
 const WIDE_SHIFT: u64 = 21;
 const WIDE_MASK: u64 = 0b11 << WIDE_SHIFT;
-
-const CELL_FLAGS_SHIFT: u64 = 23;
-const CELL_FLAGS_MASK: u64 = 0x7F << CELL_FLAGS_SHIFT; // 7 bits incl WRAPLINE
 
 const STYLE_ID_SHIFT: u64 = 32;
 const STYLE_ID_MASK: u64 = 0xFFFF << STYLE_ID_SHIFT;
@@ -301,22 +297,6 @@ pub enum Wide {
     /// Trailing spacer at end of a soft-wrapped line indicating a wide
     /// character continues on the next line.
     LeadingSpacer = 3,
-}
-
-bitflags! {
- /// Per-cell flags that DON'T live in the style table. SGR-related
- /// attributes (bold, italic, underline, etc.) live in `StyleFlags`.
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    pub struct CellFlags: u8 {
- /// Soft-wrap continuation marker on the last cell of a wrapped line.
-        const WRAPLINE         = 1 << 0;
-
- /// Cell carries hyperlink metadata. Lookup via extras_id.
-        const HYPERLINK        = 1 << 2;
-
- /// Cell carries multi-codepoint grapheme cluster. Lookup via extras_id.
-        const GRAPHEME         = 1 << 3;
-    }
 }
 
 /// Counter for hyperlinks without explicit ID.
@@ -419,7 +399,7 @@ impl Square {
     }
 
     #[inline]
-    pub fn set_c(&mut self, c: char) {
+    pub(crate) fn set_c(&mut self, c: char) {
         let cp = c as u32 as u64;
 
         debug_assert!(cp <= CODEPOINT_MASK, "codepoint exceeds 21 bits");
@@ -433,25 +413,8 @@ impl Square {
     }
 
     #[inline]
-    pub fn set_wide(&mut self, w: Wide) {
+    pub(crate) fn set_wide(&mut self, w: Wide) {
         self.0 = (self.0 & !WIDE_MASK) | ((w as u64) << WIDE_SHIFT);
-    }
-
-    #[inline]
-    pub fn cell_flags(self) -> CellFlags {
-        let bits = ((self.0 & CELL_FLAGS_MASK) >> CELL_FLAGS_SHIFT) as u8;
-
-        CellFlags::from_bits_truncate(bits)
-    }
-
-    #[inline]
-    pub fn set_cell_flags(&mut self, f: CellFlags) {
-        self.0 = (self.0 & !CELL_FLAGS_MASK) | ((f.bits() as u64) << CELL_FLAGS_SHIFT);
-    }
-
-    #[inline]
-    pub fn contains_cell_flag(self, f: CellFlags) -> bool {
-        self.cell_flags().contains(f)
     }
 
     /// Read the style id bits.
@@ -461,7 +424,7 @@ impl Square {
     }
 
     #[inline]
-    pub fn set_style_id(&mut self, id: StyleId) {
+    pub(crate) fn set_style_id(&mut self, id: StyleId) {
         self.0 = (self.0 & !STYLE_ID_MASK) | ((id as u64) << STYLE_ID_SHIFT);
     }
 
@@ -474,7 +437,7 @@ impl Square {
     }
 
     #[inline]
-    pub fn set_extras_id(&mut self, id: Option<ExtrasId>) {
+    pub(crate) fn set_extras_id(&mut self, id: Option<ExtrasId>) {
         let bits = id.unwrap_or(0) as u64;
 
         self.0 = (self.0 & !EXTRAS_ID_MASK) | (bits << EXTRAS_ID_SHIFT);
@@ -486,14 +449,6 @@ impl Square {
         *self = Square(0);
     }
 
-    /// Builder helper for tests.
-    #[inline]
-    pub fn with_style_id(mut self, id: StyleId) -> Self {
-        self.set_style_id(id);
-
-        self
-    }
-
     #[inline]
     pub fn is_wide(self) -> bool {
         matches!(self.wide(), Wide::Wide)
@@ -502,35 +457,6 @@ impl Square {
     #[inline]
     pub fn is_spacer(self) -> bool {
         matches!(self.wide(), Wide::Spacer)
-    }
-
-    #[inline]
-    pub fn wrapline(self) -> bool {
-        self.contains_cell_flag(CellFlags::WRAPLINE)
-    }
-
-    #[inline]
-    pub fn set_wrapline(&mut self, on: bool) {
-        let mut flags = self.cell_flags();
-
-        flags.set(CellFlags::WRAPLINE, on);
-
-        self.set_cell_flags(flags);
-    }
-
-    #[inline]
-    pub fn has_extras(self) -> bool {
-        self.extras_id().is_some()
-    }
-
-    #[inline]
-    pub fn has_grapheme(self) -> bool {
-        self.contains_cell_flag(CellFlags::GRAPHEME)
-    }
-
-    #[inline]
-    pub fn has_hyperlink(self) -> bool {
-        self.contains_cell_flag(CellFlags::HYPERLINK)
     }
 }
 
@@ -579,7 +505,7 @@ impl From<u64> for Wide {
 pub type StyleId = u16;
 
 /// The id of the default style. Always present.
-pub const DEFAULT_STYLE_ID: StyleId = 0;
+pub(crate) const DEFAULT_STYLE_ID: StyleId = 0;
 
 bitflags! {
     /// SGR-related cell attributes that live inside the style table.
@@ -606,9 +532,6 @@ bitflags! {
                                | Self::UNDERCURL.bits()
                                | Self::DOTTED_UNDERLINE.bits()
                                | Self::DASHED_UNDERLINE.bits();
-
-        // Combined intensity for shaping decisions.
-        const DIM_BOLD         = Self::DIM.bits() | Self::BOLD.bits();
     }
 }
 
@@ -685,33 +608,13 @@ impl StyleSet {
             .unwrap_or_else(Style::default)
     }
 
-    /// Unchecked variant of `get`. Skips both the default-style early
-    /// return AND the bounds check on `self.styles`. Used by the renderer
-    /// hot loop after the caller has already verified the id is non-zero
-    /// and in range (which is always true for ids produced by `intern`).
-    ///
-    /// # Safety
-    /// `id` must be a valid index into `self.styles` (i.e. less than
-    /// `self.len()`). Ids returned by `intern` always satisfy this.
-    #[inline(always)]
-    pub unsafe fn get_unchecked(&self, id: StyleId) -> Style {
-        debug_assert!(
-            (id as usize) < self.styles.len(),
-            "StyleSet::get_unchecked called with out-of-range id {} (len {})",
-            id,
-            self.styles.len(),
-        );
-
-        unsafe { *self.styles.get_unchecked(id as usize) }
-    }
-
     /// Intern a style and return its id. If the style already exists,
     /// returns the existing id. If not, inserts it.
     ///
     /// Saturates at `u16::MAX` styles per grid: any attempt to intern beyond
     /// that returns `DEFAULT_STYLE_ID`. In practice sessions use < 100
     /// distinct styles so this is purely defensive.
-    pub fn intern(&mut self, style: Style) -> StyleId {
+    pub(crate) fn intern(&mut self, style: Style) -> StyleId {
         if let Some(&id) = self.lookup.get(&style) {
             return id;
         }

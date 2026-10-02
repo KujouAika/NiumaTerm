@@ -15,7 +15,7 @@ use windows_sys::Win32::System::Threading::{
 /// neither is worth waiting on. `timeout` bounds the opposite case, a process
 /// that never finishes shutting down, so a caller waiting for a predecessor is
 /// delayed rather than stuck behind it.
-pub fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+pub(crate) fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     // SAFETY: PROCESS_SYNCHRONIZE alone is enough to wait on the returned handle, and a
     // failure is reported as a null handle rather than through an out-parameter.
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };

@@ -1,6 +1,5 @@
 pub use crate::environment_override::override_value;
 
-use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -62,29 +61,6 @@ pub fn config_dir(home: &Path) -> PathBuf {
         .map(|value| -> PathBuf { value.into() })
         .unwrap_or_else(|_| home.join(".config"))
         .join(APP_ID)
-}
-
-/// The machine name a remote peer sees. `HOSTNAME` is not exported by every
-/// shell, so this asks the kernel and trims the domain part that a
-/// fully-qualified name carries.
-pub fn computer_name() -> Option<String> {
-    let mut buffer = [0 as libc::c_char; 256];
-
-    // SAFETY: the buffer outlives the call and the length matches its capacity.
-    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len() - 1) } != 0 {
-        return None;
-    }
-
-    // SAFETY: `gethostname` succeeded, and the reserved final byte guarantees
-    // a terminator even when the name filled the buffer.
-    let name = unsafe { CStr::from_ptr(buffer.as_ptr().cast()) }
-        .to_str()
-        .ok()?;
-
-    name.split('.')
-        .next()
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
 }
 
 pub const DEFAULT_EDITOR: &str = "vi";

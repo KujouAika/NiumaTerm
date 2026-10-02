@@ -20,7 +20,6 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use crate::process_lifetime::cleanup_failed_attachment;
 use crate::windows::pipes::{Direction, child_stdio_pair};
 
 /// A child whose standard streams are asynchronous pipes owned by this process.
@@ -162,10 +161,6 @@ unsafe impl Send for JobHandle {}
 unsafe impl Sync for JobHandle {}
 
 impl KillOnCloseJob {
-    pub fn attach_or_kill(child: &mut Child) -> io::Result<Self> {
-        Self::attach(child).inspect_err(|_| cleanup_failed_attachment(child))
-    }
-
     /// Contain a child spawned for asynchronous waiting. A failure terminates
     /// the child; the runtime reaps it once its handle is dropped.
     pub fn attach_spawned_or_kill(child: &mut AsyncChild) -> io::Result<Self> {

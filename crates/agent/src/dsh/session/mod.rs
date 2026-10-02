@@ -1294,7 +1294,7 @@ impl Session {
     /// A live run reports its members as they are published, so there is
     /// nothing to poll: the read happens when a member is opened, and the run's
     /// own events say when it changed.
-    pub fn request_workflow_agent_transcript(&mut self, task_id: &str, agent_id: &str) {
+    pub(crate) fn request_workflow_agent_transcript(&mut self, task_id: &str, agent_id: &str) {
         load_workflow_transcript(
             self.client.clone(),
             self.session_id.clone(),
@@ -1462,7 +1462,7 @@ impl Session {
     /// predicting that here, the preset catalog is published again either way:
     /// naming the new preset, or the one still in force beside the harness's
     /// own reason for keeping it.
-    pub fn select_agent_preset(&mut self, preset: &str) {
+    pub(crate) fn select_agent_preset(&mut self, preset: &str) {
         let payload = json!({ "agentId": self.session_id, "agentPreset": preset });
 
         let client = self.client.clone();

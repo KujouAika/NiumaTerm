@@ -66,7 +66,7 @@ impl ProviderFilter {
 
 /// The Codex home a launch environment selects: `CODEX_HOME` when the launch
 /// or this process sets it, otherwise `~/.codex`.
-pub fn codex_home(launch_env: &[(String, String)]) -> Option<PathBuf> {
+pub(crate) fn codex_home(launch_env: &[(String, String)]) -> Option<PathBuf> {
     launch_env
         .iter()
         .rev()

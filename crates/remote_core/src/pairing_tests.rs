@@ -113,12 +113,6 @@ fn issued_codes_expire_and_allow_three_failures_and_one_use() {
     assert!(issued.record_failure(now));
     assert!(issued.record_failure(now));
     assert!(!issued.record_failure(now), "third failure invalidates");
-
-    let mut issued = IssuedCode::new(PairingCode::generate().unwrap(), now);
-
-    issued.record_success();
-
-    assert!(!issued.is_usable(now), "single use");
 }
 
 #[test]

@@ -4,36 +4,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::windows::powershell::{
-    build_hook_command, build_hook_command_for, hook_command_contains, newest_install,
+    build_hook_command, build_hook_command_for, hook_command_contains,
 };
-
-#[test]
-fn newest_install_picks_the_highest_supported_major() {
-    let root = env::temp_dir().join("nmt-newest-pwsh-test");
-    let _ = fs::remove_dir_all(&root);
-
-    for major in ["6", "7", "9"] {
-        fs::create_dir_all(root.join(major)).unwrap();
-    }
-
-    for major in ["6", "7"] {
-        fs::write(root.join(major).join("pwsh.exe"), "").unwrap();
-    }
-
-    assert_eq!(
-        newest_install(&root),
-        Some(
-            root.join("7")
-                .join("pwsh.exe")
-                .to_string_lossy()
-                .into_owned()
-        )
-    );
-
-    fs::remove_dir_all(&root).unwrap();
-
-    assert_eq!(newest_install(&root), None);
-}
 
 #[test]
 fn hook_command_uses_bare_safe_path() {

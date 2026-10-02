@@ -39,10 +39,10 @@ const CLIENT_IDENTITY: &[u8] = b"niumaterm-pair-client";
 const HOST_IDENTITY: &[u8] = b"niumaterm-pair-host";
 const PAIR_HELLO_VERSION: u32 = 1;
 
-pub const CODE_LEN: usize = 8;
-pub const SLOT_LEN: usize = 3;
+pub(crate) const CODE_LEN: usize = 8;
+pub(crate) const SLOT_LEN: usize = 3;
 pub const CODE_LIFETIME_MS: u64 = 5 * 60 * 1000;
-pub const MAX_FAILED_ATTEMPTS: u32 = 3;
+pub(crate) const MAX_FAILED_ATTEMPTS: u32 = 3;
 
 /// An 8-symbol Crockford base32 code. The first 3 symbols are the rendezvous
 /// slot (15 bits), the other 5 the secret (25 bits).
@@ -99,14 +99,14 @@ impl fmt::Debug for PairingCode {
 }
 
 /// A code the host displays, with the limits that keep online guessing
-/// negligible: a five minute lifetime, one successful use, and invalidation
-/// after three failed attempts.
+/// negligible: a five minute lifetime and invalidation after three failed
+/// attempts. A successful pairing consumes the code by dropping it, so it
+/// carries no used flag of its own.
 #[derive(Debug)]
 pub struct IssuedCode {
     code: PairingCode,
     expires_at_ms: u64,
     failed_attempts: u32,
-    used: bool,
 }
 
 impl IssuedCode {
@@ -115,7 +115,6 @@ impl IssuedCode {
             code,
             expires_at_ms: now_ms + CODE_LIFETIME_MS,
             failed_attempts: 0,
-            used: false,
         }
     }
 
@@ -129,7 +128,7 @@ impl IssuedCode {
 
     /// Whether a new pairing attempt may start with this code.
     pub fn is_usable(&self, now_ms: u64) -> bool {
-        !self.used && self.failed_attempts < MAX_FAILED_ATTEMPTS && now_ms < self.expires_at_ms
+        self.failed_attempts < MAX_FAILED_ATTEMPTS && now_ms < self.expires_at_ms
     }
 
     /// Record a failed attempt; returns whether the code is still usable.
@@ -137,10 +136,6 @@ impl IssuedCode {
         self.failed_attempts += 1;
 
         self.is_usable(now_ms)
-    }
-
-    pub fn record_success(&mut self) {
-        self.used = true;
     }
 }
 

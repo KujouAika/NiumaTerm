@@ -317,7 +317,7 @@ impl ViewSlots {
     }
 
     /// Every slot, for a view starting from nothing.
-    pub fn into_slots(self) -> Vec<ViewSlot> {
+    pub(crate) fn into_slots(self) -> Vec<ViewSlot> {
         vec![
             ViewSlot::Status(self.status),
             ViewSlot::Usage(self.usage),

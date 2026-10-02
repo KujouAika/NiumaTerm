@@ -15,9 +15,9 @@ pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
 pub const DEFAULT_FONT_FAMILY: &str = "monospace";
 
 pub const DEFAULT_FONT_SIZE: f64 = 14.0;
-pub const DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE: f64 = 13.0;
-pub const DEFAULT_LINE_HEIGHT: f64 = 1.0;
-pub const DEFAULT_BACKGROUND_IMAGE_OPACITY: f64 = 0.3;
+pub(crate) const DEFAULT_AGENT_TRANSCRIPT_FONT_SIZE: f64 = 13.0;
+pub(crate) const DEFAULT_LINE_HEIGHT: f64 = 1.0;
+pub(crate) const DEFAULT_BACKGROUND_IMAGE_OPACITY: f64 = 0.3;
 
 #[cfg(target_os = "windows")]
 pub const DEFAULT_UI_FONT: &str = "Segoe UI";
@@ -561,7 +561,7 @@ impl From<&str> for InputStyle {
 }
 
 /// Snap a persisted refresh interval to the allowed set, falling back to 30.
-pub fn clamp_git_interval(seconds: u64) -> u64 {
+pub(crate) fn clamp_git_interval(seconds: u64) -> u64 {
     if matches!(seconds, 10 | 15 | 30 | 60) {
         seconds
     } else {
@@ -581,11 +581,11 @@ const PLATFORM_DEFAULT_TERMINAL_FONTS: &[&str] = &["Consolas", "Menlo", "monospa
 /// The configured UI font, or this platform's default when the config leaves
 /// it blank (an empty family would fall back to gpui's default) or names
 /// another platform's default.
-pub fn ui_font_or_default(family: &str) -> String {
+pub(crate) fn ui_font_or_default(family: &str) -> String {
     font_or_default(family, PLATFORM_DEFAULT_UI_FONTS, DEFAULT_UI_FONT)
 }
 
-pub fn terminal_font_or_default(family: &str) -> String {
+pub(crate) fn terminal_font_or_default(family: &str) -> String {
     font_or_default(family, PLATFORM_DEFAULT_TERMINAL_FONTS, DEFAULT_FONT_FAMILY)
 }
 
@@ -599,7 +599,7 @@ fn font_or_default(family: &str, platform_defaults: &[&str], default: &str) -> S
     }
 }
 
-pub fn clamp_terminal_font_size(size: f64) -> f64 {
+pub(crate) fn clamp_terminal_font_size(size: f64) -> f64 {
     if size.is_finite() {
         size.clamp(6.0, 72.0)
     } else {
@@ -607,7 +607,7 @@ pub fn clamp_terminal_font_size(size: f64) -> f64 {
     }
 }
 
-pub fn clamp_agent_transcript_font_size(size: f64) -> f64 {
+pub(crate) fn clamp_agent_transcript_font_size(size: f64) -> f64 {
     if size.is_finite() {
         size.clamp(6.0, 72.0)
     } else {
@@ -615,7 +615,7 @@ pub fn clamp_agent_transcript_font_size(size: f64) -> f64 {
     }
 }
 
-pub fn clamp_terminal_line_height(line_height: f64) -> f64 {
+pub(crate) fn clamp_terminal_line_height(line_height: f64) -> f64 {
     if line_height.is_finite() {
         line_height.clamp(0.8, 3.0)
     } else {
@@ -634,11 +634,11 @@ fn clamp_opacity(opacity: f64, min: f64, fallback: f64) -> f64 {
 }
 
 /// The 0.2 floor keeps the window from becoming effectively invisible.
-pub fn clamp_background_opacity(opacity: f64) -> f64 {
+pub(crate) fn clamp_background_opacity(opacity: f64) -> f64 {
     clamp_opacity(opacity, 0.2, 1.0)
 }
 
-pub fn clamp_background_image_opacity(opacity: f64) -> f64 {
+pub(crate) fn clamp_background_image_opacity(opacity: f64) -> f64 {
     clamp_opacity(opacity, 0.0, DEFAULT_BACKGROUND_IMAGE_OPACITY)
 }
 

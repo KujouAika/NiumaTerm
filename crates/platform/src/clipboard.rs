@@ -35,7 +35,7 @@ impl Default for Clipboard {
 impl Clipboard {
     /// Used for tests and to handle missing clipboard provider when built without the `x11`
     /// feature.
-    pub fn new_nop() -> Self {
+    pub(crate) fn new_nop() -> Self {
         Self {
             clipboard: Box::new(NopClipboardContext::new().unwrap()),
             selection: None,

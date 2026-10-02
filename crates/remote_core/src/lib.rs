@@ -39,16 +39,16 @@ pub const PROTO_MAJOR: u8 = 1;
 
 /// Lowest channel protocol major this build still accepts, kept one release
 /// behind a new major so hosts and clients can update in either order.
-pub const PROTO_MIN_MAJOR: u8 = 1;
+pub(crate) const PROTO_MIN_MAJOR: u8 = 1;
 
 /// Additive protocol revision. Both sides use the lower of the two values.
 pub const PROTO_MINOR: u32 = 1;
 
 /// Pairing exchange major, versioned apart from the channel.
-pub const PAIR_MAJOR: u8 = 1;
+pub(crate) const PAIR_MAJOR: u8 = 1;
 
 /// Largest Noise message, and therefore the largest transport message.
-pub const MAX_NOISE_MESSAGE: usize = 65535;
+pub(crate) const MAX_NOISE_MESSAGE: usize = 65535;
 
 /// ChaCha20-Poly1305 authentication tag appended to every sealed message.
 pub const TAG_LEN: usize = 16;

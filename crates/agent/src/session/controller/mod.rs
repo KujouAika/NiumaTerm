@@ -182,7 +182,7 @@ impl SessionController {
     /// Submit a composed message. What the harness took is recorded here,
     /// title and images included, so a view in another process gets the
     /// same result as one beside the session.
-    pub fn submit_prompt(&mut self, prompt: Prompt) -> Result<Submitted, SubmitRefusal> {
+    pub(crate) fn submit_prompt(&mut self, prompt: Prompt) -> Result<Submitted, SubmitRefusal> {
         let title = self.title_request(&prompt.title_text, |_| prompt.fallback_title.clone());
         let settings = self.controls.settings.clone();
 
@@ -252,7 +252,7 @@ impl SessionController {
         })
     }
 
-    pub fn execute_command(&mut self, command: &PendingSlashCommand) -> SlashCommandOutcome {
+    pub(crate) fn execute_command(&mut self, command: &PendingSlashCommand) -> SlashCommandOutcome {
         let outcome = self.commands.execute(self.runtime.backend_mut(), command);
 
         self.adopt_command_approval(&outcome);
@@ -362,7 +362,7 @@ impl SessionController {
         self.commands.clear();
     }
 
-    pub fn admit_command_while_busy(
+    pub(crate) fn admit_command_while_busy(
         &mut self,
         command: PendingSlashCommand,
         policy: SlashCommandRunPolicy,
@@ -388,7 +388,7 @@ impl SessionController {
 
     /// Keep the images of a sent prompt until its transcript row exists to
     /// take them, matched by the prompt text the row will carry.
-    pub fn hold_sent_images(&mut self, text: String, images: Vec<Arc<ConversationImage>>) {
+    pub(crate) fn hold_sent_images(&mut self, text: String, images: Vec<Arc<ConversationImage>>) {
         self.pending_images.push_back((text, images));
     }
 
@@ -763,7 +763,7 @@ impl SessionController {
     /// Ask the harness to drop a prompt it has not started. The row leaves
     /// the queue only once the harness takes the removal, so one it already
     /// claimed stays where the transcript is about to confirm it.
-    pub fn withdraw_queued_prompt(&mut self, item_id: &str) -> bool {
+    pub(crate) fn withdraw_queued_prompt(&mut self, item_id: &str) -> bool {
         let removed = self
             .runtime
             .backend_mut()
@@ -888,7 +888,7 @@ impl SessionController {
         }
     }
 
-    pub fn prepare_update_stop(&mut self) {
+    pub(crate) fn prepare_update_stop(&mut self) {
         prepare_stop(&mut self.commands, &mut self.delivery);
     }
 
@@ -967,7 +967,7 @@ impl SessionController {
         }
     }
 
-    pub fn apply_replay(&mut self, replay: Vec<ReplayTurn>) {
+    pub(crate) fn apply_replay(&mut self, replay: Vec<ReplayTurn>) {
         let answered_at = replay
             .iter()
             .flat_map(|turn| turn.items.iter())
@@ -1587,7 +1587,7 @@ impl SessionController {
         self.controls.apply_model(self.runtime.backend_mut()?)
     }
 
-    pub fn select_agent_preset(&mut self, preset: String) -> Option<SettingsOutcome> {
+    pub(crate) fn select_agent_preset(&mut self, preset: String) -> Option<SettingsOutcome> {
         if self.controls.settings.agent_preset.as_deref() == Some(&preset) {
             return None;
         }
@@ -1697,7 +1697,7 @@ impl SessionController {
     }
 
     /// This conversation's state as a view in another process renders it.
-    pub fn view_slots(&self) -> ViewSlots {
+    pub(crate) fn view_slots(&self) -> ViewSlots {
         let conversation = self.conversation.borrow();
 
         ViewSlots {
@@ -1752,7 +1752,7 @@ impl SessionController {
     }
 
     /// The transcript from entry `from` on, with images by reference.
-    pub fn transcript_view(&self, from: usize) -> Vec<ViewEntry> {
+    pub(crate) fn transcript_view(&self, from: usize) -> Vec<ViewEntry> {
         let conversation = self.conversation.borrow();
 
         conversation

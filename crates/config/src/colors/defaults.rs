@@ -87,42 +87,42 @@ pub fn white() -> ColorArray {
 }
 
 #[inline]
-pub fn default_light_black() -> ColorArray {
+pub(crate) fn default_light_black() -> ColorArray {
     hex("#6B6B6B")
 }
 
 #[inline]
-pub fn default_light_blue() -> ColorArray {
+pub(crate) fn default_light_blue() -> ColorArray {
     hex("#82B8C8")
 }
 
 #[inline]
-pub fn default_light_cyan() -> ColorArray {
+pub(crate) fn default_light_cyan() -> ColorArray {
     hex("#93D3C3")
 }
 
 #[inline]
-pub fn default_light_green() -> ColorArray {
+pub(crate) fn default_light_green() -> ColorArray {
     hex("#AAC474")
 }
 
 #[inline]
-pub fn default_light_magenta() -> ColorArray {
+pub(crate) fn default_light_magenta() -> ColorArray {
     hex("#C28CB8")
 }
 
 #[inline]
-pub fn default_light_red() -> ColorArray {
+pub(crate) fn default_light_red() -> ColorArray {
     hex("#C55555")
 }
 
 #[inline]
-pub fn default_light_white() -> ColorArray {
+pub(crate) fn default_light_white() -> ColorArray {
     hex("#F8F8F8")
 }
 
 #[inline]
-pub fn default_light_yellow() -> ColorArray {
+pub(crate) fn default_light_yellow() -> ColorArray {
     hex("#FECA88")
 }
 

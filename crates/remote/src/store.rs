@@ -192,7 +192,7 @@ pub fn load_or_create_identity(dir: &Path) -> Result<DeviceKey> {
 
 /// The secret proving this host owns its id on a relay: generated on first
 /// use and kept sealed beside the device key.
-pub fn load_or_create_relay_token(dir: &Path) -> Result<String> {
+pub(crate) fn load_or_create_relay_token(dir: &Path) -> Result<String> {
     let path = dir.join(RELAY_TOKEN_FILE);
 
     match fs::read(&path) {
@@ -239,11 +239,11 @@ pub fn save_relay_access_key(dir: &Path, key: &str) -> io::Result<()> {
     durable_file::write(&path, &secret::protect(key.as_bytes())?)
 }
 
-pub fn load_devices(dir: &Path) -> Vec<PairedDevice> {
+pub(crate) fn load_devices(dir: &Path) -> Vec<PairedDevice> {
     load_list(&dir.join(DEVICES_FILE))
 }
 
-pub fn save_devices(dir: &Path, devices: &[PairedDevice]) -> io::Result<()> {
+pub(crate) fn save_devices(dir: &Path, devices: &[PairedDevice]) -> io::Result<()> {
     save_list(dir, DEVICES_FILE, devices)
 }
 

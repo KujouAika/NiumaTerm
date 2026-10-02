@@ -11,7 +11,11 @@ mod sys {
     use std::os::raw::{c_int, c_void};
 
     unsafe extern "C" {
-        pub fn proc_listpgrppids(pgrpid: c_int, buffer: *mut c_void, buffersize: c_int) -> c_int;
+        pub(crate) fn proc_listpgrppids(
+            pgrpid: c_int,
+            buffer: *mut c_void,
+            buffersize: c_int,
+        ) -> c_int;
     }
 }
 
@@ -19,7 +23,7 @@ mod sys {
 /// all system processes before the kernel applies its group filter.
 /// See Apple's implementation:
 /// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c
-pub fn process_group_count(pgid: c_int) -> io::Result<usize> {
+pub(crate) fn process_group_count(pgid: c_int) -> io::Result<usize> {
     let mut pids: Vec<c_int> = vec![0; 32];
 
     loop {

@@ -16,34 +16,33 @@ pub use crate::ghostty::types::{
 /// raw number; an ANSI mode sets bit 15. See Ghostty `src/terminal/modes.zig`.
 pub mod mode {
     /// DECCKM — application cursor keys.
-    pub const CURSOR_KEYS: u16 = 1;
+    pub(crate) const CURSOR_KEYS: u16 = 1;
 
     /// IRM — insert/replace (ANSI mode 4).
-    pub const INSERT: u16 = 4 | 0x8000;
+    pub(crate) const INSERT: u16 = 4 | 0x8000;
 
     /// DECAWM — autowrap / line wrap.
-    pub const WRAPAROUND: u16 = 7;
+    pub(crate) const WRAPAROUND: u16 = 7;
 
     /// DECTCEM — cursor visible.
-    pub const CURSOR_VISIBLE: u16 = 25;
+    pub(crate) const CURSOR_VISIBLE: u16 = 25;
 
     /// DECKPAM — application keypad.
-    pub const KEYPAD_KEYS: u16 = 66;
+    pub(crate) const KEYPAD_KEYS: u16 = 66;
 
-    pub const MOUSE_NORMAL: u16 = 1000;
-    pub const MOUSE_BUTTON: u16 = 1002;
-    pub const MOUSE_ANY: u16 = 1003;
-    pub const FOCUS_EVENT: u16 = 1004;
-    pub const MOUSE_UTF8: u16 = 1005;
-    pub const MOUSE_SGR: u16 = 1006;
-    pub const MOUSE_ALTERNATE_SCROLL: u16 = 1007;
-    pub const MOUSE_URXVT: u16 = 1015;
-    pub const MOUSE_SGR_PIXELS: u16 = 1016;
-    pub const ALT_SCREEN: u16 = 1049;
-    pub const BRACKETED_PASTE: u16 = 2004;
+    pub(crate) const MOUSE_NORMAL: u16 = 1000;
+    pub(crate) const MOUSE_BUTTON: u16 = 1002;
+    pub(crate) const MOUSE_ANY: u16 = 1003;
+    pub(crate) const FOCUS_EVENT: u16 = 1004;
+    pub(crate) const MOUSE_UTF8: u16 = 1005;
+    pub(crate) const MOUSE_SGR: u16 = 1006;
+    pub(crate) const MOUSE_ALTERNATE_SCROLL: u16 = 1007;
+    pub(crate) const MOUSE_URXVT: u16 = 1015;
+    pub(crate) const ALT_SCREEN: u16 = 1049;
+    pub(crate) const BRACKETED_PASTE: u16 = 2004;
 
     /// DEC synchronized output keeps a TUI frame private until its matching reset.
-    pub const SYNC_OUTPUT: u16 = 2026;
+    pub(crate) const SYNC_OUTPUT: u16 = 2026;
 }
 
 mod block;
@@ -227,43 +226,43 @@ impl GhosttyTerminal {
 
     /// Drain bytes the terminal wants written back to the PTY (query/DSR/DA
     /// responses). Returns empty when there is nothing to send.
-    pub fn take_pty_writes(&mut self) -> Vec<u8> {
+    pub(crate) fn take_pty_writes(&mut self) -> Vec<u8> {
         mem::take(&mut self.callbacks.pty_writes)
     }
 
     /// Drain and reset the bell counter (number of BELs since last call).
-    pub fn take_bell(&mut self) -> u32 {
+    pub(crate) fn take_bell(&mut self) -> u32 {
         mem::replace(&mut self.callbacks.bell_count, 0)
     }
 
     /// Drain clipboard writes decoded from OSC 52 or iTerm2 OSC 1337.
-    pub fn take_clipboard_writes(&mut self) -> Vec<(clipboard::ClipboardType, String)> {
+    pub(crate) fn take_clipboard_writes(&mut self) -> Vec<(clipboard::ClipboardType, String)> {
         mem::take(&mut self.callbacks.clipboard_writes)
     }
 
     /// Drain OSC 9 / OSC 777 desktop notifications as `(title, body)`.
-    pub fn take_notifications(&mut self) -> Vec<(String, String)> {
+    pub(crate) fn take_notifications(&mut self) -> Vec<(String, String)> {
         mem::take(&mut self.callbacks.notifications)
     }
 
     /// Drain the latest OSC 9;4 progress report since the last call.
-    pub fn take_progress_report(&mut self) -> Option<ProgressReport> {
+    pub(crate) fn take_progress_report(&mut self) -> Option<ProgressReport> {
         self.callbacks.progress.take()
     }
 
     /// Whether the running program currently shows a progress indicator.
-    pub fn progress_active(&self) -> bool {
+    pub(crate) fn progress_active(&self) -> bool {
         self.callbacks.progress_active
     }
 
     /// The title, when the engine reported a change since the last call.
-    pub fn take_title_change(&mut self) -> Option<String> {
+    pub(crate) fn take_title_change(&mut self) -> Option<String> {
         mem::take(&mut self.callbacks.title_changed).then(|| self.title())
     }
 
     /// The raw working directory string (OSC 7/9/1337), when the engine
     /// reported a change since the last call. Empty when the shell cleared it.
-    pub fn take_pwd_change(&mut self) -> Option<String> {
+    pub(crate) fn take_pwd_change(&mut self) -> Option<String> {
         mem::take(&mut self.callbacks.pwd_changed).then(|| self.read_string(VtTerminalData::PWD))
     }
 
@@ -310,7 +309,7 @@ impl GhosttyTerminal {
     /// `snapshot().cursor.y` (render-state, **viewport-relative**), this stays valid
     /// when the viewport is scrolled into history or has blank rows below the prompt.
     /// Returns `None` if the engine cannot provide the position.
-    pub fn active_cursor_row(&self) -> Option<u16> {
+    pub(crate) fn active_cursor_row(&self) -> Option<u16> {
         let mut out: u16 = 0;
 
         let ok = unsafe {
@@ -419,7 +418,7 @@ impl GhosttyTerminal {
     /// `mode()` can't read them — the vt_modes facade folds these in separately so
     /// `session_key_flags` / the input path see kitty press+release encoding
     /// for key press and release encoding. Empty when the protocol is inactive.
-    pub fn kitty_keyboard_modes(&self) -> vt_modes::Mode {
+    pub(crate) fn kitty_keyboard_modes(&self) -> vt_modes::Mode {
         use crate::vt_modes::Mode;
 
         let mut flags: u8 = 0;
@@ -544,7 +543,7 @@ impl GhosttyTerminal {
 
     /// Set the shape used until a program overrides it with DECSCUSR and again
     /// after that program resets the cursor style with `CSI 0 SP q`.
-    pub fn set_default_cursor_shape(&mut self, shape: CursorShape) -> Result<()> {
+    pub(crate) fn set_default_cursor_shape(&mut self, shape: CursorShape) -> Result<()> {
         let style: VtTerminalCursorStyle::Type = match shape {
             CursorShape::Beam => VtTerminalCursorStyle::BAR,
             CursorShape::Underline => VtTerminalCursorStyle::UNDERLINE,
@@ -563,7 +562,7 @@ impl GhosttyTerminal {
     /// Push default foreground/background/cursor colors and the 256-color
     /// palette into the engine so SGR-indexed and default colors resolve to the
     /// host theme rather than Ghostty's built-in palette.
-    pub fn set_colors(
+    pub(crate) fn set_colors(
         &mut self,
         fg: [u8; 3],
         bg: [u8; 3],
@@ -653,7 +652,7 @@ impl GhosttyTerminal {
     /// `None` when the ref isn't representable there (e.g. a history cell asked in
     /// viewport coords). Used to anchor a clicked viewport cell to a stable
     /// `SCREEN` coordinate.
-    pub fn point_from_grid_ref(
+    pub(crate) fn point_from_grid_ref(
         &self,
         grid_ref: &VtGridRef,
         tag: VtPointTag::Type,
@@ -669,7 +668,7 @@ impl GhosttyTerminal {
 
     /// Scroll the viewport by `delta` rows (negative = up into scrollback).
     /// Mutating: invalidates any outstanding `GridRef`.
-    pub fn scroll_viewport_delta(&mut self, delta: isize) {
+    pub(crate) fn scroll_viewport_delta(&mut self, delta: isize) {
         if self.override_stale {
             self.update_scrollbar_override();
         }
@@ -682,7 +681,7 @@ impl GhosttyTerminal {
     }
 
     /// Scroll the viewport to the bottom (active area).
-    pub fn scroll_viewport_bottom(&mut self) {
+    pub(crate) fn scroll_viewport_bottom(&mut self) {
         if self.override_stale {
             self.update_scrollbar_override();
         }
@@ -737,7 +736,7 @@ impl GhosttyTerminal {
     }
 
     /// Remove and destroy all finished blocks (user clear; `;K` path).
-    pub fn clear_blocks(&mut self) {
+    pub(crate) fn clear_blocks(&mut self) {
         unsafe { ghostty_terminal_clear_blocks(self.terminal) }
     }
 
@@ -747,12 +746,12 @@ impl GhosttyTerminal {
         (unsafe { ghostty_terminal_remove_block(self.terminal, handle) }) == VtResult::SUCCESS
     }
 
-    pub fn block_count(&self) -> usize {
+    pub(crate) fn block_count(&self) -> usize {
         unsafe { ghostty_terminal_block_count(self.terminal) }
     }
 
     /// The handle of the finished block at `index`, oldest first.
-    pub fn block_at(&self, index: usize) -> Option<BlockHandle> {
+    pub(crate) fn block_at(&self, index: usize) -> Option<BlockHandle> {
         let mut handle = BlockHandle::default();
 
         (unsafe { ghostty_terminal_block_at(self.terminal, index, &mut handle) }
@@ -820,7 +819,7 @@ impl GhosttyTerminal {
     /// against and the block's Kitty placements in block-relative
     /// coordinates. Every subsequent text read through the
     /// returned reference is lock-free.
-    pub fn acquire_block_snapshot(&mut self, handle: BlockHandle) -> Option<AcquiredBlock> {
+    pub(crate) fn acquire_block_snapshot(&mut self, handle: BlockHandle) -> Option<AcquiredBlock> {
         let block = self.block_acquire(handle)?;
         let palette = self.color_palette();
         let placements = self.block_placements(&block);
@@ -863,7 +862,7 @@ impl GhosttyTerminal {
     /// written first and scrolled into history: without them a checkpoint in
     /// block mode carries only the output since the last finished command.
     /// A replica receives that history as plain scrollback, not as blocks.
-    pub fn format_vt_state(&mut self) -> Result<Vec<u8>> {
+    pub(crate) fn format_vt_state(&mut self) -> Result<Vec<u8>> {
         let mut out = b"\x1bc\x1b[3J".to_vec();
 
         let mut history = Vec::new();
@@ -913,7 +912,7 @@ impl GhosttyTerminal {
     /// Used when the selection reaches past the viewport into scrollback:
     /// the O(scrollback) endpoint resolve is one-shot on copy, and the extract is
     /// O(selection).
-    pub fn format_screen_range(
+    pub(crate) fn format_screen_range(
         &mut self,
         start: (u16, u32),
         end: (u16, u32),
@@ -937,7 +936,7 @@ impl GhosttyTerminal {
     /// `VIEWPORT`/`ACTIVE`; **O(scrollback) for `SCREEN`/`HISTORY`**. The ref is
     /// valid only until the next mutating call (`write_vt`/`resize`/
     /// `scroll_viewport`) — use it within one read pass, never cache it.
-    pub fn grid_ref_at(&self, tag: VtPointTag::Type, x: u16, y: u32) -> Result<VtGridRef> {
+    pub(crate) fn grid_ref_at(&self, tag: VtPointTag::Type, x: u16, y: u32) -> Result<VtGridRef> {
         let point = VtPoint {
             tag,
             value: VtPointValue {
@@ -958,7 +957,7 @@ impl GhosttyTerminal {
     /// maps between SCREEN and visible coordinates (`screen_row = viewport_top +
     /// visible_row`). One cheap viewport `grid_ref`; `None` if the viewport is
     /// empty. Selection rendering uses this to translate coordinate spaces.
-    pub fn viewport_top_screen(&self) -> Option<u32> {
+    pub(crate) fn viewport_top_screen(&self) -> Option<u32> {
         let r = self.grid_ref_at(VtPointTag::VIEWPORT, 0, 0).ok()?;
 
         self.point_from_grid_ref(&r, VtPointTag::SCREEN)
@@ -999,7 +998,7 @@ impl GhosttyTerminal {
     /// invalidate a cached reference.
     /// Per-cell FFI is tag-driven: blank/plain-codepoint cells never touch the
     /// grapheme or style readers, keeping the row-harvest hot path free of unnecessary FFI.
-    pub fn read_screen_row_visit(
+    pub(crate) fn read_screen_row_visit(
         &self,
         row: u32,
         palette: &[VtColorRgb; 256],

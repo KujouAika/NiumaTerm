@@ -75,7 +75,7 @@ impl ConversationState {
         }
     }
 
-    pub fn attach_last_images(&mut self, images: Vec<Arc<ConversationImage>>) {
+    pub(crate) fn attach_last_images(&mut self, images: Vec<Arc<ConversationImage>>) {
         if let Some(metadata) = self.content.last_metadata_mut() {
             metadata.images = images;
 

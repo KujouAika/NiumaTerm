@@ -292,7 +292,7 @@ pub enum PaneSplitAxis {
     Vertical,
 }
 
-pub fn local_state_file_path() -> PathBuf {
+pub(crate) fn local_state_file_path() -> PathBuf {
     config_dir_path().join("local_state.toml")
 }
 

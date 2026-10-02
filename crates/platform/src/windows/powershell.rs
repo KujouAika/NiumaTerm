@@ -2,20 +2,18 @@
 #[path = "powershell_tests.rs"]
 mod powershell_tests;
 
-use std::path::Path;
 use std::sync::OnceLock;
-use std::{env, fs, io};
+use std::{env, io};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
-pub const DEFAULT_SHELL: &str = "powershell.exe";
-pub const LEGACY_SHELL: &str = r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe";
+pub(crate) const DEFAULT_SHELL: &str = "powershell.exe";
 
 pub const INTEGRATION_SCRIPT: &str =
     include_str!("../../../../assets/shell-integrations/nmt-integration.ps1");
 
-pub const DEFAULT_CONFIG_SHELL: &str = "powershell";
+pub(crate) const DEFAULT_CONFIG_SHELL: &str = "powershell";
 
 pub fn is_shell(shell: Option<&str>) -> bool {
     match shell {
@@ -32,20 +30,6 @@ pub fn encode_command(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
 
     STANDARD.encode(bytes)
-}
-
-pub fn newest_install(root: &Path) -> Option<String> {
-    fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .filter_map(|entry| {
-            let major: u32 = entry.file_name().to_str()?.parse().ok()?;
-            let executable = entry.path().join("pwsh.exe");
-
-            (major >= 7 && executable.is_file()).then_some((major, executable))
-        })
-        .max_by_key(|(major, _)| *major)
-        .map(|(_, executable)| executable.to_string_lossy().into_owned())
 }
 
 /// The shell launched when configuration names none.

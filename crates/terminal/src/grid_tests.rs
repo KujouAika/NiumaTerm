@@ -11,24 +11,6 @@ fn square_is_eight_bytes() {
 }
 
 #[test]
-fn wrapline_updates_preserve_other_cell_flags() {
-    let mut s = Square(0);
-
-    s.set_cell_flags(CellFlags::GRAPHEME);
-
-    s.set_wrapline(true);
-
-    assert!(s.wrapline());
-    assert!(s.has_grapheme());
-    assert!(!s.has_hyperlink());
-
-    s.set_wrapline(false);
-
-    assert!(!s.wrapline());
-    assert!(s.has_grapheme());
-}
-
-#[test]
 fn fields_are_independent() {
     let mut s = Square(0);
 
@@ -40,13 +22,10 @@ fn fields_are_independent() {
 
     s.set_wide(Wide::Wide);
 
-    s.set_wrapline(true);
-
     assert_eq!(s.c(), 'Z');
     assert_eq!(s.style_id(), 0x1234);
     assert_eq!(s.extras_id(), Some(0x5678));
     assert_eq!(s.wide(), Wide::Wide);
-    assert!(s.wrapline());
 }
 
 #[test]

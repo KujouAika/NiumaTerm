@@ -19,11 +19,11 @@ use std::time::{Duration, Instant};
 /// A closed channel counts as connected for this long. Switching to another
 /// app for a moment closes the channel on iOS within seconds, and a person
 /// who is back before this does not want the pushes that happened meanwhile.
-pub const DISCONNECT_GRACE: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DISCONNECT_GRACE: Duration = Duration::from_secs(5 * 60);
 
 /// A device disconnected for this long is taken to be out of use again:
 /// whoever left the session running is not following it any more.
-pub const DISCONNECT_EXPIRY: Duration = Duration::from_secs(12 * 60 * 60);
+pub(crate) const DISCONNECT_EXPIRY: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {

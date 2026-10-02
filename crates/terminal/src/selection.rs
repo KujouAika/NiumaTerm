@@ -12,14 +12,14 @@
 mod selection_tests;
 
 use std::mem;
-use std::ops::{Bound, Range, RangeBounds};
+use std::ops::Range;
 
 use crate::grid::{Column, Line, Pos, Row, Side, Square, Wide};
 use crate::render_buffer::RenderBuffer;
 
 /// Characters that split words for semantic selection. Matches Windows
 /// Terminal's default so paths, flags, and punctuation select predictably.
-pub const WORD_DELIMITERS: &str = " ./\\()\"'-:,.;<>~!@#$%^&*|+=[]{}~?\u{2502}\t\0";
+pub(crate) const WORD_DELIMITERS: &str = " ./\\()\"'-:,.;<>~!@#$%^&*|+=[]{}~?\u{2502}\t\0";
 
 /// A Pos and side within that point.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -139,36 +139,12 @@ impl Selection {
         }
     }
 
-    /// Check whether selection contains any point in a given range.
-    pub fn intersects_range<R: RangeBounds<Line>>(&self, range: R) -> bool {
-        let mut start = self.region.start.point.row;
-        let mut end = self.region.end.point.row;
-
-        if start > end {
-            mem::swap(&mut start, &mut end);
-        }
-
-        let range_top = match range.start_bound() {
-            Bound::Included(&range_start) => range_start,
-            Bound::Excluded(&range_start) => range_start + 1,
-            Bound::Unbounded => Line(i32::MIN),
-        };
-
-        let range_bottom = match range.end_bound() {
-            Bound::Included(&range_end) => range_end,
-            Bound::Excluded(&range_end) => range_end - 1,
-            Bound::Unbounded => Line(i32::MAX),
-        };
-
-        range_bottom >= start && range_top <= end
-    }
-
     /// Convert a selection to a grid range. Anchors are SCREEN
     /// coordinates; `viewport_top` is the SCREEN row of the top visible row.
     /// Boundaries are searched on the render buffer. The result is in visible-row
     /// coordinates (the renderer feeds it with `display_offset = 0`); it may be
     /// partly off-screen, which `row_selection_for` clips per row.
-    pub fn to_range_engine(
+    pub(crate) fn to_range_engine(
         &self,
         buf: &RenderBuffer,
         viewport_top: i32,

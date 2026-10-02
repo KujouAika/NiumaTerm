@@ -43,8 +43,6 @@ fn connect(client: &DeviceKey, host: &DeviceKey) -> (Channel, Channel) {
     let (client_channel, hello) = handshake.finish(&msg2).unwrap();
 
     assert_eq!(hello, host_hello());
-    assert_eq!(client_channel.remote_key(), host.public());
-    assert_eq!(host_channel.remote_key(), client.public());
 
     (client_channel, host_channel)
 }

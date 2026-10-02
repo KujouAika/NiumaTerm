@@ -13,7 +13,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use crate::windows::child::*;
 
 #[test]
-pub fn event_is_emitted_when_child_exits() {
+pub(crate) fn event_is_emitted_when_child_exits() {
     const WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 
     let mut child = Command::new("cmd.exe").spawn().unwrap();

@@ -13,7 +13,6 @@ use tokio::process::{
 };
 use tracing::warn;
 
-use crate::process_lifetime::cleanup_failed_attachment;
 #[cfg(target_os = "macos")]
 use crate::unix::macos::login_shell;
 #[cfg(target_os = "macos")]
@@ -152,7 +151,7 @@ struct ProcessGroup(libc::pid_t);
 pub struct ProcessTree(Weak<ProcessGroup>);
 
 impl KillOnCloseJob {
-    pub fn attach_or_kill(child: &mut Child) -> io::Result<Self> {
+    pub(crate) fn attach_or_kill(child: &mut Child) -> io::Result<Self> {
         Self::attach(child).inspect_err(|_| cleanup_failed_attachment(child))
     }
 
@@ -257,4 +256,26 @@ fn group_process_count(pgid: libc::pid_t) -> io::Result<usize> {
                 == Some(pgid)
         })
         .count())
+}
+
+/// Kill and reap a child whose containment failed, so a process that escaped
+/// its group is not left running with nothing to end it.
+fn cleanup_failed_attachment(child: &mut Child) {
+    match child.kill() {
+        Ok(()) => {
+            if let Err(error) = child.wait() {
+                warn!(
+                    "failed to reap child {} after containment failure: {error}",
+                    child.id()
+                );
+            }
+        }
+        Err(error) => match child.try_wait() {
+            Ok(Some(_)) => {}
+            result => warn!(
+                "failed to terminate child {} after containment failure: {error}; status: {result:?}",
+                child.id()
+            ),
+        },
+    }
 }

@@ -213,25 +213,3 @@ fn block_is_empty() {
 
     assert!(!selection.is_empty());
 }
-
-#[test]
-fn range_intersection() {
-    let mut selection = Selection::new(
-        SelectionType::Lines,
-        Pos::new(Line(3), Column(1)),
-        Side::Left,
-    );
-
-    selection.update(Pos::new(Line(6), Column(1)), Side::Right);
-
-    assert!(selection.intersects_range(..));
-    assert!(selection.intersects_range(Line(2)..));
-    assert!(selection.intersects_range(Line(3)..=Line(3)));
-    assert!(selection.intersects_range(Line(2)..=Line(4)));
-    assert!(selection.intersects_range(Line(2)..=Line(7)));
-    assert!(selection.intersects_range(Line(4)..=Line(5)));
-    assert!(selection.intersects_range(Line(5)..Line(8)));
-
-    assert!(!selection.intersects_range(..=Line(2)));
-    assert!(!selection.intersects_range(Line(7)..=Line(8)));
-}

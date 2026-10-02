@@ -25,7 +25,7 @@ use crate::termio::requests::answer_query;
 use crate::vt_modes::Mode;
 
 #[test]
-fn path_paste_and_block_replay_obey_session_input_rules() {
+fn path_paste_obeys_session_input_rules() {
     let (session, mut messages) = test_session();
 
     session
@@ -39,32 +39,9 @@ fn path_paste_and_block_replay_obey_session_input_rules() {
     assert!(matches!(messages.try_recv().unwrap(), Msg::Input(bytes)
         if bytes.as_ref() == b"\x1b[200~C:\\src\\main.rs \"C:\\My Project\\notes.txt\"\x1b[201~"));
 
-    session
-        .block_store()
-        .lock()
-        .apply([BlockEvent::EngineBlock {
-            seq: 1,
-            handle: BlockHandle {
-                id: 1,
-                generation: 1,
-            },
-            rows: 1,
-            meta: SegmentMeta {
-                command: Some("echo hello".into()),
-                ..SegmentMeta::default()
-            },
-        }]);
-
-    assert!(session.rerun_block(0));
-    assert!(
-        matches!(messages.try_recv().unwrap(), Msg::Input(bytes) if bytes.as_ref() == b"echo hello\r")
-    );
-    assert!(!session.rerun_block(99));
-
     session.mark_read_only();
 
     assert!(!session.paste_paths(&paths));
-    assert!(!session.rerun_block(0));
     assert!(messages.try_recv().is_err());
 }
 

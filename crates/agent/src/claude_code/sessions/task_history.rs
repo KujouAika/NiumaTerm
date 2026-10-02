@@ -47,7 +47,10 @@ pub struct RestoredTask {
 /// A conversation that has not written its transcript yet restores nothing
 /// rather than failing: the CLI creates the file as the first turn produces
 /// records, so a fresh session legitimately has no history to read.
-pub fn load_task_history(cwd: Option<&str>, session_id: &str) -> Result<Vec<RestoredTask>, String> {
+pub(crate) fn load_task_history(
+    cwd: Option<&str>,
+    session_id: &str,
+) -> Result<Vec<RestoredTask>, String> {
     let project = project_dir(cwd)
         .ok_or_else(|| format!("Claude session {session_id} has no project directory"))?;
 

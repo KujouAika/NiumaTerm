@@ -51,7 +51,7 @@ impl Error for ReplaceFilesError {
     }
 }
 
-pub fn replace_files(
+pub(crate) fn replace_files(
     staging: &Path,
     install: &Path,
     names: &[&str],
@@ -181,7 +181,7 @@ fn discard_incoming(install: &Path, names: &[&str]) {
     }
 }
 
-pub fn discard_previous(install: &Path) {
+pub(crate) fn discard_previous(install: &Path) {
     let Ok(entries) =
         fs::read_dir(install).and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
     else {

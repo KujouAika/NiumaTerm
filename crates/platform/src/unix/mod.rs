@@ -754,7 +754,7 @@ impl Child {
     /// changes, the process is sent a SIGWINCH signal.  See signal(7).  Note
     /// simply changing the sizes using tcsetwinsize() does not necessarily
     /// change the actual window size, and if not, will not generate a SIGWINCH.
-    pub fn set_winsize(&self, winsize_builder: WinsizeBuilder) -> io::Result<()> {
+    pub(crate) fn set_winsize(&self, winsize_builder: WinsizeBuilder) -> io::Result<()> {
         let winsize: Winsize = (&winsize_builder).into();
 
         match unsafe { libc::ioctl(**self, TIOCSWINSZ, &winsize as *const _) } {
@@ -765,7 +765,7 @@ impl Child {
 
     /// Return the child’s exit status if it has already exited. If the child is still running, return Ok(None).
     /// https://linux.die.net/man/2/waitpid
-    pub fn waitpid(&self) -> Result<Option<i32>, String> {
+    pub(crate) fn waitpid(&self) -> Result<Option<i32>, String> {
         if let Some(status) = self.reaped.get() {
             return Ok(Some(status));
         }

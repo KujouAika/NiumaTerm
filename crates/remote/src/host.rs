@@ -410,8 +410,10 @@ impl HostService {
         self.shared.state.lock().devices.clone()
     }
 
-    /// Names of the paired devices connected now, each device once.
-    pub fn connected_devices(&self) -> Vec<String> {
+    /// Names of the paired devices connected now, each device once. Only the
+    /// connection lifecycle tests observe it; the app shows no live roster.
+    #[cfg(test)]
+    pub(crate) fn connected_devices(&self) -> Vec<String> {
         let state = self.shared.state.lock();
 
         state

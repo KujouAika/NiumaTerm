@@ -120,7 +120,11 @@ pub fn seal(key: &str, message: &PushMessage) -> Result<String, Error> {
 }
 
 /// [`seal`] with a given nonce, for test vectors the phone checks too.
-pub fn seal_with_nonce(key: &str, message: &PushMessage, nonce: [u8; 12]) -> Result<String, Error> {
+pub(crate) fn seal_with_nonce(
+    key: &str,
+    message: &PushMessage,
+    nonce: [u8; 12],
+) -> Result<String, Error> {
     let key = decode_key(key)?;
     let plaintext = serde_json::to_vec(message)?;
 

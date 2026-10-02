@@ -23,7 +23,7 @@ use crate::{AgentEvent, AgentEventKind, HookInstallStatus};
 
 /// Every hook event the adapter normalizes. Keep in sync with the `normalize`
 /// match below.
-pub const HOOK_EVENTS: [&str; 6] = [
+pub(crate) const HOOK_EVENTS: [&str; 6] = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
@@ -37,7 +37,7 @@ pub const HOOK_EVENTS: [&str; 6] = [
 /// `NMT_AGENT_HOOK_EXE` locates the binary without baking an install path
 /// into the user's settings, and the guard exits 0 in Claude Code sessions
 /// outside NiumaTerm instead of logging a command-not-found error.
-pub const HOOK_COMMAND: &str =
+pub(crate) const HOOK_COMMAND: &str =
     r#"if [ -n "$NMT_AGENT_HOOK_EXE" ]; then "$NMT_AGENT_HOOK_EXE" claude; fi"#;
 
 pub(crate) fn normalize(

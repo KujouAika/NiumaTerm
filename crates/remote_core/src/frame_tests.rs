@@ -85,7 +85,7 @@ fn oversized_or_inconsistent_fragments_are_rejected() {
 
     let mut header = 3u32.to_le_bytes().to_vec();
 
-    header.extend([kind::SNAPSHOT, FLAG_MORE]);
+    header.extend([kind::OUTPUT, FLAG_MORE]);
 
     let frame = [header, chunk].concat();
 
@@ -106,8 +106,8 @@ fn oversized_or_inconsistent_fragments_are_rejected() {
 
     let mut reassembler = Reassembler::default();
 
-    let first = encode_message(4, kind::SNAPSHOT, &vec![0; MAX_PAYLOAD + 1]);
-    let other_kind = encode_message(4, kind::OPS, b"[]");
+    let first = encode_message(4, kind::OUTPUT, &vec![0; MAX_PAYLOAD + 1]);
+    let other_kind = encode_message(4, kind::INPUT, b"[]");
 
     assert!(
         reassembler

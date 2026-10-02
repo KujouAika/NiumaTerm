@@ -25,9 +25,6 @@ pub mod kind {
     pub const INPUT: u8 = 0x12;
     pub const EXIT: u8 = 0x13;
     pub const SIZE: u8 = 0x14;
-    pub const SNAPSHOT: u8 = 0x20;
-    pub const OPS: u8 = 0x21;
-    pub const BLOB: u8 = 0x30;
 }
 
 use std::collections::HashMap;
@@ -35,14 +32,14 @@ use std::collections::HashMap;
 use crate::Error;
 use crate::channel::MAX_PLAINTEXT;
 
-pub const HEADER_LEN: usize = 6;
-pub const MAX_PAYLOAD: usize = MAX_PLAINTEXT - HEADER_LEN;
+pub(crate) const HEADER_LEN: usize = 6;
+pub(crate) const MAX_PAYLOAD: usize = MAX_PLAINTEXT - HEADER_LEN;
 
 /// Largest reassembled message. A peer announcing more is broken or hostile,
 /// and buffering it would let it exhaust memory.
-pub const MAX_MESSAGE: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 
-pub const FLAG_MORE: u8 = 0x01;
+pub(crate) const FLAG_MORE: u8 = 0x01;
 
 /// Stream 0 carries control messages.
 pub const CONTROL_STREAM: u32 = 0;

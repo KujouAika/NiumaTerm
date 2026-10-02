@@ -106,7 +106,7 @@ pub struct Session<A: Api> {
     reason = "Callers use the system session alias without supplying raw operations."
 )]
 impl<A: Api> Session<A> {
-    pub fn for_files(api: A, paths: &[&Path]) -> Result<Self, RestartManagerError> {
+    pub(crate) fn for_files(api: A, paths: &[&Path]) -> Result<Self, RestartManagerError> {
         if paths.is_empty() {
             return Err(RestartManagerError::NoFiles);
         }
@@ -145,7 +145,7 @@ impl<A: Api> Session<A> {
         check(Operation::RegisterResources, code)
     }
 
-    pub fn file_usage(&self) -> Result<FileUsage, RestartManagerError> {
+    pub(crate) fn file_usage(&self) -> Result<FileUsage, RestartManagerError> {
         let mut needed = 0;
         let mut count = 0;
         let mut reboot_reasons = 0;

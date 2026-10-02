@@ -18,7 +18,6 @@ mod async_pty;
 mod child_output;
 mod environment_override;
 mod ipc_message;
-mod process_lifetime;
 mod tokio_runtime;
 #[cfg(not(windows))]
 mod unix;
@@ -50,7 +49,7 @@ pub struct PtyOptions<'a> {
     pub bootstrap: Option<&'a str>,
 }
 
-pub const APP_ID: &str = "NiumaTerm";
+pub(crate) const APP_ID: &str = "NiumaTerm";
 pub const USES_CONPTY: bool = cfg!(windows);
 
 #[repr(C)]

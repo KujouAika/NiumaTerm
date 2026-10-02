@@ -924,10 +924,6 @@ impl TeamSession {
         Ok(true)
     }
 
-    pub fn saved_rooms(data_directory: &Path) -> Result<Vec<RoomId>, TeamError> {
-        Ok(RoomStore::saved_rooms(data_directory)?)
-    }
-
     pub fn add_member(&mut self, config: MemberConfig) -> Result<MemberId, TeamError> {
         let mut room = self.store.room().clone();
 

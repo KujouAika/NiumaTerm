@@ -225,7 +225,7 @@ impl Room {
     /// the provider accepted, apart from summary turns, and its own replies.
     /// The room keeps every attempt and message for its lifetime, so this is
     /// read from them rather than kept beside them.
-    pub fn coverage(&self, member: MemberId) -> AcceptedCoverage {
+    pub(crate) fn coverage(&self, member: MemberId) -> AcceptedCoverage {
         let mut coverage = AcceptedCoverage::default();
 
         for attempt in &self.attempts {

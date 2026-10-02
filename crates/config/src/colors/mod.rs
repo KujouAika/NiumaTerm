@@ -348,7 +348,7 @@ pub struct Rgba {
 }
 
 impl Rgba {
-    pub fn from_hex(hex: String) -> Result<Self, String> {
+    pub(crate) fn from_hex(hex: String) -> Result<Self, String> {
         let hex = hex.strip_prefix('#').unwrap_or(&hex);
 
         if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -376,7 +376,7 @@ impl Rgba {
         Ok(color)
     }
 
-    pub fn from_rgb(rgb: ColorRgb) -> Self {
+    pub(crate) fn from_rgb(rgb: ColorRgb) -> Self {
         Self {
             red: (rgb.r as f64) / 255.0,
             green: (rgb.g as f64) / 255.0,
@@ -406,7 +406,7 @@ impl fmt::Display for Rgba {
     }
 }
 
-pub fn deserialize_to_arr<'de, D>(deserializer: D) -> Result<ColorArray, D::Error>
+pub(crate) fn deserialize_to_arr<'de, D>(deserializer: D) -> Result<ColorArray, D::Error>
 where
     D: de::Deserializer<'de>,
 {
@@ -418,7 +418,9 @@ where
     }
 }
 
-pub fn deserialize_to_arr_opt<'de, D>(deserializer: D) -> Result<Option<ColorArray>, D::Error>
+pub(crate) fn deserialize_to_arr_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<ColorArray>, D::Error>
 where
     D: de::Deserializer<'de>,
 {

@@ -169,7 +169,7 @@ impl ResumeOutcome {
     /// from disk stay listed after a failed start, and a harness that picks
     /// its conversation at launch can still continue one from there. A harness
     /// that resumes over its connection has nothing to send the request on.
-    pub fn without_session(kind: AgentKind) -> Self {
+    pub(crate) fn without_session(kind: AgentKind) -> Self {
         match kind {
             AgentKind::Claude => Self::NeedsReplayRead,
             AgentKind::Codex | AgentKind::DeepSeek => Self::Rejected,
@@ -760,7 +760,7 @@ impl Backend {
     /// Ask for one workflow member's conversation. Only a harness that reports
     /// its runs live answers this; the disk-backed one reads a stored record
     /// through its own refresh path instead.
-    pub fn request_workflow_agent_transcript(&mut self, task_id: &str, agent_id: &str) {
+    pub(crate) fn request_workflow_agent_transcript(&mut self, task_id: &str, agent_id: &str) {
         match self {
             Backend::DeepSeek(session) => {
                 session.request_workflow_agent_transcript(task_id, agent_id)
@@ -850,7 +850,7 @@ impl Backend {
     /// Rebuild the conversation's agent from another composition. Only DeepSeek
     /// composes an agent from a preset at all; the other two launch one CLI
     /// whose capabilities are fixed for the life of the process.
-    pub fn select_agent_preset(&mut self, preset: &str) -> SettingsOutcome {
+    pub(crate) fn select_agent_preset(&mut self, preset: &str) -> SettingsOutcome {
         match self {
             Backend::DeepSeek(session) => {
                 session.select_agent_preset(preset);

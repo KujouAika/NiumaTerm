@@ -87,7 +87,7 @@ impl RoomStore {
     }
 
     /// The rooms saved under `data_directory`, in id order.
-    pub fn saved_rooms(data_directory: &Path) -> Result<Vec<RoomId>, StorageError> {
+    pub(crate) fn saved_rooms(data_directory: &Path) -> Result<Vec<RoomId>, StorageError> {
         let directory = data_directory.join(ROOMS_DIRECTORY);
 
         if !directory.exists() {
