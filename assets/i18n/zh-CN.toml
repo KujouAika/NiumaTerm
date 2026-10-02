@@ -554,6 +554,7 @@
 "agent-start-retry" = "重试"
 "agent-start-close-tab" = "关闭标签页"
 "agent-start-blank-tab" = "返回空白标签页"
+"agent-start-launching" = "正在启动 %{name}…"
 
 # Agent update flow
 "agent-update-waiting-label" = "等待更新"

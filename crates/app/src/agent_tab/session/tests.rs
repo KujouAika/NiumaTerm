@@ -1392,7 +1392,12 @@ mod failed_start_tests {
 
                 assert_eq!(pane.session.borrow().runtime().status(), Status::Starting);
                 assert!(pane.send_on_ready);
-                assert_eq!(pane.input.read(cx).text().to_string(), "hello");
+                assert!(!pane.shows_start_overlay(), "held message shows in place");
+                assert_eq!(pane.input.read(cx).text().len(), 0, "message left composer");
+                assert_eq!(
+                    pane.held_draft.as_ref().map(|draft| draft.text.as_str()),
+                    Some("hello")
+                );
 
                 // Stands in for the launch the send asked for.
                 let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
@@ -1418,6 +1423,7 @@ mod failed_start_tests {
                 pane.send_held_input(window, cx);
 
                 assert!(!pane.send_on_ready);
+                assert!(pane.held_draft.is_none());
                 assert_eq!(pane.input.read(cx).text().len(), 0, "held input sent");
             });
         });
@@ -1453,9 +1459,49 @@ mod failed_start_tests {
                 pane.send_user_message_now(window, cx);
 
                 assert!(!pane.launch_deferred());
-                assert!(pane.shows_start_overlay());
+                assert!(!pane.shows_start_overlay());
                 assert!(pane.send_on_ready);
+                assert!(pane.held_draft.is_none(), "a command stays in the composer");
                 assert_eq!(pane.input.read(cx).text().to_string(), "/status");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn failed_launch_returns_held_message_to_composer(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane(cx);
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.defer_launch(cx);
+
+                pane.input
+                    .update(cx, |input, cx| input.set_value("hello", window, cx));
+
+                pane.send_user_message_now(window, cx);
+
+                assert!(pane.held_draft.is_some());
+
+                // A second submit while the first still waits is not a
+                // second message.
+                pane.send_user_message_now(window, cx);
+
+                assert!(pane.send_on_ready);
+
+                // Stands in for the launch the send asked for, failing.
+                let epoch = pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.install_started_session(Err("codex missing".into()), epoch, "Codex", cx);
+
+                pane.send_held_input(window, cx);
+
+                assert!(!pane.send_on_ready);
+                assert!(pane.held_draft.is_none());
+                assert_eq!(pane.input.read(cx).text().to_string(), "hello");
             });
         });
     }

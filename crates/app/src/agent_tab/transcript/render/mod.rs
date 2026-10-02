@@ -2,6 +2,7 @@
 pub(super) use crate::agent_tab::transcript::render::text_style::highlight_theme_for_surface;
 
 pub(super) mod compaction_row;
+pub(super) mod held_prompt;
 pub(super) mod image_preview;
 pub(super) mod menus;
 pub(super) mod message_rows;

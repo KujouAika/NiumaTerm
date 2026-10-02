@@ -132,7 +132,9 @@ use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
 use crate::agent_tab::thread_controls::{
     launch_model, profile_picker, remember_defaults, render_row,
 };
-use crate::agent_tab::transcript::{TranscriptView, last_response_label, transcript_column};
+use crate::agent_tab::transcript::{
+    TranscriptView, held_prompt, last_response_label, transcript_column,
+};
 use crate::agent_tab::view::approval_card::approval_card;
 use crate::agent_tab::view::blocking_overlay::{
     BlockingOverlay, start_overlay, update_banner, update_overlay,
@@ -271,6 +273,10 @@ pub struct AgentPane {
     /// The composer's content is sent once the harness launched on the
     /// user's behalf reports ready.
     send_on_ready: bool,
+
+    /// The message that launch is for, taken out of the composer while the
+    /// harness starts and put back just before it is sent.
+    held_draft: Option<ComposerDraft>,
 
     #[cfg(test)]
     owned_session: Option<SessionOwner>,
@@ -1012,7 +1018,7 @@ impl AgentPane {
 
         let text = self.input.read(cx).text().to_string();
 
-        if self.launch_for_input(&text, cx) {
+        if self.launch_for_input(&text, window, cx) {
             return;
         }
 
@@ -1618,7 +1624,7 @@ impl AgentPane {
     pub(crate) fn submit_current_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.input.read(cx).text().to_string();
 
-        if self.launch_for_input(&input, cx) {
+        if self.launch_for_input(&input, window, cx) {
             return;
         }
 
@@ -3453,6 +3459,7 @@ impl AgentPane {
             pending_side_prompt: None,
             deferred_launch: None,
             send_on_ready: false,
+            held_draft: None,
             #[cfg(test)]
             owned_session: None,
             history_ui: SessionHistoryUi::default(),
@@ -3688,6 +3695,15 @@ impl AgentPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ComposerDraft {
+        // A message held for a launch has already left the composer, and it
+        // is the unsent message a replacing pane has to carry. The launch it
+        // waited for is retired with this pane.
+        if let Some(held) = self.held_draft.take() {
+            self.send_on_ready = false;
+
+            return held;
+        }
+
         let text = self.input.read(cx).text().to_string();
 
         self.input
@@ -4226,8 +4242,13 @@ impl AgentPane {
         cx.notify();
     }
 
+    /// Whether the start holds the whole pane. A launch the user's own input
+    /// asked for does not: that input is already waiting for it, and the
+    /// pane says so in the transcript instead.
     pub(crate) fn shows_start_overlay(&self) -> bool {
-        self.session.borrow().runtime().status() == Status::Starting && !self.launch_deferred()
+        self.session.borrow().runtime().status() == Status::Starting
+            && !self.launch_deferred()
+            && !self.send_on_ready
     }
 
     /// Whether no harness runs and the next request that needs one launches
@@ -4248,16 +4269,31 @@ impl AgentPane {
         cx.notify();
     }
 
-    /// Launch the harness for input submitted while its launch is deferred.
-    /// The composer keeps the input, which goes out once the harness
-    /// reports ready; a launch that fails again leaves it there to retry.
-    /// Returns whether the input was held for the launch.
-    fn launch_for_input(&mut self, input: &str, cx: &mut Context<Self>) -> bool {
+    /// Launch the harness for input submitted while its launch is deferred,
+    /// and hold the input until the harness reports ready. A message leaves
+    /// the composer for the transcript, where it shows as sent; a slash
+    /// command stays in the composer, since it steers the session rather than
+    /// adding to the conversation. Returns whether the input was held,
+    /// including input submitted again while an earlier one still waits.
+    fn launch_for_input(
+        &mut self,
+        input: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.send_on_ready {
+            return true;
+        }
+
         if !self.launch_deferred() {
             return false;
         }
 
         if !input.trim().is_empty() {
+            if parse_slash_command(input).is_none() {
+                self.held_draft = Some(self.take_composer_draft(window, cx));
+            }
+
             self.send_on_ready = true;
 
             self.start_session(None, cx);
@@ -4269,21 +4305,27 @@ impl AgentPane {
     /// Send the input `launch_for_input` held once the harness it launched is
     /// ready. Sending clears the composer through the window, which a ready
     /// event does not carry, so this runs in the frame that event repaints.
+    /// A launch that ends any other way puts the message back in the
+    /// composer, where a retry finds it.
     fn send_held_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.send_on_ready {
             return;
         }
 
-        let status = self.session.borrow().runtime().status();
+        let send = match self.session.borrow().runtime().status() {
+            Status::Starting => return,
+            Status::Idle => true,
+            Status::Running | Status::Exited => false,
+        };
 
-        match status {
-            Status::Starting => {}
-            Status::Idle => {
-                self.send_on_ready = false;
+        self.send_on_ready = false;
 
-                self.send_user_message_now(window, cx);
-            }
-            Status::Running | Status::Exited => self.send_on_ready = false,
+        if let Some(draft) = self.held_draft.take() {
+            self.restore_composer_draft(draft, window, cx);
+        }
+
+        if send {
+            self.send_user_message_now(window, cx);
         }
     }
 
@@ -4962,6 +5004,18 @@ impl Render for AgentPane {
         let branch_flow_working = self.branch_flow_is_working();
         let session_loading = self.history_ui.mode == RecentSessionsMode::Loading;
 
+        // Input held for a launch is what the harness answers first, so the
+        // composer takes no more until it has gone out.
+        let input_held = self.send_on_ready;
+
+        let held = input_held.then(|| {
+            held_prompt(
+                self.held_draft.as_ref().map(|draft| draft.text.as_str()),
+                session_kind.display(),
+                cx,
+            )
+        });
+
         let background = if cx
             .global::<AgentSettings>()
             .pane_background_follows_terminal
@@ -4979,8 +5033,11 @@ impl Render for AgentPane {
 
         // A side chat starts empty on purpose and cannot switch to another
         // conversation, so it never offers the list.
+        // A held message has left the composer without starting the
+        // conversation yet, and the list would offer to replace it.
         let history = (self.history_ui.is_visible(transcript_empty, composer_empty)
-            && !self.side_chat_member)
+            && !self.side_chat_member
+            && !input_held)
             .then(|| self.history_ui.render(cx));
 
         // A list opened over a live conversation is a picker, and the
@@ -5059,6 +5116,16 @@ impl Render for AgentPane {
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_transcript_mouse_up))
                     .relative()
                     .child(self.transcript.clone())
+                    // Only a blank tab defers its launch, so the transcript
+                    // under the held message has nothing for it to cover.
+                    .children(held.map(|held| {
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .child(transcript_column(held, cx))
+                    }))
                     // The layer swallows clicks aimed at the transcript; the
                     // list's outside-click handler still sees them and
                     // dismisses itself.
@@ -5194,7 +5261,8 @@ impl Render for AgentPane {
                                                             .disabled(
                                                                 branch_flow_working
                                                                     || session_loading
-                                                                    || update_suspended,
+                                                                    || update_suspended
+                                                                    || input_held,
                                                             ),
                                                     ),
                                                 ),
@@ -5223,7 +5291,8 @@ impl Render for AgentPane {
                                                         !running
                                                             && (branch_flow_active
                                                                 || session_loading
-                                                                || update_suspended),
+                                                                || update_suspended
+                                                                || input_held),
                                                     )
                                                     .on_click(cx.listener(
                                                         move |this, _, window, cx| {

@@ -11,6 +11,7 @@ pub(super) use crate::agent_tab::transcript::format::{
     permission_icon, relative_time, should_show_jump_to_latest, strip_read_gutter,
     truncated_user_prompt, working_label,
 };
+pub(super) use crate::agent_tab::transcript::render::held_prompt::held_prompt;
 pub(super) use crate::agent_tab::transcript::render::transcript_column;
 pub(super) use crate::agent_tab::transcript::rows::{Entry, RowSpec};
 pub(super) use crate::agent_tab::transcript::view::TranscriptAttribution;

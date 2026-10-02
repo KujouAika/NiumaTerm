@@ -2374,7 +2374,8 @@ impl AppWindow {
     }
 
     /// Open an agent tab: an agent chat conversation in place of a terminal.
-    /// The conversation's agent process starts in the workspace cwd.
+    /// The conversation's agent process starts in the workspace cwd, at once
+    /// or, for a unified tab, with its first message.
     pub(crate) fn open_agent_tab(
         &mut self,
         profile: AgentProfile,
@@ -2385,7 +2386,28 @@ impl AppWindow {
 
         let workspace = agent_workspace(self.workspaces.active_roots());
 
-        self.open_agent_tab_in(&profile, workspace, None, window, cx);
+        if !cx.global::<AppSettings>().config().agent.unified_agent_tab {
+            self.open_agent_tab_in(&profile, workspace, None, window, cx);
+
+            return;
+        }
+
+        // A unified tab may still change agent in its composer, so its
+        // harness waits for the first message, like a tab relaunched on
+        // another profile does. Starting it now would cover the blank tab
+        // with the start layer for a process the next pick may retire.
+        let id = Self::alloc_id(&mut self.next_id);
+        let tab = self.create_agent_tab(&profile, workspace, None, window, cx);
+
+        tab.pane.update(cx, |pane, cx| pane.defer_launch(cx));
+
+        self.insert_tab(
+            TabId(id),
+            TabSurface::Agent(tab),
+            agent_tab_title(&profile),
+            window,
+            cx,
+        );
     }
 
     /// Open an agent tab rooted at `cwd`, optionally continuing the
