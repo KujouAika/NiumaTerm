@@ -19,7 +19,7 @@ use crate::ui::composition::{
 };
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::remote::{self, RemoteWorkspace};
-use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle};
+use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle, pending_tab_icon};
 use crate::ui::tab_bar::menu::tab_icon;
 use crate::ui::tab_bar::{fold_row, tab_row, tab_row_icon};
 use crate::ui::workspace_sidebar::list::{
@@ -459,9 +459,18 @@ fn session_row(
         }))
     };
 
+    // A session still asleep on its host wears the faded row and moon a
+    // local tab waiting to start does, so both lists tell running tabs from
+    // sleeping ones the same way.
+    let glyph = match session.pending {
+        true => pending_tab_icon(("remote-session-pending", key)).into_any_element(),
+        false => icon.into_any_element(),
+    };
+
     let row = tab_row(("remote-session", key), title, selected, cx)
         .group("remote-session")
-        .child(tab_row_icon(icon))
+        .when(session.pending, |this| this.opacity(0.6))
+        .child(tab_row_icon(glyph))
         .child(label)
         .when(followed, |row| row.child(close))
         .on_click(cx.listener(move |this, _, window, cx| {
