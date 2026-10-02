@@ -13,10 +13,8 @@ use std::{fmt, ptr};
 use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS, WIN32_ERROR};
 use windows_sys::Win32::System::RestartManager::{
     CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RM_WRITE_STATUS_CALLBACK, RmConsole, RmCritical,
-    RmEndSession, RmExplorer, RmGetList, RmMainWindow, RmOtherWindow,
-    RmRebootReasonCriticalProcess, RmRebootReasonCriticalService, RmRebootReasonDetectedSelf,
-    RmRebootReasonPermissionDenied, RmRebootReasonSessionMismatch, RmRegisterResources, RmRestart,
-    RmService, RmShutdown, RmStartSession,
+    RmEndSession, RmExplorer, RmGetList, RmMainWindow, RmOtherWindow, RmRebootReasonNone,
+    RmRegisterResources, RmRestart, RmService, RmShutdown, RmStartSession,
 };
 
 const LIST_RETRIES: usize = 3;
@@ -35,33 +33,19 @@ pub enum ApplicationKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AffectedApplication {
     pub name: String,
-    pub service_name: Option<String>,
     pub process_id: u32,
     pub kind: ApplicationKind,
-    pub terminal_session_id: Option<u32>,
     pub restartable: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RebootReasons {
-    pub permission_denied: bool,
-    pub session_mismatch: bool,
-    pub critical_process: bool,
-    pub critical_service: bool,
-    pub detected_self: bool,
-    pub unknown_bits: u32,
-}
-
-impl RebootReasons {
-    pub fn is_empty(self) -> bool {
-        self == Self::default()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileUsage {
     pub applications: Vec<AffectedApplication>,
-    pub reboot_reasons: RebootReasons,
+
+    /// Restart Manager reported any reboot reason. Reason bits a newer
+    /// Windows adds count too: a reason the updater cannot name still means
+    /// closing applications will not release the files.
+    pub reboot_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,15 +62,6 @@ pub enum RestartManagerError {
     NoFiles,
     RelativePath(PathBuf),
     Windows { operation: Operation, code: u32 },
-}
-
-impl RestartManagerError {
-    pub fn windows_code(&self) -> Option<u32> {
-        match self {
-            Self::Windows { code, .. } => Some(*code),
-            Self::NoFiles | Self::RelativePath(_) => None,
-        }
-    }
 }
 
 impl fmt::Display for RestartManagerError {
@@ -186,7 +161,7 @@ impl<A: Api> Session<A> {
         if code == ERROR_SUCCESS {
             return Ok(FileUsage {
                 applications: Vec::new(),
-                reboot_reasons: reboot_reasons.into(),
+                reboot_required: reboot_reasons != RmRebootReasonNone as u32,
             });
         }
 
@@ -217,7 +192,7 @@ impl<A: Api> Session<A> {
 
             return Ok(FileUsage {
                 applications: processes.into_iter().map(Into::into).collect(),
-                reboot_reasons: reboot_reasons.into(),
+                reboot_required: reboot_reasons != RmRebootReasonNone as u32,
             });
         }
 
@@ -338,14 +313,10 @@ impl Api for SystemApi {
 
 impl From<RM_PROCESS_INFO> for AffectedApplication {
     fn from(process: RM_PROCESS_INFO) -> Self {
-        let service_name = wide_text(&process.strServiceShortName);
-
         AffectedApplication {
             name: wide_text(&process.strAppName),
-            service_name: (!service_name.is_empty()).then_some(service_name),
             process_id: process.Process.dwProcessId,
             kind: process.ApplicationType.into(),
-            terminal_session_id: (process.TSSessionId != u32::MAX).then_some(process.TSSessionId),
             restartable: process.bRestartable != 0,
         }
     }
@@ -367,25 +338,6 @@ impl From<i32> for ApplicationKind {
             ApplicationKind::Critical
         } else {
             ApplicationKind::Unknown
-        }
-    }
-}
-
-impl From<u32> for RebootReasons {
-    fn from(bits: u32) -> Self {
-        let known = RmRebootReasonPermissionDenied as u32
-            | RmRebootReasonSessionMismatch as u32
-            | RmRebootReasonCriticalProcess as u32
-            | RmRebootReasonCriticalService as u32
-            | RmRebootReasonDetectedSelf as u32;
-
-        RebootReasons {
-            permission_denied: bits & RmRebootReasonPermissionDenied as u32 != 0,
-            session_mismatch: bits & RmRebootReasonSessionMismatch as u32 != 0,
-            critical_process: bits & RmRebootReasonCriticalProcess as u32 != 0,
-            critical_service: bits & RmRebootReasonCriticalService as u32 != 0,
-            detected_self: bits & RmRebootReasonDetectedSelf as u32 != 0,
-            unknown_bits: bits & !known,
         }
     }
 }

@@ -140,15 +140,15 @@ fn classify_file_usage(
 ) -> Result<Option<FileUsePrompt>, RestartManagerError> {
     let usage = result?;
 
-    if usage.applications.is_empty() && usage.reboot_reasons.is_empty() {
+    if usage.applications.is_empty() && !usage.reboot_required {
         return Ok(None);
     }
 
     Ok(Some(FileUsePrompt {
-        reason: if usage.reboot_reasons.is_empty() {
-            FileUsePromptReason::InUse
-        } else {
+        reason: if usage.reboot_required {
             FileUsePromptReason::RebootRequired
+        } else {
+            FileUsePromptReason::InUse
         },
         applications: usage.applications,
     }))
@@ -176,7 +176,7 @@ where
         }
     };
 
-    if !usage.reboot_reasons.is_empty() {
+    if usage.reboot_required {
         return ClosePreparation::Prompt(FileUsePrompt {
             reason: FileUsePromptReason::RebootRequired,
             applications: usage.applications,
@@ -198,10 +198,10 @@ where
 
         return match session.file_usage() {
             Ok(usage) => ClosePreparation::Prompt(FileUsePrompt {
-                reason: if usage.reboot_reasons.is_empty() {
-                    FileUsePromptReason::RemainingUsers
-                } else {
+                reason: if usage.reboot_required {
                     FileUsePromptReason::RebootRequired
+                } else {
+                    FileUsePromptReason::RemainingUsers
                 },
                 applications: usage.applications,
             }),

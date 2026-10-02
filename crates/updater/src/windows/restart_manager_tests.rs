@@ -208,13 +208,33 @@ fn growing_process_list_is_retried_and_decoded() {
     assert_eq!(usage.applications[0].name, "Windows Explorer");
     assert_eq!(usage.applications[0].process_id, 123);
     assert_eq!(usage.applications[0].kind, ApplicationKind::Explorer);
-    assert_eq!(usage.applications[0].terminal_session_id, Some(7));
     assert!(usage.applications[0].restartable);
-    assert!(usage.reboot_reasons.permission_denied);
+    assert!(usage.reboot_required);
 
     drop(session);
 
     assert_eq!(shared.lock().ended, 1);
+}
+
+#[test]
+fn unnamed_reboot_reason_still_requires_a_reboot() {
+    let state = State {
+        list: [ListReply {
+            code: ERROR_SUCCESS,
+            processes: Vec::new(),
+            needed: 0,
+            reboot_reasons: 0x8000_0000,
+        }]
+        .into(),
+        ..Default::default()
+    };
+
+    let (api, _) = ScriptedApi::new(state);
+
+    let session =
+        Session::for_files(api, &[Path::new(r"C:\NiumaTerm\NmtShellExtension.dll")]).unwrap();
+
+    assert!(session.file_usage().unwrap().reboot_required);
 }
 
 #[test]

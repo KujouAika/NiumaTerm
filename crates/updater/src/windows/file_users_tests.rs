@@ -14,7 +14,7 @@ use crate::windows::file_users::{
 use crate::windows::install::{InstallError, Installation, SHELL_EXTENSION_DLL};
 use crate::windows::releases::Release;
 use crate::windows::restart_manager::{
-    AffectedApplication, ApplicationKind, FileUsage, Operation, RebootReasons, RestartManagerError,
+    AffectedApplication, ApplicationKind, FileUsage, Operation, RestartManagerError,
 };
 
 thread_local! {
@@ -88,10 +88,8 @@ impl FileUserSession for ScriptedSession {
 fn application(name: &str, process_id: u32, restartable: bool) -> AffectedApplication {
     AffectedApplication {
         name: name.to_owned(),
-        service_name: None,
         process_id,
         kind: ApplicationKind::Explorer,
-        terminal_session_id: Some(1),
         restartable,
     }
 }
@@ -100,7 +98,7 @@ fn application(name: &str, process_id: u32, restartable: bool) -> AffectedApplic
 fn file_use_results_distinguish_clear_used_unknown_and_reboot_states() {
     let clear = FileUsage {
         applications: Vec::new(),
-        reboot_reasons: RebootReasons::default(),
+        reboot_required: false,
     };
 
     assert_eq!(classify_file_usage(Ok(clear)).unwrap(), None);
@@ -109,7 +107,7 @@ fn file_use_results_distinguish_clear_used_unknown_and_reboot_states() {
 
     let used = FileUsage {
         applications: vec![explorer.clone()],
-        reboot_reasons: RebootReasons::default(),
+        reboot_required: false,
     };
 
     let prompt = classify_file_usage(Ok(used)).unwrap().unwrap();
@@ -119,10 +117,7 @@ fn file_use_results_distinguish_clear_used_unknown_and_reboot_states() {
 
     let reboot = FileUsage {
         applications: vec![explorer],
-        reboot_reasons: RebootReasons {
-            session_mismatch: true,
-            ..Default::default()
-        },
+        reboot_required: true,
     };
 
     assert_eq!(
@@ -173,7 +168,7 @@ fn close_preparation_uses_a_fresh_session_application_list() {
     let state = Arc::new(Mutex::new(CloseState {
         usage: [Ok(FileUsage {
             applications: vec![current.clone()],
-            reboot_reasons: RebootReasons::default(),
+            reboot_required: false,
         })]
         .into(),
         shutdown_error: None,
@@ -203,11 +198,11 @@ fn failed_shutdown_restarts_before_remaining_users_are_reported() {
         usage: [
             Ok(FileUsage {
                 applications: vec![current.clone()],
-                reboot_reasons: RebootReasons::default(),
+                reboot_required: false,
             }),
             Ok(FileUsage {
                 applications: vec![current.clone()],
-                reboot_reasons: RebootReasons::default(),
+                reboot_required: false,
             }),
         ]
         .into(),
