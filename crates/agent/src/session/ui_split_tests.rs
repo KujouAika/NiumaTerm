@@ -155,8 +155,8 @@ fn search_retires_disk_reads_and_next_history_page_replaces_matches() {
 fn workflow_readers_keep_separate_content_and_acknowledge_source_revisions() {
     let mut workflows = WorkflowData::default();
 
-    assert!(workflows.claim_restore("session"));
-    assert!(!workflows.claim_restore("session"));
+    assert!(workflows.restored_session.claim("session"));
+    assert!(!workflows.restored_session.claim("session"));
 
     let first = workflows.open_agent("run", "first");
     let _second = workflows.open_agent("run", "second");
@@ -205,7 +205,7 @@ fn workflow_readers_keep_separate_content_and_acknowledge_source_revisions() {
     workflows.clear();
 
     assert!(workflows.conversation("run", "second").is_none());
-    assert!(workflows.claim_restore("session"));
+    assert!(workflows.restored_session.claim("session"));
 }
 
 #[test]

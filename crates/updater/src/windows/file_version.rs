@@ -8,13 +8,14 @@
 mod file_version_tests;
 
 use std::ffi::{OsStr, c_void};
-use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::{ptr, slice};
 
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
+
+use crate::windows::wide;
 
 /// One entry of `\VarFileInfo\Translation`, which is the language and code page
 /// that the resource's string block is named after.
@@ -110,8 +111,4 @@ fn query(block: &[u8], sub_block: &str) -> Option<(*const c_void, u32)> {
     };
 
     (found != 0 && !value.is_null() && length != 0).then_some((value.cast_const(), length))
-}
-
-fn wide(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(Some(0)).collect()
 }

@@ -347,7 +347,7 @@ impl SessionController {
     pub fn begin_task_restoration(&mut self, cwd: Option<&str>) -> Option<TaskHistoryRead> {
         let session_id = self.runtime.backend()?.session_id()?.to_owned();
 
-        if !self.children.claim_restore(&session_id) {
+        if !self.children.restored_session.claim(&session_id) {
             return None;
         }
 
@@ -793,7 +793,8 @@ impl SessionController {
         let session_id = self.runtime.backend()?.session_id()?.to_owned();
 
         self.workflows
-            .claim_restore(&session_id)
+            .restored_session
+            .claim(&session_id)
             .then_some((source, session_id))
     }
 
@@ -804,7 +805,7 @@ impl SessionController {
         restored: Result<Vec<WorkflowRun>, String>,
     ) -> Vec<Event> {
         let Ok(restored) = restored else {
-            self.workflows.forget_restore();
+            self.workflows.restored_session.forget();
 
             return Vec::new();
         };

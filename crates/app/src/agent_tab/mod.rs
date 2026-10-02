@@ -22,7 +22,6 @@ pub mod settings;
 pub mod team;
 pub mod transcript;
 
-mod capabilities;
 mod commands;
 mod composer;
 mod context_usage;
@@ -71,6 +70,7 @@ use nmt_agent::session::branch::{
     BranchCompletion, BranchError, BranchFailure, BranchStep, BranchUpdate, BranchView,
     FileProgress, PromptTarget,
 };
+use nmt_agent::session::capabilities::AgentCapabilities as _;
 use nmt_agent::session::children::ChildTranscript;
 use nmt_agent::session::command::{
     AdmitSlashCommand, AgentCommand, AnswerQuestion, ApplyModelSelection, Interrupt, Prompt,
@@ -99,7 +99,6 @@ use nmt_remote_core::rpc::EndReason;
 use rust_i18n::t;
 use tracing::info;
 
-use crate::agent_tab::capabilities::AgentCapabilities as _;
 use crate::agent_tab::commands::{
     PaletteCatalogEntry, PaletteDirection, SlashRoute, filter_palette_catalog,
     filter_skill_catalog, local_commands, merge_catalog, move_palette_selection,

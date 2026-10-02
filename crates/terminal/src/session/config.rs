@@ -3,10 +3,6 @@ use std::path::Path;
 use nmt_config::CursorShape;
 use nmt_platform::PromptIntegration;
 
-pub(crate) fn default_shell() -> String {
-    nmt_platform::default_shell()
-}
-
 /// Local terminal session configuration. `None` and empty fields fall back to
 /// defaults (`shell` → the platform's default shell).
 #[derive(Debug, Clone)]

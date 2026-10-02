@@ -10,6 +10,7 @@ use crate::background_task::{
     BackgroundTaskKey, BackgroundTaskLoadState, BackgroundTaskSnapshot,
     BackgroundTaskTranscriptUpdate, MAX_TRANSCRIPT_ITEMS,
 };
+use crate::session::restore::RestoreClaim;
 use crate::session::{AgentKind, RecoveryIdentity};
 use crate::transcript::conversation::ConversationState;
 
@@ -26,10 +27,8 @@ pub(crate) struct ChildAgents {
     /// applies to what is actually shown.
     pub transcripts: HashMap<BackgroundTaskKey, ChildTranscript>,
 
-    /// Claude session id whose child agents were already restored from
-    /// history. Ready fires again during first-turn initialization, so the
-    /// read happens once per conversation rather than once per confirmation.
-    pub restored_session: Option<String>,
+    /// Claude session whose child agents were already restored from history.
+    pub(crate) restored_session: RestoreClaim,
 }
 
 impl ChildAgents {
@@ -100,16 +99,6 @@ impl ChildAgents {
         }
 
         self.transcripts.clear();
-    }
-
-    pub(crate) fn claim_restore(&mut self, session_id: &str) -> bool {
-        if self.restored_session.as_deref() == Some(session_id) {
-            return false;
-        }
-
-        self.restored_session = Some(session_id.to_owned());
-
-        true
     }
 
     pub fn parent(identity: RecoveryIdentity) -> Option<BackgroundTaskKey> {

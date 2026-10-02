@@ -10,11 +10,11 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use nmt_agent::chat::QueuedPrompt;
+use nmt_agent::session::capabilities::AgentCapabilities as _;
 use nmt_agent::{AgentWorkspace, MultiRootAccess};
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
-use crate::agent_tab::capabilities::AgentCapabilities as _;
 use crate::agent_tab::composer::visible_prompt;
 use crate::agent_tab::profile::AgentKind;
 use crate::agent_tab::transcript::{LAST_RESPONSE_LIMIT, last_response_label};

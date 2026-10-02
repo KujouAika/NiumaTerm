@@ -23,7 +23,9 @@ mod status;
 #[cfg(test)]
 mod tests;
 
+use std::ffi::OsStr;
 use std::fs;
+use std::os::windows::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -326,4 +328,10 @@ pub fn settle_previous_update(config_directory: &Path, install: &Path) {
 
 pub fn wait_for_previous_instance(pid: u32) -> bool {
     process_exit::wait_for_exit(pid, install::PREDECESSOR_TIMEOUT)
+}
+
+/// A NUL-terminated UTF-16 copy of `value`, the form Win32 `W` functions read
+/// strings and paths in.
+fn wide(value: &OsStr) -> Vec<u16> {
+    value.encode_wide().chain(Some(0)).collect()
 }

@@ -4,7 +4,7 @@ use serde_json::{Map, from_str, to_string, to_string_pretty};
 
 use crate::AGENT_HOOK_PROTOCOL_VERSION;
 use crate::codex::hook::*;
-use crate::hook_store::{event_commands, is_marked, uninstall_from};
+use crate::hook_store::{self, event_commands, is_marked, uninstall_from};
 
 fn fixture_events() -> Vec<Value> {
     let fixture: Value = from_str(include_str!("../../tests/fixtures/codex-0.144.1.json")).unwrap();

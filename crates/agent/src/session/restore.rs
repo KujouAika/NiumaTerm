@@ -31,6 +31,29 @@ impl SettingsSeed {
     }
 }
 
+/// The conversation whose stored history was already read back. Provider
+/// readiness can fire again for the same conversation, so a restore claimed
+/// here runs once per session id rather than once per confirmation.
+#[derive(Default)]
+pub(crate) struct RestoreClaim(Option<String>);
+
+impl RestoreClaim {
+    pub(crate) fn claim(&mut self, session_id: &str) -> bool {
+        if self.0.as_deref() == Some(session_id) {
+            return false;
+        }
+
+        self.0 = Some(session_id.to_owned());
+
+        true
+    }
+
+    /// Give the claim back after a failed read, so the next open retries.
+    pub(crate) fn forget(&mut self) {
+        self.0 = None;
+    }
+}
+
 /// Native path identity also handles case and separator differences on Windows.
 pub fn directories_match(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {

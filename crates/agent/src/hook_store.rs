@@ -8,10 +8,10 @@
 
 pub use nmt_platform::{build_hook_command, hook_command_contains};
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 
-use nmt_platform::{durable_file, environment};
+use nmt_platform::durable_file;
 use serde_json::{Value, from_str, json, to_string_pretty};
 
 use crate::AGENT_HOOK_EXE_ENV;
@@ -123,13 +123,6 @@ impl HookRegistration {
 /// former executable name stays listed so an entry written before the rename
 /// is still recognized as ours and gets replaced rather than duplicated.
 const HOOK_MARKERS: [&str; 3] = [AGENT_HOOK_EXE_ENV, "NmtAgentHook.exe", "NiumaTermHook.exe"];
-
-/// The user's home directory — `USERPROFILE` on Windows with a `HOME`
-/// fallback so the same code works in POSIX-flavored shells. Shared root for
-/// every per-agent config path.
-pub(crate) fn home_dir() -> Option<PathBuf> {
-    environment::home_dir()
-}
 
 pub(crate) fn uninstall_from(settings: &mut Value) {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {

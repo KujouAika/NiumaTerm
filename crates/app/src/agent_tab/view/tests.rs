@@ -1,11 +1,11 @@
 use gpui_component::input::Enter;
 use nmt_agent::chat::QueuedPrompt;
+use nmt_agent::session::capabilities::AgentCapabilities as _;
 use nmt_agent::transcript::turns::GenerationSpeed;
 use nmt_agent::{AgentWorkspace, MultiRootAccess};
 use nmt_config::system::NewlineShortcut;
 
 use crate::agent_tab::AgentKind;
-use crate::agent_tab::capabilities::AgentCapabilities as _;
 use crate::agent_tab::composer::prompt_with_response_annotations;
 use crate::agent_tab::session::UpdateSuspension;
 use crate::agent_tab::view::blocking_overlay::update_overlay_label;

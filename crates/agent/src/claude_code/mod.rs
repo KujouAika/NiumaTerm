@@ -13,7 +13,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::hook_store::home_dir;
+use nmt_platform::environment::home_dir;
 
 /// The directory Claude Code keeps its settings, sessions and credentials in.
 /// The CLI reads `CLAUDE_CONFIG_DIR` and falls back to `~/.claude`, so every

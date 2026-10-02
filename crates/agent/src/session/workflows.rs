@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::chat::Item;
 use crate::session::lifecycle::SessionRuntime;
+use crate::session::restore::RestoreClaim;
 use crate::transcript::conversation::ConversationState;
 use crate::workflow::{
     WorkflowAgentState, WorkflowRefreshRequest, WorkflowRefreshResult, WorkflowRun,
@@ -33,9 +34,8 @@ pub struct WorkflowData {
     pub snapshot: Option<WorkflowSnapshot>,
     conversations: HashMap<(String, String), OpenWorkflowAgent>,
 
-    /// Session whose completed runs were already read back from disk, so a
-    /// resumed conversation restores once rather than on every reopen.
-    restored_session: Option<String>,
+    /// Session whose completed runs were already read back from disk.
+    pub(crate) restored_session: RestoreClaim,
 }
 
 impl WorkflowData {
@@ -56,7 +56,7 @@ impl WorkflowData {
 
         self.conversations.clear();
 
-        self.restored_session = None;
+        self.restored_session.forget();
     }
 
     /// Agents of this tab the provider currently reports as running.
@@ -234,23 +234,6 @@ impl WorkflowData {
         if open.task_id == result.task_id && open.agent_id == transcript.agent_id {
             open.source_revision = Some(transcript.revision);
         }
-    }
-
-    /// Claim the one restore this session gets, so a resumed conversation
-    /// reads its stored runs once rather than on every reopen.
-    pub(crate) fn claim_restore(&mut self, session_id: &str) -> bool {
-        if self.restored_session.as_deref() == Some(session_id) {
-            return false;
-        }
-
-        self.restored_session = Some(session_id.to_owned());
-
-        true
-    }
-
-    /// Give the claim back after a failed read, so the next open retries.
-    pub(crate) fn forget_restore(&mut self) {
-        self.restored_session = None;
     }
 
     pub(crate) fn refresh_plan(

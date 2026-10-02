@@ -12,10 +12,11 @@ mod hook_tests;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use nmt_platform::environment;
 use serde_json::{Value, json};
 
 use crate::event::AgentEventInput;
-use crate::hook_store::{self, HookRegistration, invalid};
+use crate::hook_store::{HookRegistration, invalid};
 use crate::{AgentEvent, AgentEventKind, HookInstallStatus, agent_process, build_hook_command};
 
 /// Every Codex event that contributes to the pane lifecycle.
@@ -84,12 +85,12 @@ pub(crate) fn normalize(
 
 /// `~/.codex/config.toml`, the user-scope Codex configuration.
 pub fn config_path() -> Option<PathBuf> {
-    Some(hook_store::home_dir()?.join(".codex").join("config.toml"))
+    Some(environment::home_dir()?.join(".codex").join("config.toml"))
 }
 
 /// `~/.codex/hooks.json`, the user-scope Codex Hook configuration.
 pub fn hooks_path() -> Option<PathBuf> {
-    Some(hook_store::home_dir()?.join(".codex").join("hooks.json"))
+    Some(environment::home_dir()?.join(".codex").join("hooks.json"))
 }
 
 const REGISTRATION: HookRegistration = HookRegistration {

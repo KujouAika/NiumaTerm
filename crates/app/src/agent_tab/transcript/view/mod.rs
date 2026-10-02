@@ -19,13 +19,13 @@ use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme as _, ElementExt as _, IconName, Sizable as _};
 use nmt_agent::chat::Item as SessionItem;
+use nmt_agent::session::capabilities::AgentCapabilities as _;
 use nmt_agent::transcript::conversation::ConversationState;
 use nmt_config::agent::CollapseRows;
 use nmt_profiling::transcript::{Operation, Probe};
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
-use crate::agent_tab::capabilities::AgentCapabilities as _;
 use crate::agent_tab::composer::{PALETTE_MAX_HEIGHT, PromptTarget};
 use crate::agent_tab::profile::AgentKind;
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};

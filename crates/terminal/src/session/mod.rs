@@ -33,7 +33,9 @@ use nmt_input::event::ElementState;
 use nmt_input::keyboard::{Key, KeyLocation, ModifiersState};
 use nmt_input::{KeyEncodeFlags, KeyInput, bracket_paste, encode_terminal_input};
 use nmt_platform::process::ProcessTree;
-use nmt_platform::{AsyncPty, PtyOptions, WinsizeBuilder, create_managed_pty_with_env};
+use nmt_platform::{
+    AsyncPty, PtyOptions, WinsizeBuilder, create_managed_pty_with_env, default_shell,
+};
 use parking_lot::Mutex;
 use tracing::error;
 
@@ -48,7 +50,7 @@ use crate::grid::{Column, Line, Pos};
 use crate::input::{TerminalKey, key_encode_flags, should_defer_to_ime};
 use crate::render_buffer::{FrameStore, RenderBuffer};
 use crate::selection::{SelectionRange, SelectionType, WORD_DELIMITERS};
-use crate::session::config::{default_shell, is_windows_powershell};
+use crate::session::config::is_windows_powershell;
 use crate::session::page::{PageCache, PageSource, RowPage, ScreenState};
 use crate::session::proxy::TerminalEventProxy;
 use crate::session::selection::{

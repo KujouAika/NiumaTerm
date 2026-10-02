@@ -20,11 +20,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use std::{env, fs};
 
+use nmt_platform::environment::home_dir;
 use nmt_platform::filesystem::path_identity;
 use serde_json::Value;
 
 use crate::chat::{SessionScope, SessionSummary};
-use crate::hook_store::home_dir;
 use crate::profile::CODEX_PROVIDER_PREFIX;
 use crate::session::naming::provisional_title;
 

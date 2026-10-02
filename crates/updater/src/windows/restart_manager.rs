@@ -5,8 +5,6 @@
 mod restart_manager_tests;
 
 use std::error::Error;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::{fmt, ptr};
 
@@ -16,6 +14,8 @@ use windows_sys::Win32::System::RestartManager::{
     RmEndSession, RmExplorer, RmGetList, RmMainWindow, RmOtherWindow, RmRebootReasonNone,
     RmRegisterResources, RmRestart, RmService, RmShutdown, RmStartSession,
 };
+
+use crate::windows::wide;
 
 const LIST_RETRIES: usize = 3;
 
@@ -230,10 +230,6 @@ fn check(operation: Operation, code: WIN32_ERROR) -> Result<(), RestartManagerEr
 
 fn windows_error(operation: Operation, code: WIN32_ERROR) -> RestartManagerError {
     RestartManagerError::Windows { operation, code }
-}
-
-fn wide(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(Some(0)).collect()
 }
 
 fn wide_text(value: &[u16]) -> String {
