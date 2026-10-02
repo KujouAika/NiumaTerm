@@ -121,7 +121,24 @@ check_no_ai_slop_marker() {
                 print file ": " $0
             }
         ')
-    slop=$(printf '%s\n' "$added" | grep -Eiw "$slop_markers" || true)
+    # Identifiers are split at underscores and lower-to-upper case changes, so
+    # `carries_id` and `LandingZone` match the same words as plain prose.
+    slop=$(printf '%s\n' "$added" | awk -v markers="$slop_markers" '
+        {
+            # A plain loop instead of gensub keeps this portable to BSD awk.
+            text = ""
+            prev = ""
+            for (i = 1; i <= length($0); i++) {
+                c = substr($0, i, 1)
+                if (c ~ /[A-Z]/ && prev ~ /[a-z0-9]/) text = text " "
+                text = text c
+                prev = c
+            }
+            text = tolower(text)
+            gsub(/_/, " ", text)
+            if (text ~ ("(^|[^a-z0-9])(" markers ")([^a-z0-9]|$)")) print
+        }
+    ' || true)
     # Em dashes are only rejected in Rust comments: Markdown docs and skill
     # files use them widely, and Rust string literals may hold terminal text.
     dashes=$(printf '%s\n' "$added" | grep -E '^[^:]*\.rs: .*//.*—' || true)
