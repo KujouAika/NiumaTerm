@@ -4,27 +4,23 @@
 
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, FontWeight, SharedString, div, px, transparent_black};
-use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
-use gpui_component::{ActiveTheme, IconName, Selectable, h_flex, v_flex};
+use gpui::{AnyElement, Context, FontWeight, SharedString, div, px};
+use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
 use nmt_remote_core::rpc::{SessionInfo, SessionKind, WorkspaceInfo};
 use rust_i18n::t;
 
 use crate::ui::composition::{
-    HoverActionLayout, HoverActionVisibility, hover_action, sidebar_selection, toolbar_button,
+    HoverActionLayout, HoverActionVisibility, hover_action, toolbar_button,
 };
 use crate::ui::remote::{self, RemoteWorkspace};
 use crate::ui::tab_bar::menu::tab_icon;
+use crate::ui::tab_bar::{tab_row, tab_row_icon};
 use crate::ui::workspace_sidebar::list::{
     WORKSPACE_NAME_TEXT, WORKSPACE_PATH_TEXT, tail_preserving_path, workspace_row_button,
 };
 use crate::ui::workspace_sidebar::{SIDEBAR_ROW_GUTTER, WORKSPACE_NAME_INSET};
 use crate::ui::{AppWindow, modern_dropdown};
 use crate::workspace::workspace_display_label;
-
-/// A session row's text, set like a vertical tab row so the two lists read
-/// alike.
-const SESSION_TEXT: f32 = 12.5;
 
 /// The heading of the remote section and each host's blocks under it, in the
 /// list's own rhythm: every block is spaced by the list gap, like the local
@@ -217,6 +213,7 @@ fn workspace_row(
                 .min_w_0()
                 .text_left()
                 .text_size(px(WORKSPACE_NAME_TEXT))
+                .font_weight(FontWeight::NORMAL)
                 .truncate()
                 .child(label.clone()),
         )
@@ -246,10 +243,10 @@ fn workspace_row(
         .into_any_element()
 }
 
-/// A session on a host: opening it follows it in a tab here, or shows the
-/// tab already following it. The session whose tab is on screen is marked
-/// the way the vertical tab list marks its tab, since that tab sits in no
-/// list of its own.
+/// A session on a host, drawn as a local tab row: opening it follows it in a
+/// tab here, or shows the tab already following it. The session whose tab is
+/// on screen is marked the way the local list marks its tab, since that tab
+/// sits in no list of its own.
 fn session_row(
     index: usize,
     row: usize,
@@ -269,40 +266,17 @@ fn session_row(
     let opened = session.clone();
     let title: SharedString = session.title.clone().into();
     let selected = host.selected.as_deref() == Some(session.session.as_str());
-    let selection = sidebar_selection(cx);
 
-    let button: Button = workspace_row_button(("remote-session", index * 1000 + row), cx)
-        .custom(
-            ButtonCustomVariant::new(cx)
-                .color(transparent_black())
-                .hover(cx.theme().sidebar_foreground.opacity(0.085))
-                .active(cx.theme().sidebar_foreground.opacity(0.12)),
-        )
-        .selected(selected)
-        // Button resolves selected colors after element styles, so the
-        // sidebar-accent pair must be the selected custom variant itself.
-        .when(selected, |this| {
-            this.custom(
-                ButtonCustomVariant::new(cx)
-                    .foreground(selection.active_foreground)
-                    .active(selection.active_background),
-            )
-        })
-        .accessibility_label(title.clone())
-        .child(
-            h_flex().w_full().gap_2().items_center().child(icon).child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_left()
-                    .text_size(px(SESSION_TEXT))
-                    .child(title),
-            ),
-        )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.open_remote_session(&host_id, &opened, window, cx)
-        }));
-
-    button.into_any_element()
+    tab_row(
+        ("remote-session", index * 1000 + row),
+        title.clone(),
+        selected,
+        cx,
+    )
+    .child(tab_row_icon(icon))
+    .child(div().flex_1().overflow_hidden().truncate().child(title))
+    .on_click(cx.listener(move |this, _, window, cx| {
+        this.open_remote_session(&host_id, &opened, window, cx)
+    }))
+    .into_any_element()
 }

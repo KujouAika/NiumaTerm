@@ -2,7 +2,9 @@ use std::collections;
 
 use app::agent_tab::AgentKind;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, DragMoveEvent, Role, SharedString, Stateful, div, px};
+use gpui::{
+    AnyElement, App, Context, Div, DragMoveEvent, ElementId, Role, SharedString, Stateful, div, px,
+};
 use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::{ActiveTheme as _, Icon, IconName, h_flex};
 use nmt_platform::default_shell_name;
@@ -202,7 +204,6 @@ impl VerticalTabList {
         let tab_id = tab.id;
         let key = tab_id.0 as usize;
         let active = tab.active;
-        let selection = sidebar_selection(cx);
 
         let close = hover_action(
             ("sidebar-tab-close", key),
@@ -291,73 +292,27 @@ impl VerticalTabList {
         let drag_shell = cx.entity();
         let drag_label = tab.label.clone();
 
-        let row = h_flex()
-            .id(("sidebar-tab", key))
-            // The row is the selectable thing in this style: its fill is the
-            // only cue that a tab is the one on screen, so it carries the
-            // selected state assistive technology reads. The label is stated
-            // rather than derived, because the row also holds status marks and
-            // swaps its text for an input while the tab is being renamed.
-            .role(Role::Tab)
-            .aria_label(tab.label.clone())
-            .aria_selected(active)
+        let row = tab_row(("sidebar-tab", key), tab.label.clone(), active, cx)
             .group("sidebar-tab")
-            .relative()
-            .w_full()
-            .h(px(TAB_ROW_HEIGHT))
-            // The same inset the workspace rows take, so the glyph column
-            // stands on the same edge as the workspace names above it. A tab
-            // is tied to its workspace by the gap that separates one such
-            // block from the next rather than by an indent.
-            .px(px(SIDEBAR_ROW_GUTTER))
-            .gap(px(TAB_ROW_GAP))
-            .items_center()
-            .rounded(UI_RADIUS)
-            .text_size(px(TAB_ROW_TEXT))
             // A restored-but-not-yet-spawned tab renders faded, the same
             // "sleeping tab" cue the horizontal strip uses.
             .when(tab.pending, |this| this.opacity(0.6))
-            // The selected row is marked by its fill alone. The fill
-            // already separates the row from the list at a glance; adding an
-            // outline and a heavier weight on top of it states the same thing
-            // three times, and the weight change also reflows the label.
-            .when(active, |this| {
-                this.bg(selection.active_background)
-                    .text_color(selection.active_foreground)
-            })
-            .when(!active, |this| {
-                this.text_color(selection.idle_foreground)
-                    .hover(|this| this.bg(selection.hover_background))
-            })
             // The status mark takes over the type icon's slot instead of
             // claiming a lane of its own ahead of it. What a session is doing
             // is what the eye scans the list for, and its kind only matters
             // once the row is found; sharing the slot also keeps the label
-            // from shifting sideways the moment a tab starts working. The
-            // glyph box starts on the slot's leading edge, which is the
-            // content column, so icon ink lines up with the heading text;
-            // centering the box in the wider slot would push it a pixel past.
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(TAB_ROW_ICON))
+            // from shifting sideways the moment a tab starts working.
+            .child(tab_row_icon(match (status_mark, tab.pending) {
+                (Some(mark), _) => div()
+                    .size(px(TAB_ROW_GLYPH))
                     .flex()
                     .items_center()
-                    .justify_start()
-                    .child(match (status_mark, tab.pending) {
-                        (Some(mark), _) => div()
-                            .size(px(TAB_ROW_GLYPH))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(mark)
-                            .into_any_element(),
-                        (None, true) => {
-                            pending_tab_icon(("sidebar-tab-pending", key)).into_any_element()
-                        }
-                        (None, false) => tab.icon.clone().into_any_element(),
-                    }),
-            )
+                    .justify_center()
+                    .child(mark)
+                    .into_any_element(),
+                (None, true) => pending_tab_icon(("sidebar-tab-pending", key)).into_any_element(),
+                (None, false) => tab.icon.clone().into_any_element(),
+            }))
             .child(label)
             // Bell dot, in the warning color so it reads apart from the unread
             // dot when a tab carries both.
@@ -455,6 +410,68 @@ impl VerticalTabList {
             .child(row)
             .into_any_element()
     }
+}
+
+/// The frame of a tab row in the sidebar, shared by this computer's tabs and
+/// the sessions of paired hosts so the two lists read as one: its height,
+/// inset, spacing, text, and the fill that marks the row on screen.
+///
+/// The row is the selectable thing in this style: its fill is the only cue
+/// that a tab is the one on screen, so it carries the selected state
+/// assistive technology reads. The label is stated rather than derived,
+/// because a row also holds status marks and swaps its text for an input
+/// while its tab is being renamed.
+pub(crate) fn tab_row(
+    id: impl Into<ElementId>,
+    label: SharedString,
+    active: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let selection = sidebar_selection(cx);
+
+    h_flex()
+        .id(id)
+        .role(Role::Tab)
+        .aria_label(label)
+        .aria_selected(active)
+        .relative()
+        .w_full()
+        .h(px(TAB_ROW_HEIGHT))
+        // The same inset the workspace rows take, so the glyph column stands
+        // on the same edge as the workspace names above it. A tab is tied to
+        // its workspace by the gap that separates one such block from the
+        // next rather than by an indent.
+        .px(px(SIDEBAR_ROW_GUTTER))
+        .gap(px(TAB_ROW_GAP))
+        .items_center()
+        .rounded(UI_RADIUS)
+        .text_size(px(TAB_ROW_TEXT))
+        // The selected row is marked by its fill alone. The fill already
+        // separates the row from the list at a glance; adding an outline and a
+        // heavier weight on top of it states the same thing three times, and
+        // the weight change also reflows the label.
+        .when(active, |this| {
+            this.bg(selection.active_background)
+                .text_color(selection.active_foreground)
+        })
+        .when(!active, |this| {
+            this.text_color(selection.idle_foreground)
+                .hover(|this| this.bg(selection.hover_background))
+        })
+}
+
+/// The slot at a tab row's leading edge holding its type icon or status
+/// mark. The glyph box starts on the slot's leading edge, which is the
+/// content column, so icon ink lines up with the heading text; centering the
+/// box in the wider slot would push it a pixel past.
+pub(crate) fn tab_row_icon(glyph: impl IntoElement) -> Div {
+    div()
+        .flex_none()
+        .size(px(TAB_ROW_ICON))
+        .flex()
+        .items_center()
+        .justify_start()
+        .child(glyph)
 }
 
 /// Fallback drop target for a list holding tab rows: a drop released over
