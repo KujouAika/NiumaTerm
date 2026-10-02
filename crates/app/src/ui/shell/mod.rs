@@ -2660,6 +2660,13 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Step the workspace's tab list on to its next fold.
+    pub(crate) fn cycle_tab_fold(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
+        self.workspaces.cycle_tab_fold(id);
+
+        cx.notify();
+    }
+
     pub(crate) fn reorder_workspaces(
         &mut self,
         from: usize,
@@ -4203,6 +4210,7 @@ impl Render for AppWindow {
                                 tabs,
                                 active: ws.summary.active,
                                 closeable: ws.summary.closeable,
+                                fold: ws.summary.tab_fold,
                             },
                             &unread_tabs,
                             &busy_agent_tabs,

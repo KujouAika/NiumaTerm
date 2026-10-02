@@ -2,10 +2,12 @@
 #[path = "list_tests.rs"]
 mod tests;
 
+use std::f32::consts::FRAC_PI_2;
+
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, DragMoveEvent, ElementId, FontWeight, ScrollHandle,
-    SharedString, div, px, relative,
+    SharedString, div, px, radians, relative,
 };
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_component::modern_menu::ModernMenuExt as _;
@@ -13,6 +15,7 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::tooltip::ManagedTooltipExt as _;
 use gpui_component::{ActiveTheme, Icon, IconName, IconNamed, Selectable, Sizable, h_flex, v_flex};
 use nmt_config::appearance::TabBarStyle;
+use nmt_config::local_state::TabFold;
 use rust_i18n::t;
 
 use crate::ui::composition::{
@@ -165,7 +168,10 @@ impl WorkspaceList {
         let vertical_tabs =
             cx.global::<AppSettings>().config().appearance.tab_bar_style == TabBarStyle::Vertical;
 
-        let highlight_active = ws.active && !vertical_tabs;
+        // The active tab's own row marks the selection in the vertical style,
+        // so the workspace row takes it over only while that row is folded
+        // away.
+        let highlight_active = ws.active && (!vertical_tabs || ws.tab_fold == TabFold::Collapsed);
 
         let status = WorkspaceStatus {
             agent: chrome.agent.status,
@@ -386,6 +392,20 @@ impl WorkspaceList {
                 .into_any_element()
         };
 
+        // In the vertical style the row folds its tab list, and a filled
+        // triangle says how the way a tree's disclosure mark does: right
+        // while the tabs are folded away, down while any are listed.
+        let disclosure = vertical_tabs.then(|| {
+            let icon = Icon::new(DisclosureIcon)
+                .with_size(px(DISCLOSURE_SIZE))
+                .text_color(cx.theme().sidebar_foreground.opacity(0.5));
+
+            match ws.tab_fold {
+                TabFold::Collapsed => icon,
+                TabFold::Active | TabFold::All => icon.rotate(radians(FRAC_PI_2)),
+            }
+        });
+
         let drag_name = display_label.clone();
         let drag_cwd = display_path.clone();
         let drag_agent_status = chrome.agent.status;
@@ -427,11 +447,15 @@ impl WorkspaceList {
                     .w_full()
                     .gap_1p5()
                     .items_center()
+                    .children(disclosure)
                     .child(div().flex_1().min_w_0().overflow_hidden().child(name))
                     .child(suffix),
             )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.activate_workspace(idx, window, cx);
+            // In the vertical style the tab rows switch workspaces, so the
+            // workspace row is left to fold them.
+            .on_click(cx.listener(move |this, _, window, cx| match vertical_tabs {
+                true => this.cycle_tab_fold(ws_id, cx),
+                false => this.activate_workspace(idx, window, cx),
             }));
 
         // Right-click menu. Close reuses the same confirm-gated path as the
@@ -616,6 +640,20 @@ pub(super) fn tail_preserving_path(path: &str, max_chars: usize) -> String {
         .unwrap_or(&raw_tail);
 
     format!("…{component_tail}")
+}
+
+/// Edge of the disclosure triangle, small enough to read as a mark on the
+/// name rather than as a control of its own.
+const DISCLOSURE_SIZE: f32 = 8.0;
+
+/// The filled triangle that marks a workspace's tab fold
+/// (`assets/icons/disclosure.svg`), drawn pointing right.
+struct DisclosureIcon;
+
+impl IconNamed for DisclosureIcon {
+    fn path(self) -> SharedString {
+        "icons/disclosure.svg".into()
+    }
 }
 
 /// Sidebar pinned-workspace glyph (`assets/icons/pin.svg`).

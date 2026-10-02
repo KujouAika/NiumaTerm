@@ -24,6 +24,25 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_all_tabs(fold: &TabFold) -> bool {
+    *fold == TabFold::All
+}
+
+/// How many of a workspace's tabs the vertical sidebar lists under it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabFold {
+    /// Only the workspace's active tab.
+    Active,
+    /// None: the workspace row alone.
+    Collapsed,
+    /// Every tab. A fold a newer build saved also lists every tab here, so
+    /// no tab is hidden by a state this build cannot show.
+    #[default]
+    #[serde(other)]
+    All,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LocalState {
     #[serde(default)]
@@ -120,6 +139,12 @@ pub struct WorkspaceState {
     pub pinned: bool,
     #[serde(default)]
     pub active_tab: usize,
+
+    /// Omitted while every tab is listed, so a snapshot of unfolded
+    /// workspaces stays byte-identical to one written before folding.
+    #[serde(default, skip_serializing_if = "is_all_tabs")]
+    pub tab_fold: TabFold,
+
     #[serde(default)]
     pub tabs: Vec<TabState>,
 }

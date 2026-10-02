@@ -207,6 +207,7 @@ pub(super) fn restore_session(
             additional_cwds,
             pinned,
             active_tab,
+            tab_fold,
             tabs,
         } = workspace;
 
@@ -255,6 +256,11 @@ pub(super) fn restore_session(
                 .expect("workspace manager was just created")
                 .set_pinned(workspace_id, pinned);
         }
+
+        workspaces
+            .as_mut()
+            .expect("a workspace was just added")
+            .set_tab_fold(workspace_id, tab_fold);
     }
 
     let mut workspaces = workspaces?;

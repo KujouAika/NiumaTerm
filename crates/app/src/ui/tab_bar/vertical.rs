@@ -7,6 +7,7 @@ use gpui::{
 };
 use gpui_component::modern_menu::ModernMenuExt as _;
 use gpui_component::{ActiveTheme as _, Icon, IconName, h_flex};
+use nmt_config::local_state::TabFold;
 use nmt_platform::default_shell_name;
 use nmt_terminal::event::ProgressReport;
 use rust_i18n::t;
@@ -56,6 +57,9 @@ pub(crate) struct WorkspaceTabs<'a> {
 
     /// Whether the workspace itself may be closed.
     pub(crate) closeable: bool,
+
+    /// Which of its tabs the workspace lists.
+    pub(crate) fold: TabFold,
 }
 
 /// A tab row picked up for reordering. The workspace position prevents a row
@@ -173,8 +177,15 @@ impl VerticalTabList {
         // row withholds a control that would do nothing.
         let closeable = rows.len() > 1 || workspace.closeable;
 
+        // Folding hides rows without renumbering them: a row keeps its tab's
+        // position, which reordering and jumping to the tab work from.
         rows.iter()
             .enumerate()
+            .filter(|(_, row)| match workspace.fold {
+                TabFold::All => true,
+                TabFold::Active => row.id == active_id,
+                TabFold::Collapsed => false,
+            })
             .map(|(index, row)| {
                 self.render_row(
                     (workspace.index, index),

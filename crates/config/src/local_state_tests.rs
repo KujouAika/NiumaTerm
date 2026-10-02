@@ -33,6 +33,7 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                         additional_cwds: vec!["C:/Projects/library".into(), "D:/Docs".into()],
                         pinned: true,
                         active_tab: 9,
+                        tab_fold: TabFold::All,
                         tabs: vec![
                             TabState {
                                 name: Some("editor".into()),
@@ -241,6 +242,7 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
                     additional_cwds: Vec::new(),
                     pinned: false,
                     active_tab: 0,
+                    tab_fold: TabFold::All,
                     tabs: vec![split_tab],
                 }],
             }),
@@ -265,6 +267,7 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
                     additional_cwds: Vec::new(),
                     pinned: false,
                     active_tab: 0,
+                    tab_fold: TabFold::All,
                     tabs: vec![TabState::default()],
                 }],
             }),
@@ -352,6 +355,7 @@ active_tab = 0
                     additional_cwds: Vec::new(),
                     pinned: false,
                     active_tab: 0,
+                    tab_fold: TabFold::All,
                     tabs: vec![TabState::default()],
                 }],
             }),
@@ -429,6 +433,33 @@ fn git_tab_roundtrips_without_acquiring_a_shell_or_agent() {
     let legacy: TabState = toml::from_str("cwd = '/project'\n").unwrap();
 
     assert!(legacy.git_cwd.is_none());
+}
+
+#[test]
+fn a_tab_fold_roundtrips_and_only_a_folded_workspace_writes_it() {
+    let folded = WorkspaceState {
+        tab_fold: TabFold::Active,
+        ..WorkspaceState::default()
+    };
+
+    let serialized = toml::to_string(&folded).unwrap();
+
+    assert!(serialized.contains("tab_fold = \"active\""));
+    assert_eq!(
+        toml::from_str::<WorkspaceState>(&serialized).unwrap(),
+        folded
+    );
+
+    // Unfolded workspaces save as they did before folding existed.
+    let unfolded = toml::to_string(&WorkspaceState::default()).unwrap();
+
+    assert!(!unfolded.contains("tab_fold"));
+
+    // A fold this build does not know lists every tab rather than failing
+    // the whole session.
+    let newer: WorkspaceState = toml::from_str("tab_fold = 'pinned-only'\n").unwrap();
+
+    assert_eq!(newer.tab_fold, TabFold::All);
 }
 
 #[test]

@@ -9,7 +9,7 @@ use gpui_component::input::InputState;
 use nmt_agent::AgentWorkspace;
 use nmt_agent::team::session::TeamSession;
 use nmt_config::local_state::{
-    SessionState, TabState, WindowLocalState, WindowState, WorkspaceState,
+    SessionState, TabFold, TabState, WindowLocalState, WindowState, WorkspaceState,
 };
 use tempfile::tempdir;
 
@@ -188,6 +188,7 @@ fn session_state() -> SessionState {
             additional_cwds: Vec::new(),
             pinned: false,
             active_tab: 0,
+            tab_fold: TabFold::All,
             tabs: vec![TabState {
                 name: None,
                 user_named: false,

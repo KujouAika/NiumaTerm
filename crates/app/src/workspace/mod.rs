@@ -14,6 +14,7 @@ mod tests;
 use std::borrow::Cow;
 use std::{iter, path};
 
+use nmt_config::local_state::TabFold;
 use rust_i18n::t;
 
 use crate::tabs::{CommandOutcome, TabId, TabManager};
@@ -125,6 +126,9 @@ pub struct Workspace {
     roots: Option<WorkspaceRoots>,
 
     pinned: bool,
+
+    /// How many of its tabs the vertical sidebar lists under it.
+    tab_fold: TabFold,
 
     /// A workspace the user has not adopted yet: it stays out of the saved
     /// session, so opening a directory to run one command leaves nothing
@@ -249,6 +253,7 @@ pub struct WorkspaceSummary {
     pub active: bool,
     pub pinned: bool,
     pub closeable: bool,
+    pub tab_fold: TabFold,
 
     /// Not part of the saved session until the user activates it.
     pub temporary: bool,
@@ -281,6 +286,7 @@ impl WorkspaceManager {
                 name,
                 roots: Some(roots),
                 pinned: false,
+                tab_fold: TabFold::All,
                 temporary: false,
                 kind: WorkspaceKind::Normal,
                 tabs,
@@ -302,6 +308,7 @@ impl WorkspaceManager {
             name,
             roots,
             pinned: false,
+            tab_fold: TabFold::All,
             temporary: false,
             kind,
             tabs,
@@ -405,6 +412,25 @@ impl WorkspaceManager {
 
             workspaces.insert(insert_at, workspace);
         });
+    }
+
+    /// Set how many of the workspace's tabs the vertical sidebar lists.
+    pub fn set_tab_fold(&mut self, id: WorkspaceId, fold: TabFold) {
+        if let Some(workspace) = self.workspaces.find_mut(id) {
+            workspace.tab_fold = fold;
+        }
+    }
+
+    /// Step the workspace's fold on, in the order its row cycles through:
+    /// every tab, then none, then only the active one.
+    pub fn cycle_tab_fold(&mut self, id: WorkspaceId) {
+        if let Some(workspace) = self.workspaces.find_mut(id) {
+            workspace.tab_fold = match workspace.tab_fold {
+                TabFold::All => TabFold::Collapsed,
+                TabFold::Collapsed => TabFold::Active,
+                TabFold::Active => TabFold::All,
+            };
+        }
     }
 
     /// Move the workspace at `from` to `to`, keeping the same workspace active.
@@ -583,6 +609,7 @@ impl WorkspaceManager {
                 active: index == self.workspaces.active_index(),
                 pinned: ws.pinned,
                 closeable: (closeable || ws.kind != WorkspaceKind::Normal) && !ws.pinned,
+                tab_fold: ws.tab_fold,
                 temporary: ws.temporary,
                 kind: ws.kind,
                 terminal_progress: tabs_progress(&ws.tabs),

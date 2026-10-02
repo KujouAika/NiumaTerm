@@ -20,6 +20,7 @@ fn multi_root_summaries(roots: &[Vec<&str>]) -> Vec<WorkspaceSummary> {
             pinned: false,
             closeable: roots.len() > 1,
             temporary: false,
+            tab_fold: TabFold::All,
             kind: WorkspaceKind::Normal,
             terminal_progress: ProgressTally::default(),
         })
@@ -308,4 +309,37 @@ fn temporary_ids_include_pinned_normal_workspaces_but_not_settings() {
     manager.set_pinned(second, true);
 
     assert_eq!(manager.temporary_ids().collect::<Vec<_>>(), [second, third]);
+}
+
+#[test]
+fn a_workspace_row_folds_all_tabs_then_none_then_the_active_one() {
+    let mut manager = manager(2, false);
+
+    let fold = |manager: &WorkspaceManager| {
+        manager
+            .summaries()
+            .iter()
+            .find(|summary| summary.id == WorkspaceId(2))
+            .map(|summary| summary.tab_fold)
+    };
+
+    assert_eq!(fold(&manager), Some(TabFold::All));
+
+    manager.cycle_tab_fold(WorkspaceId(2));
+
+    assert_eq!(fold(&manager), Some(TabFold::Collapsed));
+
+    manager.cycle_tab_fold(WorkspaceId(2));
+
+    assert_eq!(fold(&manager), Some(TabFold::Active));
+
+    manager.cycle_tab_fold(WorkspaceId(2));
+
+    assert_eq!(fold(&manager), Some(TabFold::All));
+
+    // Each workspace folds on its own.
+    assert_eq!(
+        manager.summaries().first().map(|summary| summary.tab_fold),
+        Some(TabFold::All)
+    );
 }

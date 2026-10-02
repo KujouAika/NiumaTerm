@@ -131,6 +131,7 @@ pub(crate) fn session_state(
             additional_cwds: workspace.additional_cwds,
             pinned: workspace.pinned,
             active_tab: tabs.list().active_index(),
+            tab_fold: workspace.tab_fold,
             tabs: tabs
                 .list()
                 .items()
