@@ -25,7 +25,7 @@ use crate::ui::composition::{
 use crate::ui::fluent::{SELECTION_BAR_HEIGHT, SELECTION_BAR_RADIUS, SELECTION_BAR_WIDTH};
 use crate::ui::platform_style::{Host, PlatformStyle as _};
 use crate::ui::shell::{InlineRename, InlineRenameSession, InlineRenameStyle};
-use crate::ui::tab_bar::{accept_row_drops, new_tab_menu};
+use crate::ui::tab_bar::{accept_row_drops, new_tab_menu, tab_row_glyph, tab_row_icon};
 use crate::ui::workspace_sidebar::drag::{WorkspaceDrag, WorkspaceDragPreview};
 use crate::ui::workspace_sidebar::status::WorkspaceStatus;
 use crate::ui::workspace_sidebar::{
@@ -394,16 +394,24 @@ impl WorkspaceList {
 
         // In the vertical style the row folds its tab list, and a filled
         // triangle says how the way a tree's disclosure mark does: right
-        // while the tabs are folded away, down while any are listed.
+        // while the tabs are folded away, down while any are listed. It sits
+        // in the tab rows' glyph slot so it stands on their icon column and
+        // the name lines up with their labels. The fold already shows in the
+        // rows listed below, so the mark appears only while the pointer is on
+        // the row, keeping its slot so the name does not shift.
         let disclosure = vertical_tabs.then(|| {
             let icon = Icon::new(DisclosureIcon)
                 .with_size(px(DISCLOSURE_SIZE))
                 .text_color(cx.theme().sidebar_foreground.opacity(0.5));
 
-            match ws.tab_fold {
+            let icon = match ws.tab_fold {
                 TabFold::Collapsed => icon,
                 TabFold::Active | TabFold::All => icon.rotate(radians(FRAC_PI_2)),
-            }
+            };
+
+            tab_row_icon(tab_row_glyph(icon))
+                .invisible()
+                .group_hover("ws-item", |this| this.visible())
         });
 
         let drag_name = display_label.clone();
@@ -442,6 +450,9 @@ impl WorkspaceList {
                 )
             })
             .group("ws-item")
+            // The disclosure slot leads the row here, so the row takes the tab
+            // rows' inset for that slot to share their glyph column.
+            .when(vertical_tabs, |this| this.pl(px(SIDEBAR_ROW_GUTTER)))
             .child(
                 h_flex()
                     .w_full()

@@ -314,13 +314,7 @@ impl VerticalTabList {
             // once the row is found; sharing the slot also keeps the label
             // from shifting sideways the moment a tab starts working.
             .child(tab_row_icon(match (status_mark, tab.pending) {
-                (Some(mark), _) => div()
-                    .size(px(TAB_ROW_GLYPH))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(mark)
-                    .into_any_element(),
+                (Some(mark), _) => tab_row_glyph(mark).into_any_element(),
                 (None, true) => pending_tab_icon(("sidebar-tab-pending", key)).into_any_element(),
                 (None, false) => tab.icon.clone().into_any_element(),
             }))
@@ -483,6 +477,17 @@ pub(crate) fn tab_row_icon(glyph: impl IntoElement) -> Div {
         .items_center()
         .justify_start()
         .child(glyph)
+}
+
+/// Centers a mark narrower than an icon's ink in the box icons draw their ink
+/// in, so the mark stands on the icons' center line in the glyph column.
+pub(crate) fn tab_row_glyph(mark: impl IntoElement) -> Div {
+    div()
+        .size(px(TAB_ROW_GLYPH))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(mark)
 }
 
 /// Fallback drop target for a list holding tab rows: a drop released over
