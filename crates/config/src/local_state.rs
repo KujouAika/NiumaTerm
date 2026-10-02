@@ -194,6 +194,12 @@ pub struct TabState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_agent: Option<String>,
 
+    /// The id paired devices know this terminal tab by while it waits to be
+    /// started. Its shell never outlives the app, so no device can follow it
+    /// across a restart: the id is handed out on every restore, never saved.
+    #[serde(skip)]
+    pub shared_terminal: Option<String>,
+
     /// Thread controls this agent tab was last running under. Absent for a
     /// tab the user never adjusted, which reopens on its profile's defaults.
     /// Declared with `panes` below the scalars: TOML requires tables after

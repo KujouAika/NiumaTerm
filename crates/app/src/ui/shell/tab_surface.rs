@@ -204,10 +204,13 @@ impl TabSurface {
         terminal || agent
     }
 
-    /// The id paired devices know a still-pending agent tab by.
-    pub(crate) fn restoring_agent(&self) -> Option<&str> {
+    /// The id paired devices know a still-pending agent or terminal tab by.
+    pub(crate) fn pending_session(&self) -> Option<&str> {
         match self {
-            Self::Pending(state) => state.shared_agent.as_deref(),
+            Self::Pending(state) => state
+                .shared_agent
+                .as_deref()
+                .or(state.shared_terminal.as_deref()),
             _ => None,
         }
     }

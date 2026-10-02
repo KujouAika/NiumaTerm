@@ -17,8 +17,8 @@ use app::agent_tab::{
 use app::remote_control::HostControl;
 use app::terminal_tab::view::{HostShare, TerminalPane};
 use gpui::{
-    App, BorrowAppContext as _, Entity, EntityId, Global, SharedString, Subscription, Task, Window,
-    WindowId,
+    App, BorrowAppContext as _, Context, Entity, EntityId, Global, SharedString, Subscription,
+    Task, Window, WindowId,
 };
 use gpui_component::Root;
 use nmt_platform::runtime;
@@ -83,6 +83,11 @@ pub(crate) struct Remote {
     /// devices know them by: the task that restores one on a device's first
     /// request.
     restoring_agents: HashMap<String, Task<()>>,
+
+    /// The id a terminal tab was listed by while pending, set only while
+    /// that tab starts its shells: the first pane shared goes live under it,
+    /// so a device attaching to the listed id reaches the started shell.
+    listed_terminal: Option<String>,
 
     hosts: Vec<PairedHost>,
     connections: HashMap<DeviceId, Arc<RemoteHost>>,
@@ -196,6 +201,7 @@ pub(crate) fn initialize(cx: &mut App) {
         viewed_sessions: HashMap::new(),
         shared_agents: HashMap::new(),
         restoring_agents: HashMap::new(),
+        listed_terminal: None,
         hosts: load_hosts(&remote_dir()),
         connections: HashMap::new(),
         host_sessions: HashMap::new(),
@@ -791,15 +797,19 @@ pub(crate) fn share_tab(pane: &Entity<TerminalPane>, cx: &mut App) {
     let registry = Arc::clone(&cx.global::<Remote>().registry);
     let claimed_remotely = Arc::new(AtomicBool::new(false));
 
-    let session = registry.register_tab(
-        title,
-        cols,
-        rows,
-        TerminalControl {
-            messenger,
-            claimed_remotely: Arc::clone(&claimed_remotely),
-        },
-    );
+    let control = TerminalControl {
+        messenger,
+        claimed_remotely: Arc::clone(&claimed_remotely),
+    };
+
+    let session = match cx.global_mut::<Remote>().listed_terminal.take() {
+        Some(session) => {
+            registry.register_tab_as(session.clone(), title, cols, rows, control);
+
+            session
+        }
+        None => registry.register_tab(title, cols, rows, control),
+    };
 
     let on_size = {
         let registry = Arc::clone(&registry);
@@ -866,7 +876,7 @@ pub(crate) fn share_agent_tab(pane: &Entity<AgentPane>, id: Option<String>, cx: 
         (title, harness.to_owned())
     };
 
-    let id = id.unwrap_or_else(|| format!("a-{}", Uuid::new_v4().simple()));
+    let id = id.unwrap_or_else(new_shared_agent_id);
 
     // The task that held this tab's place until now forwards what it already
     // received and ends once the registry lets go of its channel.
@@ -981,6 +991,11 @@ fn host_control(registry: &Arc<SessionRegistry>, session: &str) -> HostControl {
     }
 }
 
+/// A new id to offer a host agent tab to paired devices by.
+pub(crate) fn new_shared_agent_id() -> String {
+    format!("a-{}", Uuid::new_v4().simple())
+}
+
 /// The id paired devices know a shared agent tab by, saved with the tab.
 pub(crate) fn shared_agent_id(pane: &Entity<AgentPane>, cx: &App) -> Option<String> {
     cx.global::<Remote>()
@@ -1059,11 +1074,46 @@ pub(crate) fn offer_restoring_agent(
     cx.global_mut::<Remote>().restoring_agents.insert(id, task);
 }
 
-/// Withdraw the offer of an agent tab closed before it was ever restored.
-pub(crate) fn withdraw_restoring_agent(id: &str, cx: &mut App) {
+/// List a terminal tab still waiting to be started, so paired devices see
+/// it like the tabs already running. Returns the id it is listed by, or
+/// `None` where remote sessions are not set up.
+pub(crate) fn offer_pending_terminal(title: String, cx: &App) -> Option<String> {
+    let remote = cx.try_global::<Remote>()?;
+
+    Some(remote.registry.register_pending_tab(title))
+}
+
+/// Start a terminal tab listed while pending as `id` through `start`,
+/// whose first shared pane goes live under that id.
+pub(crate) fn start_listed_terminal<R>(
+    id: Option<String>,
+    cx: &mut Context<AppWindow>,
+    start: impl FnOnce(&mut Context<AppWindow>) -> R,
+) -> R {
+    let Some(id) = id else {
+        return start(cx);
+    };
+
+    cx.global_mut::<Remote>().listed_terminal = Some(id);
+
+    let started = start(cx);
+
+    // A tab whose shells all failed shared no pane; its id is not left to
+    // be taken by an unrelated pane shared later.
+    let unclaimed = cx.global_mut::<Remote>().listed_terminal.take();
+
+    if let Some(id) = unclaimed {
+        cx.global::<Remote>().registry.unregister(&id);
+    }
+
+    started
+}
+
+/// Withdraw the offer of a tab closed before it was ever started.
+pub(crate) fn withdraw_pending_session(id: &str, cx: &mut App) {
     let remote = cx.global_mut::<Remote>();
 
-    if remote.restoring_agents.remove(id).is_some() {
+    if remote.restoring_agents.remove(id).is_some() || remote.registry.is_pending(id) {
         remote.registry.unregister(id);
     }
 }
@@ -1108,7 +1158,7 @@ pub(crate) fn sync_workspaces(window: WindowId, workspaces: &WorkspaceManager, c
             let sessions = panes
                 .iter()
                 .filter_map(|pane| remote.session_of(*pane))
-                .chain(surface.restoring_agent());
+                .chain(surface.pending_session());
 
             for session in sessions {
                 remote
@@ -1457,7 +1507,48 @@ fn answer_host(request: HostRequest, cx: &mut App) {
         HostRequest::CloseSession { session, reply } => {
             let _ = reply.send(close_for_device(&session, cx));
         }
+        HostRequest::StartTab { session, reply } => {
+            let _ = reply.send(start_for_device(&session, cx));
+        }
     }
+}
+
+/// Start the pending tab listed as `session` for a paired device that is
+/// attaching to it, in whichever window holds it, without switching to it:
+/// the person at the host keeps what they are looking at.
+fn start_for_device(session: &str, cx: &mut App) -> Result<(), String> {
+    // Two devices attaching at once both ask; the second finds the tab
+    // started by the first, and its attach reaches the live session.
+    if !cx.global::<Remote>().registry.is_pending(session) {
+        return Ok(());
+    }
+
+    let windows: Vec<_> = cx
+        .global::<WindowRegistry>()
+        .windows()
+        .iter()
+        .map(|entry| (entry.handle, entry.view.clone()))
+        .collect();
+
+    for (handle, view) in windows {
+        let started = handle
+            .update(cx, |_, window, cx| {
+                view.update(cx, |app, cx| app.start_pending_tab(session, window, cx))
+            })
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+
+        if started {
+            return Ok(());
+        }
+    }
+
+    // No window holds the tab any more, as after its window closed, so the
+    // listing goes too rather than failing every attach.
+    withdraw_pending_session(session, cx);
+
+    Err(format!("no tab here shows {session}"))
 }
 
 /// Close the tab pane showing a host session a paired device asked to end,

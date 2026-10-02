@@ -548,6 +548,24 @@ impl AppWindow {
         cx.observe_window_activation(window, Self::on_window_activation)
             .detach();
 
+        // A running tab's pane withdraws its session from paired devices as
+        // it is released, but a tab still waiting to be started has no pane,
+        // so the window withdraws those as it goes; a closed window's tabs
+        // would otherwise stay listed with nothing left to start.
+        cx.on_release(|this, cx| {
+            let pending: Vec<String> = this
+                .workspaces
+                .all_tabs()
+                .flat_map(|tabs| tabs.list().items())
+                .filter_map(|tab| tab.surface().pending_session().map(str::to_owned))
+                .collect();
+
+            for id in pending {
+                ui::remote::withdraw_pending_session(&id, cx);
+            }
+        })
+        .detach();
+
         let default_profile = cx.global::<AppSettings>().default_profile_command();
         let registry_entry = cx.global::<WindowRegistry>().get(window_id);
 
@@ -1333,8 +1351,8 @@ impl AppWindow {
             pane.read(cx).end_remote_session();
         }
 
-        if let Some(shared) = tree.restoring_agent() {
-            ui::remote::withdraw_restoring_agent(shared, cx);
+        if let Some(shared) = tree.pending_session() {
+            ui::remote::withdraw_pending_session(shared, cx);
         }
 
         let return_to = tree.git().and_then(|git| git.return_to);
@@ -1677,7 +1695,7 @@ impl AppWindow {
             .tabs_of(id)
             .into_iter()
             .flat_map(|tabs| tabs.list().items())
-            .filter_map(|tab| tab.surface().restoring_agent().map(str::to_owned))
+            .filter_map(|tab| tab.surface().pending_session().map(str::to_owned))
             .collect();
 
         // A host terminal opened from a tab here ends with that tab, which
@@ -1701,7 +1719,7 @@ impl AppWindow {
             }
 
             for shared in restoring {
-                ui::remote::withdraw_restoring_agent(&shared, cx);
+                ui::remote::withdraw_pending_session(&shared, cx);
             }
 
             for pane in panes {
@@ -2307,7 +2325,7 @@ impl AppWindow {
             .find(|tab| {
                 let surface = tab.surface();
 
-                surface.restoring_agent() == Some(session)
+                surface.pending_session() == Some(session)
                     || pane.is_some_and(|pane| surface.pane_ids().contains(&pane))
             })
             .map(|tab| {
@@ -3617,8 +3635,9 @@ impl AppWindow {
 
     /// Start the still-pending tab that paired devices know by `id`, in
     /// place and without activating it, because a device asked for the
-    /// agent session it holds. Returns whether such a tab was started.
-    pub(crate) fn restore_shared_agent(
+    /// agent or terminal session it holds. Returns whether such a tab was
+    /// started.
+    pub(crate) fn start_pending_tab(
         &mut self,
         id: &str,
         window: &mut Window,
@@ -3626,7 +3645,7 @@ impl AppWindow {
     ) -> bool {
         let Some(tab) = self
             .workspaces
-            .find_tab_id(|surface| surface.restoring_agent() == Some(id))
+            .find_tab_id(|surface| surface.pending_session() == Some(id))
         else {
             return false;
         };

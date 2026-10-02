@@ -241,15 +241,11 @@ fn a_view_survives_a_dropped_link_and_resumes_from_a_checkpoint() {
     });
 }
 
-#[test]
-fn host_tabs_are_listed_attachable_and_not_closable_remotely() {
-    let host_dir = tempfile::tempdir().unwrap();
-    let registry = SessionRegistry::new();
-    let host = start_host(&host_dir, Arc::clone(&registry));
+/// The terminal session of a host tab, which the host owns and registers.
+fn host_tab_session() -> SessionHandles {
     let (shell, args) = test_shell();
 
-    // A host tab: the host owns the session and registers it.
-    let tab: SessionHandles = start_session(
+    start_session(
         create_pty_with_env(PtyOptions {
             shell: shell.as_deref().unwrap(),
             args: &args,
@@ -273,7 +269,17 @@ fn host_tabs_are_listed_attachable_and_not_closable_remotely() {
             terminal_responses: true,
         },
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn host_tabs_are_listed_attachable_and_not_closable_remotely() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    // A host tab: the host owns the session and registers it.
+    let tab = host_tab_session();
 
     let session = registry.register_tab(
         "Tab".into(),
@@ -310,6 +316,88 @@ fn host_tabs_are_listed_attachable_and_not_closable_remotely() {
     });
 
     registry.unregister(&session);
+}
+
+#[test]
+fn a_device_attaching_to_a_pending_host_tab_starts_it_under_its_listed_id() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let registry = SessionRegistry::new();
+    let host = start_host(&host_dir, Arc::clone(&registry));
+
+    let session = registry.register_pending_tab("Pending".into());
+
+    let (requests, mut requests_rx) = mpsc::unbounded_channel();
+
+    registry.serve_host_requests(requests);
+
+    // The application starts the tab's shell when asked, as activating the
+    // tab on the host would, and offers it under the id it was listed by.
+    let started = Arc::clone(&registry);
+
+    runtime().spawn(async move {
+        let mut tabs = Vec::new();
+
+        while let Some(request) = requests_rx.recv().await {
+            if let HostRequest::StartTab { session, reply } = request {
+                let tab = host_tab_session();
+
+                started.register_tab_as(
+                    session,
+                    "Started".into(),
+                    80,
+                    24,
+                    TerminalControl {
+                        messenger: tab.messenger.clone(),
+                        claimed_remotely: Arc::new(AtomicBool::new(false)),
+                    },
+                );
+
+                tabs.push(tab);
+
+                let _ = reply.send(Ok(()));
+            }
+        }
+    });
+
+    let (paired, key) = runtime().block_on(paired_client(&host));
+    let remote = remote(paired, key);
+
+    runtime().block_on(async {
+        let sessions = remote.list_sessions().await.unwrap();
+
+        assert!(sessions.iter().any(|info| info.session == session
+            && info.origin == Origin::Tab
+            && info.kind == SessionKind::Terminal));
+    });
+
+    let mut pty = remote.view(session.clone());
+
+    runtime().block_on(async {
+        run_marker(&mut pty, "PENDING").await;
+
+        assert!(!registry.is_pending(&session));
+
+        let listed: Vec<_> = registry
+            .list()
+            .into_iter()
+            .filter(|info| info.session == session)
+            .collect();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "Started");
+    });
+
+    registry.unregister(&session);
+}
+
+#[test]
+fn terminal_ids_of_a_restarted_host_never_repeat_the_previous_run() {
+    let before = SessionRegistry::new().register_pending_tab("Tab".into());
+    let after = SessionRegistry::new().register_pending_tab("Tab".into());
+
+    // Both runs list their first tab, which once shared the id `t1`; a
+    // device still holding the old id must not start the new run's tab.
+    assert_ne!(before, after);
 }
 
 #[test]
@@ -895,6 +983,9 @@ fn a_device_lists_what_it_may_start_and_opens_an_agent_on_the_host() {
                     }
                     HostRequest::CloseSession { reply, .. } => {
                         let _ = reply.send(Err("not closed in this test".into()));
+                    }
+                    HostRequest::StartTab { reply, .. } => {
+                        let _ = reply.send(Err("not started in this test".into()));
                     }
                 }
             }

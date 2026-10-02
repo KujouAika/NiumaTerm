@@ -30,7 +30,10 @@ use crate::tabs::{TabId, TabManager};
 use crate::ui::AppWindow;
 use crate::ui::git_sidebar::GitSidebar;
 use crate::ui::pane_tree::{PaneId, PaneNode, PaneTree};
-use crate::ui::remote::{offer_restoring_agent, paired_host_name, restore_agent, restore_view};
+use crate::ui::remote::{
+    new_shared_agent_id, offer_pending_terminal, offer_restoring_agent, paired_host_name,
+    restore_agent, restore_view, start_listed_terminal,
+};
 use crate::ui::settings::{AgentProfile, AppSettings, builtin_agent_profile};
 use crate::ui::shell::tab_surface::{AgentTab, GitTab, TerminalPaneTree};
 use crate::ui::shell::{TabSurface, agent_workspace};
@@ -309,9 +312,7 @@ fn offer_restoring_agents(
         let restore = move |cx: &mut App| {
             handle
                 .update(cx, |_, window, cx| {
-                    this.update(cx, |this, cx| {
-                        this.restore_shared_agent(&restored, window, cx)
-                    })
+                    this.update(cx, |this, cx| this.start_pending_tab(&restored, window, cx))
                 })
                 .is_ok_and(|restored| restored.unwrap_or(false))
         };
@@ -481,7 +482,13 @@ fn restored_surface(
                 },
             }
         }
-        SavedTab::Terminal => TabSurface::Live(restore_terminal_tree(state, next_id, cx)),
+        SavedTab::Terminal => {
+            let listed = state.shared_terminal.clone();
+
+            TabSurface::Live(start_listed_terminal(listed, cx, |cx| {
+                restore_terminal_tree(state, next_id, cx)
+            }))
+        }
     }
 }
 
@@ -592,7 +599,16 @@ fn restore_tabs(
             // host's own list reopens it, so it does not come back here as
             // a tab that passes for a local one.
             SavedTab::Remote(..) => continue,
-            SavedTab::Git(_) | SavedTab::Team(_) | SavedTab::Agent(_) => {}
+            // A pending tab re-saves its snapshot unchanged, so an agent tab
+            // saved before it was ever offered would stay unlisted on paired
+            // devices until someone here activates it. A fresh id offers it
+            // now, and the tab keeps that id once it goes live.
+            SavedTab::Agent(_) => {
+                tab_state
+                    .shared_agent
+                    .get_or_insert_with(new_shared_agent_id);
+            }
+            SavedTab::Git(_) | SavedTab::Team(_) => {}
         }
 
         let name = tab_state
@@ -631,6 +647,14 @@ fn restore_tabs(
         // The title the tab's content last reported labels it until it
         // spawns and reports its own.
         let title = tab_state.title.clone();
+
+        // Paired devices list a terminal tab while its shell waits to start,
+        // under the title a running one would report.
+        if let SavedTab::Terminal = saved_tab(&tab_state) {
+            let listed = title.clone().unwrap_or_else(|| default_title.clone());
+
+            tab_state.shared_terminal = offer_pending_terminal(listed, cx);
+        }
 
         restored.push((
             TabSurface::Pending(Box::new(tab_state)),

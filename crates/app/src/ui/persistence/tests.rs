@@ -48,6 +48,7 @@ fn tab(shell: Option<&str>, args: &[&str]) -> TabState {
         remote_host: None,
         remote_session: None,
         shared_agent: None,
+        shared_terminal: None,
         agent_settings: None,
         panes: None,
         grid_size: None,

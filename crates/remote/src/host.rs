@@ -179,6 +179,10 @@ struct Connection {
 
     /// The task forwarding each attached agent view's changes.
     agents: HashMap<String, AbortHandle>,
+
+    /// Terminal attaches to host tabs the application has just started, by
+    /// request id, to be handled again now that the session is live.
+    started: UnboundedSender<(u64, Value)>,
 }
 
 impl HostService {
@@ -570,23 +574,13 @@ impl Connection {
                     self.agent_request(id, &method, params);
                 }
                 Ok(Control::Request { id, method, params }) => {
-                    let outcome = self.request(&method, params);
-
-                    self.queue.send(Outbound::new(
-                        CONTROL_STREAM,
-                        kind::CONTROL_JSON,
-                        Control::Response { id, outcome }.encode(),
-                    ));
-
-                    if let Some((stream, session, control, size)) = self.pending_attach.take() {
-                        let flow = StreamFlow::attach(stream, &control, size, self.queue.clone());
-
-                        self.shared
-                            .config
-                            .registry
-                            .add_viewer(&session, self.viewer.clone());
-
-                        self.streams.insert(stream, (session, flow));
+                    if method == rpc::TERMINAL_ATTACH
+                        && let Ok(SessionRef { session }) = parse(params.clone())
+                        && self.shared.config.registry.is_pending(&session)
+                    {
+                        self.start_then_attach(id, session, params);
+                    } else {
+                        self.answer(id, &method, params);
                     }
                 }
                 // Clients send only requests in this protocol revision.
@@ -601,6 +595,73 @@ impl Connection {
             // Unknown frame kinds come from a newer peer and are skipped.
             _ => {}
         }
+    }
+
+    /// Answer a request handled in order with the others, then start the
+    /// terminal stream an attach set up, which must follow its response.
+    fn answer(&mut self, id: u64, method: &str, params: Value) {
+        let outcome = self.request(method, params);
+
+        self.queue.send(Outbound::new(
+            CONTROL_STREAM,
+            kind::CONTROL_JSON,
+            Control::Response { id, outcome }.encode(),
+        ));
+
+        if let Some((stream, session, control, size)) = self.pending_attach.take() {
+            let flow = StreamFlow::attach(stream, &control, size, self.queue.clone());
+
+            self.shared
+                .config
+                .registry
+                .add_viewer(&session, self.viewer.clone());
+
+            self.streams.insert(stream, (session, flow));
+        }
+    }
+
+    /// Attach to a host tab whose shell has not started yet. The tab lives
+    /// on the UI thread, so the application starts it there, and the attach
+    /// is handled again once the session is live under the same id.
+    fn start_then_attach(&mut self, id: u64, session: String, params: Value) {
+        let queue = self.queue.clone();
+        let registry = Arc::clone(&self.shared.config.registry);
+        let started = self.started.clone();
+
+        let Some(host) = registry.host_requests() else {
+            return respond(&queue, id, Err(RpcError::new(ErrorCode::NotFound, session)));
+        };
+
+        let (reply, answer) = oneshot::channel();
+
+        if host
+            .send(HostRequest::StartTab {
+                session: session.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return respond(&queue, id, Err(RpcError::new(ErrorCode::NotFound, session)));
+        }
+
+        tokio::spawn(async move {
+            // A tab still listed as pending after starting would send the
+            // attach around again forever, so it fails instead.
+            let outcome = match answer.await {
+                Ok(Ok(())) if !registry.is_pending(&session) => {
+                    if started.send((id, params)).is_ok() {
+                        return;
+                    }
+
+                    Err(RpcError::new(ErrorCode::Internal, "the channel closed"))
+                }
+                Ok(Ok(())) => Err(RpcError::new(ErrorCode::Internal, "the tab did not start")),
+                Ok(Err(message)) => Err(RpcError::new(ErrorCode::NotFound, message)),
+                Err(_) => Err(RpcError::new(ErrorCode::Internal, "the host stopped")),
+            };
+
+            respond(&queue, id, outcome);
+        });
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
@@ -1387,6 +1448,7 @@ where
     (shared.config.on_change)();
 
     let (kicks, mut kicks_rx) = mpsc::unbounded_channel();
+    let (started, mut started_rx) = mpsc::unbounded_channel();
 
     let mut connection = Connection {
         shared: Arc::clone(&shared),
@@ -1400,6 +1462,7 @@ where
         next_stream: 1,
         pending_attach: None,
         agents: HashMap::new(),
+        started,
     };
 
     loop {
@@ -1409,6 +1472,9 @@ where
                 None => break,
             },
             Some(kick) = kicks_rx.recv() => connection.kicked(kick),
+            Some((id, params)) = started_rx.recv() => {
+                connection.answer(id, rpc::TERMINAL_ATTACH, params);
+            }
         }
     }
 

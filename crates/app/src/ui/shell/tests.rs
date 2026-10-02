@@ -203,6 +203,7 @@ fn session_state() -> SessionState {
                 remote_host: None,
                 remote_session: None,
                 shared_agent: None,
+                shared_terminal: None,
                 agent_settings: None,
                 panes: None,
                 grid_size: None,

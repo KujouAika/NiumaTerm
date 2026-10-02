@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use nmt_config::{CursorShape, active_colors};
@@ -70,6 +71,12 @@ pub enum HostRequest {
         session: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Start the host tab still waiting to be started under `session`, so a
+    /// device can attach to its terminal. The error explains a refusal.
+    StartTab {
+        session: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 struct AgentEntry {
@@ -89,12 +96,24 @@ pub struct SessionRegistry {
     /// Bumped when the person at the host uses it, which tells the host
     /// that paired devices away from it are no longer being carried around.
     local_use: watch::Sender<u64>,
+
+    /// Drawn once per registry and put in every terminal id. Ids count up
+    /// from one in every run of the host, so without it an id a device kept
+    /// across a host restart would reach whichever terminal took its number,
+    /// or start a pending tab nobody asked for.
+    run: String,
 }
 
 #[derive(Default)]
 struct Inner {
     sessions: BTreeMap<String, Entry>,
     agents: BTreeMap<String, AgentEntry>,
+
+    /// Host terminal tabs listed before their shells start. A host restores
+    /// only the tab in front and starts the rest when they are first shown,
+    /// and paired devices list them all the same.
+    pending: BTreeMap<String, SessionInfo>,
+
     next: u64,
 
     /// Paired devices viewing each session, one entry per open view, so a
@@ -148,7 +167,17 @@ impl SessionRegistry {
             changed: watch::channel(0).0,
             viewers_changed: watch::channel(0).0,
             local_use: watch::channel(0).0,
+            run: run_tag(),
         })
+    }
+
+    /// A new terminal id, `prefix` telling host tabs from headless ones.
+    fn next_id(&self, prefix: char) -> String {
+        let mut inner = self.inner.lock();
+
+        inner.next += 1;
+
+        format!("{prefix}{}-{}", self.run, inner.next)
     }
 
     /// Offer a host tab's terminal. Returns its session id.
@@ -160,6 +189,66 @@ impl SessionRegistry {
         control: TerminalControl,
     ) -> String {
         self.insert(Origin::Tab, title, cols, rows, control, None)
+    }
+
+    /// List a host terminal tab whose shell has not started yet. Returns its
+    /// session id, which the tab goes live under through `register_tab_as`.
+    pub fn register_pending_tab(&self, title: String) -> String {
+        let session = self.next_id('t');
+
+        self.inner.lock().pending.insert(
+            session.clone(),
+            SessionInfo {
+                session: session.clone(),
+                title,
+                origin: Origin::Tab,
+                cols: 0,
+                rows: 0,
+                kind: SessionKind::Terminal,
+                harness: None,
+                workspace: None,
+            },
+        );
+
+        self.notify();
+
+        session
+    }
+
+    /// Offer a host tab's terminal under `session`, the id it was listed by
+    /// while it waited to be started. The tab keeps the workspace it was
+    /// listed under, so devices do not see it move while the host renders.
+    pub fn register_tab_as(
+        &self,
+        session: String,
+        title: String,
+        cols: u16,
+        rows: u16,
+        control: TerminalControl,
+    ) {
+        let workspace = self
+            .inner
+            .lock()
+            .pending
+            .remove(&session)
+            .and_then(|info| info.workspace);
+
+        self.insert_with_id(
+            session.clone(),
+            Origin::Tab,
+            title,
+            cols,
+            rows,
+            control,
+            None,
+        );
+
+        self.set_workspace(&session, workspace);
+    }
+
+    /// Whether `session` is a host tab still waiting to be started.
+    pub fn is_pending(&self, session: &str) -> bool {
+        self.inner.lock().pending.contains_key(session)
     }
 
     /// Offer a host agent tab under `session`, which the tab keeps across
@@ -223,6 +312,8 @@ impl SessionRegistry {
     fn remove(&self, session: &str, kick_viewers: bool) {
         let (terminal, agent, viewers) = {
             let mut inner = self.inner.lock();
+
+            inner.pending.remove(session);
 
             (
                 inner.sessions.remove(session),
@@ -365,12 +456,14 @@ impl SessionRegistry {
 
         let inner = &mut *inner;
 
-        let info = match inner.sessions.get_mut(session) {
-            Some(entry) => &mut entry.info,
-            None => match inner.agents.get_mut(session) {
-                Some(entry) => &mut entry.info,
-                None => return,
-            },
+        let info = if let Some(entry) = inner.sessions.get_mut(session) {
+            &mut entry.info
+        } else if let Some(entry) = inner.agents.get_mut(session) {
+            &mut entry.info
+        } else if let Some(info) = inner.pending.get_mut(session) {
+            info
+        } else {
+            return;
         };
 
         if change(info) {
@@ -386,6 +479,7 @@ impl SessionRegistry {
             .values()
             .map(|entry| entry.info.clone())
             .chain(inner.agents.values().map(|entry| entry.info.clone()))
+            .chain(inner.pending.values().cloned())
             .collect()
     }
 
@@ -448,6 +542,7 @@ impl SessionRegistry {
             .get(session)
             .map(|entry| entry.info.origin)
             .or_else(|| inner.agents.get(session).map(|entry| entry.info.origin))
+            .or_else(|| inner.pending.get(session).map(|info| info.origin))
     }
 
     /// Resize a session's PTY for a remote view.
@@ -572,13 +667,7 @@ impl SessionRegistry {
         })
         .map_err(|error| anyhow!("starting {program}: {error}"))?;
 
-        let session = {
-            let mut inner = self.inner.lock();
-
-            inner.next += 1;
-
-            format!("r{}", inner.next)
-        };
+        let session = self.next_id('r');
 
         // The host engine answers terminal queries next to the PTY, so the
         // program gets exactly one reply without a network round trip.
@@ -636,13 +725,7 @@ impl SessionRegistry {
         control: TerminalControl,
         worker: Option<SessionWorker>,
     ) -> String {
-        let session = {
-            let mut inner = self.inner.lock();
-
-            inner.next += 1;
-
-            format!("t{}", inner.next)
-        };
+        let session = self.next_id('t');
 
         self.insert_with_id(session.clone(), origin, title, cols, rows, control, worker);
 
@@ -684,6 +767,21 @@ impl SessionRegistry {
     fn notify(&self) {
         self.changed.send_modify(|version| *version += 1);
     }
+}
+
+/// Eight hex digits from the system's random source, falling back to the
+/// clock, which still differs between two runs of the host.
+fn run_tag() -> String {
+    let mut bytes = [0; 4];
+
+    if getrandom::fill(&mut bytes).is_err() {
+        bytes = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.subsec_nanos())
+            .to_le_bytes();
+    }
+
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Tell each channel among `viewers` once that its views of `session` end.
