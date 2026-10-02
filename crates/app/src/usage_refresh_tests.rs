@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use futures::FutureExt as _;
 use futures::executor::block_on;
 use futures::future::{BoxFuture, ready};
-use nmt_agent::usage::FetchCancellation;
+use nmt_agent::usage::{FetchCancellation, UsageFetchError};
 
-use crate::usage_refresh::{Completion, FetchError, Refresh, UsageSource};
+use crate::usage_refresh::{Completion, Refresh, UsageSource};
 
 #[test]
 fn disabling_and_reenabling_waits_for_cancelled_work_then_retries() {
@@ -45,7 +45,7 @@ fn failed_refresh_retains_the_last_value_until_a_later_success() {
 
     let source: UsageSource<i32> = Arc::new(move |_: Arc<FetchCancellation>| {
         ready(if calls.fetch_add(1, Ordering::Relaxed) == 0 {
-            Err(FetchError::Failed("unavailable".into()))
+            Err(UsageFetchError::Failed("unavailable".into()))
         } else {
             Ok(9)
         })
@@ -74,7 +74,7 @@ fn dropping_refresh_cancels_queued_work_without_starting_the_source() {
     let mut refresh = Refresh::new(
         0,
         Arc::new(
-            |_: Arc<FetchCancellation>| -> BoxFuture<'static, Result<i32, FetchError>> {
+            |_: Arc<FetchCancellation>| -> BoxFuture<'static, Result<i32, UsageFetchError>> {
                 panic!("cancelled source must not start")
             },
         ),

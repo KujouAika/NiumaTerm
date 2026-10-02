@@ -183,7 +183,7 @@ Start-Sleep -Seconds 30
         .unwrap()
         .unwrap_err();
 
-    assert!(error.contains("cancelled"));
+    assert!(matches!(error, UsageFetchError::Cancelled));
 
     worker.join().unwrap();
 }

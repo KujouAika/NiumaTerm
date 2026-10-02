@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use futures::executor::block_on;
 use futures::future::BoxFuture;
-use nmt_agent::usage::FetchCancellation;
+use nmt_agent::usage::{FetchCancellation, UsageFetchError};
 
 use crate::agent_usage::*;
-use crate::usage_refresh::FetchError;
 
 #[gpui::test]
 fn changing_usage_launcher_discards_the_previous_request(cx: &mut gpui::TestAppContext) {
@@ -26,7 +25,7 @@ fn changing_usage_launcher_discards_the_previous_request(cx: &mut gpui::TestAppC
                     updated_at: Some(123),
                     ..UsageSnapshot::default()
                 },
-                Arc::new(|_: Arc<FetchCancellation>| -> BoxFuture<'static, Result<UsageSnapshot, FetchError>> {
+                Arc::new(|_: Arc<FetchCancellation>| -> BoxFuture<'static, Result<UsageSnapshot, UsageFetchError>> {
                     panic!("cancelled source must not run")
                 }),
                 true,

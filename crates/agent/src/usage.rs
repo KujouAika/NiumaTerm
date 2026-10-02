@@ -1,5 +1,7 @@
 //! Provider-neutral subscription-limit data used by compact usage surfaces.
 
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -88,6 +90,35 @@ impl UsageSnapshot {
 /// Cancellation of a usage fetch. The owner cancels it synchronously, and the
 /// running fetch races its body against it, so a cancelled fetch stops at once.
 pub type FetchCancellation = CancellationToken;
+
+/// Why a usage fetch produced no snapshot. Cancellation is its own variant
+/// because callers treat it differently from failure: a cancelled fetch was
+/// abandoned deliberately and may be worth restarting, while a failed one is
+/// worth reporting. A message string cannot carry that distinction without the
+/// caller comparing against its exact wording, which then breaks silently the
+/// first time the wording changes.
+#[derive(Debug)]
+pub enum UsageFetchError {
+    Cancelled,
+    Failed(String),
+}
+
+impl fmt::Display for UsageFetchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UsageFetchError::Cancelled => formatter.write_str("usage request cancelled"),
+            UsageFetchError::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+/// Lets the `?` operator lift a provider's `Result<_, String>` helpers, whose
+/// failures are all genuine failures rather than cancellations.
+impl From<String> for UsageFetchError {
+    fn from(message: String) -> Self {
+        UsageFetchError::Failed(message)
+    }
+}
 
 pub fn now_unix_millis() -> i64 {
     Utc::now().timestamp_millis()

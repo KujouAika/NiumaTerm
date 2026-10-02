@@ -5,11 +5,11 @@
 #[path = "usage_fetcher_tests.rs"]
 mod usage_fetcher_tests;
 
+use std::env;
 use std::future::poll_fn;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 use std::time::Duration;
-use std::{env, fmt};
 
 use futures::FutureExt as _;
 use nmt_net::http_client;
@@ -24,8 +24,8 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::claude_code::config_home;
 use crate::usage::{
-    FIVE_HOUR_WINDOW_MINUTES, FetchCancellation, UsageSnapshot, UsageWindow, WEEKLY_WINDOW_MINUTES,
-    parse_timestamp_millis,
+    FIVE_HOUR_WINDOW_MINUTES, FetchCancellation, UsageFetchError, UsageSnapshot, UsageWindow,
+    WEEKLY_WINDOW_MINUTES, parse_timestamp_millis,
 };
 
 const OAUTH_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -78,35 +78,6 @@ const CLI_STOP_MARKERS: &[&str] = &[
     "current session",
     "failed to load usage data",
 ];
-
-/// Why a usage fetch produced no snapshot. Cancellation is its own variant
-/// because callers treat it differently from failure: a cancelled fetch was
-/// abandoned deliberately and may be worth restarting, while a failed one is
-/// worth reporting. A message string cannot carry that distinction without the
-/// caller comparing against its exact wording, which then breaks silently the
-/// first time the wording changes.
-#[derive(Debug)]
-pub enum UsageFetchError {
-    Cancelled,
-    Failed(String),
-}
-
-impl fmt::Display for UsageFetchError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UsageFetchError::Cancelled => formatter.write_str("Claude usage request cancelled"),
-            UsageFetchError::Failed(message) => formatter.write_str(message),
-        }
-    }
-}
-
-/// Lets the `?` operator lift this module's `Result<_, String>` helpers, whose
-/// failures are all genuine failures rather than cancellations.
-impl From<String> for UsageFetchError {
-    fn from(message: String) -> Self {
-        UsageFetchError::Failed(message)
-    }
-}
 
 #[derive(Debug)]
 enum OAuthFetchError {

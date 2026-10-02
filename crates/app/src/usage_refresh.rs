@@ -5,17 +5,13 @@ mod usage_refresh_tests;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use nmt_agent::usage::FetchCancellation;
-
-pub(crate) enum FetchError {
-    Cancelled,
-    Failed(String),
-}
+use nmt_agent::usage::{FetchCancellation, UsageFetchError};
 
 /// A fetch waits on processes and the network, so it runs on the shared
 /// runtime and observes its cancellation there.
-pub(crate) type UsageSource<T> =
-    Arc<dyn Fn(Arc<FetchCancellation>) -> BoxFuture<'static, Result<T, FetchError>> + Send + Sync>;
+pub(crate) type UsageSource<T> = Arc<
+    dyn Fn(Arc<FetchCancellation>) -> BoxFuture<'static, Result<T, UsageFetchError>> + Send + Sync,
+>;
 
 pub(crate) struct Refresh<T> {
     pub(crate) value: T,
@@ -32,7 +28,7 @@ pub(crate) struct Fetch<T> {
 
 pub(crate) struct Fetched<T> {
     cancelled: Arc<FetchCancellation>,
-    result: Result<T, FetchError>,
+    result: Result<T, UsageFetchError>,
 }
 
 pub(crate) enum Completion {
@@ -45,7 +41,7 @@ pub(crate) enum Completion {
 impl<T> Fetch<T> {
     pub(crate) async fn run(self) -> Fetched<T> {
         let result = if self.cancelled.is_cancelled() {
-            Err(FetchError::Cancelled)
+            Err(UsageFetchError::Cancelled)
         } else {
             (self.source)(Arc::clone(&self.cancelled)).await
         };
@@ -121,12 +117,12 @@ impl<T> Refresh<T> {
 
                 Completion::Updated
             }
-            Err(FetchError::Failed(message)) => {
+            Err(UsageFetchError::Failed(message)) => {
                 self.failed = true;
 
                 Completion::Failed(message)
             }
-            Err(FetchError::Cancelled) => {
+            Err(UsageFetchError::Cancelled) => {
                 if self.enabled {
                     Completion::Retry
                 } else {

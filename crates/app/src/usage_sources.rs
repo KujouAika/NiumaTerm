@@ -3,30 +3,22 @@ use std::sync::Arc;
 use app::agent_tab::profile::agent_launch;
 use chrono::Local;
 use futures::FutureExt as _;
-use nmt_agent::claude_code::usage_fetcher::{UsageFetchError, fetch_with_cancel};
+use nmt_agent::claude_code::usage_fetcher::fetch_with_cancel;
 use nmt_agent::codex::usage_fetcher::fetch;
 use nmt_agent::launcher::AgentCli;
-use nmt_agent::usage::{FetchCancellation, UsageSnapshot};
+use nmt_agent::usage::{FetchCancellation, UsageFetchError, UsageSnapshot};
 use nmt_config::profile::AgentKind;
 use nmt_platform::process::{decode_child_output, hidden_cmd_command, output};
 
 use crate::daily_usage::{DailyTokenUsage, parse_usage};
 use crate::ui::AppSettings;
-use crate::usage_refresh::{FetchError, UsageSource};
+use crate::usage_refresh::UsageSource;
 
 pub(crate) fn account_sources(launcher: AgentCli) -> [UsageSource<UsageSnapshot>; 2] {
     [
         codex_source(launcher),
         Arc::new(|cancellation: Arc<FetchCancellation>| {
-            async move {
-                fetch_with_cancel(&cancellation)
-                    .await
-                    .map_err(|error| match error {
-                        UsageFetchError::Cancelled => FetchError::Cancelled,
-                        UsageFetchError::Failed(message) => FetchError::Failed(message),
-                    })
-            }
-            .boxed()
+            async move { fetch_with_cancel(&cancellation).await }.boxed()
         }),
     ]
 }
@@ -57,12 +49,7 @@ pub(crate) fn codex_source(launcher: AgentCli) -> UsageSource<UsageSnapshot> {
     Arc::new(move |cancellation: Arc<FetchCancellation>| {
         let launcher = launcher.clone();
 
-        async move {
-            fetch(&launcher, &cancellation)
-                .await
-                .map_err(FetchError::Failed)
-        }
-        .boxed()
+        async move { fetch(&launcher, &cancellation).await }.boxed()
     })
 }
 
@@ -70,7 +57,7 @@ pub(crate) fn daily_source() -> UsageSource<Option<DailyTokenUsage>> {
     Arc::new(|_| fetch_daily_usage().boxed())
 }
 
-async fn fetch_daily_usage() -> Result<Option<DailyTokenUsage>, FetchError> {
+async fn fetch_daily_usage() -> Result<Option<DailyTokenUsage>, UsageFetchError> {
     let now = Local::now();
     let since = now.format("%Y%m%d").to_string();
     let date = now.format("%Y-%m-%d").to_string();
@@ -81,10 +68,10 @@ async fn fetch_daily_usage() -> Result<Option<DailyTokenUsage>, FetchError> {
 
     let output = output(command)
         .await
-        .map_err(|error| FetchError::Failed(format!("failed to run ccusage: {error}")))?;
+        .map_err(|error| UsageFetchError::Failed(format!("failed to run ccusage: {error}")))?;
 
     if !output.status.success() {
-        return Err(FetchError::Failed(format!(
+        return Err(UsageFetchError::Failed(format!(
             "ccusage exited with {}: {}",
             output.status,
             decode_child_output(&output.stderr).trim()
@@ -93,7 +80,7 @@ async fn fetch_daily_usage() -> Result<Option<DailyTokenUsage>, FetchError> {
 
     parse_usage(&output.stdout, &date)
         .map(Some)
-        .map_err(FetchError::Failed)
+        .map_err(UsageFetchError::Failed)
 }
 
 #[cfg(test)]

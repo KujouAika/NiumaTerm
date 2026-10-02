@@ -15,8 +15,8 @@ use tokio::time::timeout;
 use crate::launcher::AgentCli;
 use crate::subprocess::{DROP_SHUTDOWN_GRACE, JsonLineProcess, OUTPUT_FAILURE_METHOD};
 use crate::usage::{
-    FIVE_HOUR_WINDOW_MINUTES, FetchCancellation, UsageResetCredits, UsageSnapshot, UsageWindow,
-    WEEKLY_WINDOW_MINUTES, parse_timestamp_millis,
+    FIVE_HOUR_WINDOW_MINUTES, FetchCancellation, UsageFetchError, UsageResetCredits, UsageSnapshot,
+    UsageWindow, WEEKLY_WINDOW_MINUTES, parse_timestamp_millis,
 };
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -24,9 +24,9 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 pub async fn fetch(
     launcher: &AgentCli,
     cancellation: &FetchCancellation,
-) -> Result<UsageSnapshot, String> {
+) -> Result<UsageSnapshot, UsageFetchError> {
     if cancellation.is_cancelled() {
-        return Err("Codex usage request cancelled".into());
+        return Err(UsageFetchError::Cancelled);
     }
 
     let command = launcher.command([
@@ -61,17 +61,12 @@ pub async fn fetch(
         || {},
     )?;
 
-    let result = cancellation
+    let read = cancellation
         .run_until_cancelled(timeout(
             FETCH_TIMEOUT,
             read_rate_limits(&mut process, &mut rx),
         ))
-        .await
-        .map_or_else(
-            || Err("Codex usage request cancelled".to_string()),
-            |read| read.unwrap_or_else(|_| Err("Codex app-server timed out".into())),
-        )
-        .map(UsageSnapshot::with_updated_now);
+        .await;
 
     drop(rx);
 
@@ -83,17 +78,21 @@ pub async fn fetch(
 
     let _ = process.shutdown(grace, true).await;
 
-    result.map_err(|error| {
-        let stderr = stderr.lock();
-        let stderr = stderr.trim();
-        let error = launcher.redact(&error);
+    let error = match read {
+        None => return Err(UsageFetchError::Cancelled),
+        Some(Ok(Ok(usage))) => return Ok(usage.with_updated_now()),
+        Some(Ok(Err(error))) => launcher.redact(&error),
+        Some(Err(_)) => "Codex app-server timed out".to_string(),
+    };
 
-        if stderr.is_empty() {
-            error
-        } else {
-            format!("{error}: {stderr}")
-        }
-    })
+    let stderr = stderr.lock();
+    let stderr = stderr.trim();
+
+    Err(UsageFetchError::Failed(if stderr.is_empty() {
+        error
+    } else {
+        format!("{error}: {stderr}")
+    }))
 }
 
 async fn read_rate_limits(
