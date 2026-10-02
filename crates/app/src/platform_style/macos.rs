@@ -131,13 +131,6 @@ impl PlatformStyle for MacOs {
         input.text_left()
     }
 
-    /// The heading centers in the bar, on the same line as the window buttons
-    /// and the leading controls, which AppKit and the bar both center
-    /// vertically.
-    fn session_heading_slot(slot: Div) -> Div {
-        slot.items_center()
-    }
-
     /// The status area already reaches into the gutter, so the row keeps its
     /// place in it.
     fn sidebar_agent_usage(usage: AnyElement) -> AnyElement {

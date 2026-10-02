@@ -104,7 +104,7 @@ use crate::ui::shell::workspace_dirs::{
 use crate::ui::tab_bar::{TabStrip, VerticalTabList, WorkspaceTabs};
 use crate::ui::terminal_launch::{spawn_default_pane, spawn_local_view_pane, spawn_remote_pane};
 use crate::ui::terminal_layout::TerminalLayout;
-use crate::ui::title_bar::{PanelToggle, TitleBarInputs, TitleCenter};
+use crate::ui::title_bar::{PanelToggle, TitleBarInputs};
 use crate::ui::workflows::WorkflowsView;
 use crate::ui::workspace_sidebar;
 use crate::ui::workspace_sidebar::{Sidebar, SidebarUsage, WorkspaceChrome};
@@ -4094,7 +4094,7 @@ impl AppWindow {
     }
 
     /// What the title bar shows for the window's current state.
-    fn title_bar_inputs(&self, center: TitleCenter, cx: &App) -> TitleBarInputs {
+    fn title_bar_inputs(&self, tab_strip: Option<AnyElement>, cx: &App) -> TitleBarInputs {
         // Both panel toggles count the work of the active tab, because
         // activating either one opens that tab's runs or children.
         let active_agent = self.active_agent();
@@ -4105,7 +4105,7 @@ impl AppWindow {
                 false => self.sidebar.width,
             },
             sidebar_collapsed: self.sidebar.collapsed,
-            center,
+            tab_strip,
             has_ready_tab: self.next_ready_tab(cx).is_some(),
             has_busy_tab: self.next_busy_tab(cx).is_some(),
             git_tab_active: self.workspaces.active_tabs().active().is_git(),
@@ -4362,42 +4362,20 @@ impl Render for AppWindow {
             .tab_strip
             .reveal_active(active_id, active_index, cx);
 
-        // The title-bar Git model only refreshes while its setting is on, so
-        // with the setting off its snapshot describes an earlier directory.
-        let show_branch = cx
-            .global::<AppSettings>()
-            .config()
-            .appearance
-            .show_git_status_on_title_bar;
-
-        let title_center = match vertical_tabs {
-            true => TitleCenter::Heading {
-                title: self.active_tab_title().into(),
-                branch: show_branch
-                    .then(|| {
-                        self.panels
-                            .git_model()
-                            .read(cx)
-                            .snapshot
-                            .as_ref()
-                            .and_then(|snapshot| snapshot.branch.clone())
-                    })
-                    .flatten()
-                    .map(SharedString::from),
-            },
-            false => TitleCenter::Tabs(self.chrome.tab_strip.render(
+        let tab_strip = (!vertical_tabs).then(|| {
+            self.chrome.tab_strip.render(
                 self.workspaces.active_tabs(),
                 &unread_tabs,
                 &busy_agent_tabs,
                 &self.renames,
                 cx,
-            )),
-        };
+            )
+        });
 
         let title_bar = self
             .chrome
             .title_bar
-            .render(self.title_bar_inputs(title_center, cx), cx);
+            .render(self.title_bar_inputs(tab_strip, cx), cx);
 
         self.apply_pending_ratios(cx);
 

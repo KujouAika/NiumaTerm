@@ -6,9 +6,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Div, Entity, SharedString, div, px};
 use gpui_component::button::Button;
 use gpui_component::modern_menu::ModernMenu;
-use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, IconNamed, TitleBar, h_flex,
-};
+use gpui_component::{Disableable as _, Icon, IconName, IconNamed, TitleBar, h_flex};
 use nmt_config::appearance::TabShape;
 use rust_i18n::t;
 
@@ -23,7 +21,7 @@ use crate::ui::{
 use crate::update::check;
 
 /// The window's title bar: the app menu and navigation controls over the
-/// sidebar, the tab strip or session heading in the middle, and the panel
+/// sidebar, the tab strip in the middle, and the panel
 /// toggles at the trailing edge. It owns the `+N -M` git summary it shows;
 /// everything else it draws comes in with each render.
 pub(crate) struct WindowTitleBar {
@@ -38,7 +36,10 @@ pub(crate) struct TitleBarInputs {
 
     pub(crate) sidebar_collapsed: bool,
 
-    pub(crate) center: TitleCenter,
+    /// The horizontal tab strip, absent in the vertical style, which folds
+    /// the tabs into the sidebar. The sidebar then names every session, so
+    /// the middle of the bar stays empty drag space.
+    pub(crate) tab_strip: Option<AnyElement>,
 
     /// Whether the ready-tab and busy-tab jumps currently have a target.
     pub(crate) has_ready_tab: bool,
@@ -57,19 +58,6 @@ pub(crate) struct TitleBarInputs {
     /// Whether the active tab's Side Chat window is showing, absent until a
     /// side question opens one.
     pub(crate) side_chat: Option<bool>,
-}
-
-/// The middle of the bar.
-pub(crate) enum TitleCenter {
-    /// The horizontal tab strip.
-    Tabs(AnyElement),
-    /// Vertical tabs move the strip into the sidebar, which leaves the middle
-    /// of the bar free to name the session on screen instead: its title, and
-    /// the branch its working directory is on.
-    Heading {
-        title: SharedString,
-        branch: Option<SharedString>,
-    },
 }
 
 /// A trailing panel toggle: how much work its panel reports running, and
@@ -91,18 +79,6 @@ pub(crate) const TITLE_BAR_CONTROLS_WIDTH: f32 = 4.0 * Host::TITLE_BAR_BUTTON_SI
     + 3.0 * Host::TITLE_BAR_BUTTON_GAP
     + Host::TITLE_BAR_CONTROLS_TRAILING_GAP;
 
-/// The session heading in the middle of the bar, and the branch chip beside
-/// it. The chip is set smaller than the title because it qualifies the title
-/// rather than competing with it.
-const TITLE_BAR_HEADING_TEXT: f32 = 13.0;
-
-const TITLE_BAR_HEADING_GAP: f32 = 10.0;
-const TITLE_BAR_CHIP_TEXT: f32 = 12.0;
-const TITLE_BAR_CHIP_RADIUS: f32 = 6.0;
-const TITLE_BAR_CHIP_PADDING_X: f32 = 8.0;
-const TITLE_BAR_CHIP_PADDING_Y: f32 = 2.0;
-const TITLE_BAR_CHIP_ICON: f32 = 11.0;
-
 impl WindowTitleBar {
     pub(crate) fn new(git_model: Entity<GitStatusModel>, cx: &mut Context<AppWindow>) -> Self {
         Self {
@@ -114,7 +90,7 @@ impl WindowTitleBar {
         let TitleBarInputs {
             sidebar_width,
             sidebar_collapsed,
-            center,
+            tab_strip,
             has_ready_tab,
             has_busy_tab,
             git_tab_active,
@@ -223,17 +199,13 @@ impl WindowTitleBar {
                     .h_full()
                     .flex()
                     .items_end()
-                    .map(|this| match (center, tab_shape) {
-                        (TitleCenter::Heading { title, branch }, _) => this
-                            .map(Host::session_heading_slot)
-                            .child(session_heading(title, branch, cx)),
+                    .map(|this| match (tab_strip, tab_shape) {
+                        (None, _) => this,
                         // Pills float apart from the content, so they center
                         // in the bar. Attached tabs keep the bottom edge they
                         // share with the content below.
-                        (TitleCenter::Tabs(tab_bar), TabShape::Rounded) => {
-                            this.items_center().child(tab_bar)
-                        }
-                        (TitleCenter::Tabs(tab_bar), TabShape::Attached) => this.child(tab_bar),
+                        (Some(tab_bar), TabShape::Rounded) => this.items_center().child(tab_bar),
+                        (Some(tab_bar), TabShape::Attached) => this.child(tab_bar),
                     }),
             )
             .child(title_bar_git_summary().child(self.git_status.clone()))
@@ -288,42 +260,6 @@ fn app_menu_button(cx: &mut Context<AppWindow>) -> impl IntoElement {
             .accessibility_label(t!("shell-app-menu")),
         move |menu, _, cx| app_menu(menu, &shell, cx),
     )
-}
-
-/// What the title bar names in the vertical tab-bar style, where the strip
-/// that would otherwise fill this space lives in the sidebar: the session
-/// on screen, and the branch its working directory is on.
-fn session_heading(
-    title: SharedString,
-    branch: Option<SharedString>,
-    cx: &App,
-) -> impl IntoElement {
-    h_flex()
-        .min_w_0()
-        .gap(px(TITLE_BAR_HEADING_GAP))
-        .items_center()
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_size(px(TITLE_BAR_HEADING_TEXT))
-                .text_color(cx.theme().muted_foreground)
-                .child(title),
-        )
-        .children(branch.map(|branch| {
-            h_flex()
-                .flex_none()
-                .gap_1()
-                .items_center()
-                .rounded(px(TITLE_BAR_CHIP_RADIUS))
-                .px(px(TITLE_BAR_CHIP_PADDING_X))
-                .py(px(TITLE_BAR_CHIP_PADDING_Y))
-                .bg(cx.theme().muted)
-                .text_size(px(TITLE_BAR_CHIP_TEXT))
-                .text_color(cx.theme().muted_foreground)
-                .child(Icon::new(IconName::GitBranch).size(px(TITLE_BAR_CHIP_ICON)))
-                .child(branch)
-        }))
 }
 
 /// Upper-right `Workflows` control, revealed once a run exists. It carries

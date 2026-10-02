@@ -73,12 +73,6 @@ impl PlatformStyle for Windows {
         input.text_center()
     }
 
-    /// The heading centers in the bar, on the same line as the caption button
-    /// glyphs that span the bar's full height.
-    fn session_heading_slot(slot: Div) -> Div {
-        slot.items_center()
-    }
-
     /// The status area already reaches into the gutter, so the row keeps its
     /// place in it.
     fn sidebar_agent_usage(usage: AnyElement) -> AnyElement {

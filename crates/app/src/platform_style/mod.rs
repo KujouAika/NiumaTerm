@@ -110,10 +110,6 @@ pub trait PlatformStyle {
     /// The input that stands in for a tab's title while the tab is renamed.
     fn tab_rename_input(input: Input) -> Input;
 
-    /// The title bar slot that names the session while tabs sit in the
-    /// sidebar. It starts bottom-aligned, the edge the tab strip occupies.
-    fn session_heading_slot(slot: Div) -> Div;
-
     /// The agent quota row as the sidebar's status area places it.
     fn sidebar_agent_usage(usage: AnyElement) -> AnyElement;
 

@@ -43,10 +43,6 @@ impl RightPanelController {
         &self.panel
     }
 
-    pub(super) fn git_model(&self) -> &Entity<GitStatusModel> {
-        &self.git_model
-    }
-
     pub(super) fn workflows_seen(&self) -> bool {
         self.workflows_seen
     }
