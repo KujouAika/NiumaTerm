@@ -764,6 +764,10 @@
 "agent-cache-warning-message" = "提供方的缓存按自身时钟过期，此时继续该对话很可能把整个上下文重新按缓存写入计费。"
 "agent-cache-warning-send" = "仍然发送"
 "agent-cache-warning-cancel" = "取消"
+"agent-profile-switch-title" = "切换到 %{name}？"
+"agent-profile-switch-message" = "将在此标签页中用 %{name} 开始新对话，当前对话会就此结束。"
+"agent-profile-switch-confirm" = "切换"
+"agent-profile-switch-cancel" = "取消"
 
 # Agent composer
 "agent-composer-choose-command" = "请从列表中选择斜杠命令。"

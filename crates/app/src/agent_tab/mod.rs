@@ -3089,7 +3089,11 @@ impl AgentPane {
 
         let cwd = self.cwd(cx);
 
-        if directories_match(summary.cwd.as_deref(), cwd.as_deref()) && self.can_switch_profile(cx)
+        // Only a blank tab is taken over; a tab with a conversation of its
+        // own keeps it and the listed one opens beside it.
+        if directories_match(summary.cwd.as_deref(), cwd.as_deref())
+            && self.can_switch_profile(cx)
+            && !self.switch_discards_conversation(cx)
         {
             self.emit_event(
                 AgentPaneEvent::SwitchProfile {
@@ -3640,29 +3644,36 @@ impl AgentPane {
         self.host.upgrade()
     }
 
-    /// Whether this tab may still change which agent it runs. Only a blank
-    /// conversation qualifies: once a turn ran, or a resumed conversation is
-    /// waiting to replay, the session belongs to its agent. Team members,
-    /// side chats, and tabs following a paired host run on a profile chosen
-    /// elsewhere.
+    /// Whether this tab may change which agent it runs. Team members, side
+    /// chats, and tabs following a paired host run on a profile chosen
+    /// elsewhere. A resume in flight is about to name the conversation, and
+    /// relaunching under it would race the replay.
     pub(super) fn can_switch_profile(&self, cx: &App) -> bool {
-        let Some(host) = self.host.upgrade() else {
-            return false;
-        };
-
-        cx.global::<AgentSettings>().unified_agent_tab
+        self.host.upgrade().is_some()
+            && cx.global::<AgentSettings>().unified_agent_tab
             && !self.team_member
             && !self.side_chat_member
             && self.remote.is_none()
             && self.history_ui.mode != RecentSessionsMode::Loading
-            && self.session.borrow().runtime().status() != Status::Running
-            && self.transcript.read(cx).is_empty()
-            && host.read(cx).saved_conversation().is_none()
     }
 
-    /// Ask the chrome to relaunch this tab on `profile`. Returns whether the
-    /// request was made; a tab that already runs `profile` or can no longer
-    /// switch is left alone.
+    /// Whether relaunching on another profile would end a conversation: a
+    /// turn is running, the transcript holds one, or a resumed one waits to
+    /// replay. The relaunched tab starts a fresh conversation, so these are
+    /// what a switch throws away. A conversation set aside by `/new` or
+    /// `/clear` leaves none of them behind.
+    pub(super) fn switch_discards_conversation(&self, cx: &App) -> bool {
+        self.session.borrow().runtime().status() == Status::Running
+            || !self.transcript.read(cx).is_empty()
+            || self
+                .host
+                .upgrade()
+                .is_some_and(|host| host.read(cx).saved_conversation().is_some())
+    }
+
+    /// Ask the chrome to relaunch this tab on `profile`, in a fresh
+    /// conversation. Returns whether the request was made; a tab that already
+    /// runs `profile` or cannot switch is left alone.
     pub(super) fn switch_profile(&mut self, profile: AgentProfile, cx: &mut Context<Self>) -> bool {
         if !self.binding.is_current() || !self.can_switch_profile(cx) {
             return false;

@@ -765,6 +765,10 @@
 "agent-cache-warning-message" = "The provider's prompt cache expires on its own clock, so continuing this conversation now is likely to rewrite the whole context as cache-create tokens."
 "agent-cache-warning-send" = "Send Anyway"
 "agent-cache-warning-cancel" = "Cancel"
+"agent-profile-switch-title" = "Switch to %{name}?"
+"agent-profile-switch-message" = "%{name} starts a new conversation in this tab, and the current conversation ends here."
+"agent-profile-switch-confirm" = "Switch"
+"agent-profile-switch-cancel" = "Cancel"
 
 # Agent composer
 "agent-composer-choose-command" = "Choose a slash command from the list."

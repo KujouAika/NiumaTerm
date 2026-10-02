@@ -16,7 +16,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
+use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex};
 use nmt_agent::session::settings::ConversationSettings;
 use nmt_config::profile::AgentProfile;
 use rust_i18n::t;
@@ -29,6 +29,7 @@ use crate::agent_tab::thread_controls::effort::effort_panel;
 use crate::agent_tab::thread_controls::harness_rows::{
     claude_settings, codex_settings, deepseek_settings,
 };
+use crate::agent_tab::view::profile_switch::profile_switch_dialog;
 
 /// One composer setting, drawn as its own pill. Each pill opens its own menu
 /// and changes one value, so each carries its own outline: a shared frame
@@ -432,7 +433,7 @@ pub(super) fn setting_picker(
     settings_pill_frame(pill, cx)
 }
 
-/// The agent a blank tab launches, as a pill leading the settings row: the
+/// The agent the tab runs, as a pill leading the settings row: the
 /// current profile's mark and name, opening a menu of every configured
 /// profile. Profiles rather than bare agent kinds are listed, because two
 /// profiles of one kind can point at different endpoints, keys, or models.
@@ -470,12 +471,36 @@ pub(super) fn profile_picker(
             for profile in profiles.clone() {
                 let pane = pane.clone();
                 let checked = profile.name == current_name && profile.kind == current_kind;
+                let label = profile_label(&profile);
 
                 menu = menu.item(
-                    PopupMenuItem::new(profile_label(&profile))
+                    PopupMenuItem::new(label.clone())
                         .icon(profile.kind.icon())
                         .checked(checked)
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
+                            if checked {
+                                return;
+                            }
+
+                            // The relaunched tab starts a fresh conversation,
+                            // so ending one on screen takes a confirmation.
+                            if pane.read(cx).switch_discards_conversation(cx) {
+                                let pane = pane.clone();
+                                let profile = profile.clone();
+                                let label = label.clone();
+
+                                window.open_dialog(cx, move |dialog, _, _| {
+                                    profile_switch_dialog(
+                                        dialog.centered(true),
+                                        &pane,
+                                        &profile,
+                                        &label,
+                                    )
+                                });
+
+                                return;
+                            }
+
                             pane.update(cx, |this, cx| this.switch_profile(profile.clone(), cx));
                         }),
                 );

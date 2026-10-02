@@ -2482,10 +2482,11 @@ impl AppWindow {
         AgentTab { owner, pane }
     }
 
-    /// Relaunch the blank agent tab `request.tab` on another profile, in the
-    /// same place in its tab list. The tab keeps its id and position and the
-    /// unsent message moves across; the old session is dropped, which retires
-    /// its agent process.
+    /// Relaunch the agent tab `request.tab` on another profile, in the same
+    /// place in its tab list and in a fresh conversation. The tab keeps its
+    /// id and position and the unsent message moves across; the old session
+    /// is dropped, which retires its agent process and ends any conversation
+    /// it held.
     fn replace_agent_tab(
         &mut self,
         request: PendingAgentSwitch,
