@@ -183,7 +183,7 @@ impl VerticalTabList {
             .enumerate()
             .filter(|(_, row)| match workspace.fold {
                 TabFold::All => true,
-                TabFold::Active => row.id == active_id,
+                TabFold::Awake => !row.pending,
                 TabFold::Collapsed => false,
             })
             .map(|(index, row)| {

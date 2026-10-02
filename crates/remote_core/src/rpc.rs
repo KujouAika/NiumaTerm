@@ -308,6 +308,16 @@ pub struct SessionInfo {
     /// workspaces, and sessions no tab shows, send none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<SessionWorkspace>,
+
+    /// A host tab still asleep: listed, but its shell or agent starts only
+    /// once someone opens it. Omitted while false, and hosts from before the
+    /// flag send none, so their sessions all read as running.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pending: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A workspace on the host, as devices group sessions by it.

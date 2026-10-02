@@ -312,7 +312,7 @@ fn temporary_ids_include_pinned_normal_workspaces_but_not_settings() {
 }
 
 #[test]
-fn a_workspace_row_folds_all_tabs_then_none_then_the_active_one() {
+fn a_workspace_row_folds_all_tabs_then_none_then_the_awake_ones() {
     let mut manager = manager(2, false);
 
     let fold = |manager: &WorkspaceManager| {
@@ -331,7 +331,7 @@ fn a_workspace_row_folds_all_tabs_then_none_then_the_active_one() {
 
     manager.cycle_tab_fold(WorkspaceId(2));
 
-    assert_eq!(fold(&manager), Some(TabFold::Active));
+    assert_eq!(fold(&manager), Some(TabFold::Awake));
 
     manager.cycle_tab_fold(WorkspaceId(2));
 

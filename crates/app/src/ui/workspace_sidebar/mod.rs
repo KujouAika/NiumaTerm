@@ -5,12 +5,15 @@ mod list;
 mod remote_list;
 mod status;
 
+use std::collections::HashMap;
+
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Div, DragMoveEvent, Entity, FontWeight, SharedString, div, px,
 };
 use gpui_component::{ActiveTheme, Disableable, IconName, IconNamed, h_flex, v_flex};
 use nmt_agent::AgentProjection;
+use nmt_config::local_state::TabFold;
 use rust_i18n::t;
 
 use crate::agent_usage::AgentUsageView;
@@ -73,6 +76,13 @@ pub(super) struct Sidebar {
     pub(super) width: f32,
 
     list: WorkspaceList,
+
+    /// How many of its sessions each host workspace lists, by host id and the
+    /// workspace's id (its label on hosts that send none). Unlike a local
+    /// fold this lasts for the run only: a host's workspace ids are its own
+    /// runtime ids, which name other workspaces once it restarts. A workspace
+    /// missing here lists every session.
+    remote_folds: HashMap<(String, String), TabFold>,
 }
 
 impl Sidebar {
@@ -82,7 +92,15 @@ impl Sidebar {
             animated: false,
             width,
             list: WorkspaceList::new(),
+            remote_folds: HashMap::default(),
         }
+    }
+
+    /// Step a host workspace's session list on to its next fold.
+    pub(super) fn cycle_remote_fold(&mut self, host: String, workspace: String) {
+        let fold = self.remote_folds.entry((host, workspace)).or_default();
+
+        *fold = fold.next();
     }
 
     /// Width of a tab row in the vertical tab-bar style: the sidebar width
@@ -124,6 +142,7 @@ impl Sidebar {
                     .pt(px(SIDEBAR_GROUP_GAP))
                     .into_any_element(),
                 &remote,
+                &self.remote_folds,
                 renames,
                 self.width,
                 cx,

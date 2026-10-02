@@ -214,6 +214,7 @@ impl SessionRegistry {
                 kind: SessionKind::Terminal,
                 harness: None,
                 workspace: None,
+                pending: true,
             },
         );
 
@@ -269,6 +270,29 @@ impl SessionRegistry {
         harness: String,
         control: AgentControl,
     ) {
+        self.insert_agent(session, title, harness, control, false);
+    }
+
+    /// Offer a host agent tab under `session` while it waits to be restored,
+    /// listed as asleep until `register_agent` replaces it with the live tab.
+    pub fn register_pending_agent(
+        &self,
+        session: String,
+        title: String,
+        harness: String,
+        control: AgentControl,
+    ) {
+        self.insert_agent(session, title, harness, control, true);
+    }
+
+    fn insert_agent(
+        &self,
+        session: String,
+        title: String,
+        harness: String,
+        control: AgentControl,
+        pending: bool,
+    ) {
         let mut inner = self.inner.lock();
 
         inner.agents.insert(
@@ -283,6 +307,7 @@ impl SessionRegistry {
                     kind: SessionKind::Agent,
                     harness: Some(harness),
                     workspace: None,
+                    pending,
                 },
                 control,
             },
@@ -760,6 +785,7 @@ impl SessionRegistry {
                 kind: SessionKind::Terminal,
                 harness: None,
                 workspace: None,
+                pending: false,
             },
             control,
             size: watch::channel((cols, rows)).0,

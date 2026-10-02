@@ -365,9 +365,11 @@ fn a_device_attaching_to_a_pending_host_tab_starts_it_under_its_listed_id() {
     runtime().block_on(async {
         let sessions = remote.list_sessions().await.unwrap();
 
+        // The device sees the tab as asleep, which its sidebar folds by.
         assert!(sessions.iter().any(|info| info.session == session
             && info.origin == Origin::Tab
-            && info.kind == SessionKind::Terminal));
+            && info.kind == SessionKind::Terminal
+            && info.pending));
     });
 
     let mut pty = remote.view(session.clone());
@@ -385,6 +387,7 @@ fn a_device_attaching_to_a_pending_host_tab_starts_it_under_its_listed_id() {
 
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "Started");
+        assert!(!listed[0].pending);
     });
 
     registry.unregister(&session);

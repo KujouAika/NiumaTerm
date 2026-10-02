@@ -421,15 +421,10 @@ impl WorkspaceManager {
         }
     }
 
-    /// Step the workspace's fold on, in the order its row cycles through:
-    /// every tab, then none, then only the active one.
+    /// Step the workspace's fold on to the next one its row cycles through.
     pub fn cycle_tab_fold(&mut self, id: WorkspaceId) {
         if let Some(workspace) = self.workspaces.find_mut(id) {
-            workspace.tab_fold = match workspace.tab_fold {
-                TabFold::All => TabFold::Collapsed,
-                TabFold::Collapsed => TabFold::Active,
-                TabFold::Active => TabFold::All,
-            };
+            workspace.tab_fold = workspace.tab_fold.next();
         }
     }
 

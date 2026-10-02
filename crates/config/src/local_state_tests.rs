@@ -438,17 +438,22 @@ fn git_tab_roundtrips_without_acquiring_a_shell_or_agent() {
 #[test]
 fn a_tab_fold_roundtrips_and_only_a_folded_workspace_writes_it() {
     let folded = WorkspaceState {
-        tab_fold: TabFold::Active,
+        tab_fold: TabFold::Awake,
         ..WorkspaceState::default()
     };
 
     let serialized = toml::to_string(&folded).unwrap();
 
-    assert!(serialized.contains("tab_fold = \"active\""));
+    assert!(serialized.contains("tab_fold = \"awake\""));
     assert_eq!(
         toml::from_str::<WorkspaceState>(&serialized).unwrap(),
         folded
     );
+
+    // The name the awake fold was first saved under still loads as it.
+    let earlier: WorkspaceState = toml::from_str("tab_fold = 'active'\n").unwrap();
+
+    assert_eq!(earlier.tab_fold, TabFold::Awake);
 
     // Unfolded workspaces save as they did before folding existed.
     let unfolded = toml::to_string(&WorkspaceState::default()).unwrap();

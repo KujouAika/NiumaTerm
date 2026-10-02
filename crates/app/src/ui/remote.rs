@@ -1030,7 +1030,7 @@ pub(crate) fn offer_restoring_agent(
     // Weak, so the channel closes once the live tab replaces this offer.
     let own = requests.downgrade();
 
-    registry.register_agent(id.clone(), title, harness, AgentControl { requests });
+    registry.register_pending_agent(id.clone(), title, harness, AgentControl { requests });
 
     let task = cx.spawn({
         let id = id.clone();

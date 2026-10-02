@@ -6,8 +6,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, DragMoveEvent, ElementId, FontWeight, ScrollHandle,
-    SharedString, div, px, radians, relative,
+    AnyElement, App, ClipboardItem, Context, Div, DragMoveEvent, ElementId, FontWeight,
+    ScrollHandle, SharedString, div, px, radians, relative,
 };
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_component::modern_menu::ModernMenuExt as _;
@@ -392,27 +392,8 @@ impl WorkspaceList {
                 .into_any_element()
         };
 
-        // In the vertical style the row folds its tab list, and a filled
-        // triangle says how the way a tree's disclosure mark does: right
-        // while the tabs are folded away, down while any are listed. It sits
-        // in the tab rows' glyph slot so it stands on their icon column and
-        // the name lines up with their labels. The fold already shows in the
-        // rows listed below, so the mark appears only while the pointer is on
-        // the row, keeping its slot so the name does not shift.
-        let disclosure = vertical_tabs.then(|| {
-            let icon = Icon::new(DisclosureIcon)
-                .with_size(px(DISCLOSURE_SIZE))
-                .text_color(cx.theme().sidebar_foreground.opacity(0.5));
-
-            let icon = match ws.tab_fold {
-                TabFold::Collapsed => icon,
-                TabFold::Active | TabFold::All => icon.rotate(radians(FRAC_PI_2)),
-            };
-
-            tab_row_icon(tab_row_glyph(icon))
-                .invisible()
-                .group_hover("ws-item", |this| this.visible())
-        });
+        // In the vertical style the row folds its tab list.
+        let disclosure = vertical_tabs.then(|| disclosure_mark(ws.tab_fold, "ws-item", cx));
 
         let drag_name = display_label.clone();
         let drag_cwd = display_path.clone();
@@ -450,8 +431,7 @@ impl WorkspaceList {
                 )
             })
             .group("ws-item")
-            // The disclosure slot leads the row here, so the row takes the tab
-            // rows' inset for that slot to share their glyph column.
+            // The disclosure slot leads the row, on the tab rows' inset.
             .when(vertical_tabs, |this| this.pl(px(SIDEBAR_ROW_GUTTER)))
             .child(
                 h_flex()
@@ -653,6 +633,29 @@ pub(super) fn tail_preserving_path(path: &str, max_chars: usize) -> String {
     format!("…{component_tail}")
 }
 
+/// The mark leading a workspace row whose click folds its tab list. A filled
+/// triangle says how the way a tree's disclosure mark does: right while the
+/// tabs are folded away, down while any are listed. It sits in the tab rows'
+/// glyph slot so it stands on their icon column and the name lines up with
+/// their labels, which takes the row starting on the tab rows' inset. The
+/// fold already shows in the rows listed below, so the mark appears only
+/// while the pointer is on the row (`group`), keeping its slot so the name
+/// does not shift.
+pub(super) fn disclosure_mark(fold: TabFold, group: &'static str, cx: &App) -> Div {
+    let icon = Icon::new(DisclosureIcon)
+        .with_size(px(DISCLOSURE_SIZE))
+        .text_color(cx.theme().sidebar_foreground.opacity(0.5));
+
+    let icon = match fold {
+        TabFold::Collapsed => icon,
+        TabFold::Awake | TabFold::All => icon.rotate(radians(FRAC_PI_2)),
+    };
+
+    tab_row_icon(tab_row_glyph(icon))
+        .invisible()
+        .group_hover(group, |this| this.visible())
+}
+
 /// Edge of the disclosure triangle, small enough to read as a mark on the
 /// name rather than as a control of its own.
 const DISCLOSURE_SIZE: f32 = 8.0;
@@ -680,7 +683,7 @@ impl IconNamed for PinIcon {
 /// flow so it can sit in the gutter left of the row's own padding, and it
 /// carries the accent color on its own: the row fill stays a neutral subtle
 /// wash, which keeps a selected row legible against a translucent pane.
-fn selection_bar(cx: &App) -> impl IntoElement {
+pub(super) fn selection_bar(cx: &App) -> impl IntoElement {
     div()
         .absolute()
         .left(px(SELECTION_BAR_INSET))
