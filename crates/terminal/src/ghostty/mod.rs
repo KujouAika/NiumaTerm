@@ -70,22 +70,20 @@ use libghostty_vt_sys::{
     FormatterTerminalExtra as VtFormatterTerminalExtra, GridRef as VtGridRef,
     KITTY_KEY_DISAMBIGUATE, KITTY_KEY_REPORT_ALL, KITTY_KEY_REPORT_ALTERNATES,
     KITTY_KEY_REPORT_ASSOCIATED, KITTY_KEY_REPORT_EVENTS, KittyGraphics as VtKittyGraphics,
-    KittyGraphicsImageData as VtKittyGraphicsImageData, Point as VtPoint,
-    PointCoordinate as VtPointCoordinate, PointTag as VtPointTag, PointValue as VtPointValue,
-    Result as VtResult, Selection as VtSelection, String as VtString, Terminal as VtTerminal,
-    TerminalCursorStyle as VtTerminalCursorStyle, TerminalData as VtTerminalData,
-    TerminalModeConfig as VtTerminalModeConfig, TerminalOption as VtTerminalOption,
-    TerminalScrollViewport as VtTerminalScrollViewport,
+    Point as VtPoint, PointCoordinate as VtPointCoordinate, PointTag as VtPointTag,
+    PointValue as VtPointValue, Result as VtResult, Selection as VtSelection, String as VtString,
+    Terminal as VtTerminal, TerminalCursorStyle as VtTerminalCursorStyle,
+    TerminalData as VtTerminalData, TerminalModeConfig as VtTerminalModeConfig,
+    TerminalOption as VtTerminalOption, TerminalScrollViewport as VtTerminalScrollViewport,
     TerminalScrollViewportTag as VtTerminalScrollViewportTag,
     TerminalScrollViewportValue as VtTerminalScrollViewportValue,
     TerminalScrollbar as VtTerminalScrollbar, ghostty_block_ref_cols, ghostty_kitty_graphics_image,
-    ghostty_kitty_graphics_image_get, ghostty_terminal_block_acquire, ghostty_terminal_block_at,
-    ghostty_terminal_block_count, ghostty_terminal_block_row_count, ghostty_terminal_blocks_bytes,
-    ghostty_terminal_clear_blocks, ghostty_terminal_finish_block, ghostty_terminal_free,
-    ghostty_terminal_get, ghostty_terminal_grid_ref, ghostty_terminal_new,
-    ghostty_terminal_point_from_grid_ref, ghostty_terminal_remove_block, ghostty_terminal_resize,
-    ghostty_terminal_scroll_viewport, ghostty_terminal_set, ghostty_terminal_vt_write,
-    sized as vt_sized,
+    ghostty_terminal_block_acquire, ghostty_terminal_block_at, ghostty_terminal_block_count,
+    ghostty_terminal_block_row_count, ghostty_terminal_blocks_bytes, ghostty_terminal_clear_blocks,
+    ghostty_terminal_finish_block, ghostty_terminal_free, ghostty_terminal_get,
+    ghostty_terminal_grid_ref, ghostty_terminal_new, ghostty_terminal_point_from_grid_ref,
+    ghostty_terminal_remove_block, ghostty_terminal_resize, ghostty_terminal_scroll_viewport,
+    ghostty_terminal_set, ghostty_terminal_vt_write, sized as vt_sized,
 };
 use nmt_config::CursorShape;
 #[cfg(test)]
@@ -1018,6 +1016,10 @@ impl GhosttyTerminal {
         )?))
     }
 
+    /// Copy one frozen image's decoded pixels out of a finished block's
+    /// Kitty storage. The caller keys the lazily uploaded result by
+    /// `(block_id, image_id)`. `None` if the block holds no such image. Engine lock
+    /// held by the caller; the pixels are copied out before returning.
     pub fn block_image_pixels(
         &self,
         block: &BlockRef,
@@ -1031,30 +1033,7 @@ impl GhosttyTerminal {
             return None;
         }
 
-        let read_u32 = |data: VtKittyGraphicsImageData::Type| -> u32 {
-            let mut v: u32 = 0;
-
-            unsafe {
-                ghostty_kitty_graphics_image_get(image, data, (&mut v as *mut u32).cast());
-            }
-
-            v
-        };
-
-        let width = read_u32(VtKittyGraphicsImageData::WIDTH);
-        let height = read_u32(VtKittyGraphicsImageData::HEIGHT);
-
-        let mut data_len: usize = 0;
-
-        unsafe {
-            ghostty_kitty_graphics_image_get(
-                image,
-                VtKittyGraphicsImageData::DATA_LEN,
-                (&mut data_len as *mut usize).cast(),
-            );
-        }
-
-        unsafe { kitty_image_graphic_data(image, image_id, width, height, data_len) }
+        unsafe { kitty_image_graphic_data(image, image_id) }
     }
 
     /// Screen positions of every kitty placement pinned by one frozen block.

@@ -274,15 +274,11 @@ impl KittyState {
         out
     }
 
-    /// Copy one frozen image's decoded pixels out of a finished block's
-    /// Kitty storage. The caller keys the lazily uploaded result by
-    /// `(block_id, image_id)`. `None` if the block holds no such image. Engine lock
-    /// held by the caller; the pixels are copied out before returning.
     /// Diff the live kitty images against the shipped set and return the pixel
     /// deltas. Called **only on the PTY reader thread** after `snapshot`
     /// (engine lock held by the caller); `placements` is that snapshot's placement
-    /// list, so no second iterator walk. New or changed images (`(id,w,h,len)` key)
-    /// have their pixels copied (`gray`/`gray_alpha` → rgba); vanished ids are
+    /// list, so no second iterator walk. New or changed images (a generation
+    /// not yet shipped) have their pixels copied (`gray`/`gray_alpha` → rgba); vanished ids are
     /// reported for removal. Empty in steady state.
     pub(super) fn take_image_deltas(
         &mut self,
@@ -315,46 +311,14 @@ impl KittyState {
                     continue;
                 }
 
-                let read_u32 = |data: VtKittyGraphicsImageData::Type| -> u32 {
-                    let mut v: u32 = 0;
-
-                    unsafe {
-                        ghostty_kitty_graphics_image_get(image, data, (&mut v as *mut u32).cast());
-                    }
-
-                    v
-                };
-
-                let width = read_u32(VtKittyGraphicsImageData::WIDTH);
-                let height = read_u32(VtKittyGraphicsImageData::HEIGHT);
-
-                let mut data_len: usize = 0;
-
-                unsafe {
-                    ghostty_kitty_graphics_image_get(
-                        image,
-                        VtKittyGraphicsImageData::DATA_LEN,
-                        (&mut data_len as *mut usize).cast(),
-                    );
-                }
-
-                let mut generation: u64 = 0;
-
-                unsafe {
-                    ghostty_kitty_graphics_image_get(
-                        image,
-                        VtKittyGraphicsImageData::GENERATION,
-                        (&mut generation as *mut u64).cast(),
-                    );
-                }
+                let generation =
+                    unsafe { image_scalar::<u64>(image, VtKittyGraphicsImageData::GENERATION) };
 
                 if self.shipped_images.get(&p.image_id) == Some(&generation) {
                     continue; // unchanged — already shipped
                 }
 
-                let Some(data) = (unsafe {
-                    kitty_image_graphic_data(image, p.image_id, width, height, data_len)
-                }) else {
+                let Some(data) = (unsafe { kitty_image_graphic_data(image, p.image_id) }) else {
                     continue;
                 };
 
@@ -422,14 +386,26 @@ fn placement_geometry(
     (g_cols, g_rows, [sx, sy, sw, sh])
 }
 
-/// Copy a decoded kitty image's pixels into a [`crate::graphics::GraphicData`],
-/// converting gray forms to RGBA (the engine already decoded PNG/zlib, so
-/// only raw pixel formats reach here). Shared by the live delta shipper and
-/// the frozen-block lazy read.
+/// Read one datum of a kitty image. `T` must be the type the FFI writes for
+/// `data` (u32 for the size, usize for the byte length, u64 for the
+/// generation).
 ///
 /// # Safety
 /// `image` must be a live image handle from the storage the caller currently
 /// pins (engine lock or an acquired block ref).
+unsafe fn image_scalar<T: Default>(
+    image: VtKittyGraphicsImage,
+    data: VtKittyGraphicsImageData::Type,
+) -> T {
+    let mut v = T::default();
+
+    unsafe {
+        ghostty_kitty_graphics_image_get(image, data, (&mut v as *mut T).cast());
+    }
+
+    v
+}
+
 /// Set the kitty image storage limit of `terminal` in bytes. A non-zero limit
 /// also enables the protocol; 0 disables it.
 pub(super) fn set_kitty_storage_limit(terminal: VtTerminal, bytes: u64) {
@@ -442,14 +418,27 @@ pub(super) fn set_kitty_storage_limit(terminal: VtTerminal, bytes: u64) {
     }
 }
 
+/// Copy a decoded kitty image's pixels into a [`crate::graphics::GraphicData`],
+/// converting gray forms to RGBA (the engine already decoded PNG/zlib, so
+/// only raw pixel formats reach here). Shared by the live delta shipper and
+/// the frozen-block lazy read.
+///
+/// # Safety
+/// `image` must be a live image handle from the storage the caller currently
+/// pins (engine lock or an acquired block ref).
 pub(super) unsafe fn kitty_image_graphic_data(
     image: VtKittyGraphicsImage,
     image_id: u32,
-    width: u32,
-    height: u32,
-    data_len: usize,
 ) -> Option<graphics::GraphicData> {
     use crate::graphics::{ColorType, GraphicData, GraphicId};
+
+    let (width, height, data_len) = unsafe {
+        (
+            image_scalar::<u32>(image, VtKittyGraphicsImageData::WIDTH),
+            image_scalar::<u32>(image, VtKittyGraphicsImageData::HEIGHT),
+            image_scalar::<usize>(image, VtKittyGraphicsImageData::DATA_LEN),
+        )
+    };
 
     let mut format: VtKittyImageFormat::Type = VtKittyImageFormat::RGBA;
 
