@@ -93,26 +93,48 @@ EOF
 }
 
 check_no_ai_slop_marker() {
+    # Words that collide with real identifiers or terminal terms (text
+    # shaping, render surfaces, arithmetic carry, gates, bridges) stay out of
+    # this list, because it matches whole words in code as well as prose.
     slop_markers='ponytail|seam|fact|parity|envelope|wire|contract'
-    slop=$(git diff --cached --diff-filter=ACMR -U0 |
+    slop_markers="$slop_markers|rather than|which is what|says nothing"
+    slop_markers="$slop_markers|carries|carried|carrying"
+    slop_markers="$slop_markers|lands|landed|landing|travels|travelled"
+    slop_markers="$slop_markers|surfaced|surfacing|lifted|hoisted|funnels"
+    slop_markers="$slop_markers|honest|honestly|worth|ordinary|actually"
+    slop_markers="$slop_markers|deliberately|intentionally|explicitly"
+    slop_markers="$slop_markers|vocabulary|authoritative|plumbing|scaffolding"
+    slop_markers="$slop_markers|load-bearing|knobs?|lockstep|footprint"
+    slop_markers="$slop_markers|belt-and-braces"
+    added=$(git diff --cached --diff-filter=ACMR -U0 |
         awk -v generated="$generated_paths" '
             /^\+\+\+ b\// {
                 file = substr($0, 7)
                 vendored = file ~ generated
                 # License notices must retain the original upstream wording.
                 license_file = tolower(file) ~ /(^|\/)license([.](md|txt|rst))?$/
+                # The files that define the banned list have to spell it out.
+                word_list = file ~ /^(\.githooks\/pre-commit|AGENTS[.]md)$/
                 next
             }
-            !vendored && !license_file && /^\+/ { print file ": " $0 }
-        ' | grep -Eiw "$slop_markers" || true)
-    if [ -z "$slop" ]; then
+            !vendored && !license_file && !word_list && /^\+/ {
+                print file ": " $0
+            }
+        ')
+    slop=$(printf '%s\n' "$added" | grep -Eiw "$slop_markers" || true)
+    # Em dashes are only rejected in Rust comments: Markdown docs and skill
+    # files use them widely, and Rust string literals may hold terminal text.
+    dashes=$(printf '%s\n' "$added" | grep -E '^[^:]*\.rs: .*//.*—' || true)
+    if [ -z "$slop" ] && [ -z "$dashes" ]; then
         return 0
     fi
 
     cat >&2 <<EOF
 pre-commit: refusing to commit AI slop containing '$slop_markers'
+or an em dash in a Rust comment
 
 $slop
+$dashes
 EOF
     failed=1
 }

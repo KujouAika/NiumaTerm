@@ -6,7 +6,16 @@ Repo-level guidance for AI coding agents working in this repository.
 
 - Limit edits to files needed for the user's request. Other contributors may
   have work in progress; preserve their changes when editing shared files.
-- YOU ARE FORBIDDEN TO USE FOLLOWING AI SLOP WORDS: ponytail, seam, fact, parity, envelope, wire, contract
+- YOU ARE FORBIDDEN TO USE FOLLOWING AI SLOP WORDS: ponytail, seam, fact, parity, envelope, wire, contract,
+  rather than, which is what, says nothing, carries/carried/carrying,
+  lands/landed/landing, travels/travelled, surfaced/surfacing, lifted, hoisted,
+  funnels, honest/honestly, worth, ordinary, actually, deliberately,
+  intentionally, explicitly, vocabulary, authoritative, plumbing, scaffolding,
+  load-bearing, knob(s), lockstep, footprint, belt-and-braces. Do not put an em
+  dash in a Rust comment.
+- Do not describe data flow with personified or spatial verbs (a value "says",
+  "tells", "sits", "lives", "settles" or "travels"). Name the operation
+  instead: stores, returns, sends, reads, completes.
 - Always write documents, specs, tests and comments in English.
 
 ## Testing application launches
