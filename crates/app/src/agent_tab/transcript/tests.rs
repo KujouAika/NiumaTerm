@@ -131,7 +131,7 @@ mod read_gutter_tests {
 #[cfg(test)]
 /// Two conversations rendered by the same component must not share view state.
 /// The Agent pane's own conversation and a child agent's conversation are both
-/// `TranscriptView`s, so anything held on the type rather than per instance
+/// `TranscriptView`s, so anything held on the type instead of per instance
 /// would leak one conversation's reading position into the other.
 mod separate_view_state_tests {
     use std::time::Instant;
@@ -227,7 +227,7 @@ mod separate_view_state_tests {
             });
 
             // A shared list state would report one conversation's row count for
-            // both, which is what makes measured heights unusable across them.
+            // both, and that makes measured heights unusable across them.
             assert_eq!(parent.read(cx).transcript_list.item_count(), 4);
             assert_eq!(child.read(cx).transcript_list.item_count(), 1);
         });
@@ -259,7 +259,7 @@ mod separate_view_state_tests {
 /// A settled turn leads with the prompt that opened it. Claude never echoes a
 /// message steered into a running turn, so the pane publishes it from its own
 /// queue partway through the turn; row order has to keep it where it happened
-/// rather than lifting it to the head of the turn it interrupted.
+/// instead of moving it to the head of the turn it interrupted.
 mod steered_prompt_rows_tests {
     use std::time::Instant;
 
@@ -429,7 +429,7 @@ mod steered_prompt_rows_tests {
                     .replay(1, false, None, None);
 
                 // It folds like any settled turn, and closes after its reply
-                // rather than stating a duration the session never reported.
+                // instead of stating a duration the session never reported.
                 assert_eq!(order(transcript), vec!["0", "fold(1)", "2"]);
 
                 transcript
@@ -540,7 +540,7 @@ mod resumed_collapse_tests {
                 assert_eq!(row_count(transcript, CollapseRows::Off), 4);
 
                 // Reading work inline is the point of "only tool calls", so
-                // the turn carries no fold disclosure to hide it again.
+                // the turn has no fold disclosure to hide it again.
                 assert!(
                     !transcript
                         .build_row_specs(CollapseRows::ToolCalls)
@@ -768,7 +768,7 @@ mod branch_point_targeting_tests {
                     Some(3)
                 );
 
-                // A depth landing on a different prompt names a list the
+                // A depth pointing at a different prompt names a list the
                 // transcript disagrees with, and moving to it would put the
                 // user in front of a turn they did not point at.
                 assert_eq!(
@@ -845,9 +845,9 @@ mod branch_point_targeting_tests {
     }
 
     #[test]
-    fn a_count_landing_on_another_prompt_names_nothing() {
-        // The backend left a branch point out — a cut it cannot make — so the
-        // depths no longer line up. The text comparison catches it rather than
+    fn a_count_pointing_at_another_prompt_names_nothing() {
+        // The backend left a branch point out (a cut it cannot make), so the
+        // depths no longer line up. The text comparison catches it instead of
         // letting the cut land a turn away from where the user pointed.
         let checkpoints = ["third".to_string(), "first".to_string()];
 
@@ -1001,8 +1001,8 @@ mod row_rhythm_tests {
         });
     }
 
-    /// The steps of an expanded run report the toggle that opened them, which
-    /// is what puts them on its ramp. The toggle itself and the prose around
+    /// The steps of an expanded run report the toggle that opened them, and
+    /// that puts them on its ramp. The toggle itself and the prose around
     /// the run report nothing, because neither arrived when the run opened.
     #[gpui::test]
     fn an_expanded_runs_steps_report_the_toggle_that_opened_them(cx: &mut TestAppContext) {
@@ -1081,18 +1081,18 @@ mod row_rhythm_tests {
         });
     }
 
-    /// A step landing under a reply moves that reply's gap down a rank, so the
+    /// A step added under a reply moves that reply's gap down a rank, so the
     /// reply differs from the row the list holds while still being that row.
     /// Replacing it would hand the list a row it has never measured: the
     /// reader part-way through the reply is put back at its top, and its
     /// height drops out of the scrollbar until it is next laid out.
     #[gpui::test]
-    fn a_step_landing_under_the_reply_being_read_holds_the_readers_place(cx: &mut TestAppContext) {
+    fn a_step_added_under_the_reply_being_read_holds_the_readers_place(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let view = cx.new(|_| TranscriptView::new(AgentKind::Codex, None));
 
             view.update(cx, |view, cx| {
-                // Pushed rather than replayed: a replayed turn has settled,
+                // Pushed, not replayed: a replayed turn has settled,
                 // and a settled turn is headed by its work disclosure.
                 view.push(1, user("ask").item, Vec::new(), cx);
                 view.push(1, agent("reply").item, Vec::new(), cx);
@@ -1133,7 +1133,7 @@ mod row_rhythm_tests {
         });
     }
 
-    /// Reduced motion is read where a disclosure opens rather than where its
+    /// Reduced motion is read where a disclosure opens instead of where its
     /// progress is reported, so nothing is ever in flight: the content is on
     /// screen at once and the transcript asks for no frames of its own.
     #[gpui::test]
@@ -1159,7 +1159,7 @@ mod row_rhythm_tests {
         });
     }
 
-    /// Shutting a disclosure starts an exit rather than finishing one: the
+    /// Shutting a disclosure starts an exit instead of finishing one: the
     /// steps stay on the list while they leave, and only come off it once
     /// there is nothing left on screen to lose.
     #[gpui::test]
@@ -1208,10 +1208,9 @@ mod row_rhythm_tests {
 
     /// The space under a run's last step and the space under the toggle once
     /// the run is gone are the same boundary read off the same pair of rows,
-    /// so they are worth the same rank. The exit leans on that: it holds back
+    /// so they get the same rank. The exit leans on that: it holds back
     /// exactly the difference between that rank and the step rhythm the
-    /// toggle sits on while the run is open, which is what makes the run's
-    /// removal move nothing.
+    /// toggle has while the run is open, so the run's removal moves nothing.
     #[gpui::test]
     fn a_run_leaves_behind_the_space_its_toggle_takes_over(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -1250,7 +1249,7 @@ mod row_rhythm_tests {
         });
     }
 
-    /// A run's steps each ramp their own height, so each carries a measured
+    /// A run's steps each ramp their own height, so each has a measured
     /// height of its own. Those measurements leave with the rows they were
     /// taken from; a disclosure the run has nothing to do with keeps its own.
     #[gpui::test]
@@ -1284,7 +1283,7 @@ mod row_rhythm_tests {
         });
     }
 
-    /// A click landing part-way through an exit asks for the content back.
+    /// A click arriving part-way through an exit asks for the content back.
     /// Reading the click against the expanded state alone would restart the
     /// exit instead, so the block would go on shutting under a second click
     /// meant to stop it.
@@ -1304,7 +1303,7 @@ mod row_rhythm_tests {
 
                 assert!(
                     view.disclosures.group_expanded(2),
-                    "the run stayed open rather than finishing the exit"
+                    "the run stayed open instead of finishing the exit"
                 );
             });
         });
@@ -1331,8 +1330,8 @@ mod row_rhythm_tests {
     }
 
     /// Unfolding a turn splices its work in under the "Show work" row, and
-    /// every row it splices in reports the fold, which is what puts them on
-    /// its ramp. The fold itself and the reply that was on screen while the
+    /// every row it splices in reports the fold, which puts them on its
+    /// ramp. The fold itself and the reply that was on screen while the
     /// turn was folded report nothing.
     #[gpui::test]
     fn an_unfolded_turns_work_reports_the_fold_that_opened_it(cx: &mut TestAppContext) {
@@ -1379,7 +1378,7 @@ mod row_rhythm_tests {
         });
     }
 
-    /// Folding a turn back starts an exit rather than finishing one: its work
+    /// Folding a turn back starts an exit instead of finishing one: its work
     /// stays on the list while it leaves, and comes off only once there is
     /// nothing left on screen to lose.
     #[gpui::test]
@@ -1416,7 +1415,7 @@ mod row_rhythm_tests {
 
     /// A step of a run inside an unfolded turn is on screen by two
     /// disclosures at once. It follows its run while the fold rests, so a run
-    /// opened inside a settled turn still travels, and the fold as soon as
+    /// opened inside a settled turn still moves, and the fold as soon as
     /// the fold moves, because the fold is then moving everything under it.
     #[gpui::test]
     fn a_step_follows_its_run_until_its_fold_moves(cx: &mut TestAppContext) {

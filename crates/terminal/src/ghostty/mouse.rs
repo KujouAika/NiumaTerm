@@ -41,7 +41,7 @@ pub enum MouseButton {
 /// honoured instead of only the two a hand-written encoder knew.
 ///
 /// The input path works in cells and reads the terminal's modes from the
-/// published mode word rather than from the engine, which lives on the PTY
+/// published mode word instead of from the engine, which runs on the PTY
 /// task. The encoder is therefore told the grid as a surface of one-pixel
 /// cells, and SGR-pixel reporting, which needs real pixel positions, is not
 /// offered.
@@ -202,7 +202,7 @@ impl MouseReporter {
             ghostty_mouse_event_set_mods(self.event, mods);
 
             // The middle of the cell, so the encoder's pixel-to-cell mapping
-            // lands on it however it rounds.
+            // resolves to it however it rounds.
             ghostty_mouse_event_set_position(
                 self.event,
                 VtMousePosition {

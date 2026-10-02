@@ -89,7 +89,7 @@ pub(super) struct CodexTasks {
 
 impl CodexTasks {
     /// Point the registry at a parent thread. Returns true when this is a
-    /// different root, which is what makes the caller start descendant
+    /// different root, which makes the caller start descendant
     /// discovery and drop rows belonging to the previous conversation.
     pub(super) fn set_root(&mut self, thread_id: &str) -> bool {
         if self.root() == Some(thread_id) {
@@ -135,7 +135,7 @@ impl CodexTasks {
             .as_ref()
             .map(BackgroundTaskRegistry::snapshot)?;
 
-        // Stoppability is derived here rather than merged through an update:
+        // Stoppability is derived here instead of merged through an update:
         // it is exactly "an active turn is known right now", which a patch that
         // only ever fills missing fields could not express when the turn ends.
         for task in &mut snapshot.tasks {
@@ -167,7 +167,7 @@ impl CodexTasks {
     /// Record a child relationship and report whether the thread is a valid
     /// descendant of the selected root. `parent_thread_id` may be another
     /// descendant; the chain is walked so a row that never reaches the selected
-    /// root — or that closes a cycle — is refused.
+    /// root (or that closes a cycle) is refused.
     fn confirm(&mut self, thread_id: &str, parent_thread_id: Option<&str>) -> bool {
         let Some(root) = self.root().map(str::to_owned) else {
             return false;
@@ -271,8 +271,8 @@ impl CodexTasks {
 
     /// `collabAgentToolCall` is the parent's own spawn/send/wait/close call.
     /// Its `receiverThreadIds` name the children it targets and `agentsStates`
-    /// carries each child's authoritative lifecycle status, so this is the
-    /// primary live source for both identity and state.
+    /// holds each child's lifecycle status as the parent reports it, so this is
+    /// the primary live source for both identity and state.
     fn observe_collab_tool_call(&mut self, item: &Value) -> bool {
         // The sender is the thread that issued the call: the selected root, or
         // a descendant of it when a child spawns its own child.
@@ -321,7 +321,7 @@ impl CodexTasks {
                     thread_id: thread_id.clone(),
                 }),
                 state: collab_agent_state(state),
-                // `message` carries the child's completion summary or its error
+                // `message` holds the child's completion summary or its error
                 // text, which is the most useful one-line status available.
                 status: text_field(state, &["message"]),
                 ..BackgroundTaskUpdate::default()
@@ -347,7 +347,7 @@ impl CodexTasks {
     }
 
     /// `subAgentActivity` reports that a known child started, was interacted
-    /// with, or was interrupted. It carries no status text, so it only moves
+    /// with, or was interrupted. It has no status text, so it only moves
     /// the lifecycle.
     fn observe_subagent_activity(&mut self, item: &Value) -> bool {
         let Some(thread_id) = item["agentThreadId"]
@@ -482,7 +482,7 @@ impl CodexTasks {
             // `active` is the only status with a turn behind it; a child that
             // went idle, unloaded, or errored has nothing left to interrupt. A
             // child waiting on an approval is still `active` and still
-            // interruptible, so it deliberately keeps its turn.
+            // interruptible, so it keeps its turn.
             "thread/status/changed" => params["status"]["type"].as_str() != Some("active"),
             _ => false,
         };
@@ -577,7 +577,7 @@ impl CodexTasks {
     }
 
     /// Fold one descendant page. Returns the cursor of the next page when it
-    /// is worth following, and marks discovery ready once paging stops. A
+    /// should be followed, and marks discovery ready once paging stops. A
     /// cursor already followed in this pass means the server is repeating a
     /// page, which would otherwise page forever.
     pub(super) fn apply_descendants(
@@ -613,10 +613,10 @@ impl CodexTasks {
             changed |= self.drain_pending(&id);
 
             // A listed thread reports only whether it is loaded and busy. A row
-            // the live stream already described keeps its authoritative
-            // lifecycle; one seen for the first time here is not running now,
-            // and Stopped is the honest reading of an ended agent whose outcome
-            // this listing does not carry.
+            // the live stream already described keeps that lifecycle, which
+            // wins over this listing; one seen for the first time here is not
+            // running now, and Stopped is the accurate reading of an ended
+            // agent whose outcome this listing does not include.
             let known = self
                 .registry
                 .as_ref()
@@ -762,8 +762,8 @@ fn descendant_parent_id(thread: &Value) -> Option<String> {
 }
 
 /// One entry of a collaboration call's `agentsStates`: the child agent's own
-/// lifecycle as the parent last observed it. This is the authoritative live
-/// source, because a thread's runtime status only says whether it is loaded
+/// lifecycle as the parent last observed it. This live source wins over the
+/// others, because a thread's runtime status only reports whether it is loaded
 /// and busy, never how its work ended.
 fn collab_agent_state(state: &Value) -> Option<BackgroundTaskState> {
     Some(match state["status"].as_str()? {

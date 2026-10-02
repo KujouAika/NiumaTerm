@@ -8,7 +8,7 @@
 //!
 //! Reconciliation therefore runs one direction only, from the text. Removing a
 //! thumbnail deletes its placeholder and reconciles, so both routes share one
-//! rule rather than two that can disagree.
+//! rule, not two that can disagree.
 
 pub(crate) use nmt_agent::images::{AttachError, MAX_ATTACHMENTS};
 
@@ -54,7 +54,7 @@ pub(crate) fn spaced_placeholder(preceding: Option<char>, placeholder: &str) -> 
     }
 }
 
-/// Everything the pending message carries besides its text: the images
+/// Everything the pending message holds besides its text: the images
 /// anchored in it by placeholder, and the earlier response text quoted into
 /// it. Both are cleared by the same send and drawn on the same strip above
 /// the composer, so they travel together.
@@ -94,8 +94,8 @@ impl ComposerAttachments {
         self.annotations.clear();
     }
 
-    /// Put annotations back in front of the ones already pending, which is
-    /// what an interrupted message restores.
+    /// Put annotations back in front of the ones already pending. Restoring an
+    /// interrupted message uses this.
     pub(crate) fn restore_annotations(&mut self, mut earlier: Vec<String>) {
         earlier.append(&mut self.annotations);
 
@@ -197,7 +197,7 @@ impl ComposerAttachments {
     }
 
     /// Bring the attachment list back in line with the composer text. The text
-    /// is the record of which images the message still carries, so this runs
+    /// is the record of which images the message still holds, so this runs
     /// after every edit that could have changed its placeholders. Reports
     /// whether the strip needs redrawing.
     pub(crate) fn sync(
@@ -219,11 +219,11 @@ impl ComposerAttachments {
         // ranges are read from the text the input is left holding.
         let text = match self.images.reconcile(text) {
             Some(renumbered) => {
-                // Renumbering rewrites digits in place, and a message carries
+                // Renumbering rewrites digits in place, and a message holds
                 // fewer than ten images, so every placeholder keeps its length
                 // and the caret still belongs where the edit left it. Setting
-                // the value drops the selection, so it is put back rather than
-                // letting an edit in the middle of a prompt throw the caret to
+                // the value drops the selection, so it is put back; otherwise
+                // an edit in the middle of a prompt would throw the caret to
                 // the top of the composer.
                 let cursor = input.read(cx).cursor();
 
@@ -248,8 +248,8 @@ impl ComposerAttachments {
         true
     }
 
-    /// The images the pending message carries, above the composer text they
-    /// are anchored in. Absent while nothing is attached, so an ordinary
+    /// The images the pending message holds, above the composer text they
+    /// are anchored in. Absent while nothing is attached, so a plain
     /// message keeps the composer where it has always been.
     pub(crate) fn render(&self, cx: &mut Context<AgentPane>) -> Option<AnyElement> {
         if self.images().is_empty() && self.annotations().is_empty() {
@@ -291,7 +291,7 @@ impl ComposerAttachments {
     ) -> AnyElement {
         let image = attachment.image.clone();
 
-        // A click carries the pointer's position, not the thumbnail's; the
+        // A click reports the pointer's position, not the thumbnail's; the
         // bounds the layout gave it are kept from the prepaint that precedes
         // the click, so the preview knows where to grow from.
         let placed = Rc::new(Cell::new(Bounds::default()));
@@ -348,11 +348,11 @@ impl ComposerAttachments {
             .into_any_element()
     }
 
-    /// One annotation, as its own chip. They stay separate rather than folding
+    /// One annotation, as its own chip. They stay separate instead of folding
     /// into a single count because each one is a different quotation the user
     /// chose, and one of them being wrong is a reason to drop that one.
     ///
-    /// The chip shows as much as fits and carries the whole selection in its
+    /// The chip shows as much as fits and puts the whole selection in its
     /// tooltip: a quotation is often several lines, and a strip that grew to
     /// hold them would take the composer's room.
     fn render_response_annotation(
@@ -531,7 +531,7 @@ pub(crate) fn scratch_dir(route: &str) -> PathBuf {
 }
 
 /// Edge of a thumbnail. Large enough to recognize a screenshot by, small
-/// enough that a full message's worth of them does not push the composer off
+/// enough that [`MAX_ATTACHMENTS`] of them do not push the composer off
 /// the pane.
 pub(crate) const THUMBNAIL: f32 = 56.0;
 

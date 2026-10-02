@@ -185,7 +185,7 @@ overlay = "#0000004D"
 # Syntax palette from VS Code's 2026 Dark theme: the token rules in
 # `extensions/theme-defaults/themes/2026-dark.json` plus the values a scope
 # inherits through `dark_modern`, `dark_plus`, and `dark_vs` when the 2026
-# file leaves it alone, which is what VS Code renders. Editor colors are
+# file leaves it alone, matching what VS Code renders. Editor colors are
 # the theme's own; its editor background is this theme's content layer.
 [colors.ui.highlight]
 "editor.background" = "#121314"

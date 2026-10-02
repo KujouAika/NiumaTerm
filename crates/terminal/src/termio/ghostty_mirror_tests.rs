@@ -460,7 +460,7 @@ fn subscribe_mid_stream_replays_without_loss_or_duplication() {
     machine.pty.reader.data = data.clone();
     machine.pty.writer.exited = true;
 
-    // Parse one batch first so the subscription lands between PTY reads.
+    // Parse one batch first so the subscription is registered between PTY reads.
     machine
         .pty_read(
             &mut PtyState::default(),
@@ -1856,7 +1856,7 @@ fn prediction_cleanup_cannot_discard_completed_output() {
     );
 }
 
-/// The engine must accept a `;C` mark that carries parameters, or the output
+/// The engine must accept a `;C` mark that has parameters, or the output
 /// rows lose their semantic tag and the block disappears.
 #[test]
 fn submitted_command_survives_prediction_cleanup() {
@@ -1994,7 +1994,7 @@ echo hi\r\n\x1b]133;C\x07hi\r\n\
 
 /// A user clear announced by the Clear-Host wrapper (`;K`): the frozen
 /// history drops (HistoryCleared), the engine is wiped, and the session
-/// keeps working — the next command harvests normally from row 0.
+/// keeps working: the next command harvests normally from row 0.
 #[test]
 fn pty_read_history_clear_mark_drops_history_and_wipes_engine() {
     use crate::event::{BlockEvent, TerminalEvent};
@@ -2102,7 +2102,7 @@ echo two\r\n\x1b]133;C\x07two\r\n\
     assert_eq!(starts[1].seq, finishes[1].seq);
     assert!(starts[0].seq < starts[1].seq);
 
-    // Each frozen block carries the complete command record, so the store
+    // Each frozen block includes the complete command record, so the store
     // never has to join metadata by sequence number later.
     let blocks: Vec<_> = events
         .iter()
@@ -2133,7 +2133,7 @@ echo two\r\n\x1b]133;C\x07two\r\n\
     }
 
     // Mark forwarding is working when the engine tags the
-    // prompt rows — the drift-correction ground truth for the view.
+    // prompt rows: the drift-correction ground truth for the view.
     assert!(
         machine.ghostty.has_prompt_tagged_row(),
         "engine rows must carry semantic prompt tags after mark forwarding"
@@ -2223,7 +2223,7 @@ impl AsyncPty for RestartingPty {
     }
 }
 
-/// A replayed checkpoint carries the finished blocks as history again, so
+/// A replayed checkpoint includes the finished blocks as history again, so
 /// blocks frozen from the earlier stream must go, or the history shows twice.
 #[test]
 fn a_restarted_stream_drops_blocks_from_the_earlier_stream() {
@@ -2303,11 +2303,11 @@ fn blocks_machine(chunks: Vec<(bool, Vec<u8>)>) -> Termio<RestartingPty, VoidLis
     .unwrap()
 }
 
-/// A replica starts from a checkpoint, which carries no OSC 133 marks. The
+/// A replica starts from a checkpoint, which has no OSC 133 marks. The
 /// checkpoint's replayed marks must leave it trusting the shell at the same
 /// point, so the first command it sees becomes a block as on the host.
 #[test]
-fn a_checkpoint_carries_the_prompt_lifecycle_to_the_replica() {
+fn a_checkpoint_restores_the_prompt_lifecycle_on_the_replica() {
     let started = b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D\x07\
 \x1b]133;A\x07PS> \x1b]133;B\x07";
 

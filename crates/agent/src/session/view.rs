@@ -84,7 +84,7 @@ pub struct ImageData {
 
 /// A time on the host, sent as how long ago it was. Two readings compare
 /// equal when both are set or both are not: the value advances on its own,
-/// and only its appearance or removal is a change worth publishing.
+/// and only its appearance or removal is a change that gets published.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Since(pub Option<Duration>);
 
@@ -285,7 +285,7 @@ impl AgentView {
     /// [`ViewPublisher`] emits, for a view that renders the projection
     /// directly instead of running a replica controller. A splice past the
     /// end appends, so a view that fell behind by a trimmed entry still
-    /// converges on the next splice rather than panicking.
+    /// converges on the next splice instead of panicking.
     pub fn apply(&mut self, op: ViewOp) {
         match op {
             ViewOp::Splice { from, entries } => {

@@ -18,7 +18,7 @@ use crate::ui::shell::TabSurface;
 use crate::workspace::{WorkspaceId, WorkspaceKind, WorkspaceManager};
 
 /// A pane that runs the current default profile's exact command is saved with
-/// `shell = None` — "follow the default profile" — so later profile changes apply
+/// `shell = None` ("follow the default profile"), so later profile changes apply
 /// to restored sessions instead of pinning today's shell path forever.
 fn normalize_saved_launch(state: &mut TabState, default_profile: &(Option<String>, Vec<String>)) {
     if state.shell == default_profile.0 && state.args == default_profile.1 {
@@ -165,7 +165,7 @@ pub(crate) fn surface_snapshot(
 ) -> TabState {
     let mut state = match surface {
         // A tab that never went live re-saves its restored snapshot
-        // unchanged — its shells never ran, so the saved launch state is
+        // unchanged: its shells never ran, so the saved launch state is
         // still the truth.
         TabSurface::Pending(state) => (**state).clone(),
         // Flat fields always mirror the focused pane, so a snapshot

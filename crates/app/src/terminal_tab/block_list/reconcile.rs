@@ -7,7 +7,7 @@ use crate::terminal_tab::pane_model::list_mirror::ListPosition;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct BlockListMeasureKey {
-    /// (cols, cell height, pad rows) — pad rows toggling (Command Blocks
+    /// (cols, cell height, pad rows). Pad rows toggling (Command Blocks
     /// on/off) changes every item height, so it must force a full remeasure.
     pub(crate) layout: (u32, f32, f32),
 
@@ -25,7 +25,7 @@ pub(crate) struct BlockListRenderMetrics {
     pub(crate) frozen_px: f32,
 
     /// The live item's history rows in pixels (active-grid scrollback above
-    /// the live grid) — the "tail" position in scroll/active-top math.
+    /// the live grid): the "tail" position in scroll/active-top math.
     pub(crate) tail_px: f32,
 
     pub(crate) total_px: f32,

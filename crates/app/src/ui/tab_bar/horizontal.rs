@@ -54,7 +54,7 @@ pub(crate) struct TabStrip {
     /// tab bounds, so hovering it cannot move the destination away.
     drag_over: Option<(usize, bool)>,
 
-    /// Strip width recorded during the previous prepaint, which is what
+    /// Strip width recorded during the previous prepaint: the width
     /// the tabs divide between them. Held in a cell because the
     /// measurement arrives from a prepaint callback, long after `render` has
     /// given up its borrow.
@@ -68,7 +68,7 @@ const MIN_TAB_WIDTH: f32 = 54.0;
 
 /// Widest a tab gets while the strip has room to spare. Past this width a
 /// tab adds only empty space after its title, and a few tabs stretched across
-/// a wide window read as one bar rather than separate targets.
+/// a wide window read as one bar instead of separate targets.
 const MAX_TAB_WIDTH: f32 = 220.0;
 
 impl TabStrip {
@@ -87,7 +87,7 @@ impl TabStrip {
     /// path without fighting manual scrolling on unrelated re-renders. On the
     /// very first render the scroll handle hasn't recorded its overflow axes yet
     /// (that happens in its first prepaint), so the request is consumed as a
-    /// no-op — re-request once on the second render via `reveal_retry`.
+    /// no-op; re-request once on the second render via `reveal_retry`.
     pub(crate) fn reveal_active(
         &mut self,
         active_id: TabId,
@@ -109,7 +109,7 @@ impl TabStrip {
 
         // Runs every render: close the make-way gap once the drag is gone
         // without a drop on the strip (cancelled via Escape, or released
-        // elsewhere) — the cancel itself refreshes the window, so this always
+        // elsewhere); the cancel itself refreshes the window, so this always
         // gets a chance to run.
         if self.drag_over.is_some() && !cx.has_active_drag() {
             self.drag_over = None;
@@ -277,7 +277,7 @@ impl TabStrip {
                 // Inline rename: the label swaps for an input. The mouse-down
                 // stopper keeps clicks in the input from activating the tab
                 // (and blurring the input); Escape cancels before the input
-                // sees it. Otherwise the label carries the right-click menu.
+                // sees it. Otherwise the label owns the right-click menu.
                 let renaming = renames.tab_input(TabId(id)).cloned();
 
                 let content: AnyElement = if let Some(input) = renaming {
@@ -354,15 +354,15 @@ impl TabStrip {
                         // A dead shell recolors the title instead of
                         // appending "[exited]", which spent six
                         // characters of a fixed-width tab on state that
-                        // a color carries for free.
+                        // a color shows for free.
                         .when(exited, |this| this.text_color(cx.theme().danger))
                         .map(|this| {
                             if icon_only {
                                 // One glyph, two states stacked in the same
                                 // slot: the tab's icon at rest, the close
                                 // control while the pointer is on the tab. The
-                                // slot is sized for the click target rather
-                                // than the 12px glyph, and the pill's own
+                                // slot is sized for the click target, not
+                                // the 12px glyph, and the pill's own
                                 // padding frames it on both sides.
                                 return this.child(
                                     div()
@@ -525,7 +525,7 @@ impl TabStrip {
                                                 // both mean "this tab is still
                                                 // working", and a static dot
                                                 // there read as one more
-                                                // colored state rather than as
+                                                // colored state instead of as
                                                 // motion. A finished command
                                                 // keeps its graded dot, since
                                                 // that state no longer moves.
@@ -587,7 +587,7 @@ impl TabStrip {
                                                 // finished command reports, so
                                                 // it takes the success color
                                                 // the terminal dot already
-                                                // uses rather than a second
+                                                // uses instead of a second
                                                 // color for one meaning.
                                                 AgentTabIndicator::Ready => StatusMark::new(
                                                     ("tab-agent-ready", id as usize),
@@ -661,7 +661,7 @@ impl TabStrip {
             .id("tab-strip-drop")
             .w_full()
             .min_w_0()
-            // Tab widths need the width the strip actually got, which layout
+            // Tab widths need the width the strip was given, which layout
             // only settles after this render. Recording it and asking for one
             // more render converges in a single extra frame, and the equality
             // guard keeps that from repeating every frame.
@@ -724,7 +724,7 @@ const NEW_TAB_BUTTON_WIDTH: f32 = TOOLBAR_BUTTON_SIZE;
 /// takes over.
 fn fitted_tab_width(strip_width: f32, tab_count: usize, shape: TabShape) -> f32 {
     // A strip that has never been laid out reports no width. Starting from the
-    // widest tab keeps the first frame at full size rather than flashing every
+    // widest tab keeps the first frame at full size instead of flashing every
     // tab down to the floor and back.
     if tab_count == 0 || strip_width <= 0.0 {
         return MAX_TAB_WIDTH;

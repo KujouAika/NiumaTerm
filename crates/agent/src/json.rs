@@ -59,9 +59,9 @@ pub(crate) fn block_text(content: &Value, text_blocks_only: bool) -> Option<Stri
 }
 
 /// Unix seconds as the RFC 3339 form the session picker renders (UTC, `Z`
-/// suffix, second precision), which is what backends reading their history
+/// suffix, second precision), the same form backends reading their history
 /// off disk already record. `None` for a value outside chrono's range, so a
-/// corrupt stamp shows no date rather than the epoch.
+/// corrupt stamp shows no date instead of the epoch.
 pub(crate) fn rfc3339_from_unix_seconds(seconds: i64) -> Option<String> {
     DateTime::from_timestamp(seconds, 0).map(|date| date.to_rfc3339_opts(SecondsFormat::Secs, true))
 }
@@ -74,7 +74,7 @@ pub(crate) fn unix_seconds_from_rfc3339(text: &str) -> Option<i64> {
 }
 
 /// A `-`/`+` line body from whole before and after texts. Providers report
-/// file edits as complete old and new strings rather than hunks, and the
+/// file edits as complete old and new strings instead of hunks, and the
 /// file-change card renders exactly this body.
 pub(crate) fn diff_lines(removed: &str, added: &str) -> String {
     let mut diff = String::new();

@@ -28,12 +28,13 @@ pub struct TerminalSessionConfig {
     pub engine_blocks: bool,
 
     /// Child-only values merged into the shell's inherited environment.
-    /// Runtime metadata is deliberately excluded from persisted tab state.
+    /// Runtime metadata is excluded from persisted tab state because it only
+    /// describes this launch.
     pub environment_overrides: Vec<(String, String)>,
 
     /// Bytes the launch places in the terminal's input queue before the shell
     /// starts, for a platform whose shell integration is typed at the shell
-    /// rather than found by it. Not part of the restorable tab state: it is a
+    /// instead of found by it. Not part of the restorable tab state: it is a
     /// property of this launch, not of the command the user configured.
     pub bootstrap: Option<String>,
 
@@ -61,7 +62,7 @@ impl TerminalSessionConfig {
 
     /// The launch adjustments the platform's prompt integration needs, or
     /// `None` when the shell has none. Caller-supplied args are the user's own
-    /// launch command, so a config that carries them is left alone.
+    /// launch command, so a config that has them is left alone.
     fn prompt_integration(&self) -> Option<PromptIntegration> {
         if !self.args.is_empty() {
             return None;

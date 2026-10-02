@@ -19,7 +19,7 @@ const AGENT_ONE: &str = "a6a0cda9e93639379";
 const AGENT_TWO: &str = "a5a25521c354f9bd7";
 
 /// Captured from a real two-agent run. The transcript's one attachment record
-/// held a skill listing that says nothing about the shape under test, so its
+/// held a skill listing unrelated to the shape under test, so its
 /// content is blanked while the record itself stays: dropping it would break
 /// the `parentUuid` chain the replay parser walks.
 const JOURNAL: &str = include_str!("../../../tests/fixtures/claude/workflow/journal.jsonl");
@@ -102,7 +102,7 @@ fn only_run(workflows: &ClaudeWorkflows) -> WorkflowRun {
 
 #[test]
 fn later_records_match_their_run_without_a_task_type() {
-    // Only `task_started` carries `task_type`; every later record identifies
+    // Only `task_started` has `task_type`; every later record identifies
     // its run by `task_id` alone.
     let mut workflows = reducer();
 
@@ -510,7 +510,7 @@ fn restored_runs_never_replace_a_run_the_stream_already_reported() {
 }
 
 #[test]
-fn a_run_whose_snapshot_never_landed_still_restores() {
+fn a_run_whose_snapshot_was_never_written_still_restores() {
     // A run the process outlived writes no completion snapshot, so the run
     // directory is the only record left of it.
     let root = run_tree();
@@ -549,7 +549,7 @@ fn a_run_whose_snapshot_never_landed_still_restores() {
     assert_eq!(run.name.as_deref(), Some("deep-research"));
     assert_eq!(run.state, WorkflowRunState::Stopped);
 
-    // The snapshot is what carries these, so they stay absent.
+    // Only the snapshot records these, so they stay absent.
     assert!(run.phases.is_empty());
     assert_eq!(run.total_tokens, None);
 
@@ -561,7 +561,7 @@ fn a_run_whose_snapshot_never_landed_still_restores() {
         .find(|agent| agent.agent_id.as_deref() == Some(orphan))
         .expect("orphan agent is listed");
 
-    // The journal never mentioned it, so it reports as cut off rather than
+    // The journal never mentioned it, so it reports as cut off instead of
     // done or failed.
     assert_eq!(orphan_row.state, WorkflowAgentState::Stopped);
 
@@ -575,7 +575,7 @@ fn a_run_whose_snapshot_never_landed_still_restores() {
 
     // Both are labelled from the opening line of the prompt they were given.
     for agent in &run.agents {
-        let label = agent.label.as_deref().expect("agent carries a label");
+        let label = agent.label.as_deref().expect("agent has a label");
 
         assert!(!label.is_empty());
         assert!(!label.starts_with('#'), "{label}");

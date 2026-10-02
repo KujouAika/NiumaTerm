@@ -36,7 +36,7 @@ use crate::workspace::workspace_display_label;
 
 /// The heading of the remote section and one block per host under it. Each
 /// host's block spaces its rows by the list gap, like the local workspaces
-/// above, but carries those gaps itself: a host folding its rows away folds
+/// above, but owns those gaps itself: a host folding its rows away folds
 /// the gaps between them too, which the list's own gap could not do.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn remote_workspace_blocks(
@@ -224,7 +224,7 @@ fn list_gap(
     })
 }
 
-/// Names a session's fold motion by host and session rather than list
+/// Names a session's fold motion by host and session instead of list
 /// position, so a session moving between the host's loose rows and one of
 /// its workspaces keeps the motion it is in.
 fn session_fold_id(host: &RemoteWorkspace, session: &SessionInfo) -> ElementId {
@@ -254,7 +254,7 @@ fn host_row(
     let selection = sidebar_selection(cx);
     let host_id = host.id.as_str().to_owned();
 
-    // Keyed by host rather than list position, so a host connecting above
+    // Keyed by host instead of list position, so a host connecting above
     // this one does not hand this row another's reveal.
     let disclosure = Disclosure::new(
         ElementId::Name(format!("remote-host-disclosure:{host_id}").into()),
@@ -468,7 +468,7 @@ fn workspace_row(
 
     let selection = sidebar_selection(cx);
 
-    // Keyed by host and workspace rather than list position, so a host
+    // Keyed by host and workspace instead of list position, so a host
     // connecting above this one does not hand this row another's reveal.
     let disclosure = Disclosure::new(
         ElementId::Name(format!("remote-disclosure:{}:{}", fold_key.0, fold_key.1).into()),

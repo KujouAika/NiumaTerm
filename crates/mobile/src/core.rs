@@ -64,8 +64,8 @@ pub struct MobileCore {
 }
 
 /// A person is looking at the host list while the phone connects, so after
-/// three attempts of five seconds each the host shows as unreachable rather
-/// than connecting indefinitely.
+/// three attempts of five seconds each the host shows as unreachable instead
+/// of connecting indefinitely.
 const CONNECT_RETRY: Retry = Retry::Limited {
     attempts: 3,
     window: Duration::from_secs(5),

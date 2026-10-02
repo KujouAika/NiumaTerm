@@ -98,7 +98,7 @@ pub(crate) fn line_from_parts(
     TerminalLine::new(text, cells, runs, None)
 }
 
-/// Accumulates display cells into a `TerminalLine` — the one display-
+/// Accumulates display cells into a `TerminalLine`: the one display-
 /// convention kernel for the live frame extractor and the frozen engine-row
 /// builder: appends display text, merges runs of equal style, and gives wide
 /// glyphs an NBSP placeholder column (GPUI's force-width layout snaps one
@@ -120,7 +120,7 @@ impl LineBuilder {
     }
 
     /// Append one cell's display text; `wide` adds the placeholder column,
-    /// covered by the same run. `style.len` is ignored — the run length is
+    /// covered by the same run. `style.len` is ignored; the run length is
     /// the appended byte count, merged into the previous run on equal style.
     pub(crate) fn push_segment(
         &mut self,

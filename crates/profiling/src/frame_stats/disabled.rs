@@ -36,7 +36,7 @@ pub fn enabled() -> bool {
 }
 
 /// Publish the display refresh interval so the digest can report the frame
-/// rate the machine is actually capable of, and classify long frames.
+/// rate the machine is capable of, and classify long frames.
 #[inline(always)]
 pub fn set_vsync_interval(_interval: Duration) {}
 
@@ -53,8 +53,8 @@ pub fn record_frame_armed() {}
 #[inline(always)]
 pub fn record_request_serviced() {}
 
-/// Records one task run on the UI thread. Reported as total occupancy rather
-/// than per-task time: many tasks individually too short to look suspicious can
+/// Records one task run on the UI thread. Reported as total occupancy, not
+/// per-task time: many tasks individually too short to look suspicious can
 /// still fill the thread and leave no room to service a frame request.
 #[inline(always)]
 pub fn record_main_thread_task(_duration: Duration) {}

@@ -65,7 +65,7 @@ impl CodeSource {
     }
 }
 
-/// Prefer an explicitly named interpreter. Bare command text has no shell
+/// Prefer an interpreter named in the command. Bare command text has no shell
 /// metadata, so only distinctive PowerShell syntax overrides the Bash default.
 pub(super) fn command_syntax(command: &str) -> (&'static str, Range<usize>) {
     let trimmed = command.trim_start();

@@ -382,7 +382,7 @@ impl Default for Square {
 
 impl Square {
     /// Read the underlying packed bits. Used by render hot loops that want
-    /// to extract multiple fields from a single cell load — calling the
+    /// to extract multiple fields from a single cell load; calling the
     /// individual accessors would otherwise reload the cell from memory
     /// each time the optimizer can't prove they alias.
     #[inline(always)]
@@ -586,10 +586,10 @@ impl StyleSet {
     }
 
     /// Look up the style for an id. Returns the default style for unknown
-    /// ids (defensive — should never happen in practice).
+    /// ids (defensive; should never happen in practice).
     ///
     /// Hot path note: this is called once per cell during rendering, so the
-    /// `id == 0` (default style) check is intentionally inlined first. The
+    /// `id == 0` (default style) check is inlined first. The
     /// overwhelming majority of cells in a typical terminal use the default
     /// style; that branch becomes a single compare + copy of a constant.
     #[inline(always)]
@@ -673,7 +673,7 @@ impl Default for StyleSet {
 
 impl From<&SnapshotStyle> for Style {
     /// Build a `Style` from a Ghostty snapshot style. Ghostty `blink` and
-    /// `overline` have no render flag and are intentionally dropped rather than
+    /// `overline` have no render flag and are dropped instead of
     /// synthesizing unsupported styling.
     fn from(s: &SnapshotStyle) -> Self {
         let mut flags = StyleFlags::empty();

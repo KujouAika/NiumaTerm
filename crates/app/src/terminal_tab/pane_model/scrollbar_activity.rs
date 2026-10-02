@@ -36,7 +36,7 @@ impl ScrollbarActivity {
     }
 
     /// Start a thumb drag, remembering where inside the thumb the pointer
-    /// landed as a track fraction.
+    /// pressed, as a track fraction.
     pub(crate) fn begin_drag(&mut self, grab: f32) {
         self.dragging = true;
         self.grab = grab;

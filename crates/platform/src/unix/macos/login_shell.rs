@@ -1,6 +1,6 @@
 //! The part of the user's environment that a GUI launch never receives.
 //!
-//! An application started by launchd — from Finder, the Dock, or `open` — gets
+//! An application started by launchd (from Finder, the Dock, or `open`) gets
 //! a PATH of `/usr/bin:/bin:/usr/sbin:/sbin` and none of the variables the
 //! user's shell startup files export. Terminal tabs do not notice: their PTY
 //! child is started through `/usr/bin/login`, which builds a real login
@@ -27,14 +27,14 @@ use tracing::{debug, warn};
 
 use crate::unix::shell::default_shell;
 
-/// A startup file that waits on something — a network mount, a prompt the
-/// shell will never receive an answer to — would otherwise block the first
+/// A startup file that waits on something (a network mount, a prompt the
+/// shell will never receive an answer to) would otherwise block the first
 /// agent launch forever. A heavyweight zsh configuration measures in the
 /// hundreds of milliseconds, so this bound is generous without being open.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Variables that describe the shell which produced the dump rather than the
-/// user's environment. Carrying them over would describe the wrong process.
+/// Variables that describe the shell which produced the dump, not the user's
+/// environment. Copying them over would describe the wrong process.
 const SHELL_LOCAL: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 /// The variables a child of this process needs beyond the ones this process
@@ -45,9 +45,9 @@ const SHELL_LOCAL: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 /// environment is already the user's and replacing it would discard whatever
 /// the surrounding shell session had set up.
 ///
-/// The capture happens at most once per run: shell startup is slow enough to
-/// be worth doing once, and an edit to a startup file takes effect on the next
-/// launch either way.
+/// The capture happens at most once per run: shell startup is slow enough
+/// that repeating it per child would cost time, and an edit to a startup file
+/// takes effect on the next launch either way.
 pub(crate) fn missing_variables() -> &'static [(String, String)] {
     static VARIABLES: OnceLock<Vec<(String, String)>> = OnceLock::new();
 
@@ -115,7 +115,7 @@ fn started_from_terminal() -> bool {
 /// The shell is both a login and an interactive one because there is no single
 /// place users put their PATH: zsh spreads it over `.zshenv`, `.zprofile` and
 /// `.zshrc`, and a bash user's is usually in `.bashrc`, which only an
-/// interactive shell reads. `env -0` is what makes the dump parseable — a
+/// interactive shell reads. `env -0` makes the dump parseable: a
 /// value may contain newlines, so line-oriented output cannot be split back
 /// apart. `exec` hands the process to `env` so that shell exit hooks cannot
 /// append anything after the dump.
@@ -134,8 +134,8 @@ fn capture(shell: &str) -> Option<Vec<(String, String)>> {
         // Startup chatter and the complaints an interactive shell makes about
         // having no terminal are not part of the answer.
         .stderr(Stdio::null())
-        // Own group, so the timeout can end a startup file's own children
-        // rather than only the shell that is waiting on them.
+        // Own group, so the timeout can end a startup file's own children too,
+        // not only the shell that is waiting on them.
         .process_group(0)
         .spawn()
         .inspect_err(|error| warn!("could not run login shell {shell}: {error}"))
@@ -192,7 +192,7 @@ fn parse(output: &[u8], marker: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Reduce a captured environment to what is worth carrying into a child.
+/// Reduce a captured environment to the variables a child should inherit.
 ///
 /// `is_set` reports whether this process already has a variable. Those are
 /// left alone: launchd's own values for `HOME`, `TMPDIR` or `SSH_AUTH_SOCK`

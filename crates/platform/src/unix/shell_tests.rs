@@ -21,7 +21,7 @@ fn a_blank_shell_falls_back_to_the_default() {
     assert_eq!(resolved_shell(Some("  /bin/zsh  ")), "/bin/zsh");
 }
 
-/// A shell without an integration must be told so rather than launched with
+/// A shell without an integration must be reported as such, not launched with
 /// its own startup files suppressed and nothing put back in their place.
 /// `/bin/sh` is bash on some systems, but in `sh` mode it reads neither the rc
 /// file nor the profile chain the bootstrap replays.
@@ -34,7 +34,7 @@ fn a_shell_without_an_integration_reports_none() {
 
 /// zsh is handed the integration by being typed at, so the user's own
 /// `ZDOTDIR` is never touched. The launch suppresses zsh's startup files
-/// instead — and with them its line editor, which would draw the injected
+/// instead, and with them its line editor, which would draw the injected
 /// line, and the history entry that line would otherwise leave behind.
 #[test]
 fn zsh_is_launched_bare_and_handed_its_bootstrap() {
@@ -54,8 +54,8 @@ fn zsh_is_launched_bare_and_handed_its_bootstrap() {
 
 /// bash is handed its integration the same way. The launch suppresses its own
 /// startup files, which the bootstrap replays, and `HISTCONTROL` keeps the
-/// injected line out of the session's history — the one thing that has to
-/// travel in the environment, since it has no command-line form.
+/// injected line out of the session's history: the one setting that has to
+/// be passed in the environment, since it has no command-line form.
 #[test]
 fn bash_is_launched_bare_and_handed_its_bootstrap() {
     let integration = prompt_integration(Some("/bin/bash")).expect("bash is integrated");
@@ -78,14 +78,14 @@ fn bash_is_launched_bare_and_handed_its_bootstrap() {
     );
 
     // No line editor is turned off: bash 3.2 cannot turn one back on, so the
-    // echo is cleared by the bootstrap rather than suppressed at the launch.
+    // echo is cleared by the bootstrap instead of suppressed at the launch.
     assert!(!integration.args.iter().any(|arg| arg == "--noediting"));
 }
 
 /// The leading space is what keeps the injected line out of the session's
-/// history, and the newline is what submits it. Both are load-bearing, and
-/// neither is visible in the rendered result, so nothing else would catch
-/// their loss.
+/// history, and the newline is what submits it. Losing either breaks the
+/// integration, and neither is visible in the rendered result, so nothing
+/// else would catch their loss.
 #[test]
 fn the_bootstrap_line_is_a_single_submitted_command() {
     let bootstrap = prompt_integration(Some("/bin/zsh"))

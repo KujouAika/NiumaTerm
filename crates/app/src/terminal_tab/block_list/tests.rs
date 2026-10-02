@@ -222,7 +222,7 @@ fn hit_test_maps_block_list_points() {
 
 /// Frozen Kitty direct read: a placement frozen into a
 /// block reports a block-relative row, its pixels read back lazily, and
-/// the paint mapping lands on the right visible row band.
+/// the paint mapping places it on the right visible row band.
 #[test]
 fn frozen_block_images_map_visible_rows() {
     use crate::terminal_tab::graphics::{ReleaseQueue, graphic_to_generation};
@@ -284,7 +284,7 @@ fn frozen_block_images_map_visible_rows() {
     );
 }
 
-/// Kitty V1 per-block ownership intentionally differs from active-screen ownership:
+/// Kitty V1 per-block ownership differs from active-screen ownership by design:
 /// cross-block place-by-id falls flat on the fresh
 /// screen, and an active delete-all cannot reach a frozen block's images.
 #[test]

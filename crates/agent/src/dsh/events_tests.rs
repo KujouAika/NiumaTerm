@@ -139,7 +139,7 @@ fn a_lost_stream_without_a_serving_host_reports_the_host_exit() {
         }
 
         // Dropping the listener with the socket leaves nothing to reconnect to,
-        // which is what a host that exited looks like from the tab.
+        // the same state a host that exited presents to the tab.
     });
 
     let (frames_tx, frames) = mpsc::channel();

@@ -1,7 +1,7 @@
 //! The controls a conversation runs under, and the choices each offers.
 //!
 //! Every field is optional because a harness reports only the controls it has,
-//! and an absent one means the harness decides rather than that the user chose
+//! and an absent one means the harness decides, not that the user chose
 //! nothing.
 
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,8 @@ pub struct ThreadSettings {
     pub effort: Option<String>,
 
     /// `None` is the normal tier: the model catalog only lists additional
-    /// tiers, so normal is expressed as an explicit `serviceTier: null`
-    /// (double-optional in the serialized payload — null resets, absent keeps).
+    /// tiers, so normal is expressed as a written-out `serviceTier: null`
+    /// (double-optional in the serialized payload: null resets, absent keeps).
     pub tier: Option<String>,
 
     /// The agent composition a DeepSeek Harness conversation is built from.
@@ -63,8 +63,8 @@ pub struct AgentPreset {
 
 /// Put `selected` at the head of a catalog that does not list it. A
 /// conversation can run on a model its provider stopped advertising, or on
-/// one named by hand, and the picker has to show the value in use rather
-/// than a blank; a bare entry with no tiers or efforts is what such a model
+/// one named by hand, and the picker has to show the value in use instead of
+/// a blank; a bare entry with no tiers or efforts is what such a model
 /// has to offer.
 pub(crate) fn list_selected_model(models: &mut Vec<ModelInfo>, selected: Option<&str>) {
     if let Some(model) = selected.map(str::trim).filter(|model| !model.is_empty())

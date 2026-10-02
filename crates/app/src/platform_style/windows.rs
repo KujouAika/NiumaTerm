@@ -40,7 +40,7 @@ impl PlatformStyle for Windows {
     /// the leading edge.
     const SIDEBAR_SELECTION_MARK: bool = true;
 
-    /// State the leading gap on the bar itself rather than relying on the
+    /// State the leading gap on the bar itself instead of relying on the
     /// component's default padding, so the gap and the width the leading
     /// region is measured against cannot drift apart.
     fn title_bar(bar: TitleBar) -> TitleBar {

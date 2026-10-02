@@ -3,7 +3,7 @@
 //! `CreatePipe` cannot open an end for overlapped I/O, which forces a blocked
 //! thread per direction. Each pair here is a single-instance named pipe
 //! instead: the end this process keeps is overlapped, and the end handed to
-//! the console host stays synchronous, which is what the host expects.
+//! the console host stays synchronous, as the host expects.
 //!
 //! Output reads use Tokio's named pipe, so completions arrive directly at the
 //! runtime's IOCP. Input writes complete against an auto-reset event; its wait
@@ -46,7 +46,7 @@ const PIPE_BUFFER: usize = 64 * 1024;
 
 /// Upper bound of one native write. The bytes are copied because an overlapped
 /// write needs memory that outlives the call, so a large paste is submitted in
-/// pieces rather than duplicated whole.
+/// pieces instead of duplicated whole.
 const WRITE_CHUNK: usize = 64 * 1024;
 
 static NEXT_PIPE: AtomicU32 = AtomicU32::new(0);
@@ -60,7 +60,7 @@ pub(crate) enum Direction {
     Outbound,
 }
 
-/// Create the pipe carrying console output: the overlapped end read here, and
+/// Create the pipe for console output: the overlapped end read here, and
 /// the synchronous write end for the console host. The reader is registered
 /// with the shared runtime's IOCP here, so creation can stay synchronous while
 /// the first read needs no runtime context of its own.
@@ -76,7 +76,7 @@ pub(crate) fn conout_pair() -> io::Result<(ConoutPipe, OwnedHandle)> {
     Ok((ConoutPipe { pipe }, theirs))
 }
 
-/// Create the pipe carrying console input: the synchronous read end for the
+/// Create the pipe for console input: the synchronous read end for the
 /// console host, and the overlapped end written here.
 pub(crate) fn conin_pair() -> io::Result<(OwnedHandle, ConinPipe)> {
     let (ours, theirs) = pipe_pair(Direction::Outbound)?;
@@ -87,7 +87,7 @@ pub(crate) fn conin_pair() -> io::Result<(OwnedHandle, ConinPipe)> {
 /// Pipes for one of a child's standard streams. Anonymous pipes cannot be
 /// overlapped, so Tokio's own child stdio parks a blocking-pool thread on
 /// every pending read. Here the parent end is registered with the runtime's
-/// IOCP instead, and the child's end stays synchronous as ordinary console
+/// IOCP instead, and the child's end stays synchronous as regular console
 /// programs expect. Call inside a runtime context.
 pub(crate) fn child_stdio_pair(direction: Direction) -> io::Result<(NamedPipeServer, OwnedHandle)> {
     let (ours, theirs) = pipe_pair(direction)?;

@@ -81,10 +81,10 @@ pub(super) struct ModelProfile {
 
 /// Read what a conversation just opened or reattached to offers: its model
 /// directory with `profile`'s pick applied, the session list, its commands,
-/// skills and agent presets. Each is scoped to the session rather than the
+/// skills and agent presets. Each is scoped to the session instead of the
 /// tab, since a resumed conversation may have been composed from a different
 /// preset or rooted elsewhere, so every open asks afresh. The session list is
-/// read now rather than when the picker opens, because the picker refuses to
+/// read now instead of when the picker opens, because the picker refuses to
 /// open on an empty list and cannot wait for one.
 pub(super) fn load_conversation(
     client: &ApiClient,
@@ -301,7 +301,7 @@ pub(super) fn load_search(
             Err(error) => json!({ "type": SEARCH_FRAME, "error": error.message() }),
         };
 
-        // A failure is delivered rather than only logged: the search takes over
+        // A failure is delivered, not only logged: the search takes over
         // the recent list, so one that reported nothing would leave the user
         // looking at rows that no longer answer the question they asked.
         deliver(json!({ "payload": payload }));
@@ -311,7 +311,7 @@ pub(super) fn load_search(
 /// Read the session's command registry and deliver the palette it fills.
 ///
 /// Discovery is asynchronous for the same reason the model directory's is: it
-/// is a call rather than a push, and a tab that waited on it would be unusable
+/// is a call, not a push, and a tab that waited on it would be unusable
 /// until the host answered.
 pub(super) fn load_commands(
     client: ApiClient,
@@ -354,10 +354,10 @@ pub(super) fn load_skills(
 /// Read the agent compositions this deployment offers, and which one built this
 /// conversation.
 ///
-/// The roster belongs to the deployment rather than to the session, but the
+/// The roster belongs to the deployment, not to the session, but the
 /// current pick belongs to the session, so both are read here: reattaching to a
 /// conversation composed from another preset has to move the picker with it.
-/// `refusal` travels with them because it explains why `current` is not the
+/// `refusal` is returned with them because it explains why `current` is not the
 /// preset that was asked for.
 pub(super) fn load_agent_presets(
     client: ApiClient,
@@ -431,7 +431,7 @@ pub(super) fn load_subagent_transcript(
 /// Read one workflow member's own conversation.
 ///
 /// A member is published as a session of its own, so its log is read the same
-/// way any session's is. That is deliberately not the child-agent read: the
+/// way any session's is. That is not the child-agent read, on purpose: the
 /// catalog that read is addressed through covers what a turn delegated, and a
 /// workflow member reached through it would depend on the workflow tool
 /// registering there as well.
@@ -457,7 +457,7 @@ pub(super) fn load_workflow_transcript(
 
 /// Read the prompts this conversation can be branched in front of.
 ///
-/// The log answers it rather than the transcript this tab happens to be
+/// The log answers it instead of the transcript this tab happens to be
 /// showing, so the offer covers turns from before the tab attached and stays
 /// right after a compaction rewrites what the transcript displays. It is read
 /// per request for the same reason: a list assembled as events went by would
@@ -468,7 +468,7 @@ pub(super) fn load_fork_checkpoints(
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
     nmt_platform::runtime().spawn(async move {
-        // A failure is delivered rather than only logged: the picker waits on
+        // A failure is delivered, not only logged: the picker waits on
         // this page, so a read that reported nothing would hold it open on a
         // list never arriving.
         let page = events::snapshot(
@@ -498,8 +498,8 @@ pub(super) fn load_fork_checkpoints(
 ///
 /// This runs off the create path because provider lookups reach the network,
 /// and a tab must not wait on a slow provider before it can be typed in. The
-/// selection is applied here rather than reported and applied later, so what
-/// the pane displays is what the harness will actually route.
+/// selection is applied here instead of reported and applied later, so what
+/// the pane displays is what the harness will route.
 fn load_models(
     client: ApiClient,
     session_id: String,
@@ -574,9 +574,9 @@ async fn reconcile_models(
                     }
                 },
                 Ok(false) => {}
-                // Reported beside the picker rather than only logged: the
+                // Reported beside the picker, not only logged: the
                 // alternative is a switch that looks applied while the
-                // first message carrying an image is refused for a reason
+                // first message with an image is refused for a reason
                 // the pane never mentions.
                 Err(message) => {
                     tracing::warn!("deepseek could not declare {id} as image-capable: {message}");
@@ -645,7 +645,7 @@ async fn read_model_catalog(client: &ApiClient, selected: &Value) -> Result<Valu
 
 /// How each adapter spells a catalog entry's input modalities. The field name
 /// is the whole difference between them, and an adapter missing from this list
-/// is left alone rather than written with entries its own schema would drop.
+/// is left alone instead of written with entries its own schema would drop.
 const MODALITY_FIELDS: [(&str, &str); 2] =
     [("llm-deepseek", "inputModalities"), ("llm-pi-ai", "input")];
 
@@ -653,7 +653,7 @@ const MODALITY_FIELDS: [(&str, &str); 2] =
 /// report whether that changed anything.
 ///
 /// `Ok(false)` means the catalog already offered the model to images, which is
-/// the ordinary state once this has run for a profile.
+/// the normal state once this has run for a profile.
 async fn declare_image_input(
     client: &ApiClient,
     provider: &str,
@@ -683,8 +683,8 @@ async fn declare_image_input(
     };
 
     // Where the provider's own settings live inside its section. Empty for a
-    // section that is the provider profile itself, which is what the DeepSeek
-    // route declares; the OpenAI-compatible adapter keeps one profile per
+    // section that is the provider profile itself, as the DeepSeek route
+    // declares; the OpenAI-compatible adapter keeps one profile per
     // route instead.
     let section: Vec<&str> = route["settingsPath"]
         .as_array()
@@ -736,8 +736,8 @@ async fn declare_image_input(
     // The answer is the namespace as the harness now reads it, which is the
     // only place a silently dropped declaration shows. An adapter build whose
     // catalog schema has no modality field accepts the write, stores it, and
-    // resolves the entry without it — so the write has to be read back rather
-    // than assumed, or every conversation would rewrite a setting that never
+    // resolves the entry without it, so the write has to be read back instead
+    // of assumed, or every conversation would rewrite a setting that never
     // takes and the first image would still be refused with no explanation.
     if !declares_image(catalog(&written, &section), model, field) {
         return Err(format!(
@@ -792,7 +792,7 @@ pub(crate) fn models_with_image(models: &Value, model: &str, field: &str) -> Opt
         .find(|entry| entry["id"].as_str() == Some(model))
     {
         Some(entry) => entry[field] = modalities,
-        // A model the catalog never listed carries nothing else: the adapter
+        // A model the catalog never listed has nothing else: the adapter
         // fills a context window and an image budget of its own for an entry
         // that names only its modalities.
         None => catalog.push(json!({ "id": model, field: modalities })),

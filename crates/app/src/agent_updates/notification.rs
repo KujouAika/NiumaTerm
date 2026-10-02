@@ -58,7 +58,8 @@ pub(crate) struct UpdateNotificationView {
     pub terminal_timeout: bool,
 }
 
-/// Pure mapping from authoritative coordinator state to one stable card view.
+/// Pure mapping from the coordinator's state (the source of truth) to one
+/// stable card view.
 /// The identity retains installation plus target version across every phase.
 pub(crate) fn notification_view(snapshot: &InstallationSnapshot) -> Option<UpdateNotificationView> {
     let versions = snapshot.state.versions.as_ref();

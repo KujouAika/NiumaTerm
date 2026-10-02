@@ -142,7 +142,7 @@ impl AsyncPty for NetworkPty {
 }
 
 /// Closing a view detaches it; the session keeps running on the host until
-/// someone ends it there or asks explicitly.
+/// someone ends it there or asks for it to end.
 impl Drop for NetworkPty {
     fn drop(&mut self) {
         info!(session = %self.session, "closing the view of a remote terminal");

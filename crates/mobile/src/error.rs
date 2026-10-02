@@ -10,8 +10,8 @@ pub enum CoreError {
 
 impl From<anyhow::Error> for CoreError {
     fn from(error: anyhow::Error) -> Self {
-        // The alternate form keeps the context chain, which is what tells
-        // "reaching the relay" apart from "the host refused this device".
+        // The alternate form keeps the context chain, the only part that
+        // distinguishes "reaching the relay" from "the host refused this device".
         Self::Failed {
             message: format!("{error:#}"),
         }

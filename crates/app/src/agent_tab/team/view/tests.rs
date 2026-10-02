@@ -925,7 +925,7 @@ async fn member_question_shows_in_team_composer_and_blocks_new_requests(cx: &mut
 
     let composer = cx
         .debug_bounds("team-member-composer")
-        .expect("the member's view carries its own composer card");
+        .expect("the member's view has its own composer card");
 
     let question = cx.debug_bounds("agent-question-panel").unwrap();
 

@@ -1,4 +1,4 @@
-//! One Team member's live agent session and the Team work it is carrying.
+//! One Team member's live agent session and the Team work assigned to it.
 
 use gpui::{App, Subscription};
 use nmt_agent::chat::{SendOutcome, TeamDecisionRequest, ThreadSettings};
@@ -47,7 +47,7 @@ impl MemberHost {
 
     /// Make `settings` the settings the member's next turn runs with. The
     /// session also keeps them as its own, so a conversation it opens later
-    /// starts on the room's values rather than back on the profile's.
+    /// starts on the room's values instead of back on the profile's.
     pub(super) fn apply_settings(&self, settings: ThreadSettings, cx: &mut App) {
         self.owner.session().update(cx, |session, cx| {
             session
@@ -87,10 +87,10 @@ impl MemberHost {
             }
 
             // The member's conversation is named after the user's request,
-            // as an ordinary conversation is named after its first prompt.
-            // The text actually sent opens with the member's role and the
-            // stage instruction, and a title taken from that would show the
-            // scaffolding wherever the provider lists the conversation.
+            // as a regular conversation is named after its first prompt.
+            // The text sent to the model opens with the member's role and the
+            // stage instruction, and a title taken from that would show that
+            // preamble wherever the provider lists the conversation.
             let title = state.title_request(&intent.input.text, |_| None);
 
             let result = state.submit(

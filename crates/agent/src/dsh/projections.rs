@@ -1,9 +1,9 @@
 //! Folding the host's projection units into the snapshots the pane renders.
 //!
-//! The host publishes each unit as its own frame carrying that unit's whole
+//! The host publishes each unit as its own frame holding that unit's whole
 //! current value, so a figure the pane shows as one thing arrives here as
 //! several independent updates. This holds the latest of each and republishes
-//! the combination, which is why it is a tracker rather than a pure mapping.
+//! the combination, so it is a tracker instead of a pure mapping.
 
 use std::collections::HashMap;
 
@@ -59,7 +59,7 @@ impl ProjectionTracker {
         ))
     }
 
-    /// Fold the whole baseline a history page carries.
+    /// Fold the whole baseline a history page holds.
     ///
     /// A live push only reports what changed since the session started, so a
     /// tab that read nothing else would show no accounting and no permission
@@ -98,7 +98,7 @@ impl ProjectionTracker {
             }
             "contextPressure" => {
                 // `projectedTokens` re-prices what the surface gained since the
-                // provider's last sample, which is what makes the figure react
+                // provider's last sample, so the figure reacts
                 // to a compaction; the provider-anchored sample is the fallback
                 // when the estimate is absent.
                 self.used_tokens = value["projectedTokens"]
@@ -113,7 +113,7 @@ impl ProjectionTracker {
             // The harness names a conversation itself once it has something to
             // name it from, and republishes the name whenever it changes, so
             // this is the only report a pinned or regenerated title makes. A
-            // conversation still waiting for one carries a null value, which
+            // conversation still waiting for one has a null value, which
             // leaves the tab on the name it already shows.
             "title" => value
                 .as_str()
@@ -133,7 +133,7 @@ impl ProjectionTracker {
 
                 event.into_iter().collect()
             }
-            // A cleared goal is reported as a null value rather than by the
+            // A cleared goal is reported as a null value instead of by the
             // key disappearing, so the absent case is a value to publish and
             // not a frame to ignore.
             "goal" => vec![Event::GoalUpdated(goal_status(value))],
@@ -181,10 +181,10 @@ impl ProjectionTracker {
 
     /// The composition of the next request's prompt.
     ///
-    /// The three figures share one heuristic density estimate rather than the
+    /// The three figures share one heuristic density estimate instead of the
     /// provider's own accounting, so they do not add up to the occupancy figure
-    /// beside them. Their sum is still the only honest total for this split,
-    /// because it is what the same estimator says the parts come to.
+    /// beside them. Their sum is still the only consistent total for this
+    /// split, because the same estimator produced every part of it.
     fn composition_event(&self, value: &Value) -> Option<Event> {
         let segments: Vec<ContextSegment> = [
             ("System prompt", "systemTokens"),
@@ -230,10 +230,10 @@ impl ProjectionTracker {
 
 /// The presets this session can switch between, and the one it is on.
 ///
-/// The options are the deployment's own preset table rather than a list this
-/// build knows, so both travel: a picker built from a hard-coded set would
+/// The options are the deployment's own preset table, not a list this
+/// build knows, so both are sent: a picker built from a hard-coded set would
 /// offer values a deployment does not serve and hide the ones it does. The
-/// derived `custom` entry appears only while the knobs match no preset, which
+/// derived `custom` entry appears only while the settings match no preset, which
 /// is why it can be the current value without being switchable to.
 fn permission_presets(value: &Value) -> Option<Event> {
     let presets: Vec<ApprovalPreset> = value["options"]
@@ -257,8 +257,8 @@ fn permission_presets(value: &Value) -> Option<Event> {
 
 /// The session's standing objective, or `None` once it has been cleared.
 ///
-/// The projection carries the goal's replay counters beside the snapshot the
-/// user wrote, because how many rounds a goal has already spent is what says
+/// The projection holds the goal's replay counters beside the snapshot the
+/// user wrote, because how many rounds a goal has already spent shows
 /// whether it is close to its own cap.
 fn goal_status(value: &Value) -> Option<GoalStatus> {
     let goal = &value["goal"];
@@ -292,8 +292,8 @@ fn todo_list(value: &Value) -> TaskList {
     }
 }
 
-/// The four reported buckets are disjoint — reasoning tokens are already inside
-/// the output count — so the total is their plain sum.
+/// The four reported buckets are disjoint (reasoning tokens are already inside
+/// the output count), so the total is their plain sum.
 ///
 /// `input_tokens` is the whole prompt side, cache traffic included, because
 /// readers treat the cache counts as parts of it: the breakdown rows nest them

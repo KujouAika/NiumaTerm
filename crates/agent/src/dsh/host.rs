@@ -68,10 +68,10 @@ impl HostError {
 
 /// A running host. Dropping it terminates the process tree through the Job
 /// Object: the harness is launched through an npm shim, so killing only the
-/// shim would strand the Node process that actually holds the port.
+/// shim would strand the Node process that holds the port.
 ///
-/// There is deliberately no graceful shutdown handshake. The harness's stdio
-/// carries no control protocol once it is serving, and its stdin EOF was
+/// There is no graceful shutdown handshake on purpose. The harness's stdio
+/// has no control protocol once it is serving, and its stdin EOF was
 /// observed not to end a process that had already run a turn.
 pub struct Host {
     client: ApiClient,
@@ -190,7 +190,7 @@ impl Host {
 
         // A bare name that PATH cannot resolve comes back as the configured
         // spelling, which is not a file; that is the missing-installation case
-        // rather than a start failure, and it has a different answer.
+        // and not a start failure, and it has a different answer.
         if !cli.resolved_executable().is_file() {
             return Err(HostError::NotInstalled(cli.executable().to_string()));
         }
@@ -279,7 +279,7 @@ impl Host {
     }
 
     /// Whether the host is still serving. A host that exited takes every open
-    /// tab's session with it, so tabs ask this rather than discovering it on
+    /// tab's session with it, so tabs ask this instead of discovering it on
     /// their next call.
     pub fn is_running(&self) -> bool {
         matches!(self.child.lock().try_wait(), Ok(None))
@@ -297,7 +297,7 @@ impl Host {
 pub const DEFAULT_EXECUTABLE: &str = "dsh";
 
 /// Launcher for a profile that runs the harness from its published package
-/// rather than an installed binary. `-y` is not optional: the host is spawned
+/// instead of an installed binary. `-y` is not optional: the host is spawned
 /// with a null stdin, so npx's prompt before fetching a package it does not
 /// have cached could never be answered.
 ///

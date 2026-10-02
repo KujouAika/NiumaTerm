@@ -236,7 +236,7 @@ fn nearby_host(service: &ResolvedService) -> Option<NearbyHost> {
     let id = service.get_property_val_str("id")?.to_owned();
 
     // Answers heard on the loopback interface carry 127.0.0.1, which names
-    // this computer rather than the host.
+    // this computer, not the host.
     let ip = service
         .get_addresses_v4()
         .into_iter()

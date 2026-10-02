@@ -29,8 +29,8 @@ pub(crate) struct GitTab {
     pub(crate) return_to: Option<TabId>,
 }
 
-/// A tab's surface. Restored tabs start `Pending` — the saved snapshot with no
-/// shell process behind it — and become `Live` (spawning their shells) the
+/// A tab's surface. Restored tabs start `Pending` (the saved snapshot with no
+/// shell process behind it) and become `Live` (spawning their shells) the
 /// first time they are activated, so startup only pays for the visible tab.
 pub(crate) enum TabSurface {
     Pending(Box<TabState>),
@@ -40,7 +40,7 @@ pub(crate) enum TabSurface {
     /// accounting exposed through `tree()`.
     Agent(AgentTab),
     /// The settings UI filling the main area. It is rebuilt from the settings
-    /// global on every render, so the variant carries no state of its own.
+    /// global on every render, so the variant holds no state of its own.
     Settings,
     Git(GitTab),
     Team(Entity<TeamPane>),
@@ -306,7 +306,7 @@ impl TabSurface {
         }
     }
 
-    /// Live leaves. A pending tab has none — it owns no panes and no
+    /// Live leaves. A pending tab has none: it owns no panes and no
     /// processes, which is exactly what route/process sweeps should see.
     pub(crate) fn leaves(&self) -> Vec<(PaneId, &Entity<TerminalPane>)> {
         self.tree()

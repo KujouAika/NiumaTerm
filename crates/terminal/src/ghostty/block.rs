@@ -20,7 +20,7 @@ use crate::ghostty::{
 ///
 /// Pins an immutable snapshot of the block: while held, the block cannot
 /// be freed (removal/eviction defer destruction) or mutated (reflow
-/// drains readers first), and every read here takes no engine lock — the
+/// drains readers first), and every read here takes no engine lock: the
 /// render thread can read frozen blocks while the PTY thread is inside a
 /// `write_vt` burst. Released on drop.
 ///
@@ -31,7 +31,7 @@ pub struct BlockRef {
     pub(super) cols: u16,
 }
 
-// SAFETY: the engine's block_ref API is explicitly any-thread —
+// SAFETY: the engine's block_ref API is documented as any-thread:
 // acquire/release and all block_ref_* readers synchronize internally
 // (refcount under the block-set mutex; the pinned data is immutable).
 unsafe impl Send for BlockRef {}
@@ -39,7 +39,7 @@ unsafe impl Send for BlockRef {}
 unsafe impl Sync for BlockRef {}
 
 impl BlockRef {
-    /// The `(id, generation)` of the pinned snapshot — the stable cache
+    /// The `(id, generation)` of the pinned snapshot: the stable cache
     /// key for shaped/rendered rows.
     pub fn handle(&self) -> BlockHandle {
         let mut handle = BlockHandle::default();
@@ -79,7 +79,7 @@ impl BlockRef {
         bytes
     }
 
-    /// Walk one row of the snapshot with styles — same visitor shape as
+    /// Walk one row of the snapshot with styles: same visitor shape as
     /// [`GhosttyTerminal::read_screen_row_visit`], but without the engine
     /// lock. `None` for a row at/beyond the logical row count.
     pub fn read_row_visit(
@@ -135,7 +135,7 @@ impl BlockRef {
     }
 
     /// [`Self::format_range`] with caller-friendly endpoints: `None` means
-    /// the block edge, and rows/columns clamp into the snapshot's bounds —
+    /// the block edge, and rows/columns clamp into the snapshot's bounds,
     /// the shape a selection copy produces. `None` for an
     /// empty block.
     pub(crate) fn format_range_clamped(
@@ -164,7 +164,7 @@ impl BlockRef {
         self.format_range(tl, br, true, true).map(Some)
     }
 
-    /// Export an inclusive cell range of the snapshot as plain text — the
+    /// Export an inclusive cell range of the snapshot as plain text: the
     /// copy/deep-search floor. Cross-block copy concatenates per-block
     /// exports so no cross-block engine lock is needed.
     pub(crate) fn format_range(

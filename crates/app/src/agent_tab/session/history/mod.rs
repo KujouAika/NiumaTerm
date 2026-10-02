@@ -3,7 +3,7 @@
 //!
 //! A harness that lists over the protocol is asked; one that keeps its
 //! transcripts on disk is read here instead, which is why the list has a
-//! loading shape of its own rather than simply arriving.
+//! loading shape of its own instead of simply arriving.
 
 pub(crate) use nmt_agent::session::history::FilesystemHistoryRequest;
 

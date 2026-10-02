@@ -92,7 +92,7 @@ fn apply_ui_constants(theme: &mut ComponentTheme) {
     theme.radius_lg = CARD_RADIUS;
 
     // No theme-file key backs this one, so it is not a fallback: button
-    // padding is a property of the application's design language rather than
+    // padding is a property of the application's design language, not
     // of the palette a theme chooses.
     theme.button_padding_x = BUTTON_PADDING_X;
     theme.colors.sidebar_border = theme.colors.sidebar_border.opacity(UI_BORDER_OPACITY);

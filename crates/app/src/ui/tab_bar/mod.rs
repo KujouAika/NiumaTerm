@@ -64,7 +64,7 @@ fn progress_visual(report: ProgressReport, cx: &App) -> (Hsla, f32) {
         // Indeterminate reports carry no percentage: a full-width muted bar
         // reads as "running, no ETA" and stays distinguishable from a finished
         // determinate bar, which is full-width in the accent color. No pulse
-        // animation — the strip would then repaint every frame for as long as
+        // animation: the strip would then repaint every frame for as long as
         // any background command runs.
         ProgressState::Indeterminate => (cx.theme().muted_foreground, 1.0),
         ProgressState::Remove => (cx.theme().primary, 0.0),

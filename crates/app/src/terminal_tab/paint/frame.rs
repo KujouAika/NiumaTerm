@@ -151,7 +151,7 @@ pub(crate) fn paint_frozen_images(
 }
 
 /// Paint one image generation's `source` crop into `dest` and mark it
-/// uploaded (its atlas tile releases with the last reference) — the shared
+/// uploaded (its atlas tile releases with the last reference): the shared
 /// tail of live-frame and frozen image painting. Degenerate crops are
 /// skipped.
 fn paint_generation(
@@ -169,7 +169,7 @@ fn paint_generation(
     generation.mark_uploaded();
 }
 
-/// Paint `image`'s full texture into `full` bounds, clipped to `dest` — the source-crop
+/// Paint `image`'s full texture into `full` bounds, clipped to `dest`: the source-crop
 /// primitive. GPUI intersects the mask with the element's existing overflow
 /// mask, so viewport clipping is automatic.
 fn paint_image_clipped(

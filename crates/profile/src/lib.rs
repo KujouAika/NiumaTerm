@@ -111,8 +111,7 @@ pub struct AgentProfile {
 
     /// Reasoning effort forced on every conversation this profile starts.
     /// Empty leaves the choice to the remembered thread settings and whatever
-    /// the agent reports, which is what the pickers showed before this field
-    /// existed.
+    /// the agent reports, as the pickers did before this field existed.
     #[serde(default)]
     pub effort: String,
 
@@ -128,8 +127,8 @@ pub struct AgentProfile {
     /// Idle minutes after the agent's last answer beyond which the next
     /// message is warned about: a provider prompt cache expires on its own
     /// clock, so the message that follows a long pause is billed as a full
-    /// cache write. `0` disables the warning, which is what a profile written
-    /// before this field existed carries.
+    /// cache write. `0` disables the warning, the same value a profile written
+    /// before this field existed has.
     #[serde(default, rename = "cache-warn-minutes")]
     pub cache_warn_minutes: u32,
 
@@ -152,8 +151,8 @@ pub struct AgentProfile {
     /// harness's own serialized value. Tabs keep their own picks and never
     /// pass them to a tab opened later, so without this each new tab starts
     /// on the harness's configured value. Empty leaves it to the harness and
-    /// the tab's remembered pick, which is what a profile written before this
-    /// field existed carries.
+    /// the tab's remembered pick, the same value a profile written before this
+    /// field existed has.
     #[serde(default)]
     pub approval: String,
 

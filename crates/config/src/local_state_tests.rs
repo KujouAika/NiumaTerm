@@ -460,7 +460,7 @@ fn a_tab_fold_roundtrips_and_only_a_folded_workspace_writes_it() {
 
     assert!(!unfolded.contains("tab_fold"));
 
-    // A fold this build does not know lists every tab rather than failing
+    // A fold this build does not know lists every tab instead of failing
     // the whole session.
     let newer: WorkspaceState = toml::from_str("tab_fold = 'pinned-only'\n").unwrap();
 

@@ -29,7 +29,7 @@ pub const PUSH_UNREGISTER: &str = "push.unregister";
 /// The feature a host lists in its hello when it takes registrations.
 pub const PUSH_FEATURE: &str = "push";
 
-/// Longest title and body a push carries. Lock-screen banners show a line
+/// Longest title and body a push includes. Lock-screen banners show a line
 /// or two, and the bound keeps a sealed push well inside the forwarder's
 /// 3 KB limit, which in turn keeps it inside the 4 KB APNs payload.
 pub const MAX_TITLE_CHARS: usize = 120;
@@ -88,7 +88,7 @@ pub struct PushMessage {
 }
 
 impl PushMessage {
-    /// A message with title and body cut to what a push carries.
+    /// A message with title and body cut to what a push can include.
     pub fn new(
         host: &str,
         session: &str,

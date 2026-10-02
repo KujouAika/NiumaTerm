@@ -20,7 +20,7 @@ impl AgentKind {
     ///
     /// The order is the order profiles are seeded in, and the first entry
     /// becomes a new installation's default profile, so a kind is appended
-    /// rather than inserted.
+    /// instead of inserted.
     pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::DeepSeek];
 
     pub fn full_name(self) -> &'static str {

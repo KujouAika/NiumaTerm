@@ -5,7 +5,7 @@
 //! here depends on a minimal field set (`type`, `subtype`, `message.content`,
 //! tool block ids/names/inputs, `isSidechain`, `isMeta`, `isCompactSummary`,
 //! `compactMetadata`, `uuid`, `gitBranch`) and skips any line it does not
-//! recognize — an unparseable session degrades to an id-prefix title instead of
+//! recognize; an unparseable session degrades to an id-prefix title instead of
 //! failing the list.
 
 pub use crate::claude_code::sessions::fork::ClaudeFork;
@@ -21,7 +21,7 @@ pub(crate) use crate::claude_code::sessions::titles::{
 };
 
 /// The workflow reader resolves the same project directory and parses the same
-/// child transcript shape, so both are shared rather than reimplemented.
+/// child transcript shape, so both are shared instead of reimplemented.
 pub(super) use crate::claude_code::sessions::replay::parse_child_replay;
 
 pub(crate) mod progress;
@@ -154,8 +154,8 @@ fn projects_root() -> Option<PathBuf> {
     Some(config_home()?.join("projects"))
 }
 
-/// The transcript directory for `cwd` (falling back to the process cwd, which
-/// is what a spawned `claude` without an explicit working directory uses).
+/// The transcript directory for `cwd` (falling back to the process cwd, the one
+/// a spawned `claude` without an explicit working directory uses).
 pub(super) fn project_dir(cwd: Option<&str>) -> Option<PathBuf> {
     let cwd = match cwd {
         Some(cwd) => cwd.to_string(),

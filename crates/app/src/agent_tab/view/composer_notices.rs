@@ -1,4 +1,4 @@
-//! The quiet readouts a composer card carries around its input: the harness's
+//! The quiet readouts a composer card shows around its input: the harness's
 //! directory limits, the prompts queued behind a running turn, and how long
 //! the conversation has been sitting.
 
@@ -77,7 +77,7 @@ pub(super) fn queued_message_label(prompt: &QueuedPrompt) -> String {
 }
 
 /// The prompts waiting behind the running turn, one row each, above the
-/// composer. A row whose backend named it carries a control that drops it
+/// composer. A row whose backend named it has a control that drops it
 /// again; one this side is only remembering does not, because there is
 /// nothing on the backend such a control could address.
 pub(crate) fn queued_prompts(
@@ -143,9 +143,9 @@ pub(super) enum LastResponseTone {
     Danger,
 }
 
-/// The mark a settled conversation carries, from how long it has been sitting.
+/// The mark a settled conversation shows, from how long it has been sitting.
 ///
-/// Under half the window there is nothing worth saying: a conversation picked
+/// Under half the window there is nothing to say: a conversation picked
 /// up that soon costs what it would have cost immediately, and a reading that
 /// is always on screen is one the eye stops seeing. Past the window the answer
 /// stops changing, which is the same answer as the last reading inside it.
@@ -163,7 +163,7 @@ pub(super) fn last_response_tone(seconds: u64) -> Option<LastResponseTone> {
 
 /// How long ago the agent last answered, beside the composer's controls.
 ///
-/// Drawn as a mark rather than as a reading: the number itself only
+/// Drawn as a mark, not as a reading: the number itself only
 /// matters once it is large enough to change what the next message costs,
 /// and until then a line of text beside the settings is one more thing to
 /// read past on the way to sending. The wording it used to carry is on the

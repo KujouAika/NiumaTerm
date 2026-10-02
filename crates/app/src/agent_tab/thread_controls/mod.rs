@@ -32,7 +32,7 @@ use crate::agent_tab::thread_controls::harness_rows::{
 use crate::agent_tab::view::profile_switch::profile_switch_dialog;
 
 /// One composer setting, drawn as its own pill. Each pill opens its own menu
-/// and changes one value, so each carries its own outline: a shared frame
+/// and changes one value, so each draws its own outline: a shared frame
 /// around several of them reads as a segmented control whose parts move
 /// together, which is the opposite of what these do.
 const SETTINGS_PILL_RADIUS: f32 = 8.0;
@@ -48,7 +48,7 @@ const SETTINGS_PILL_CHEVRON: f32 = 10.0;
 
 /// Faces the effort gauge is drawn with, past the empty one. Six is what the
 /// longest ladder any harness offers needs, so every level of every ladder
-/// lands on a face of its own.
+/// is drawn on a face of its own.
 const EFFORT_GAUGE_STEPS: usize = 6;
 
 /// One setting the composer row keeps off its surface, as the menu behind the
@@ -57,7 +57,7 @@ const EFFORT_GAUGE_STEPS: usize = 6;
 ///
 /// The model and the effort are what a user changes between one message and
 /// the next. The rest are a deployment's standing choices, read once and left
-/// alone, and a pill each for them crowds the two that are actually read.
+/// alone, and a pill each for them crowds the two that are read.
 #[derive(Clone)]
 pub(super) struct FoldedSetting {
     pub(super) name: Cow<'static, str>,
@@ -90,7 +90,7 @@ pub(crate) fn harness_settings(
 }
 
 /// The effort ladder the composer offers, cheapest first. It is this
-/// application's rather than the harness's: Codex reports no per-model
+/// application's, not the harness's: Codex reports no per-model
 /// levels at all, so reading them from the session spread its whole
 /// serialization range across the control, including values no model
 /// answers to.
@@ -246,10 +246,10 @@ fn setting_submenus(
 }
 
 /// The model catalog as picker entries, spelled the way the settings ask
-/// for. A catalog entry carries both names of one model - the one the
+/// for. A catalog entry holds both names of one model - the one the
 /// harness displays and the route id a pick is sent as - and which of them
 /// tells the user what they are choosing depends on the deployment, so the
-/// pairing is a setting rather than a decision made here.
+/// pairing is a setting, not a decision made here.
 pub(super) fn model_options(state: &ConversationSettings, cx: &App) -> Vec<(String, String)> {
     let model_list_style = cx.global::<AgentSettings>().model_list_style;
 
@@ -270,7 +270,7 @@ pub(super) fn model_options(state: &ConversationSettings, cx: &App) -> Vec<(Stri
 /// the values it could stand at instead.
 ///
 /// Nothing to fold means no control, so a harness offering only a model
-/// and an effort keeps a row of two rather than one that ends in an empty
+/// and an effort keeps a row of two instead of one that ends in an empty
 /// menu.
 pub(super) fn folded_settings_pill(
     cx: &mut Context<AgentPane>,
@@ -301,8 +301,8 @@ pub(super) fn folded_settings_pill(
                         .text_color(cx.theme().muted_foreground.opacity(0.7)),
                 ),
         )
-        // Anchored bottom-left so the menu opens upward — the row sits
-        // at the bottom edge of the pane.
+        // Anchored bottom-left so the menu opens upward: the row is at
+        // the bottom edge of the pane.
         .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, window, cx| {
             setting_submenus(menu, &pane, settings.clone(), window, cx)
         });
@@ -334,14 +334,14 @@ pub(super) fn settings_pill(button: Button) -> Button {
 }
 
 /// The box a pill's outline is drawn on, which shows it only under the
-/// pointer. At rest the row reads as a line of values rather than a line
+/// pointer. At rest the row reads as a line of values instead of a line
 /// of boxes, which keeps it quieter than the prompt above it; the outline
 /// appears where the pointer is, to say the value under it opens.
 ///
-/// It has to be a box around the pill rather than the pill itself. A
+/// It has to be a box around the pill, not the pill itself. A
 /// Button sets a hover style of its own while it renders, gpui keeps one
 /// per element, and that one resolves a ghost button's border to
-/// transparent — so an outline hung on the pill's own hover is the outline
+/// transparent, so an outline hung on the pill's own hover is the outline
 /// the Button then paints away.
 pub(super) fn settings_pill_frame(pill: impl IntoElement, cx: &App) -> Div {
     let border = cx.theme().border;
@@ -356,8 +356,8 @@ pub(super) fn settings_pill_frame(pill: impl IntoElement, cx: &App) -> Div {
 }
 
 /// One dropdown showing `icon · current value · chevron`. The model is the
-/// only setting still shown this way, so the picker carries the floor that
-/// keeps a route id readable rather than taking it as an argument. Menus
+/// only setting still shown this way, so the picker holds the floor that
+/// keeps a route id readable instead of taking it as an argument. Menus
 /// keep the existing protocol values and setters.
 pub(super) fn setting_picker(
     cx: &mut Context<AgentPane>,
@@ -402,7 +402,7 @@ pub(super) fn setting_picker(
                         .text_color(cx.theme().muted_foreground.opacity(0.7)),
                 ),
         )
-        // Anchored bottom-left so the menu opens upward — the row sits at
+        // Anchored bottom-left so the menu opens upward: the row is at
         // the bottom edge of the pane.
         .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
             let mut menu = menu;
@@ -435,7 +435,7 @@ pub(super) fn setting_picker(
 
 /// The agent the tab runs, as a pill leading the settings row: the
 /// current profile's mark and name, opening a menu of every configured
-/// profile. Profiles rather than bare agent kinds are listed, because two
+/// profile. Profiles, not bare agent kinds, are listed because two
 /// profiles of one kind can point at different endpoints, keys, or models.
 pub(super) fn profile_picker(
     cx: &mut Context<AgentPane>,
@@ -463,7 +463,7 @@ pub(super) fn profile_picker(
                         .text_color(cx.theme().muted_foreground.opacity(0.7)),
                 ),
         )
-        // Anchored bottom-left so the menu opens upward — the row sits at
+        // Anchored bottom-left so the menu opens upward: the row is at
         // the bottom edge of the pane.
         .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
             let mut menu = menu;

@@ -1,9 +1,9 @@
-//! Reading one Claude record: the identifiers it carries, the state it
-//! reports, and the text worth showing from it.
+//! Reading one Claude record: the identifiers it holds, the state it
+//! reports, and the text to show from it.
 //!
 //! These take a record and answer a question about it, without touching the
-//! reduction's own state, which is what lets the reducer above stay about
-//! sequencing rather than about record shapes.
+//! reduction's own state, so the reducer above stays about sequencing
+//! instead of record shapes.
 
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -62,8 +62,8 @@ pub(super) fn refs_from(record: &Value) -> BackgroundTaskRefs {
     }
 }
 
-/// Lifecycle state a task record reports. `task_notification` carries only
-/// terminal statuses; `task_updated` carries the full vocabulary and is the
+/// Lifecycle state a task record reports. `task_notification` holds only
+/// terminal statuses; `task_updated` holds the full set of statuses and is the
 /// only place a stopped task's `killed` reliably appears.
 pub(crate) fn lifecycle_state(kind: &str, record: &Value) -> Option<BackgroundTaskState> {
     let status = match kind {
@@ -80,7 +80,7 @@ pub(crate) fn lifecycle_state(kind: &str, record: &Value) -> Option<BackgroundTa
         "pending" => BackgroundTaskState::Starting,
         "running" => BackgroundTaskState::Working,
         // A paused background task is waiting on something outside itself,
-        // which is what the panel shows as needing input.
+        // so the panel shows it as needing input.
         "paused" => BackgroundTaskState::NeedsInput,
         "completed" => BackgroundTaskState::Done,
         "failed" => BackgroundTaskState::Failed,
@@ -126,7 +126,7 @@ pub(crate) fn sidechain_preview(message: &Value) -> Option<String> {
 //
 // One child is named several ways over its life: by task id, by the tool-use
 // id of the call that launched it, and by an agent id. Only a record that
-// carried two of them together proves they describe the same child, so this
+// held two of them together proves they describe the same child, so this
 // records exactly those pairings and nothing inferred from recency.
 
 /// Identifier aliases retained per session. One child contributes at most a
@@ -151,7 +151,7 @@ impl AliasTable {
     }
 
     /// Record that these identifiers describe the same child. Only called with
-    /// identifiers a single record carried together.
+    /// identifiers a single record held together.
     pub(super) fn link_all(&mut self, canonical: &str, ids: &[String]) {
         for id in ids {
             if id == canonical || self.aliases.contains_key(id) {

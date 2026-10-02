@@ -1,7 +1,7 @@
-//! Turning host frames into the backend-neutral chat vocabulary.
+//! Turning host frames into the backend-neutral chat event types.
 //!
-//! The host publishes an already-normalized session event stream, so this maps
-//! rather than interprets: there is no vendor stream to reassemble, and
+//! The host publishes an already-normalized session event stream, so this only
+//! maps and does not interpret: there is no vendor stream to reassemble, and
 //! anything unrecognized becomes nothing at all instead of an error.
 
 #[cfg(test)]
@@ -18,7 +18,7 @@ use crate::chat::{
 use crate::dsh::generation::GenerationTracker;
 use crate::json::diff_lines;
 
-/// The status vocabulary the transcript renders: anything else reads as still
+/// The status values the transcript renders: anything else reads as still
 /// running, and `failed` is what turns a row red.
 const IN_PROGRESS: &str = "inProgress";
 
@@ -42,7 +42,7 @@ pub(crate) struct ApprovalRequest {
 ///
 /// This is separate from [`map_frame`] because answering is a side effect the
 /// session has to own: the identities below are needed later, when the user
-/// decides, and nothing in the transcript vocabulary carries them.
+/// decides, and no transcript item type holds them.
 pub(crate) fn approval_request(frame: &Value, session_id: &str) -> Option<ApprovalRequest> {
     let payload = &frame["payload"];
 
@@ -73,9 +73,9 @@ pub(crate) fn approval_request(frame: &Value, session_id: &str) -> Option<Approv
 /// A batch of questions the harness is blocked on.
 ///
 /// `ids` is kept because the harness matches an answer positionally against the
-/// question ids it asked, while the transcript vocabulary carries only the
-/// question text. Answering therefore needs the ask order preserved, which is
-/// also why this holds the whole batch rather than one question at a time.
+/// question ids it asked, while the transcript item holds only the question
+/// text. Answering therefore needs the ask order preserved, so this also
+/// holds the whole batch instead of one question at a time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QuestionRequest {
     pub(crate) client_id: String,
@@ -104,9 +104,9 @@ pub(crate) fn question_request(
     let mut questions = Vec::with_capacity(asked.len());
 
     for item in asked {
-        // A question with no id cannot be answered — the harness rejects the
-        // whole batch when one answer fails to name the question it settles —
-        // so the card is not raised at all rather than raised unanswerable.
+        // A question with no id cannot be answered (the harness rejects the
+        // whole batch when one answer fails to name the question it answers),
+        // so the card is not raised at all instead of raised unanswerable.
         let id = item["id"].as_str()?;
 
         ids.push(id.to_string());
@@ -114,7 +114,7 @@ pub(crate) fn question_request(
         questions.push(Question {
             input: Default::default(),
             header: item["header"].as_str().map(str::to_string),
-            // `detail` is supporting text the harness deliberately keeps out of
+            // `detail` is supporting text the harness keeps out of
             // the option labels; folding it into the question text is what puts
             // it in front of the user, because the card has no separate slot.
             question: match item["detail"].as_str() {
@@ -154,7 +154,7 @@ pub(crate) fn question_request(
     ))
 }
 
-/// Frames belonging to a session this client does not own, or carrying a type
+/// Frames belonging to a session this client does not own, or having a type
 /// this build does not know, produce no events. Both are normal: the mux stream
 /// is aggregated across every attached session, and the harness adds event
 /// types between releases.
@@ -206,7 +206,7 @@ pub(crate) fn map_frame(frame: &Value, session_id: &str, tools: &mut EventTracke
 /// Unfinished tool calls and model-step timing retained across session events.
 ///
 /// The result event names only the call it answers, so what kind of transcript
-/// row it belongs to — and the command or paths that row already shows — is
+/// row it belongs to (and the command or paths that row already shows) is
 /// knowable only from the call that opened it.
 #[derive(Default)]
 pub(crate) struct EventTracker {
@@ -272,8 +272,8 @@ fn started_tool_item(call: &Value, view: &Value) -> Item {
 /// The completed form of a row, built from the row that opened it so the
 /// identity and the fields already on screen survive the update.
 ///
-/// A failed call carries no result view at all — the presenter has nothing to
-/// format — so the model-facing text is the fallback rather than an edge case.
+/// A failed call has no result view at all (the presenter has nothing to
+/// format), so the model-facing text is the fallback, not an edge case.
 fn completed_tool_item(started: &Item, view: &Value, message: &Value, failed: bool) -> Item {
     let status = Some(if failed { FAILED } else { COMPLETED }.to_string());
 
@@ -311,7 +311,7 @@ fn completed_tool_item(started: &Item, view: &Value, message: &Value, failed: bo
         } => Item::FileChange {
             id: id.clone(),
             paths: paths.clone(),
-            // The result diff carries surrounding context the arguments did
+            // The result diff includes surrounding context the arguments did
             // not, so it replaces the call-time one when present.
             diff: if failed {
                 None
@@ -379,8 +379,8 @@ fn diff_paths(diffs: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// A unified-diff body for the reviewable pane. The card carries whole before
-/// and after texts rather than hunks, so the body is assembled here.
+/// A unified-diff body for the reviewable pane. The card holds whole before
+/// and after texts instead of hunks, so the body is assembled here.
 fn render_diffs(diffs: &Value) -> Option<String> {
     let entries = diffs.as_array()?;
 
@@ -389,8 +389,8 @@ fn render_diffs(diffs: &Value) -> Option<String> {
     for entry in entries {
         let path = entry["path"].as_str().unwrap_or("(unknown)");
 
-        // A create has no prior content, which the card states as null rather
-        // than as an empty string.
+        // A create has no prior content, which the card states as null, not as an
+        // empty string.
         let old = entry["oldText"].as_str().unwrap_or_default();
         let new = entry["newText"].as_str().unwrap_or_default();
 
@@ -517,7 +517,7 @@ pub(crate) fn map_session_event(
         Some("todo/write") => map_todo_write(event, data),
         Some("llm/retry") => map_retry(data),
         // The wait is over and the next attempt is starting, which looks like
-        // ordinary work again.
+        // normal work again.
         Some("llm/retry-started") => vec![Event::StatusDetail(None)],
         _ => Vec::new(),
     }
@@ -526,7 +526,7 @@ pub(crate) fn map_session_event(
 /// A provider request that failed and will be tried again.
 ///
 /// This is the one thing the working row cannot show on its own: the turn is
-/// waiting rather than thinking, and the elapsed time climbs identically either
+/// waiting, not thinking, and the elapsed time climbs identically either
 /// way while the token count sits still. The delay is left out because it is a
 /// countdown, and a figure that stops being true a second after it is drawn
 /// reads as worse information than none.
@@ -555,7 +555,7 @@ fn map_retry(data: &Value) -> Vec<Event> {
 /// without leaving a row claiming the conversation was rewritten.
 ///
 /// The replacement text the conversation continues from arrives separately as a
-/// `user/message` carrying the checkpoint's plugin source, which the user-message
+/// `user/message` with the checkpoint's plugin source, which the user-message
 /// mapping already declines to render as something the user wrote.
 fn map_compaction_summary(data: &Value) -> Vec<Event> {
     let Some(id) = data["compactionId"].as_str() else {
@@ -584,7 +584,7 @@ fn map_compaction_summary(data: &Value) -> Vec<Event> {
             } else {
                 CompactionTrigger::Automatic
             }),
-            // The harness prices the range it replaced rather than the context
+            // The harness prices the range it replaced, not the context
             // before and after, so only the replaced side is knowable here.
             pre_tokens: data["shadowedTokenCount"].as_u64(),
             post_tokens: None,
@@ -601,7 +601,7 @@ fn map_compaction_summary(data: &Value) -> Vec<Event> {
 ///
 /// It is rendered as the same checklist shape the other harnesses' task tool
 /// produces, so the transcript's progress tally reads it without a second
-/// vocabulary. Each write is its own row because the list is a snapshot of a
+/// item type. Each write is its own row because the list is a snapshot of a
 /// moment, and an earlier one stays true about the moment it described.
 fn map_todo_write(event: &Value, data: &Value) -> Vec<Event> {
     let checklist: String = data["todos"]
@@ -634,9 +634,9 @@ fn map_todo_write(event: &Value, data: &Value) -> Vec<Event> {
     })]
 }
 
-/// A turn ends completed, aborted by someone, or failed. Only a failure carries
-/// text into the transcript; a user abort is a normal outcome that the tab
-/// presents as an interruption rather than an error.
+/// A turn ends completed, aborted by someone, or failed. Only a failure adds
+/// text to the transcript; a user abort is a normal outcome that the tab
+/// presents as an interruption, not an error.
 fn turn_failure(reason: &Value) -> Option<String> {
     match reason["kind"].as_str()? {
         "completed" | "aborted" => None,
@@ -645,7 +645,7 @@ fn turn_failure(reason: &Value) -> Option<String> {
 }
 
 /// Streaming deltas carry no message id, only their position within the turn.
-/// The completed message that follows carries its blocks in the same order, so
+/// The completed message that follows lists its blocks in the same order, so
 /// the position is what lets a streamed row and its completion meet.
 fn block_id(data: &Value, index: u64) -> String {
     let turn = data["turn"].as_u64().unwrap_or_default();
@@ -664,8 +664,8 @@ fn map_chunk(data: &Value) -> Vec<Event> {
     let item_id = block_id(data, index);
 
     match chunk["type"].as_str() {
-        // A block announces itself before its first delta, which is what lets
-        // an empty row appear immediately rather than at the first token.
+        // A block announces itself before its first delta, so an empty row
+        // can appear immediately instead of at the first token.
         Some("block-start") => match chunk["blockType"].as_str() {
             Some("reasoning") => vec![Event::ItemStarted(Item::Reasoning {
                 id: item_id,
@@ -696,9 +696,9 @@ fn map_chunk(data: &Value) -> Vec<Event> {
     }
 }
 
-/// The authoritative form of everything the step streamed. Completing each
-/// block by its position lets the transcript reconcile with what it already
-/// showed instead of appending a duplicate.
+/// The final form of everything the step streamed, which wins over the
+/// deltas. Completing each block by its position lets the transcript
+/// reconcile with what it already showed instead of appending a duplicate.
 ///
 /// Interrupted requests can also record their partial message here; completing
 /// its rows preserves the output without marking the whole turn successful.

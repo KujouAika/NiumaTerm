@@ -101,8 +101,8 @@ pub type Palette = [VtColorRgb; 256];
 /// Cell text with inline storage for short content. Almost every cell is a
 /// single codepoint (≤4 UTF-8 bytes); heap-allocating a `String` per cell was
 /// the dominant harvest cost (61 ns/cell, 91% of PTY time under scroll floods).
-/// Content up to 22 bytes — every single codepoint and all common grapheme
-/// clusters — stays inline; longer clusters (rare ZWJ chains) spill to heap.
+/// Content up to 22 bytes (every single codepoint and all common grapheme
+/// clusters) stays inline; longer clusters (rare ZWJ chains) spill to heap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellText(CellTextRepr);
 
@@ -188,7 +188,7 @@ pub struct RowCell {
     pub style: SnapshotStyle,
 }
 
-/// Row-level results of a [`GhosttyTerminal::read_screen_row_visit`] walk —
+/// Row-level results of a [`GhosttyTerminal::read_screen_row_visit`] walk:
 /// everything about the row that is not a per-cell callback.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScreenRowMeta {
@@ -219,7 +219,7 @@ pub struct SnapshotCursor {
     pub x: u16,
     pub y: u16,
 
-    /// `true` when the cursor should be shown — DECTCEM on **and** within the
+    /// `true` when the cursor should be shown: DECTCEM on **and** within the
     /// viewport (render-state `CURSOR_VISIBLE` ∧ `CURSOR_VIEWPORT_HAS_VALUE`).
     pub visible: bool,
 
@@ -245,7 +245,7 @@ pub struct SnapshotColors {
 
 /// A kitty-graphics placement captured from the engine. Positions are
 /// **viewport-relative** (`placement_viewport_pos` already did scroll/cull), so the
-/// renderer uses them directly — no `dest_row − (history_size − display_offset)`.
+/// renderer uses them directly, with no `dest_row − (history_size − display_offset)`.
 /// Virtual placements (unicode placeholders) carry only `image_id`/`is_virtual`
 /// (the engine returns no position for them); terminal positions those from the
 /// placeholder cells instead.
@@ -290,7 +290,7 @@ pub struct SnapshotPlacement {
 
 /// Geometry of one non-virtual kitty placement in absolute rows.
 /// For frozen blocks ([`GhosttyTerminal::block_placements`]) the rows are
-/// block-relative — the same row space `BlockRef::read_row_visit` reads.
+/// block-relative: the same row space `BlockRef::read_row_visit` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacementScreenPos {
     pub image_id: u32,

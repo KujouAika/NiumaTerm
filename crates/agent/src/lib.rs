@@ -51,7 +51,7 @@ use crate::event::{MAX_ROUTE_BYTES, validate_identity};
 #[cfg(test)]
 use crate::monitor::ACTIVE_STATE_STALE_AFTER;
 
-/// How to launch an agent CLI. Protocol-specific settings are carried here so
+/// How to launch an agent CLI. Protocol-specific settings are stored here so
 /// adapters can map them onto their native environment or RPC surfaces.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchConfig {

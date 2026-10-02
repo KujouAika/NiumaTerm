@@ -1,6 +1,6 @@
 //! Inline renaming of a workspace entry, a tab, or a paired host's session.
 //!
-//! Both renames replace a label with a text input in place rather than opening
+//! Both renames replace a label with a text input in place instead of opening
 //! a dialog, and both commit on Enter or blur and cancel on Escape. At most one
 //! of each can be in flight, so the session below is what every row asks
 //! whether it is the one being renamed.

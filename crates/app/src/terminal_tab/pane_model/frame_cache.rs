@@ -10,7 +10,7 @@ pub(crate) struct TerminalFrameCache {
 
     /// The frame no longer matches the surface and must be rebuilt on the next
     /// render. `frame` is kept: pointer/IME mapping between the invalidation
-    /// and the rebuild must keep using what is on screen — mapping against an
+    /// and the rebuild must keep using what is on screen; mapping against an
     /// empty cache flips the row offsets mid-drag (broken-selection bug).
     stale: bool,
 
@@ -20,7 +20,7 @@ pub(crate) struct TerminalFrameCache {
 pub(crate) type GenerationMap = collections::HashMap<u32, Arc<graphics::ImageGeneration>>;
 
 impl TerminalFrameCache {
-    /// The last built frame — served even when stale, so consumers between an
+    /// The last built frame, served even when stale, so consumers between an
     /// invalidation and the next render keep mapping against what is displayed.
     pub(crate) fn current(&self) -> Option<TerminalFrame> {
         self.frame.clone()

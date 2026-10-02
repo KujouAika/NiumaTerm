@@ -40,7 +40,7 @@ mod team {
     use crate::{AgentWorkspace, LaunchConfig};
 
     #[test]
-    fn claude_team_uses_the_ordinary_backend() {
+    fn claude_team_uses_the_regular_backend() {
         let directory = tempdir().unwrap();
 
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -77,7 +77,7 @@ mod team {
             .unwrap_or_else(|error| panic!("Claude Team startup failed: {error}"));
 
         let Backend::Claude(session) = &mut backend else {
-            panic!("Claude Team did not start the ordinary backend");
+            panic!("Claude Team did not start the regular backend");
         };
 
         let events = session.process(json!({

@@ -4,30 +4,30 @@ use crate::update::ProviderKind;
 
 /// What one harness can do. Behavior questions ask a named capability here
 /// instead of comparing against a kind, so a call site reads as the question
-/// it is actually asking and a new harness answers it once.
+/// it is asking and a new harness answers it once.
 ///
-/// There is deliberately no `Default`: every field must be written out for a
-/// new kind, which is what stops one from silently inheriting whichever
+/// There is no `Default` on purpose: every field must be written out for a
+/// new kind, so a new one cannot silently inherit whichever
 /// harness a scattered comparison happened to name.
 pub struct Capabilities {
     /// Skills are named in the composer with a `$name` prefix and validated
     /// against a discovered catalog before the turn is sent.
     pub skill_references: bool,
 
-    /// Files written since a chosen user message can be restored, which is
-    /// what the `/rewind` command offers.
+    /// Files written since a chosen user message can be restored; the `/rewind`
+    /// command offers this.
     pub file_rewind: bool,
 
     /// The harness reports workflow runs the pane can scope to its session.
     pub workflows: bool,
 
-    /// Provider commands are discovered after startup rather than known at
+    /// Provider commands are discovered after startup instead of known at
     /// once, so an empty palette means "still loading" and says so instead of
     /// looking broken.
     pub async_command_discovery: bool,
 
     /// Another `Ready` arrives while the first turn initializes. A later one
-    /// must keep the controls currently in use rather than restore the ones
+    /// must keep the controls currently in use instead of restoring the ones
     /// the CLI reports at startup.
     pub repeats_ready_during_init: bool,
 
@@ -37,49 +37,49 @@ pub struct Capabilities {
 
     /// The launch fixes the model for the whole session because the system
     /// prompt is built from it, so a pick has to be resolved before spawning
-    /// rather than sent as a later setting change.
+    /// instead of sent as a later setting change.
     pub model_baked_into_launch: bool,
 
     /// An approval can be granted for the rest of the session, not just for the
-    /// one call that asked. A harness whose answer vocabulary has no such
+    /// one call that asked. A harness whose answer values include no such
     /// outcome offers no button for it, because a button that silently degrades
     /// to allow-once would misreport what the user just agreed to.
     pub session_scoped_approval: bool,
 
-    /// A skill is invoked by writing `/name` into an ordinary prompt, which the
+    /// A skill is invoked by writing `/name` into a normal prompt, which the
     /// harness recognizes before the step runs. There is no invocation request,
-    /// so a slash line naming a skill is a message rather than a command, and
+    /// so a slash line naming a skill is a message, not a command, and
     /// rejecting it as an unknown command would block the only way to use one.
     pub slash_skills_are_prompts: bool,
 
     /// The conversation can be branched in front of a chosen prompt over the
-    /// backend's own connection, which is what the `/fork` picker offers.
+    /// backend's own connection; the `/fork` picker offers this.
     /// Where the conversation is instead a file this side rewrites, `/fork`
     /// reaches the rewind picker that already cuts the same branch.
     pub session_fork: bool,
 
-    /// A title can be pinned on the conversation, which is what `/rename`
-    /// offers. Where titles are derived from the transcript and regenerated,
+    /// A title can be pinned on the conversation; `/rename` offers this.
+    /// Where titles are derived from the transcript and regenerated,
     /// there is nothing to pin them against.
     pub session_rename: bool,
 
     /// The harness indexes its own conversations and can be asked which of
-    /// them mention a phrase, which is what `/find` offers.
+    /// them mention a phrase; `/find` offers this.
     pub session_search: bool,
 
     /// Whether the harness can use every workspace directory or only the
     /// primary one. A harness that cannot take the whole set must say so in
-    /// the tab rather than quietly working against one directory, and must
+    /// the tab instead of quietly working against one directory, and must
     /// never be widened to a common ancestor to look like one that can.
     pub multi_root_access: MultiRootAccess,
 
     /// A question about the conversation can be answered beside it, from its
-    /// live context and without adding a turn, which is what `/side` offers.
+    /// live context and without adding a turn; `/side` offers this.
     pub side_questions: bool,
 
     /// The conversation can be forked into a separate ephemeral thread that
-    /// runs beside it with its own turns, tools, and settings, which is what
-    /// `/side` opens where side questions are not answered in place.
+    /// runs beside it with its own turns, tools, and settings; `/side` opens
+    /// one where side questions are not answered in place.
     pub side_threads: bool,
 }
 
@@ -121,8 +121,8 @@ const CLAUDE: Capabilities = Capabilities {
 
 /// `skill_references` is false because the harness has no structured skill
 /// reference at all: a skill is named inside the prompt text, which
-/// `slash_skills_are_prompts` is what carries. `file_rewind` is false for the
-/// same kind of reason — DeepSeek Harness has no equivalent operation.
+/// `slash_skills_are_prompts` already covers. `file_rewind` is false for the
+/// same kind of reason: DeepSeek Harness has no equivalent operation.
 const DEEPSEEK: Capabilities = Capabilities {
     skill_references: false,
     file_rewind: false,

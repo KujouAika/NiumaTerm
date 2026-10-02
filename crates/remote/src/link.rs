@@ -1,5 +1,5 @@
 //! Moves binary messages between a WebSocket and the protocol state machines.
-//! One WebSocket binary message carries one Noise message, on the LAN and
+//! One WebSocket binary message holds one Noise message, on the LAN and
 //! later through the relay, so both paths share this code.
 
 use std::sync::Arc;
@@ -145,7 +145,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// both directions because the Noise transport keeps both ciphers in one
 /// state.
 ///
-/// The pump also keeps the channel honest about liveness: a network that
+/// The pump also keeps the channel's liveness accurate: a network that
 /// drops packets without closing the socket (sleep, a pulled cable, a NAT
 /// timeout) would otherwise leave both sides waiting forever. It answers
 /// probes itself, so the layers above never see them. `probe` asks for one

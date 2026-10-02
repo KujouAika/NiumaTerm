@@ -96,7 +96,7 @@ fn continuing_applies_the_plan_before_reporting_relaunch_failure() {
         "new dll"
     );
 
-    // The installation deliberately has no executable, so relaunch fails
+    // The installation has no executable, so relaunch fails
     // without starting another process or discarding the installed DLL.
     assert!(!updater.relaunch());
     assert_eq!(

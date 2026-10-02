@@ -48,7 +48,7 @@ impl ControlSheet {
         }
     }
 
-    /// A button; the primary one carries the recommended choice.
+    /// A button; the primary one holds the recommended choice.
     pub fn button(
         mut self,
         label: impl Into<SharedString>,

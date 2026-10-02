@@ -68,7 +68,7 @@ impl AgentCli {
         }
     }
 
-    /// A launcher for tests, which name an executable directly rather than
+    /// A launcher for tests, which name an executable directly instead of
     /// through a profile.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(

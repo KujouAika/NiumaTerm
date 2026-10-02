@@ -12,7 +12,7 @@ pub struct Theme {
     #[serde(default)]
     pub colors: ThemeColors,
 
-    /// Shared display name for explicitly paired light and dark variants.
+    /// Shared display name for light and dark variants declared as a pair.
     #[serde(default)]
     pub family: String,
 }

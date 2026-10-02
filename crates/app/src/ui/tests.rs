@@ -1,12 +1,12 @@
 use crate::ui::DEFAULT_CJK_FONT_FAMILY;
 
-/// A face this platform does not have does not fail to load — it silently
+/// A face this platform does not have does not fail to load; it silently
 /// resolves to something else, which is how a terminal ends up drawing its
 /// grid in Helvetica. Every default named as a family therefore has to be one
 /// the host installs.
 ///
 /// The UI face is exempt: `.SystemUIFont` is a token GPUI maps to the
-/// backend's own system face, and macOS deliberately keeps that face out of
+/// backend's own system face, and macOS keeps that face out of
 /// the family list.
 #[test]
 fn every_default_font_family_is_installed() {

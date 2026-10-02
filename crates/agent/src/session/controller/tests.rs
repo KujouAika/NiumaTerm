@@ -742,7 +742,7 @@ fn a_new_deepseek_conversation_runs_under_the_remembered_permission() {
     );
 
     // A conversation resumed in place reports the preset its own log holds,
-    // which is kept rather than replaced by the remembered pick.
+    // which is kept instead of replaced by the remembered pick.
     let SessionEffect::Ready(resumed) = session.apply_event(epoch, harness_default_ready()) else {
         panic!("a resumed conversation must expose effective settings");
     };
@@ -838,7 +838,7 @@ fn a_remembered_agent_preset_never_overrides_the_reported_composition() {
 
     // The composition reaches the harness with the creation request, so the
     // one the conversation reports is what it runs on even while a remembered
-    // pick is seeded, and a Ready carrying no composition keeps it.
+    // pick is seeded, and a Ready with no composition keeps it.
     assert!(matches!(
         session.apply_event(epoch, harness_default_ready()),
         SessionEffect::Ready(_)

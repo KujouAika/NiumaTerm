@@ -11,7 +11,7 @@ use gpui_component::modern_menu::{ModernMenu, dismiss_modern_menu};
 /// A button that opens a modern menu under its own bottom-left corner.
 ///
 /// The menu is drawn in a window of its own, which the platform places from a
-/// point rather than from an element, so the button's rectangle has to reach the
+/// point instead of from an element, so the button's rectangle has to reach the
 /// press that opens the menu. The canvas records it while the frame is laid out;
 /// the press reads what the last frame measured, which is where the button was
 /// when it was clicked. Its insets are what pin it over the button: an absolute

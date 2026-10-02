@@ -1,8 +1,8 @@
 //! `Background Tasks` view: the work a Codex or Claude Code parent session
-//! started and left running — child agents, and the commands Claude Code runs
+//! started and left running: child agents, and the commands Claude Code runs
 //! in the background. Provider adapters own that lifecycle, so this component
 //! reads the latest snapshot from the active Agent pane and dispatches nothing
-//! to a row beyond the one operation a snapshot reports as available — a row
+//! to a row beyond the one operation a snapshot reports as available; a row
 //! offers Stop only while its adapter says that task can be stopped.
 
 pub(super) mod rows;
@@ -43,7 +43,7 @@ const COMPACT_RUNNING_ROWS: usize = 4;
 
 const COMPACT_FINISHED_ROWS: usize = 10;
 
-/// Elapsed labels are recomputed from stored times rather than counted, so one
+/// Elapsed labels are recomputed from stored times instead of counted, so one
 /// tick per second is enough to keep a seconds display truthful.
 const ELAPSED_TICK: Duration = Duration::from_secs(1);
 
@@ -58,8 +58,8 @@ impl IconNamed for StopTaskIcon {
     }
 }
 
-/// What the panel is showing. One child at a time replaces the list rather
-/// than opening beside it, so the shared right-side area still holds one view.
+/// What the panel is showing. One child at a time replaces the list instead
+/// of opening beside it, so the shared right-side area still holds one view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PanelMode {
     List,
@@ -67,7 +67,7 @@ enum PanelMode {
         key: BackgroundTaskKey,
 
         /// Section expansion restored when the user goes back, so returning
-        /// lands on what they were reading.
+        /// shows what they were reading.
         running_expanded: bool,
 
         finished_expanded: bool,
@@ -116,7 +116,7 @@ pub(crate) struct BackgroundTasksView {
 
     /// The open child's conversation, rendered by the same component the Agent
     /// pane uses. Its own instance, so expansion and scroll belong to this
-    /// child rather than to the parent conversation.
+    /// child, not to the parent conversation.
     detail_transcript: Option<Entity<TranscriptView>>,
 
     detail_interest: Option<ChildReader>,
@@ -152,7 +152,7 @@ impl BackgroundTasksView {
     }
 
     /// Point the view at another parent session. Row expansion and scroll are
-    /// per-conversation, so they reset rather than carrying over.
+    /// per-conversation, so they reset instead of persisting across targets.
     pub(crate) fn set_target(
         &mut self,
         target: Option<WeakEntity<AgentPane>>,
@@ -165,7 +165,7 @@ impl BackgroundTasksView {
         self.target = target;
 
         // A child belongs to one parent session, so pointing at another one
-        // returns to the list rather than keeping that child on screen.
+        // returns to the list instead of keeping that child on screen.
         self.mode = PanelMode::List;
         self.detail_transcript = None;
         self.detail_interest = None;
@@ -312,7 +312,7 @@ impl BackgroundTasksView {
 
             // An Agent pane publishes its first snapshot only once the adapter
             // has something to report, so a targeted view with none yet is
-            // still starting up rather than looking at the wrong kind of tab.
+            // still starting up, not looking at the wrong kind of tab.
             return match self.target.is_some() {
                 true => empty_state(
                     t!("tasks-background-loading-title"),
@@ -454,7 +454,7 @@ impl BackgroundTasksView {
     ) -> AnyElement {
         let Some(task) = snapshot.tasks.iter().find(|task| task.key == key) else {
             // The child left this session's snapshot, so there is nothing to
-            // show; the list is the honest place to be.
+            // show, so the view goes back to the list.
             self.close_detail(cx);
 
             return div().into_any_element();
@@ -565,7 +565,7 @@ impl BackgroundTasksView {
                 .flex_1()
                 .min_h_0()
                 // The retention bound drops the oldest content, so a truncated
-                // conversation says so rather than reading as complete.
+                // conversation shows a notice instead of reading as complete.
                 .children((dropped > 0).then(|| {
                     div()
                         .px_2()

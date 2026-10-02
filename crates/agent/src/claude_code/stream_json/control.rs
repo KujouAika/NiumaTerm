@@ -360,7 +360,7 @@ pub(super) struct PendingQuestions {
 /// `answers` holds chosen option labels per question, in question order.
 ///
 /// The tool reads its answers back out of its own input, so the original
-/// payload is echoed with `answers` merged in rather than replaced by an
+/// payload is echoed with `answers` merged in instead of replaced by an
 /// answers-only object. Keys are the question texts verbatim, because that is
 /// what the provider matches an answer against.
 pub(super) fn merge_question_answers(
@@ -377,7 +377,7 @@ pub(super) fn merge_question_answers(
 
         // A single-select question is reported as the bare label; the provider
         // joins a multi-select array with ", " on its side, so the array form
-        // stays the honest representation of what was picked.
+        // stays the accurate representation of what was picked.
         answered.insert(
             question.question.clone(),
             if question.multi_select {
@@ -394,7 +394,7 @@ pub(super) fn merge_question_answers(
 }
 
 /// Read the tool's `questions` array. A question with fewer than two options
-/// cannot be answered by picking, so it is dropped rather than rendered as an
+/// cannot be answered by picking, so it is dropped instead of rendered as an
 /// unanswerable row; an empty result means the request is not usable at all.
 pub(super) fn parse_questions(input: &Value) -> Vec<Question> {
     let Some(questions) = input["questions"].as_array() else {
@@ -447,7 +447,7 @@ fn operation_resolved(operation: PendingControlOperation, response: &Value) -> O
         PendingControlOperation::FileRewind => Some(Event::FileRewindCompleted { error }),
         // A composition that could not be computed leaves the previous
         // breakdown in place: the accounting beside it is still accurate, and
-        // an error here says nothing about the conversation.
+        // an error here reveals no problem with the conversation.
         PendingControlOperation::ContextComposition => error
             .is_none()
             .then(|| parse_context_composition(&response["response"]))
@@ -455,8 +455,8 @@ fn operation_resolved(operation: PendingControlOperation, response: &Value) -> O
             .map(Event::ContextCompositionUpdated),
         // The CLI answers with a null title when it had too little to name,
         // and a build that does not know the request answers with an error.
-        // Neither is worth showing the user: the conversation keeps the name
-        // it already had. Both are worth a line in the log, because nothing
+        // Neither is shown to the user: the conversation keeps the name it
+        // already had. Both get a line in the log, because nothing
         // else distinguishes them from a request that was never made.
         PendingControlOperation::SessionTitle => {
             let title = error
@@ -485,7 +485,7 @@ fn operation_resolved(operation: PendingControlOperation, response: &Value) -> O
 }
 
 /// The CLI answers with a null response when the model produced no text, so
-/// an empty answer is reported as a failure rather than shown as blank.
+/// an empty answer is reported as a failure instead of shown as blank.
 fn side_question_answer(payload: &Value) -> Result<String, String> {
     payload["response"]
         .as_str()
@@ -495,7 +495,7 @@ fn side_question_answer(payload: &Value) -> Result<String, String> {
         .ok_or_else(|| "Claude returned no answer to the side question.".to_string())
 }
 
-/// Categories the CLI lists beside its usage breakdown rather than as part of
+/// Categories the CLI lists beside its usage breakdown instead of as part of
 /// it: the window still empty, and the reserve compaction keeps for itself.
 /// Both are the window's free room, so listing them among the parts filling it
 /// puts "Free space" at the top of what is supposedly full. The CLI's own
@@ -557,11 +557,11 @@ fn fail_pending_control_operations(
             PendingControlOperation::FileRewind => Some(Event::FileRewindCompleted {
                 error: Some(message.to_string()),
             }),
-            // Nothing is waiting on a breakdown, so a lost one is not worth
-            // reporting; the next turn asks again.
+            // Nothing is waiting on a breakdown, so a lost one is not
+            // reported; the next turn asks again.
             PendingControlOperation::ContextComposition => None,
             // A conversation that lost its naming request keeps the name it
-            // already had, which is what an unnamed one shows anyway.
+            // already had, the same as an unnamed one shows anyway.
             PendingControlOperation::SessionTitle => None,
             PendingControlOperation::SideQuestion(id) => Some(Event::SideQuestionAnswered {
                 id,

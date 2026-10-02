@@ -22,7 +22,7 @@ Sub-agents are off-limits in this side conversation. Do not interact with any ex
 
 You may perform non-mutating inspection, including reading or searching files and running checks that do not alter repo-tracked files.
 
-Do not modify files, source, git state, permissions, configuration, or any other workspace state unless the user explicitly requests that mutation in this side conversation. If the user explicitly requests a mutation, keep it minimal, local to the request, and avoid disrupting the main thread.";
+Do not modify files, source, git state, permissions, configuration, or any other workspace state unless the user directly requests that mutation in this side conversation. If the user directly requests a mutation, keep it minimal, local to the request, and avoid disrupting the main thread.";
 
 /// The model-visible message that marks where the inherited history ends.
 /// Developer instructions alone say that such a boundary exists; this item

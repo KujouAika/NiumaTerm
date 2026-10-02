@@ -17,7 +17,7 @@ use crate::APP_ID;
 
 /// Writable per-user state (logs, caches, downloaded updates). Falls back to
 /// the temp directory so a sandbox that denies the real location still yields
-/// a usable path rather than failing startup.
+/// a usable path instead of failing startup.
 pub fn data_dir() -> PathBuf {
     let directory = base_data_dir().map(|base| base.join(APP_ID));
 
@@ -36,7 +36,7 @@ fn base_data_dir() -> Option<PathBuf> {
 }
 
 /// Where macOS puts the files one application owns. Configuration is kept here
-/// too rather than in an XDG directory: Finder hides dot-directories, Migration
+/// too, not in an XDG directory: Finder hides dot-directories, Migration
 /// Assistant and Time Machine both carry this one to a new machine, and no
 /// other Mac application looks in `~/.config`.
 #[cfg(target_os = "macos")]
@@ -59,7 +59,7 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 /// Shares the data directory: on macOS the two are one place, so a single
-/// installation is one directory rather than a pair that can drift apart.
+/// installation is one directory, not a pair that can drift apart.
 #[cfg(target_os = "macos")]
 pub fn config_dir(home: &Path) -> PathBuf {
     application_support_dir(home).join(APP_ID)

@@ -58,7 +58,7 @@ pub fn emit() -> String {
 /// indistinguishable from one built on `main`. Call from a build script only.
 pub fn emit_internal() {
     if let Some(git_dir) = git_dir() {
-        // Committing on the current branch rewrites the branch ref rather than
+        // Committing on the current branch rewrites the branch ref instead of
         // `HEAD`, which keeps naming the same branch; the reflog is the one
         // file both a commit and a checkout always append to.
         println!(
@@ -73,7 +73,7 @@ pub fn emit_internal() {
     ) {
         (Some(branch), Some(commit)) => format!("{branch}@{commit}"),
         // A build from a published archive has no checkout to read, and the
-        // label is diagnostic rather than load-bearing, so it degrades instead
+        // label is diagnostic and nothing depends on it, so it degrades instead
         // of failing the build the way a missing version label does.
         _ => "unknown".to_owned(),
     };
@@ -82,11 +82,11 @@ pub fn emit_internal() {
 }
 
 /// The revision that last changed the calling crate, for a binary an update
-/// replaces only when it moved forward rather than on every release.
+/// replaces only when it moved forward instead of on every release.
 ///
 /// Explorer keeps a registered shell extension mapped in its own process, so
 /// replacing that file costs a stale context menu until Explorer unloads it.
-/// The release name cannot decide whether that cost is worth paying, because it
+/// The release name cannot decide whether to pay that cost, because it
 /// advances on every build while the same extension stays correct across
 /// releases that did not touch it.
 ///
@@ -108,7 +108,7 @@ pub fn crate_revision() -> String {
 
 fn derive_from_git() -> String {
     // `describe` reports whichever tag it considers newest, so a revision
-    // carrying both a release tag and an unrelated one could hide the release.
+    // with both a release tag and an unrelated one could hide the release.
     if let Some(tag) = run_git(&["tag", "--points-at", "HEAD"]).and_then(|tags| {
         tags.lines()
             .map(str::trim)

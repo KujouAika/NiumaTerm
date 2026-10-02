@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use crate::agent_tab::transcript::typewriter::{ReplyTyping, shown_prefix};
 
-/// The cut lands between characters, whatever their width in bytes, and a
+/// The cut falls between characters, whatever their width in bytes, and a
 /// count past the end lets the whole text through.
 #[test]
 fn a_prefix_ends_on_a_character_boundary() {

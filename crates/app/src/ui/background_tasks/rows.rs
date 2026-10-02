@@ -1,7 +1,7 @@
 //! One task as a row, and the two sections rows are grouped into.
 //!
 //! Running tasks are what the panel is for, so they are listed first and in
-//! full; finished ones are kept because a result is still worth reading, and
+//! full; finished ones are kept because their results are still useful, and
 //! collapse behind a count once there are more than the panel has room for.
 
 use std::borrow::Cow;
@@ -51,7 +51,7 @@ pub(super) fn render_row(
 
     // Whether a child can be stopped depends on identifiers the provider may
     // not have published yet, not on the lifecycle state alone, so the control
-    // follows what the snapshot reports rather than being inferred here.
+    // follows what the snapshot reports instead of being inferred here.
     let stop = task.can_stop.then(|| {
         // Keep the control attached to this child as rows move between sections.
         toolbar_button(SharedString::from(format!(
@@ -80,7 +80,7 @@ pub(super) fn render_row(
         .px_2()
         .py_1()
         .gap_2()
-        // The control is centred against the row as a whole rather than aligned
+        // The control is centred against the row as a whole instead of aligned
         // to either text line, which keeps it steady whether the row has a
         // timing label or not.
         .items_center()

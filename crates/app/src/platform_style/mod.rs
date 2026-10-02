@@ -10,7 +10,7 @@
 //! Add a hook here when a view needs a platform-specific measurement or
 //! builder step, then answer it in both implementations. Views compose a
 //! builder hook with `map`, for example `.map(Host::title_bar)`. Styling that
-//! holds everywhere stays in the view, so a hook carries only what actually
+//! holds everywhere stays in the view, so a hook contains only what
 //! differs between platforms.
 //!
 //! The `app` library owns this module so its conversation views and the
@@ -87,7 +87,7 @@ pub trait PlatformStyle {
     /// controls instead.
     const FULL_TAB_WIDTH: f32;
 
-    /// Whether the selected workspace row carries an accent mark in its
+    /// Whether the selected workspace row draws an accent mark in its
     /// leading gutter in addition to its fill. Without the mark the row's name
     /// needs no lane cleared for it and starts on the content column.
     const SIDEBAR_SELECTION_MARK: bool;
@@ -104,7 +104,7 @@ pub trait PlatformStyle {
     /// The group holding a tab's trailing close control and progress bar.
     fn tab_suffix(suffix: Div, density: TabDensity) -> Div;
 
-    /// The area holding a tab's title, which also carries its context menu.
+    /// The area holding a tab's title, which also owns its context menu.
     fn tab_title(title: Stateful<Div>, density: TabDensity) -> Stateful<Div>;
 
     /// The input that stands in for a tab's title while the tab is renamed.

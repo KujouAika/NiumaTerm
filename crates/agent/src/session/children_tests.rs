@@ -173,7 +173,7 @@ fn a_snapshot_is_shown_only_for_the_session_it_describes() {
 }
 
 #[test]
-fn a_later_snapshot_replaces_the_previous_one_and_carries_its_activity() {
+fn a_later_snapshot_replaces_the_previous_one_and_keeps_its_activity() {
     let parent = BackgroundTaskKey::claude_code("session-1");
 
     let mut registry = BackgroundTaskRegistry::new(parent.clone());

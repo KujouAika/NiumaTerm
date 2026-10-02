@@ -25,8 +25,8 @@ impl Default for UpdateConfig {
     }
 }
 
-/// The two ways a build is published. A missing or unreadable value lands on
-/// stable, the channel a user who never chose is least surprised by.
+/// The two ways a build is published. A missing or unreadable value falls back
+/// to stable, the channel a user who never chose is least surprised by.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum UpdateChannel {

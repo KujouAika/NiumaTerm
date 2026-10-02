@@ -216,7 +216,7 @@ impl VerticalTabList {
 
     /// One tab rendered as a row. Clicking it switches to that workspace *and*
     /// that tab, so a row under an inactive workspace is a single-click jump
-    /// rather than a two-step one.
+    /// instead of a two-step one.
     fn render_row(
         &self,
         position: (usize, usize),
@@ -245,7 +245,7 @@ impl VerticalTabList {
         }));
 
         // One mark per row, because the lane it sits in is one glyph wide.
-        // Ordered by what is worth acting on first: an agent mid-turn, then
+        // Ordered by what most needs action first: an agent mid-turn, then
         // what the shell is doing, then output nobody has read. A tab's own
         // kind of status therefore outranks the generic unread dot, the way
         // the horizontal strip orders them too. A row with nothing to report
@@ -335,7 +335,7 @@ impl VerticalTabList {
             }))
             .child(label)
             // Bell dot, in the warning color so it reads apart from the unread
-            // dot when a tab carries both.
+            // dot when a tab has both.
             .children(tab.bell.then(|| {
                 StatusMark::new(
                     ("sidebar-tab-bell", key),
@@ -449,8 +449,8 @@ impl VerticalTabList {
 /// inset, spacing, text, and the fill that marks the row on screen.
 ///
 /// The row is the selectable thing in this style: its fill is the only cue
-/// that a tab is the one on screen, so it carries the selected state
-/// assistive technology reads. The label is stated rather than derived,
+/// that a tab is the one on screen, so it exposes the selected state
+/// assistive technology reads. The label is stated instead of derived,
 /// because a row also holds status marks and swaps its text for an input
 /// while its tab is being renamed.
 pub(crate) fn tab_row(
@@ -472,7 +472,7 @@ pub(crate) fn tab_row(
         // The same inset the workspace rows take, so the glyph column stands
         // on the same edge as the workspace names above it. A tab is tied to
         // its workspace by the gap that separates one such block from the
-        // next rather than by an indent.
+        // next, not by an indent.
         .px(px(SIDEBAR_ROW_GUTTER))
         .gap(px(TAB_ROW_GAP))
         .items_center()
@@ -535,7 +535,7 @@ pub(crate) fn fold_row(
 }
 
 /// A [`fold_row`] for a row of another height. The clip caps the row at
-/// `height` rather than sizing it, so a row whose height follows its text
+/// `height` instead of sizing it, so a row whose height follows its text
 /// is never stretched: `height` only has to be at least the row's own, and
 /// the closer it is, the sooner a fold starts to visibly shrink the row.
 pub(crate) fn fold_block(
@@ -587,7 +587,7 @@ pub(crate) fn fold_block(
 const TAB_FOLD: Duration = Duration::from_millis(180);
 
 /// Fallback drop target for a list holding tab rows: a drop released over
-/// the make-way gap (a margin, outside every row's hitbox) still lands on the
+/// the make-way gap (a margin, outside every row's hitbox) still drops at the
 /// tracked insertion position instead of silently ending the drag.
 pub(crate) fn accept_row_drops(list: Stateful<Div>, cx: &mut Context<AppWindow>) -> Stateful<Div> {
     list.on_drop(cx.listener(|this, drag: &RowDrag, window, cx| {

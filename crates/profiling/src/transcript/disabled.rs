@@ -6,7 +6,7 @@ mod tests;
 
 use crate::transcript::Operation;
 
-/// No measurement state is carried by ordinary builds.
+/// Builds without profiling hold no measurement state.
 #[must_use]
 pub enum Probe {}
 

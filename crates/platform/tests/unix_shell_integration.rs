@@ -4,7 +4,7 @@
 //!
 //! The marks only earn boundary trust in a strict `A -> B -> C -> D` order, and
 //! the pieces that produce them are spread across a `precmd` hook, a `preexec`
-//! hook and a `PS1` suffix that a prompt framework may rebuild — and bash
+//! hook and a `PS1` suffix that a prompt framework may rebuild, and bash
 //! reaches its own through a login hop that `exec`s a second shell. Nothing
 //! short of running them shows whether the pieces still line up.
 
@@ -65,7 +65,7 @@ struct Session {
     home: PathBuf,
 
     /// Everything read so far, so a wait can be expressed against the whole
-    /// session rather than against one read's worth of bytes.
+    /// session instead of against the bytes of a single read.
     stream: Vec<u8>,
 }
 
@@ -89,7 +89,7 @@ impl Session {
                     }
                 }
                 // The PTY is non-blocking, so "nothing yet" arrives as an
-                // error rather than a short read.
+                // error instead of a short read.
                 Err(_) => thread::sleep(Duration::from_millis(20)),
             }
         }
@@ -128,7 +128,7 @@ impl Drop for Session {
 }
 
 /// Start `shell` with the bundled integration and an empty HOME, so the marks
-/// under test are the ones the bundled files emit rather than whatever the
+/// under test are the ones the bundled files emit, not whatever the
 /// developer's own configuration adds.
 fn start(shell: &str, label: &str) -> Option<Session> {
     start_with_startup_files(shell, label, &[])
@@ -252,7 +252,7 @@ fn bash_reports_an_ordered_prompt_lifecycle() {
 }
 
 /// The exit code is what a finished command block records, so a failure has to
-/// travel out as its own status rather than a generic zero.
+/// be reported as its own status, not a generic zero.
 fn assert_reports_failing_exit_code(shell: &str) {
     let Some(mut session) = start(shell, "exit-code") else {
         return;
@@ -414,7 +414,7 @@ fn bash_still_reads_the_users_startup_files() {
 }
 
 /// The user's shell has to end up with everything their files defined, not
-/// just what an `export` would have carried.
+/// just what an `export` would have passed on.
 #[test]
 fn bash_keeps_functions_and_aliases_from_the_users_startup_files() {
     let text = bash_bootstrap_in_temp_home(
@@ -434,8 +434,8 @@ fn bash_keeps_functions_and_aliases_from_the_users_startup_files() {
 }
 
 /// bash allows one DEBUG trap, and the integration installs one for `;C`. A
-/// trap the user's own files put there — bash-preexec, atuin — must keep
-/// firing rather than be silently replaced.
+/// trap the user's own files put there (bash-preexec, atuin) must keep
+/// firing instead of being silently replaced.
 #[test]
 fn bash_keeps_a_debug_trap_the_user_already_installed() {
     let text = bash_bootstrap_in_temp_home(
@@ -486,7 +486,7 @@ fn bash_empty_enter_keeps_the_lifecycle_ordered() {
 }
 
 /// The prompt-end mark is re-applied on every prompt, so the strip that
-/// precedes it has to actually match: without it PS1 would grow by one marker
+/// precedes it has to match: without it PS1 would grow by one marker
 /// per prompt, and the terminal would see the prompt region close early.
 fn assert_the_prompt_mark_does_not_accumulate(shell: &str) {
     let Some(mut session) = start(shell, "no-accumulate") else {
@@ -522,18 +522,18 @@ fn bash_prompt_mark_does_not_accumulate() {
 }
 
 /// The line the terminal types at the shell must not end up in the user's
-/// history. It carries a leading space and the launch sets the shell's
+/// history. It starts with a space and the launch sets the shell's
 /// ignore-space setting for exactly that; the bootstrap then puts the setting
 /// back, so nothing but that one line is affected.
 ///
-/// Checked against the history file the session writes rather than the byte
-/// stream: on bash the injected line is echoed by readline — cleared from the
-/// screen, not from the stream — so the stream is the wrong thing to look at.
+/// Checked against the history file the session writes, not the byte stream:
+/// on bash the injected line is echoed by readline (cleared from the screen,
+/// not from the stream), so the stream is the wrong thing to look at.
 ///
 /// Only bash is covered end to end. zsh writes no history file unless
 /// `SAVEHIST` is set from a startup file, and arranging that inside a session
-/// whose startup files the launch deliberately suppresses ends up pinning the
-/// arrangement rather than the behaviour. The zsh side is covered by the unit
+/// whose startup files the launch suppresses ends up pinning the arrangement
+/// instead of the behaviour. The zsh side is covered by the unit
 /// test that pins `-o histignorespace` into the launch.
 fn assert_the_bootstrap_line_leaves_no_history(shell: &str, write_history: &[u8]) {
     let Some(mut session) = start(shell, "history") else {
@@ -576,7 +576,7 @@ fn bash_bootstrap_line_leaves_no_history() {
 
 /// zsh draws its right prompt after the left one, so its bytes arrive inside
 /// the command-echo region. The integration closes it with a second `;B`,
-/// which has to leave the lifecycle ordered — a repeated mark that the
+/// which has to leave the lifecycle ordered: a repeated mark that the
 /// terminal rejected would cost boundary trust on every prompt.
 #[test]
 fn zsh_right_prompt_closes_with_its_own_command_mark() {
@@ -609,14 +609,14 @@ fn zsh_right_prompt_closes_with_its_own_command_mark() {
     );
 }
 
-/// A session states which terminal it is rather than passing on whatever
+/// A session states which terminal it is instead of passing on whatever
 /// started the application. Started from Finder or the Dock there is nothing to
 /// pass on, and `/usr/bin/login` fills the gap with `network`, a name no
-/// terminfo database carries; the shell then decides it cannot address the
+/// terminfo database has; the shell then decides it cannot address the
 /// cursor and reprints its prompt instead of redrawing it in place.
 ///
 /// The angle brackets separate the answer from the echo of the command that
-/// asks for it, which carries the format string rather than the value.
+/// asks for it, which shows the format string instead of the value.
 #[test]
 fn a_session_tells_its_shell_which_terminal_it_is() {
     let Some(mut session) = start("zsh", "term") else {

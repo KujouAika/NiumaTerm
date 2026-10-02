@@ -90,7 +90,7 @@ pub(crate) fn install(cx: &mut App) {
         with_active_window(cx, |window, _| window.zoom_window());
     });
 
-    // Disabled rather than absent while a check runs, and for a build with no
+    // Disabled instead of absent while a check runs, and for a build with no
     // updater, so the item stays where a user learned to look for it.
     cx.on_action(|_: &CheckForUpdates, cx: &mut App| {
         if update::can_check(cx) {
@@ -161,7 +161,7 @@ fn menus() -> Vec<Menu> {
             // View menu, so there is no item for it here.
         ]),
         // AppKit fills in the list of open windows for a menu it recognizes by
-        // the name "Window", which is what the English catalog calls this one.
+        // the name "Window", the English catalog's name for this one.
         Menu::new(t!("menu-window")).items([
             MenuItem::action(t!("menu-minimize"), Minimize),
             MenuItem::action(t!("menu-zoom"), Zoom),

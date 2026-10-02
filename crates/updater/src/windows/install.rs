@@ -1,10 +1,10 @@
 //! Replacing the installed files with a staged release, in place.
 //!
 //! Windows refuses to delete a file that is mapped as a running image but
-//! allows renaming one, which is what makes an installation replace itself
-//! without a second program to do it: every file moves aside under a new name
+//! allows renaming one, so an installation can replace itself without a
+//! second program to do it: every file moves aside under a new name
 //! and the staged copy takes the name it vacated. A process that has one of the
-//! old files mapped — this one, and Explorer for the context-menu extension —
+//! old files mapped (this one, and Explorer for the context-menu extension)
 //! keeps running from the renamed file until it exits.
 
 #[cfg(test)]
@@ -93,7 +93,7 @@ impl Installation {
     }
 }
 
-/// Install the files `package` carries and `install` does not have.
+/// Install the files `package` contains and `install` does not have.
 ///
 /// A swap copies what the build performing it knows to look for, and the build
 /// performing it is the one being replaced. A release published before this one
@@ -106,7 +106,7 @@ impl Installation {
 /// the swap, which can rename a mapped file aside where a plain copy over one
 /// would be refused.
 pub(super) fn install_additions(package: &Path, install: &Path) {
-    if !carries_installed_app(package, install) {
+    if !is_installed_release(package, install) {
         return;
     }
 
@@ -127,10 +127,10 @@ pub(super) fn install_additions(package: &Path, install: &Path) {
 ///
 /// Staging can also hold an attempt that never replaced anything, and a file
 /// taken out of a different release would pair a grammar or a helper with an
-/// executable that never shipped beside it. A package whose executable carries
+/// executable that never shipped beside it. A package whose executable has
 /// no readable version cannot be attributed to a release at all, so it is not
 /// treated as a match for an installation that reads as unversioned either.
-fn carries_installed_app(package: &Path, install: &Path) -> bool {
+fn is_installed_release(package: &Path, install: &Path) -> bool {
     let staged = version_string(&package.join(APP_EXE), "FileVersion");
 
     staged.is_some() && staged == version_string(&install.join(APP_EXE), "FileVersion")
@@ -193,14 +193,14 @@ fn apply(staging: &Path, install: &Path, plan: &InstallPlan) -> Result<(), Insta
 /// The version-resource key that decides whether the staged copy of `name` is
 /// already the one on disk.
 ///
-/// Comparing a version rather than the bytes is what keeps a rebuild of
+/// Comparing a version instead of the bytes is what keeps a rebuild of
 /// unchanged sources from counting as a change, and the key differs for one
 /// file: Explorer keeps a registered context-menu extension mapped in its own
 /// process, so replacing that DLL costs a stale menu until Explorer restarts,
 /// and its `InternalVersion` names the revision its own sources last changed in,
 /// which is the only value that says whether the cost buys anything. Everything
-/// else — the executables, the syntax-language DLL, and the vendored ConPTY
-/// pair carrying Microsoft's version resource — moves with the `FileVersion` it
+/// else (the executables, the syntax-language DLL, and the vendored ConPTY
+/// pair with Microsoft's version resource) moves with the `FileVersion` it
 /// ships.
 fn version_key(name: &str) -> &'static str {
     if name == SHELL_EXTENSION_DLL {
@@ -214,7 +214,7 @@ fn version_key(name: &str) -> &'static str {
 ///
 /// The swap is performed by the instance an update replaces, so a name that
 /// instance does not consider is a file that never gets installed. Reading the
-/// list off the staged package rather than out of a list compiled into the
+/// list off the staged package instead of out of a list compiled into the
 /// running build is therefore what lets a later release add a file at all: the
 /// build performing the swap does not have to have heard of it.
 ///
@@ -240,7 +240,7 @@ fn staged_names(package: &Path) -> Vec<String> {
     names
 }
 
-/// The version each staged file carries in `staging` and in `install`.
+/// The version each staged file has in `staging` and in `install`.
 fn versions(staging: &Path, install: &Path) -> Vec<(String, Option<String>, Option<String>)> {
     staged_names(staging)
         .into_iter()
@@ -258,7 +258,7 @@ fn versions(staging: &Path, install: &Path) -> Vec<(String, Option<String>, Opti
 ///
 /// A version that cannot be read on either side counts as a difference. That
 /// covers a release adding a file the installation does not have yet, and it
-/// errs towards installing a file rather than towards leaving an installation
+/// errs towards installing a file instead of towards leaving an installation
 /// half-updated because one version resource could not be parsed.
 fn differing(versions: &[(String, Option<String>, Option<String>)]) -> Vec<String> {
     versions

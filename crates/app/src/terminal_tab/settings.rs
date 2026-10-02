@@ -1,9 +1,9 @@
 //! The narrow settings surface the terminal reads.
 //!
-//! The application's settings global carries every configurable value in the
-//! program — themes, agent profiles, window chrome — and handing that whole
+//! The application's settings global holds every configurable value in the
+//! program (themes, agent profiles, window chrome), and handing that whole
 //! object to the terminal ties the terminal to the settings layer above it.
-//! This snapshot holds only what terminal rendering and input actually
+//! This snapshot holds only what terminal rendering and input
 //! consume, pre-resolved to plain values. The settings layer rebuilds it
 //! whenever the source settings change, so terminal code observes and reads
 //! this global alone.

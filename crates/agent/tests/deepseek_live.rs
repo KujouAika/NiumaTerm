@@ -34,7 +34,7 @@ impl StartsATurn for SendOutcome {
 }
 
 /// A turn long enough that there is always partial output to lose when the
-/// cancel lands, which is the property this is checking.
+/// cancel arrives; this test checks that the partial output survives.
 const LONG_PROMPT: &str =
     "Count from 1 to 400, one number per line, with a short remark on each. Do not stop early.";
 
@@ -58,7 +58,7 @@ fn launch() -> LaunchConfig {
 }
 
 /// Drain events until `stop` accepts one, or the deadline passes. Returns every
-/// event seen, so a failure can be read from the whole stream rather than from
+/// event seen, so a failure can be read from the whole stream instead of from
 /// the one that was being waited for.
 fn collect_until(
     session: &mut Session,
@@ -337,7 +337,7 @@ fn a_turn_streams_and_survives_being_stopped() {
     assert!(saw_start, "no turn started; saw {started:?}");
 
     // Let real output accumulate before stopping, so "the partial answer
-    // survives" is a claim about text that actually existed.
+    // survives" is a claim about text that really existed.
     let (streamed, _) = collect_until(&mut session, &frames, Duration::from_secs(15), |_| false);
     let before_stop = folded_text(&streamed);
 
@@ -404,7 +404,7 @@ fn a_turn_streams_and_survives_being_stopped() {
             &[],
         )
         // The stop settled before this line, so the conversation is idle and
-        // the prompt starts its own turn rather than steering the old one.
+        // the prompt starts its own turn instead of steering the old one.
         .assert_started_a_turn();
 
     let (second, restarted) = collect_until(&mut session, &frames, Duration::from_secs(180), |e| {
@@ -422,7 +422,7 @@ fn a_turn_streams_and_survives_being_stopped() {
 
 /// `--no-open` keeps the host from opening the served page in a browser, and a
 /// release that predates the flag refuses to start when it is passed. The start
-/// path therefore has to reach a serving host on both, which is what this runs.
+/// path therefore has to reach a serving host on both; this test checks that.
 #[test]
 #[ignore = "starts a real harness host"]
 fn the_host_serves_whether_or_not_it_knows_the_no_browser_flag() {
@@ -538,7 +538,7 @@ fn an_approval_is_raised_answered_and_the_turn_continues() {
         .expect("the harness host should start and open a conversation");
 
     // Writing outside the workspace is denied under the default sandbox, and
-    // the model escalates, which is what raises the approval.
+    // the model escalates, and the escalation raises the approval.
     session
         .send_user_message(
             &format!(
@@ -571,7 +571,7 @@ fn an_approval_is_raised_answered_and_the_turn_continues() {
             Event::ApprovalRequested { description } => Some(description.clone()),
             _ => None,
         })
-        .expect("the request carries a description");
+        .expect("the request has a description");
 
     assert!(
         !description.trim().is_empty(),
@@ -595,7 +595,7 @@ fn an_approval_is_raised_answered_and_the_turn_continues() {
         "the harness never reported the approval resolved; saw {after:?}"
     );
 
-    // The grant reached the harness: the escalated write actually happened.
+    // The grant reached the harness: the escalated write happened.
     assert!(
         outside.is_file(),
         "the approved command did not run: {} was never written",
@@ -608,7 +608,7 @@ fn an_approval_is_raised_answered_and_the_turn_continues() {
 #[test]
 #[ignore = "starts a real harness host and spends a model call"]
 fn a_real_turn_shows_its_commands_and_file_changes() {
-    // A workspace of its own rather than the temp root itself: the harness
+    // A workspace of its own instead of the temp root itself: the harness
     // refuses to run its shell tool when its ACL temp root and the workspace
     // are the same directory, which a bare temp-dir workspace makes true.
     let workspace = env::temp_dir().join(format!("nmt-deepseek-tool-{}", Uuid::new_v4()));
@@ -703,7 +703,7 @@ fn a_real_turn_shows_its_commands_and_file_changes() {
 
     assert!(
         command_ran,
-        "no completed command row carried the output; started={started:?} completed={completed:?}"
+        "no completed command row had the output; started={started:?} completed={completed:?}"
     );
 
     let file_changed = completed.iter().any(|item| {
@@ -714,11 +714,11 @@ fn a_real_turn_shows_its_commands_and_file_changes() {
 
     assert!(
         file_changed,
-        "no completed file row carried the change; completed={completed:?}"
+        "no completed file row had the change; completed={completed:?}"
     );
 
     // The mapping keys on the card, so a tool with no dedicated row still has
-    // to appear rather than being dropped.
+    // to appear instead of being dropped.
     assert!(
         started
             .iter()
@@ -770,7 +770,7 @@ fn a_profile_pinning_an_unserved_effort_is_told_rather_than_ignored() {
     assert!(!message.is_empty());
 
     // The level reported back is the one the session is on, so the control
-    // lands on something the route actually serves.
+    // ends on something the route serves.
     assert_ne!(effort.as_deref(), Some("medium"));
 }
 
@@ -994,7 +994,7 @@ fn permission_commands_update_the_session_preset() {
         assert!(!session.has_active_operation());
     }
 
-    // A remembered pick restored on the user's behalf says nothing when it
+    // A remembered pick restored on the user's behalf adds no message when it
     // takes: the projection it moved is the whole report.
     session.select_permission("danger-full-access");
 

@@ -554,8 +554,8 @@ impl<'a> VisibleGrid<'a> {
 //
 // Per-row selection interval computation for the render buffer.
 //
-// This is the only surviving piece of the old grid emitter. The rest — shaping
-// and emitting cells into the legacy Sugarloaf terminal grid/atlas — died with
+// This is the only surviving piece of the old grid emitter. The rest (shaping
+// and emitting cells into the legacy Sugarloaf terminal grid/atlas) died with
 // the old renderer path; the GPUI shell paints from `RenderBuffer` directly and
 // needs only this row-selection helper.
 // ---------------------------------------------------------------------------

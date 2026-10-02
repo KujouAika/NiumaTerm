@@ -164,7 +164,7 @@ pub(crate) async fn fetch_snapshot(
 }
 
 /// Line count of an untracked file (its "all added" count); 0 for binary
-/// (NUL-containing) or unreadable files. Streams in fixed chunks — untracked
+/// (NUL-containing) or unreadable files. Streams in fixed chunks: untracked
 /// files can be huge (build artifacts, datasets) and this runs every refresh
 /// tick, so the whole file must never be pulled into memory at once.
 fn count_file_lines(root: &str, path: &str) -> u64 {
@@ -425,7 +425,7 @@ pub(crate) struct GitStatusModel {
     target_cwd: Option<String>,
     pub(crate) snapshot: Option<GitSnapshot>,
 
-    /// Bumped each time a snapshot lands, so observers can tell data changes
+    /// Bumped each time a snapshot arrives, so observers can tell data changes
     /// apart from `refreshing` flag flips.
     pub(crate) snapshot_seq: u64,
 
@@ -478,7 +478,7 @@ impl GitStatusModel {
         }
 
         // Interval loop; the period is re-read each tick so the settings
-        // dropdown takes effect at the next tick without restart plumbing.
+        // dropdown takes effect at the next tick without a restart path.
         cx.spawn(Self::poll_git_status).detach();
 
         Self {
@@ -564,7 +564,7 @@ impl GitStatusModel {
 
         // The conversation tabs watch the branch of their own directories on
         // this same interval, so an answer read within one is shared with them
-        // rather than read again here.
+        // instead of read again here.
         let branch_max_age = Duration::from_secs(
             cx.global::<AppSettings>()
                 .config()

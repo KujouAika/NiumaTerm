@@ -253,7 +253,7 @@ pub(crate) fn assistant_block(block: &Value) -> Option<AssistantBlock<'_>> {
     }
 }
 
-/// Whether an assistant message wraps an API failure rather than a reply. The
+/// Whether an assistant message wraps an API failure instead of a reply. The
 /// stream marks it `is_api_error_message`, a stored conversation
 /// `isApiErrorMessage`; either way its text is the error message.
 pub(crate) fn is_api_error(message: &Value) -> bool {

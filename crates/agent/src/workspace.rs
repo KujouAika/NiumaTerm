@@ -34,7 +34,7 @@ impl AgentWorkspace {
 
     /// A conversation with a primary directory and additional directories in
     /// workspace order. Additional directories without a primary one would
-    /// have no `cwd` to anchor them, so they are dropped rather than silently
+    /// have no `cwd` to anchor them, so they are dropped instead of silently
     /// promoted.
     pub fn new(primary: Option<String>, additional: Vec<String>) -> Self {
         match primary {
@@ -63,8 +63,8 @@ impl AgentWorkspace {
             .chain(self.additional.iter().map(String::as_str))
     }
 
-    /// Whether this conversation was given more than one directory, which is
-    /// what a primary-only harness has to disclose.
+    /// Whether this conversation was given more than one directory. A
+    /// primary-only harness has to disclose that.
     pub fn is_multi_root(&self) -> bool {
         !self.additional.is_empty()
     }
@@ -87,8 +87,8 @@ impl AgentWorkspace {
     }
 }
 
-/// Whether a harness can use every directory an [`AgentWorkspace`] carries.
-/// There is deliberately no `Default`: a new harness has to state which of
+/// Whether a harness can use every directory an [`AgentWorkspace`] holds.
+/// There is no `Default` on purpose: a new harness has to state which of
 /// these it provides, so it cannot inherit another harness's answer and
 /// silently claim access it does not have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

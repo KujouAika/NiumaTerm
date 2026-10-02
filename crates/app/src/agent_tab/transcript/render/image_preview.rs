@@ -3,10 +3,10 @@
 //! The transcript shows attachments as thumbnails, which is enough to
 //! recognize a screenshot but not to read one. Opening it here keeps the
 //! reader in the conversation: the layer covers the message stream it came
-//! from, blurred rather than replaced, so the surrounding messages still mark
+//! from, blurred instead of replaced, so the surrounding messages still mark
 //! where the image belongs. The image grows out of the thumbnail that was
-//! clicked and shrinks back into it, which is what ties the two together as
-//! one picture rather than a thumbnail and an unrelated dialog.
+//! clicked and shrinks back into it, so the two read as one picture instead
+//! of a thumbnail and an unrelated dialog.
 
 #[cfg(test)]
 #[path = "image_preview_tests.rs"]
@@ -36,14 +36,13 @@ use crate::agent_tab::transcript::TranscriptView;
 pub(crate) const ZOOM_DURATION: Duration = Duration::from_millis(150);
 
 /// Share of the message stream an enlarged image may take. Short of the whole
-/// area so the blurred conversation stays visible around it, which is what
-/// makes the image read as a layer over the transcript rather than as another
-/// screen.
+/// area so the blurred conversation stays visible around it, and the image
+/// reads as a layer over the transcript instead of as another screen.
 const PREVIEW_FRACTION: f32 = 0.8;
 
 /// Edge of the round close control, and how far it hangs past the image's
 /// corner. Straddling the corner keeps it clear of the image's own content,
-/// which is what the reader opened the image to see.
+/// the part the reader opened the image to see.
 const PREVIEW_CLOSE_EDGE: f32 = 28.0;
 
 const PREVIEW_CLOSE_OFFSET: f32 = 10.0;
@@ -58,8 +57,8 @@ pub(crate) struct ImagePreviewLayer {
     /// conversation lets its final row reach the top of the screen.
     pub(crate) transcript_height: Option<Pixels>,
 
-    /// Where the viewport sits in the window, which is what turns the window
-    /// bounds a thumbnail reports into a position inside the preview layer.
+    /// Where the viewport is in the window, needed to turn the window bounds
+    /// a thumbnail reports into a position inside the preview layer.
     pub(crate) transcript_origin: Option<Point<Pixels>>,
 
     pub(crate) image_preview: ImagePreview,
@@ -118,7 +117,7 @@ impl ImagePreviewLayer {
 
     /// The mask over the conversation and the enlarged image above it, while
     /// one is open or still on its way back to its thumbnail. The image is a
-    /// sibling of the mask rather than a child, so it stays solid while the
+    /// sibling of the mask, not a child, so it stays solid while the
     /// mask underneath is still fading: a picture growing out of a thumbnail
     /// is what ties them together, and a ghost of one does not.
     pub(crate) fn render_zoomed_image(
@@ -147,7 +146,7 @@ impl ImagePreviewLayer {
         let mut elements = vec![
             FrostedLayer::new(frost)
                 // The conversation underneath is context for the image now,
-                // so clicking it dismisses the image rather than acting on
+                // so clicking it dismisses the image instead of acting on
                 // the row that happens to be under the pointer.
                 .on_click(cx.listener(|this, _, _, cx| this.preview.close_zoomed_image(cx)))
                 .into_any_element(),
@@ -179,7 +178,7 @@ impl ImagePreviewLayer {
         window: &mut Window,
         cx: &mut Context<TranscriptView>,
     ) -> Option<AnyElement> {
-        // The image element takes its size from the style rather than from the
+        // The image element takes its size from the style instead of from the
         // pixels, so the decoded frame is the only place the image's own
         // dimensions can come from.
         let frame = image.clone().use_render_image(window, cx)?.size(0);
@@ -221,7 +220,7 @@ impl ImagePreviewLayer {
                 .w(placed.size.width)
                 .h(placed.size.height)
                 // An image with nowhere to grow from fades in with the mask
-                // instead of landing on it whole.
+                // instead of appearing on it whole.
                 .when(origin.is_none(), |this| this.opacity(progress))
                 // The mask closes on click, and the image is not part of what
                 // the reader is dismissing; claiming the press keeps a click
@@ -230,8 +229,8 @@ impl ImagePreviewLayer {
                 .child(
                     img(image)
                         .size_full()
-                        // Cover throughout rather than Contain: the thumbnail
-                        // is cropped to a square, and the image lands in a
+                        // Cover throughout, not Contain: the thumbnail
+                        // is cropped to a square, and the image ends in a
                         // frame of its own shape, where Cover shows all of
                         // it. Contain would letterbox the crop on the first
                         // frame and snap it away on the last.
@@ -246,7 +245,7 @@ impl ImagePreviewLayer {
                         .top(px(-PREVIEW_CLOSE_OFFSET))
                         .right(px(-PREVIEW_CLOSE_OFFSET))
                         // The control belongs to the open image, so it arrives
-                        // with it rather than riding on the corner of a
+                        // with it instead of riding on the corner of a
                         // thumbnail-sized picture.
                         .opacity(progress)
                         .child(
@@ -283,8 +282,8 @@ fn preview_size(natural: Size<Pixels>, room: Size<Pixels>) -> Size<Pixels> {
 }
 
 /// Where the image is `progress` of the way from its thumbnail to its full
-/// size. Every edge travels in step, so the frame changes shape as it grows
-/// rather than growing first and reshaping after.
+/// size. Every edge moves in step, so the frame changes shape as it grows
+/// instead of growing first and reshaping after.
 fn preview_bounds(from: Bounds<Pixels>, to: Bounds<Pixels>, progress: f32) -> Bounds<Pixels> {
     let between = |from: Pixels, to: Pixels| from + (to - from) * progress;
 

@@ -330,7 +330,7 @@ fn register_available(
 }
 
 /// How long a fake agent has to reach its first event. The agent is a
-/// PowerShell process, so this covers interpreter startup rather than any work
+/// PowerShell process, so this covers interpreter startup instead of any work
 /// the session does, and the whole suite runs alongside every other test binary
 /// in the workspace.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -351,7 +351,7 @@ fn next_message(receiver: &Receiver<Value>, deadline: Instant) -> Option<Value> 
             // The sender lives with the reader thread feeding it, so a closed
             // channel means the agent exited and no later message can arrive.
             // Waiting out the deadline would only delay the same failure and
-            // report it as a timeout rather than as the exit it is.
+            // report it as a timeout instead of as the exit it is.
             Err(RecvTimeoutError::Disconnected) => {
                 panic!("the fake agent exited before its session became ready")
             }

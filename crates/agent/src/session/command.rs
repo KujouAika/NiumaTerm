@@ -51,7 +51,7 @@ use crate::session::view::DraftAnswers;
 use crate::session::{OperationError, SettingsOutcome};
 
 pub trait AgentCommand: Serialize + DeserializeOwned {
-    /// The name the command travels under between processes.
+    /// The name the command is sent under between processes.
     const METHOD: &'static str;
 
     type Outcome: Serialize + DeserializeOwned + Send + 'static;
@@ -59,8 +59,8 @@ pub trait AgentCommand: Serialize + DeserializeOwned {
     fn run(self, controller: &mut SessionController) -> Self::Outcome;
 }
 
-/// One image of a composed message. The bytes travel as base64, which is
-/// what a JSON message can carry.
+/// One image of a composed message. The bytes are sent as base64, because a
+/// JSON message cannot hold raw bytes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PromptImage {
     #[serde(with = "base64_bytes")]
@@ -287,7 +287,7 @@ impl AgentCommand for AdmitSlashCommand {
 
 /// The call a view in another process starts a new conversation with. It is
 /// not an [`AgentCommand`]: replacing the conversation restarts the harness
-/// process, which the session owner does rather than the controller. The
+/// process, which the session owner does instead of the controller. The
 /// outcome is `Result<(), String>`, the message of a refusal.
 pub const NEW_CONVERSATION_METHOD: &str = "new_conversation";
 
@@ -301,7 +301,7 @@ pub enum RemoteCommandError {
 }
 
 /// Run a command a view in another process sent, returning its outcome as
-/// it travels back. `stage_images` writes a prompt's images to files for a
+/// it is sent back. `stage_images` writes a prompt's images to files for a
 /// harness that reads them by path, and returns the paths.
 pub fn run_remote(
     method: &str,

@@ -663,9 +663,9 @@ const EXAMPLE_CONFIG_PATH: &str = "../../assets/config-example.toml";
 /// here instead of leaving the example advertising settings that no longer
 /// exist. Run with `--nocapture` to print the replacement content.
 ///
-/// The shipped file records the Windows defaults — shell, editor and font
-/// values differ per platform — so only that host can hold it to them. A key
-/// added anywhere still fails there, which is what this guards.
+/// The shipped file records the Windows defaults (shell, editor and font
+/// values differ per platform), so only that host can hold it to them. A key
+/// added anywhere still fails there, and this test guards exactly that.
 #[cfg(target_os = "windows")]
 #[test]
 fn example_config_matches_the_serialized_defaults() {

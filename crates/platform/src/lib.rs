@@ -108,7 +108,7 @@ pub fn build_hook_command(executable: &str, argument: &str) -> io::Result<String
     platform::build_hook_command(executable, argument)
 }
 
-/// Whether `command` — a hook entry read back from an agent's config —
+/// Whether `command` (a hook entry read back from an agent's config)
 /// invokes the binary identified by `marker`.
 ///
 /// Kept alongside the builder because a platform that encodes the command
@@ -147,7 +147,7 @@ pub fn default_shell_name() -> &'static str {
 
 /// How a shell must be launched so it evaluates the bundled OSC 133 prompt
 /// integration: startup arguments, child-only environment, or both. Which of
-/// the two carries it is the platform's business — PowerShell takes the script
+/// the two holds it is the platform's business: PowerShell takes the script
 /// as an argument, zsh is reached through `ZDOTDIR`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptIntegration {
@@ -156,7 +156,7 @@ pub struct PromptIntegration {
 
     /// Bytes to place in the terminal's input queue before the shell starts,
     /// for a platform that hands the shell its integration by typing at it
-    /// rather than through a startup file the shell would discover. The PTY
+    /// instead of through a startup file the shell would discover. The PTY
     /// hides them: the launch turns the shell's line editor off so the line
     /// discipline governs the echo, and the terminal clears `ECHO` for exactly
     /// this one write.
@@ -169,7 +169,7 @@ pub struct PromptIntegration {
 ///
 /// A platform that has to materialize files does so on the first call, so a
 /// `Some` answer means the launch is ready to go; a failure there reports
-/// `None` rather than a launch that would drop the user's own configuration.
+/// `None`, not a launch that would drop the user's own configuration.
 pub fn prompt_integration(shell: Option<&str>) -> Option<PromptIntegration> {
     platform::prompt_integration(shell)
 }

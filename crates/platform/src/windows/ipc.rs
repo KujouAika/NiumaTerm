@@ -36,8 +36,8 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
-/// Try to become the primary instance. The mutex handle intentionally lives
-/// until process exit.
+/// Try to become the primary instance. The mutex handle is kept open until
+/// process exit, so the name stays claimed for the whole run.
 pub fn try_become_primary(testing: bool) -> bool {
     let name = wide(mutex_name(testing));
 

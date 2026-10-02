@@ -24,7 +24,7 @@ use crate::event::ElementState;
 use crate::keyboard::{Key, KeyLocation, ModifiersState, NamedKey};
 
 bitflags! {
-    /// Terminal modes that affect key encoding, lifted off `nmt_terminal::vt_modes::Mode`
+    /// Terminal modes that affect key encoding, copied from `nmt_terminal::vt_modes::Mode`
     /// so this crate stays independent of rio-backend. Each frontend derives these
     /// from its own mode source (rioterm: `Mode`; NiumaTerm: the session `vt_modes` atomic).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +38,7 @@ bitflags! {
     }
 }
 
-/// Neutral, frontend-agnostic view of a keystroke — exactly the fields the
+/// Neutral, frontend-agnostic view of a keystroke: exactly the fields the
 /// encoder reads. Frontends fill it from their own key events.
 #[derive(Debug, Clone)]
 pub struct KeyInput {
@@ -158,7 +158,7 @@ fn build_key_sequence(key: &KeyInput, mods: ModifiersState, flags: KeyEncodeFlag
 /// modifier folding) through a single frontend-independent path.
 ///
 /// The caller must not invoke this while a frontend mode consumes the key (vi motion,
-/// search input, hint selection, IME preedit) — those gates stay caller-side. It is
+/// search input, hint selection, IME preedit); those gates stay caller-side. It is
 /// for the press path only; key-release (kitty event types) calls
 /// [`build_key_sequence`] directly.
 fn encode_terminal_key(
@@ -283,7 +283,7 @@ fn named_key_escape(
         }
     }
 
-    // F1–F4 SS3 — no modifiers, not kitty (gated ~ALL_KEYS ~DISAMBIGUATE).
+    // F1–F4 SS3: no modifiers, not kitty (gated ~ALL_KEYS ~DISAMBIGUATE).
     if empty && !all_keys && !disamb && !report_repeat {
         let b: &[u8] = match named {
             NamedKey::F1 => b"\x1bOP",
@@ -328,7 +328,7 @@ fn named_key_escape(
 }
 
 /// Whether the keystroke should be encoded as an escape sequence (vs delivered as
-/// plain text by the caller). Lifted verbatim from rioterm's `should_build_sequence`.
+/// plain text by the caller). Copied verbatim from rioterm's `should_build_sequence`.
 fn should_build_sequence(
     input: &KeyInput,
     text: &str,

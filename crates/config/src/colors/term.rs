@@ -12,7 +12,7 @@ pub const DIM_FACTOR: f32 = 0.66;
 /// > The 256 color table and its partitioning
 ///
 /// The color range of a 256 color terminal consists of 4 parts,
-/// often 5, in which case you actually get 258 colors:
+/// often 5, in which case you get 258 colors:
 ///
 /// Color numbers 0 to 7 are the default terminal colors, the actual RGB
 /// value of which is not standardized and can often be configured.

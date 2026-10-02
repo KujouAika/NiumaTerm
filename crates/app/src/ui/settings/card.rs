@@ -64,8 +64,8 @@ pub(super) fn card_text_input(
     input
 }
 
-/// The hover hint that carries a label's description. `owner` names the label
-/// it belongs to: the hint carries hover state, so it needs an id of its own,
+/// The hover hint that shows a label's description. `owner` names the label
+/// it belongs to: the hint keeps hover state, so it needs an id of its own,
 /// and two hints sharing one would share that state.
 pub(super) fn description_hint(owner: &str, description: SharedString, cx: &App) -> Stateful<Div> {
     gpui::div()
@@ -80,7 +80,7 @@ pub(super) fn description_hint(owner: &str, description: SharedString, cx: &App)
 /// on the right, and an optional description behind a hover hint beside the
 /// title. An empty description omits the hint entirely.
 ///
-/// The description hides behind the hint rather than sitting under the title
+/// The description hides behind the hint instead of appearing under the title
 /// so that every row is one line tall: the rows stay scannable, the control
 /// column keeps one baseline, and a row explaining itself at length costs the
 /// page no more height than one that needs no explanation. This is the shape

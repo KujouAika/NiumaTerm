@@ -40,7 +40,7 @@ pub(crate) fn conversation_title_request(
 /// The compact title a conversation shows until its provider generates one,
 /// derived from the opening prompt. Whitespace runs collapse to single
 /// spaces, at most `max_words` words are kept, and longer text is cut with an
-/// ellipsis. A prompt that opens with `/` names a command rather than a
+/// ellipsis. A prompt that opens with `/` names a command, not a
 /// subject, so it yields no title.
 pub(crate) fn provisional_title(text: &str, max_words: Option<usize>) -> Option<String> {
     let mut words = text.split_whitespace();
@@ -67,7 +67,7 @@ pub(crate) fn provisional_title(text: &str, max_words: Option<usize>) -> Option<
 
     let mut truncated: String = prefix.chars().take(PROVISIONAL_TITLE_CHARS - 1).collect();
 
-    // A cut that lands after a space would render as "word …"; trimming
+    // A cut that falls after a space would render as "word …"; trimming
     // keeps the ellipsis attached to the last kept word.
     truncated.truncate(truncated.trim_end().len());
 

@@ -1,7 +1,7 @@
 //! Differential harness: does Windows ConPTY pass a kitty graphics APC
 //! (`ESC _ G ... ESC \`) through to the conout stream, or strip it the way it
 //! strips OSC 111?  rio reads ConPTY's *re-rendered* output, so if the APC does
-//! not survive here, rio's engine can never see the image — and the "no image"
+//! not survive here, rio's engine can never see the image, and the "no image"
 //! bug is a ConPTY limitation, not a rio bug.
 //!
 //! Run with:  cargo test -p teletypewriter --test conpty_passthrough -- --nocapture
@@ -192,7 +192,7 @@ Start-Sleep -Milliseconds 300
 /// kitty APC), the engine never sees the marks and prompt-row hiding is
 /// impossible on Windows without a rio-side OSC sniffer upstream of the engine.
 /// If the marks survive, the engine (with upstream work) could tag prompt rows
-/// and the dock could hide them. Characterization only — it records the answer
+/// and the dock could hide them. Characterization only: it records the answer
 /// without asserting an unknown; flip to a hard assert once we depend on it.
 #[test]
 fn conpty_osc133_prompt_marks_roundtrip() {
@@ -218,7 +218,7 @@ Start-Sleep -Milliseconds 300
 
     let saw_marker = find_subslice(&out, b"MARKER_DONE").is_some();
 
-    // ESC ] 1 3 3  — the OSC 133 introducer.
+    // ESC ] 1 3 3: the OSC 133 introducer.
     let saw_osc133 = find_subslice(&out, &[0x1b, 0x5d, 0x31, 0x33, 0x33]).is_some();
 
     eprintln!(
@@ -261,7 +261,7 @@ Start-Sleep -Milliseconds 300
 /// images and live kitty graphics rendering is possible on Windows.
 ///
 /// This used to be an ignored negative canary asserting the APC was *stripped*.
-/// The bundled ConPTY now round-trips it, so we assert the positive contract and
+/// The bundled ConPTY now round-trips it, so we assert that it survives and
 /// separately check the trailing marker (pipe/child health) and the `ESC _ G`
 /// introducer so a failure distinguishes a broken pipe from APC stripping.
 #[test]
@@ -296,7 +296,7 @@ Start-Sleep -Milliseconds 300
         "child never produced MARKER_DONE — pipe/child broken, test inconclusive"
     );
 
-    // The contract: the kitty graphics APC introducer survives ConPTY. If this
+    // Expected: the kitty graphics APC introducer survives ConPTY. If this
     // fails while the marker arrived, ConPTY regressed to stripping the APC and
     // live kitty graphics can no longer be fed through on Windows.
     assert!(

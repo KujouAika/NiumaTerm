@@ -143,7 +143,7 @@ fn matching_sessions(key: &InstallationKey, cx: &mut App) -> Vec<Entity<AgentSes
         .collect()
 }
 
-/// A tab whose harness has no vendor-managed installation carries no key, so it
+/// A tab whose harness has no vendor-managed installation has no key, so it
 /// matches no target and is never suspended by another harness's update.
 pub(super) fn affected_installation_indices(
     target: &InstallationKey,

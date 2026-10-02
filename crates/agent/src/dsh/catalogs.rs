@@ -5,8 +5,8 @@
 //!
 //! A preset names the plugins a conversation's agent is built from, so it
 //! decides what tools that conversation can ever call. The roster belongs to
-//! the deployment rather than to this application, which is why it is read
-//! rather than written here.
+//! the deployment, not to this application, so it is only read here, never
+//! written.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,9 +24,9 @@ use crate::dsh::api::{ApiClient, CallError};
 
 /// Read an `agentPreset.list` result.
 ///
-/// A preset that cannot compose a session stays on the harness's own roster —
-/// its directory still occupies the id, and the harness's authoring surface has
-/// to be able to show and delete it — but this picker only selects, so offering
+/// A preset that cannot compose a session stays on the harness's own roster
+/// (its directory still occupies the id, and the harness's authoring surface has
+/// to be able to show and delete it), but this picker only selects, so offering
 /// one here would trade a visible reason now for a failed conversation later.
 pub(crate) fn preset_catalog(value: &Value) -> Vec<AgentPreset> {
     value
@@ -50,7 +50,7 @@ pub(crate) fn preset_catalog(value: &Value) -> Vec<AgentPreset> {
 
 /// What the preset is for, prefixed for a locally authored one.
 ///
-/// Trust is worth stating because a `user` preset is exactly as privileged as
+/// Trust is stated because a `user` preset is exactly as privileged as
 /// the plugins it names: it was not vetted by the deployment, and a row that
 /// presented it like a shipped one would imply it was.
 fn description(preset: &Value) -> Option<String> {
@@ -72,13 +72,13 @@ fn description(preset: &Value) -> Option<String> {
 // The child agents a conversation spawned.
 //
 // The harness keeps children as sessions of their own and answers for the
-// direct level only, so a row describes one child rather than a subtree. Both
+// direct level only, so a row describes one child, not a subtree. Both
 // reads are pure functions over a unary result; the session owns the calls.
 
 /// Read a `subagent.list` result into the snapshot the panel renders.
 ///
 /// A diagnostic row names a child the harness could not read; it is dropped
-/// rather than shown, because nothing about it can be opened and a row that
+/// instead of shown, because nothing about it can be opened and a row that
 /// only reports its own unreadability is noise beside working children.
 pub(crate) fn subagent_snapshot(
     value: &Value,
@@ -113,7 +113,7 @@ fn task_summary(
 
     // The harness samples whether the child's driver is running; it
     // reports no failure state, so an inactive child reads as finished
-    // rather than as one whose outcome is known.
+    // instead of as one whose outcome is known.
     let running = entry["activity"].as_str() == Some("running");
 
     Some(BackgroundTaskSummary {
@@ -207,7 +207,7 @@ pub(crate) const COMMAND_LIST_METHOD: &str = "commands/list";
 
 /// Gateway endpoint running one command line.
 ///
-/// Sending the line as an ordinary prompt does not run it: the host admits a
+/// Sending the line as a normal prompt does not run it: the host admits a
 /// prompt to the agent whatever it starts with, so a slash line delivered that
 /// way reaches the model as text.
 const EXECUTE_METHOD: &str = "commands/execute";
@@ -248,9 +248,9 @@ pub(super) async fn execute_command(
 
 /// Read a `skill.list` result.
 ///
-/// A skill is invoked by writing `/name` into an ordinary prompt, which the
+/// A skill is invoked by writing `/name` into a normal prompt, which the
 /// host recognizes before the step runs; there is no invocation call, so the
-/// catalog exists to name what can be written rather than what can be called.
+/// catalog exists to name what can be written, not what can be called.
 pub(crate) fn skill_catalog(value: &Value) -> SkillCatalog {
     SkillCatalog {
         skills: value["skills"]
@@ -299,7 +299,7 @@ pub(crate) fn skill_catalog(value: &Value) -> SkillCatalog {
 /// Read a `commands/execute` result.
 ///
 /// The registry settles a command before answering, so this is the outcome
-/// rather than an acknowledgement. A name or a line the registry could not
+/// and not an acknowledgement. A name or a line the registry could not
 /// resolve produces no answer at all, which is a refusal the caller has to
 /// report itself: nothing ran and nothing will.
 ///

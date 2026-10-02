@@ -108,7 +108,7 @@ pub struct SessionRecord {
     /// The agent an agent session runs, as `host.info` names harnesses.
     pub harness: Option<String>,
 
-    /// Started from a device rather than as a tab at the host.
+    /// Started from a device instead of as a tab at the host.
     pub remote_origin: bool,
 
     /// The host workspace whose tab shows the session; none from hosts

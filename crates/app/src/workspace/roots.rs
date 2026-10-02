@@ -37,7 +37,7 @@ pub enum RootChange {
 }
 
 /// The directories one normal workspace owns. The primary directory is a
-/// separate field rather than index zero of a list so that the non-empty
+/// separate field instead of index zero of a list so that the non-empty
 /// invariant holds by construction and persistence keeps its existing `cwd`
 /// field for the primary path.
 #[derive(Clone, Debug, PartialEq, Eq)]

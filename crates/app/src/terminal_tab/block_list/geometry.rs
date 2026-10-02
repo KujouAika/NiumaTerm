@@ -3,13 +3,13 @@ use std::ops;
 use nmt_terminal::block_store::{BlockItem, BlockStore};
 
 /// Blank rows above and below each item's content: one full cell row on each
-/// side, with the separator rule on the item's top edge — so adjacent blocks
+/// side, with the separator rule on the item's top edge, so adjacent blocks
 /// read as content / blank / rule / blank / content. Compact presentation
 /// (Command Blocks off) passes `pad_rows = 0.0` through the geometry
 /// functions instead, packing rows contiguously like a classic grid.
 pub(crate) const ITEM_PAD_ROWS: f32 = 1.0;
 
-/// Row count of one item — the cached engine row count (already wrapped at
+/// Row count of one item: the cached engine row count (already wrapped at
 /// the current width; the engine reflows blocks eagerly on resize).
 pub(crate) fn item_rows(item: &BlockItem, _cols: u32) -> u32 {
     item.engine_rows().min(u32::MAX as usize) as u32
@@ -17,7 +17,7 @@ pub(crate) fn item_rows(item: &BlockItem, _cols: u32) -> u32 {
 
 /// Pixel height of one item: content rows plus `pad_rows` blank rows above
 /// and below. Empty items (empty commands never freeze, but a stale cache can
-/// briefly report 0) are invisible — no rows, no pads.
+/// briefly report 0) are invisible: no rows, no pads.
 pub(crate) fn item_px(item: &BlockItem, cols: u32, cell_h: f32, pad_rows: f32) -> f32 {
     match item_rows(item, cols) {
         0 => 0.0,

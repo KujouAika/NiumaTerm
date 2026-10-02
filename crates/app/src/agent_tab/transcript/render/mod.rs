@@ -38,7 +38,7 @@ use crate::design::status_animation_fps;
 pub(super) const TRANSCRIPT_THUMBNAIL: f32 = 56.0;
 
 /// Share of the pane the conversation column takes, and the margin on each
-/// side that leaves. A share rather than a fixed measure on a narrow pane,
+/// side that leaves. A share instead of a fixed measure on a narrow pane,
 /// so the column keeps a little air at its sides instead of a fixed strip
 /// eating most of the width.
 const TRANSCRIPT_COLUMN_FRACTION: f32 = 0.8;
@@ -52,7 +52,7 @@ fn transcript_column_margin() -> f32 {
 /// maximised window a share of the pane would run well past that, the eye
 /// loses the start of the next line on the return sweep, and every card,
 /// bubble and the composer would stretch with it. Held in rems so it tracks
-/// the root size the rest of the UI scales with rather than pinning a
+/// the root size the rest of the UI scales with instead of pinning a
 /// physical width.
 const TRANSCRIPT_COLUMN_MAX_REMS: f32 = 55.0;
 
@@ -65,7 +65,7 @@ const TRANSCRIPT_LOOSE_MARGIN: f32 = 40.0;
 /// With the human-friendly layout on it is the smaller of the pane share and
 /// the measure, centred in the pane. The cap sits on an inner box under the
 /// percent margin because a padding cannot express "the larger of these two
-/// margins". The inner box is a block centred by auto margins rather than a
+/// margins". The inner box is a block centred by auto margins instead of a
 /// flex item: a flex container sizes its items from their content first, and
 /// a shrink-to-fit bubble measured that way wraps its CJK prose one glyph per
 /// line. Block layout hands the box its definite width straight down.
@@ -88,8 +88,8 @@ pub(crate) fn transcript_column(body: impl IntoElement, cx: &App) -> Div {
         )
 }
 
-/// Three ranks of space, which is what makes a turn read as message / work /
-/// message rather than as one undifferentiated stack. The widest marks where
+/// Three ranks of space, so a turn reads as message / work / message
+/// instead of as one undifferentiated stack. The widest marks where
 /// one exchange ends; the middle one holds a turn's work off the prose it is
 /// interleaved with, close enough that the two still read as one answer; the
 /// tightest keeps the steps of a single run together.
@@ -98,7 +98,7 @@ const TRANSCRIPT_GROUP_GAP: f32 = 24.0;
 const TRANSCRIPT_WORK_TEXT_GAP: f32 = 12.0;
 const TRANSCRIPT_STEP_GAP: f32 = 8.0;
 
-/// How many pixels a rank of space is worth.
+/// How many pixels a rank of space spans.
 pub(super) fn gap_px(gap: RowGap) -> f32 {
     match gap {
         RowGap::Step => TRANSCRIPT_STEP_GAP,
@@ -116,16 +116,16 @@ pub(super) const TRANSCRIPT_RUN_RULE: f32 = 2.0;
 
 /// Where the conversation's own text starts inside the reading column, which
 /// every prose row and status line sets on itself. The run rule stands on
-/// that edge rather than left of it, so a run reads as part of the column
+/// that edge instead of left of it, so a run reads as part of the column
 /// instead of hanging off it.
 pub(super) const TRANSCRIPT_TEXT_INSET: f32 = 4.0;
 
 /// Leading for transcript text, as a multiple of the font size. Conversation
-/// prose is read in paragraphs rather than scanned line by line the way
+/// prose is read in paragraphs instead of scanned line by line the way
 /// terminal output is, so it is set looser than the chrome around it.
 pub(super) const TRANSCRIPT_LINE_HEIGHT: f32 = 1.6;
 
-// Rows that stand for a turn rather than for something inside one: the fold
+// Rows that stand for a turn, not for something inside one: the fold
 // that hides a finished turn's work, the summary on it, an interruption, and
 // the toggle for a workflow run.
 
@@ -235,7 +235,7 @@ pub(super) fn render_run_toggle(
 
     agent_card()
         .child(
-            // No type icon: the toggle names a count of steps rather than
+            // No type icon: the toggle names a count of steps instead of
             // being one, and its own chevron already says what it does.
             AgentDisclosureRow::new(("wl-run", run_start), label.clone())
                 .expanded(expanded)
@@ -325,7 +325,7 @@ impl RenderOnce for WorkingIndicator {
 
 /// How far into its pulse one dot is, for a cycle position shared by all of
 /// them. Each dot peaks a third of the cycle after the one before it, so the
-/// swell travels along the row rather than the three breathing together.
+/// swell moves along the row instead of the three breathing together.
 fn dot_pulse(delta: f32, index: usize) -> f32 {
     let interval = 1.0 / DOT_COUNT as f32;
     let phase = (delta - index as f32 * interval).rem_euclid(1.0);

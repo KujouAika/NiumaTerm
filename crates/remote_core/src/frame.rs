@@ -41,7 +41,7 @@ pub(crate) const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 
 pub(crate) const FLAG_MORE: u8 = 0x01;
 
-/// Stream 0 carries control messages.
+/// Stream 0 is reserved for control messages.
 pub const CONTROL_STREAM: u32 = 0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -82,7 +82,7 @@ pub struct AgentControlsState {
     pub settings: AgentTabSettings,
 }
 
-/// The thread-settings picks one agent tab is running under, carried into the
+/// The thread-settings picks one agent tab is running under, passed on to the
 /// conversations that tab opens later. All optional: `None` leaves the value
 /// the launch profile and the CLI resolve between them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -210,7 +210,7 @@ pub struct TabState {
     /// The title the tab's content last reported: the shell's OSC title or
     /// the agent conversation's name. A restored tab shows it before it is
     /// activated, so tabs that have not spawned yet stay distinguishable
-    /// instead of all carrying their profile name.
+    /// instead of all showing their profile name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 
@@ -316,7 +316,7 @@ fn decode(content: Option<&str>) -> io::Result<LocalState> {
 
 /// Save window state. The read-modify-replace cycle runs under the lock in
 /// `persistence::update`, and a file that fails to decode is left untouched
-/// rather than overwritten with what this instance happens to hold.
+/// instead of overwritten with what this instance happens to hold.
 pub fn save_windows(windows: &[WindowLocalState]) -> io::Result<()> {
     save_windows_to(&local_state_file_path(), windows)
 }

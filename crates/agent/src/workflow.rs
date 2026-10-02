@@ -1,7 +1,7 @@
 //! Backend-neutral model for a Dynamic Workflow run: the phases it moves
 //! through, the agents it fans out to, and their progress.
 //!
-//! Providers supply progress and conversations through this shared vocabulary.
+//! Providers supply progress and conversations through these shared types.
 
 use crate::chat::Item;
 
@@ -42,7 +42,7 @@ pub struct WorkflowPhase {
 
 /// One agent row. Every provider-sourced detail is optional because the
 /// progress array is provider internals: a field the provider stops sending
-/// must degrade the row rather than break the run.
+/// must degrade the row instead of breaking the run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkflowAgent {
     /// Provider order within the run; also the row's stable identity when no

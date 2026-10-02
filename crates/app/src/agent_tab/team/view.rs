@@ -1022,7 +1022,7 @@ impl Render for TeamPane {
         let surface = v_flex()
             .debug_selector(|| "team-surface".into())
             // The surface holds keyboard focus between member panes, so it
-            // needs its own node for screen readers to announce it rather than
+            // needs its own node for screen readers to announce it instead of
             // the whole window.
             .id("team-surface")
             .role(Role::Pane)

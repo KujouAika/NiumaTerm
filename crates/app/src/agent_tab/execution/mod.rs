@@ -103,14 +103,14 @@ pub struct AgentSession {
     /// running was granted.
     pub(super) active_workspace: AgentWorkspace,
 
-    /// The thread controls this tab runs under, carried from one conversation
+    /// The thread controls this tab runs under, kept from one conversation
     /// to the next one it opens. It is the tab's own state: a tab created now
     /// starts from its launch profile, and the session snapshot saves this
     /// alongside the tab so a restored one reopens on what the user picked.
     remembered: Option<ThreadSettings>,
 
     /// The saved conversation a restored tab continues. Resuming needs a
-    /// ready session, and until the replay lands the live conversation is
+    /// ready session, and until the replay arrives the live conversation is
     /// still empty, so a session snapshot taken in between falls back to this
     /// id instead of forgetting the conversation.
     restored_conversation: Option<RecoveryIdentity>,
@@ -301,7 +301,7 @@ impl SessionOwner {
         let scratch = self.scratch.clone();
 
         // Cleanup must outlive this owner, so it runs as a detached runtime
-        // task rather than work tied to the view.
+        // task instead of work tied to the view.
         nmt_platform::runtime().spawn(async move {
             if let Some(mut backend) = backend {
                 let _ = backend.shutdown(Duration::from_secs(5), true).await;
@@ -329,7 +329,7 @@ impl AgentSession {
     }
 
     /// A session that opens as a side chat of the conversation `side`
-    /// names, starting on the parent's `settings`. Every turn carries the
+    /// names, starting on the parent's `settings`. Every turn sends the
     /// full settings, so this is also what makes it inherit the parent's
     /// approval and sandbox policy. It is never named: its thread is
     /// ephemeral, and a name could neither be stored nor listed.
@@ -572,7 +572,7 @@ impl AgentSession {
 
     /// Tell the chrome when the side chat gains its first exchange or loses
     /// all of them. Clearing the conversation empties it from inside the
-    /// controller, so the check runs after every change rather than at the
+    /// controller, so the check runs after every change instead of at the
     /// few places that ask or close.
     pub(crate) fn sync_side_chat(&self, cx: &mut Context<Self>) {
         let open = self.controller.borrow().side_questions().is_open();
@@ -1269,7 +1269,7 @@ impl AgentSession {
 
         let stopping = backend.shutdown(Duration::from_secs(5), force);
 
-        // The backend travels with its shutdown so a failure can hand it back
+        // The backend moves into the shutdown task so a failure can hand it back
         // to the controller.
         let worker = nmt_platform::runtime().spawn(async move { (backend, stopping.await) });
 
@@ -1306,7 +1306,7 @@ impl AgentSession {
     }
 
     /// The outcome reaches the caller through [`Self::restoration_readiness`]:
-    /// the process now comes up on a background thread, so a failure lands
+    /// the process now comes up on a background thread, so a failure arrives
     /// after this returns.
     pub fn restore_after_update(&mut self, snapshot: &RecoverySnapshot, cx: &mut Context<Self>) {
         if self.is_closed() {
@@ -1859,7 +1859,7 @@ impl AgentSession {
     ///
     /// Runs once per session, from whichever comes first: the session becoming
     /// ready, or the view opening. The ready path is what lets a resumed
-    /// conversation surface the title-bar control at all — the view cannot be
+    /// conversation surface the title-bar control at all: the view cannot be
     /// opened before the control exists, so waiting for it would strand every
     /// run recorded before this tab opened.
     pub(crate) fn restore_workflows(&mut self, cx: &mut Context<Self>) {
@@ -1877,7 +1877,7 @@ impl AgentSession {
             cx,
             move || source.restore(cwd.as_deref(), &session_id),
             move |this, restored, cx| {
-                // A restoration that outlived its session says nothing about
+                // A restoration that outlived its session does not describe
                 // the conversation now open.
                 if this.is_closed() || !this.controller.borrow().runtime().is_current(epoch) {
                     return;

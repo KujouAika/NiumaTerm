@@ -1,4 +1,4 @@
-//! The Remote WebSocket carries independent log, control, and interaction streams.
+//! The Remote WebSocket holds independent log, control, and interaction streams.
 
 #[cfg(test)]
 #[path = "events_tests.rs"]
@@ -329,7 +329,7 @@ async fn read_message(
             .map(Some)
             .map_err(|error| error.to_string()),
         Some(Ok(Message::Close(_))) | None => Err("the harness closed the stream".to_string()),
-        // Reading queues the Ping reply; flushing sends it now rather than
+        // Reading queues the Ping reply; flushing sends it now instead of
         // with the next outgoing message, which an idle stream never has.
         Some(Ok(Message::Ping(_))) => socket
             .flush()
@@ -359,7 +359,7 @@ struct Streams {
     attempt: Option<LiveAttempt>,
 }
 
-/// The provider attempt whose tokens the assistant stream is carrying. Chunk
+/// The provider attempt whose tokens the assistant stream is delivering. Chunk
 /// frames name only the attempt, while the transcript keys rows by turn and
 /// step, which the start frame (or the reconnect baseline) announced once.
 struct LiveAttempt {
@@ -384,7 +384,7 @@ impl LiveAttempt {
         })
     }
 
-    /// The compact stream a reconnect baseline carries packs consecutive
+    /// The compact stream in a reconnect baseline packs consecutive
     /// deltas of one block into a texts array; the row shape the history
     /// replay already decodes.
     fn baseline_event(&self, record: &Value) -> Option<Value> {
@@ -591,7 +591,7 @@ impl Streams {
                 } }));
             }
             // The harness's own client takes a session's running state from
-            // these edges rather than from its log, which can leave a turn
+            // these edges instead of from its log, which can leave a turn
             // open when the turn-end record is rejected.
             Some("emit")
                 if value["event"] == "api-session/status"

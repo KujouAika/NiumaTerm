@@ -22,9 +22,9 @@ pub(crate) struct ChildAgents {
     /// copy so the right-side view never maintains a second mutable registry.
     pub background_tasks: Option<BackgroundTaskSnapshot>,
 
-    /// Each child's own conversation, accumulated here rather than in the
+    /// Each child's own conversation, accumulated here instead of in the
     /// adapter so live activity is retained once and the retention bound
-    /// applies to what is actually shown.
+    /// applies to what is shown.
     pub transcripts: HashMap<BackgroundTaskKey, ChildTranscript>,
 
     /// Claude session whose child agents were already restored from history.
@@ -66,7 +66,7 @@ impl ChildAgents {
 
     /// Take a replacement snapshot, reporting whether the activity `parent`
     /// shows changed. The chrome shows those counts, so it is told on a
-    /// change rather than on every republished snapshot.
+    /// change instead of on every republished snapshot.
     pub(crate) fn set_snapshot(
         &mut self,
         parent: Option<&BackgroundTaskKey>,

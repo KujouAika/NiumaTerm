@@ -49,8 +49,8 @@ impl Drop for KittyState {
 impl KittyState {
     /// Walk the engine's kitty-graphics placements into owned `SnapshotPlacement`s
     /// Re-points the persistent iterator at the live storage (no alloc),
-    /// then for each placement reads the scalar fields and — for non-virtual visible
-    /// placements — the viewport-relative geometry. Returns empty when graphics are
+    /// then for each placement reads the scalar fields and (for non-virtual visible
+    /// placements) the viewport-relative geometry. Returns empty when graphics are
     /// disabled or there are no placements (the common case: ~3 FFI calls).
     pub(super) fn new() -> Result<Self> {
         let mut placement_iter = ptr::null_mut();
@@ -158,7 +158,7 @@ impl KittyState {
                 )
             } != VtResult::SUCCESS
             {
-                // Off-screen (NO_VALUE) — invisible this frame, nothing to paint.
+                // Off-screen (NO_VALUE): invisible this frame, nothing to paint.
                 continue;
             }
 
@@ -204,8 +204,8 @@ impl KittyState {
     /// Enumerate a finished block's Kitty placements with **block-relative**
     /// positions: `screen_col`/`screen_row`
     /// of the returned entries are in the block's own row space (the same
-    /// rows `BlockRef::read_row_visit` reads). Requires the engine lock —
-    /// the grid-size helpers read the live terminal's cell metrics — but the
+    /// rows `BlockRef::read_row_visit` reads). Requires the engine lock
+    /// (the grid-size helpers read the live terminal's cell metrics), but the
     /// placements themselves come from the frozen storage pinned by `block`.
     /// Virtual placements and evicted pins are skipped; empty when graphics
     /// are disabled or the block has none (~2 FFI calls).
@@ -239,7 +239,7 @@ impl KittyState {
             if unsafe { ghostty_block_ref_placement_pos(block.raw, iter, &mut col, &mut row) }
                 != VtResult::SUCCESS
             {
-                // Virtual placement (unicode placeholder) — no pin to resolve.
+                // Virtual placement (unicode placeholder): no pin to resolve.
                 continue;
             }
 
@@ -315,7 +315,7 @@ impl KittyState {
                     unsafe { image_scalar::<u64>(image, VtKittyGraphicsImageData::GENERATION) };
 
                 if self.shipped_images.get(&p.image_id) == Some(&generation) {
-                    continue; // unchanged — already shipped
+                    continue; // unchanged, already shipped
                 }
 
                 let Some(data) = (unsafe { kitty_image_graphic_data(image, p.image_id) }) else {
@@ -365,7 +365,7 @@ fn placement_scalar<T: Default>(
     v
 }
 
-/// Grid size + resolved source rectangle of the current placement — the shared
+/// Grid size + resolved source rectangle of the current placement: the shared
 /// tail of every placement walk. Returns `(grid_cols, grid_rows, [sx, sy, sw, sh])`.
 fn placement_geometry(
     iter: VtKittyGraphicsPlacementIterator,

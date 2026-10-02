@@ -23,7 +23,7 @@ const PLACEHOLDER_SUFFIX: char = ']';
 
 /// One image attached to the pending message.
 pub struct Attachment<T> {
-    /// Held in the form the renderer takes, shared rather than copied: the
+    /// Held in the form the renderer takes, shared instead of copied: the
     /// strip asks for it every frame, and the encoded bytes of a screenshot
     /// are megabytes.
     pub image: T,
@@ -41,7 +41,7 @@ impl<T> Attachment<T> {
 
 /// Why a paste produced no attachment.
 pub enum AttachError {
-    /// The message already carries [`MAX_ATTACHMENTS`].
+    /// The message already has [`MAX_ATTACHMENTS`].
     Full,
     /// The clipboard's bytes could not be read as an image.
     Undecodable,
@@ -106,8 +106,8 @@ impl<T> PendingAttachments<T> {
     }
 
     /// The image a `[Image #N]` placeholder names, counting from one the way
-    /// the text reads. `None` where the number names nothing this message
-    /// carries.
+    /// the text reads. `None` where the number names nothing attached to
+    /// this message.
     fn image_for_number(&self, number: usize) -> Option<&T> {
         self.items
             .get(number.checked_sub(1)?)
@@ -115,7 +115,7 @@ impl<T> PendingAttachments<T> {
     }
 
     /// The byte range of every placeholder in `text` that names an image this
-    /// message still carries, which is what the composer draws as a link. A
+    /// message still has; the composer draws these ranges as links. A
     /// placeholder naming no attachment stays plain text: the user typed it,
     /// and it stands for nothing to open.
     pub fn placeholder_links(&self, text: &str) -> Vec<Range<usize>> {
@@ -127,8 +127,8 @@ impl<T> PendingAttachments<T> {
     }
 
     /// The image the placeholder at `range` names. The range is matched
-    /// against a fresh reading of the text rather than trusted as an offset,
-    /// so a range taken before an edit resolves to nothing rather than to
+    /// against a fresh reading of the text instead of trusted as an offset,
+    /// so a range taken before an edit resolves to nothing instead of to
     /// whatever now sits at those bytes.
     pub fn linked_image(&self, text: &str, range: Range<usize>) -> Option<&T> {
         placeholder_spans(text)
@@ -277,7 +277,7 @@ fn placeholder_spans(text: &str) -> Vec<(Range<usize>, usize)> {
 }
 
 /// The size an image is shrunk to, or `None` when it already fits. The long
-/// edge lands on the cap and the short edge is scaled by the same factor, so
+/// edge is set to the cap and the short edge is scaled by the same factor, so
 /// the shape is kept.
 fn scaled_dimensions(width: u32, height: u32) -> Option<(u32, u32)> {
     let long_edge = width.max(height);

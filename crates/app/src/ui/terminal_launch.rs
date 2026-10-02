@@ -155,7 +155,7 @@ pub(crate) fn spawn_default_pane(
                 Ok(pane) => pane,
                 Err(error) => {
                     // Even the built-in shell cannot spawn (e.g. ConPTY
-                    // unavailable) — no terminal can ever open, so tell
+                    // unavailable): no terminal can ever open, so tell
                     // the user why before exiting instead of dying with
                     // an invisible panic.
                     crate::show_startup_error_dialog(&t!(

@@ -53,7 +53,7 @@ enum Entry {
 /// Rows are addressed from the top of the scrollback, so removing history
 /// shifts later indices (`history_epoch`, and `history_rows` shrinking for
 /// removals the block store never hears about); a width change rewraps rows;
-/// the page carries colors already resolved against the theme.
+/// the page holds colors already resolved against the theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenState {
     pub revision: u64,

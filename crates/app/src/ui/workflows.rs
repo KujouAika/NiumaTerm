@@ -1,8 +1,8 @@
 //! Read-only `Workflows` view: the Dynamic Workflow runs a Claude Code session
 //! started, their phases, and the agents each one fanned out to.
 //!
-//! Workflow agents are not child agents — the provider reports them as entries
-//! inside one run rather than as tasks of their own — so they are shown here
+//! Workflow agents are not child agents (the provider reports them as entries
+//! inside one run, not as tasks of their own), so they are shown here
 //! instead of in `Background Tasks`, which stays scoped to child agents. The
 //! pane owns the run model and the refresh; this component only reads it and
 //! never drives a run.
@@ -43,7 +43,7 @@ impl WorkflowsView {
     }
 
     /// Point the view at another session. An open conversation belongs to one
-    /// session, so it closes rather than carrying over.
+    /// session, so it closes instead of staying open for the new one.
     pub(crate) fn set_target(
         &mut self,
         target: Option<WeakEntity<AgentPane>>,
@@ -432,7 +432,7 @@ impl Render for WorkflowsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The sibling `Background Tasks` panel reads in the agent's own font,
         // and the two are the same surface to a user, so both follow the agent
-        // typography rather than the app chrome's.
+        // typography, not the app chrome's.
         let settings = cx.global::<AppSettings>();
         let font_family = settings.config().appearance.agent_font_family.clone();
         let font_size = px(settings.config().appearance.agent_font_size as f32);
@@ -447,8 +447,8 @@ impl Render for WorkflowsView {
             .overflow_hidden()
             .font_family(font_family)
             .text_size(font_size)
-            // An open conversation carries its own header with the way back,
-            // so the panel title stands down rather than stacking two bars.
+            // An open conversation has its own header with the way back,
+            // so the panel title is hidden instead of stacking two bars.
             .children((!showing_conversation).then(|| {
                 h_flex()
                     .refine_style(&panel_header(cx))
@@ -483,7 +483,7 @@ fn agent_state_color(state: WorkflowAgentState, cx: &Context<WorkflowsView>) -> 
 
 /// Agents grouped by the phases the provider declared, in provider order. A
 /// run that declared no phases, or an agent naming one the run never listed,
-/// still appears — under a trailing untitled group rather than being dropped.
+/// still appears, under a trailing untitled group instead of being dropped.
 fn group_agents_by_phase(run: &WorkflowRun) -> Vec<(Option<&str>, Vec<&WorkflowAgent>)> {
     let mut sections: Vec<(Option<&str>, Vec<&WorkflowAgent>)> = Vec::new();
 

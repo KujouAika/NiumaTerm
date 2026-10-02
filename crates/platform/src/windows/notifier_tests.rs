@@ -58,7 +58,7 @@ fn windows_toast_visual_smoke() {
 
     show(&NativeNotification {
         title: "NiumaTerm visual smoke test".into(),
-        body: "This notification is intentionally not removed.".into(),
+        body: "This notification is left in place on purpose.".into(),
         activation_url: "nmt://action/activate".into(),
         tag: "visual-smoke".into(),
         group: "NiumaTerm".into(),

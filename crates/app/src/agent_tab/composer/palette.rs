@@ -134,7 +134,7 @@ impl SlashPalette {
         .detach();
     }
 
-    /// The message worth showing right now, if any.
+    /// The message to show right now, if any.
     pub(crate) fn visible_feedback(&self, commands: &CommandQueue) -> Option<&CommandFeedback> {
         self.feedback
             .as_ref()
@@ -240,7 +240,7 @@ impl SlashPalette {
     }
 
     /// The line inside the composer card reporting the latest command result
-    /// still worth showing against `commands`.
+    /// that should still show against `commands`.
     pub(crate) fn render_feedback(
         &self,
         commands: &CommandQueue,
@@ -291,9 +291,9 @@ pub(super) fn feedback_is_current(kind: CommandFeedbackKind, queue_is_empty: boo
     !(kind == CommandFeedbackKind::Queued && queue_is_empty)
 }
 
-/// Whether a message is a passing acknowledgement rather than something the
+/// Whether a message is a passing acknowledgement, not something the
 /// user still has to act on. An error stays until it is read, and a queued
-/// list describes work still waiting rather than work already accepted.
+/// list describes work still waiting, not work already accepted.
 pub(super) fn feedback_is_transient(kind: CommandFeedbackKind) -> bool {
     match kind {
         CommandFeedbackKind::Notice => true,

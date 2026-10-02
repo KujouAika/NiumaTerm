@@ -43,7 +43,7 @@ fn engine_block_items_carry_meta() {
 }
 
 /// `EngineBlocksSync` prunes items whose engine block is gone (budget
-/// eviction, oldest first — counted so list splicing stays aligned) and
+/// eviction, oldest first, counted so list splicing stays aligned) and
 /// refreshes rows + generation after an engine reflow.
 #[test]
 fn engine_blocks_sync_prunes_and_refreshes() {

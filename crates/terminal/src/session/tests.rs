@@ -102,7 +102,7 @@ fn powershell_bootstrap_is_passed_as_utf16_encoded_command() {
 }
 
 /// zsh is handed its integration by being typed at before the shell reads
-/// anything, so the launch carries the bootstrap rather than a startup file
+/// anything, so the launch includes the bootstrap instead of a startup file
 /// the shell would have to find. The configured launch command survives.
 #[cfg(unix)]
 #[test]
@@ -125,7 +125,7 @@ fn zsh_is_integrated_through_an_injected_bootstrap() {
 }
 
 /// bash is handed its integration the same way zsh is, so the same two things
-/// hold: the launch carries a bootstrap, and the configured launch command
+/// hold: the launch includes a bootstrap, and the configured launch command
 /// survives into the restorable tab state.
 #[cfg(unix)]
 #[test]
@@ -191,7 +191,7 @@ fn explicit_args_suppress_the_zsh_integration() {
 }
 
 /// Creating a session with a non-existent shell returns a structured
-/// `PtySpawn` error rather than a bare null so callers retain the failure cause.
+/// `PtySpawn` error instead of a bare null so callers retain the failure cause.
 #[test]
 fn bad_shell_returns_structured_error() {
     let config = TerminalSessionConfig {
@@ -457,9 +457,9 @@ fn block_batches_and_seq_metadata_reach_the_block_store() {
         ended_at: now,
     }));
 
-    // ...the item materializes later, at the block's finish, carrying the
+    // ...the item materializes later, at the block's finish, with the
     // complete record. The batch is staged and only flushed to the store on
-    // the read's damage wake, so nothing lands until the following
+    // the read's damage wake, so nothing arrives until the following
     // `TerminalDamaged`.
     proxy.send_event(TerminalEvent::BlockBatch(vec![BlockEvent::EngineBlock {
         seq: 1,
@@ -632,7 +632,7 @@ fn sustained_output_does_not_grow_ui_queue() {
 }
 
 /// On the UI wake, active (live generation) and frozen (block-store
-/// history) image state are both present — the read installed the generation
+/// history) image state are both present: the read installed the generation
 /// before flushing the block batch that froze the same content.
 #[test]
 fn active_and_frozen_state_coherent_at_wake() {

@@ -6,7 +6,7 @@ use std::io;
 
 /// Characters a POSIX shell passes through verbatim in an unquoted word.
 ///
-/// `~` is deliberately absent: a leading tilde is expanded by the shell, so a
+/// `~` is absent: a leading tilde is expanded by the shell, so a
 /// path that starts with one has to reach the shell quoted.
 fn is_bare_word(executable: &str) -> bool {
     executable
@@ -57,7 +57,7 @@ pub(crate) fn single_quoted(value: &str) -> String {
 
 /// Whether `command` invokes the binary identified by `marker`.
 ///
-/// A POSIX hook command always carries the executable path literally, so
+/// A POSIX hook command always holds the executable path literally, so
 /// unlike the PowerShell form there is no encoded payload to decode first.
 pub fn hook_command_contains(command: &str, marker: &str) -> bool {
     command.contains(marker)

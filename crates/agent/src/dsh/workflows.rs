@@ -1,9 +1,9 @@
 //! Workflow runs a conversation's tool started.
 //!
-//! Unlike the disk-backed producer, these arrive as ordinary session events, so
-//! this is an accumulator over the log rather than a reader of a stored record:
-//! each event carries only its own increment, and the run is what they add up
-//! to. That is also why nothing here polls — a live run reports itself.
+//! Unlike the disk-backed producer, these arrive as normal session events, so
+//! this is an accumulator over the log instead of a reader of a stored record:
+//! each event holds only its own increment, and a run is the sum of those
+//! increments. That is also why nothing here polls: a live run reports itself.
 
 use serde_json::Value;
 

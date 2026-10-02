@@ -1,7 +1,7 @@
 //! Child conversations accumulated from the sidechain stream.
 //!
 //! A child agent has a conversation of its own that the parent transcript
-//! never shows. The reducer forwards its content rather than retaining it, so
+//! never shows. The reducer forwards its content instead of retaining it, so
 //! what lives here is only what a later record needs: the items observed since
 //! the caller last drained, the tool calls still waiting for their results, and
 //! the launch instruction already published as the opening message.
@@ -29,8 +29,8 @@ pub(super) struct ChildTranscripts {
     /// in its own file and streams only the child's assistant output, so the
     /// launch block is the one place the live stream states what the child was
     /// asked to do. Older versions also replay that text as a sidechain user
-    /// record, which `repeats_launch` recognizes as the same instruction rather
-    /// than a second one.
+    /// record, which `repeats_launch` recognizes as the same instruction, not
+    /// a second one.
     launch_prompts: HashMap<String, String>,
 }
 

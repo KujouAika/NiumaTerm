@@ -220,7 +220,7 @@ fn fallback_text<'a>(event: &TerminalKey<'a>) -> Option<&'a str> {
 ///
 /// Ctrl-C is both the copy chord and the interrupt byte here, so it copies a
 /// selection when there is one and sends ETX when there is not. Ctrl-Shift-C
-/// and Ctrl-Shift-V were the chords before that: they are swallowed rather than
+/// and Ctrl-Shift-V were the chords before that: they are swallowed instead of
 /// encoded, so the habit of reaching for them does nothing instead of writing
 /// an escape sequence into the command line.
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
@@ -245,8 +245,8 @@ fn clipboard_action(event: &TerminalKey<'_>) -> Option<TerminalKeyAction> {
 ///
 /// Control keeps its terminal meaning on these platforms, so Ctrl-C is the
 /// interrupt byte and nothing else. That leaves Command-C with no byte to fall
-/// back to, which is why it carries none: with nothing selected it copies
-/// nothing rather than interrupting the running program.
+/// back to, which is why it sends none: with nothing selected it copies
+/// nothing instead of interrupting the running program.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn clipboard_action(event: &TerminalKey<'_>) -> Option<TerminalKeyAction> {
     if !event.modifiers.super_key()

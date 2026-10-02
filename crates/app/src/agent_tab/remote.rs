@@ -162,8 +162,8 @@ fn answer(
 
             publish(session, publisher, views);
 
-            // The refusal travels as a value, so the view shows the host's
-            // message rather than a transport error around it.
+            // The refusal is sent as a value, so the view shows the host's
+            // message instead of a transport error around it.
             let _ = reply.send(serde_json::to_value(outcome).map_err(|error| error.to_string()));
         }
         AgentRequest::Call { method, reply, .. } if method == NEW_CONVERSATION_METHOD => {
@@ -412,7 +412,7 @@ fn image(session: &AgentSession, params: Value) -> Result<Value, String> {
 
 /// Write a remote prompt's images where this session's composer keeps its
 /// own, for a harness that reads images by path. A failed write leaves the
-/// prompt short of paths, which such a harness refuses rather than sending
+/// prompt short of paths, which such a harness refuses instead of sending
 /// a message without its images.
 fn stage_images(route: &str, images: &[PromptImage]) -> Vec<PathBuf> {
     let dir = scratch_dir(route);

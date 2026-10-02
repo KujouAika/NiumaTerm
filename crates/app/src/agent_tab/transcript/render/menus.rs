@@ -16,7 +16,7 @@ pub(crate) fn copy_entry_menu(
 ) -> impl Fn(ModernMenu, &mut Window, &mut App) -> ModernMenu + 'static {
     move |menu, _, cx| {
         // Full transcript payloads can be very large. Resolve and clone the
-        // text only after a right click opens the menu, keeping ordinary
+        // text only after a right click opens the menu, keeping regular
         // list layout independent of the hidden message size.
         let copy_text = view
             .read_with(cx, |view, _| {

@@ -43,8 +43,8 @@ impl PlatformStyle for MacOs {
         Some((TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_HEIGHT) / 2.0);
 
     /// The three window buttons and their spacing occupy the leading edge.
-    /// The zoom button's edge carries no ink margin, so the first frame
-    /// starts where its glyph lands the glyph spacing past that edge.
+    /// The zoom button's edge has no ink margin, so the first frame
+    /// starts where its glyph ends up the glyph spacing past that edge.
     const TITLE_BAR_LEADING_INSET: f32 = (TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_HEIGHT) / 2.0
         + TRAFFIC_LIGHTS_WIDTH
         + TITLE_BAR_GLYPH_SPACING
@@ -65,7 +65,7 @@ impl PlatformStyle for MacOs {
     /// The last glyph keeps the glyph spacing to the sidebar's edge, as the
     /// first keeps it to the zoom button; its frame's padding and ink margin
     /// already cover part of it. The last control is always the next-busy
-    /// arrow, whose ink runs to within half a point of its box rather than
+    /// arrow, whose ink runs to within half a point of its box instead of
     /// the usual margin.
     const TITLE_BAR_CONTROLS_TRAILING_GAP: f32 =
         TITLE_BAR_GLYPH_SPACING - 0.5 - (Self::TITLE_BAR_BUTTON_SIZE - TITLE_BAR_ICON) / 2.0;

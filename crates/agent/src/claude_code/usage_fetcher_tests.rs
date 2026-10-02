@@ -3,7 +3,7 @@ use crate::claude_code::usage_fetcher::*;
 
 #[test]
 fn config_home_prefers_an_explicit_claude_config_dir() {
-    // Built through `join` rather than written out, so the expectation uses
+    // Built through `join` instead of written out, so the expectation uses
     // whatever separator the platform's `PathBuf` produces.
     let profiles: PathBuf = "profiles".into();
     let config_dir = profiles.join("claude");
@@ -169,7 +169,7 @@ fn keeps_cli_output_bounded_to_the_newest_bytes() {
     assert_eq!(output, b"new-data");
 }
 
-/// An already-cancelled request must report cancellation rather than a
+/// An already-cancelled request must report cancellation instead of a
 /// failure message: the caller restarts the first and only reports the
 /// second, and it reaches neither the network nor an interactive CLI here.
 #[test]
@@ -188,7 +188,7 @@ fn a_cancelled_request_reports_cancellation_not_failure() {
     );
 }
 
-/// The prompt as the CLI actually renders it: cursor moves carry the layout,
+/// The prompt as the CLI really renders it: cursor moves carry the layout,
 /// so stripping them leaves the words with nothing between them. Matching on
 /// the spelled-out wording finds nothing here and the session then answers the
 /// prompt's default, which declines and exits.

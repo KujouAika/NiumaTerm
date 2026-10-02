@@ -30,9 +30,9 @@ use crate::agent_tab::transcript::{TranscriptView, truncated_user_prompt};
 /// Oversized prompts (huge pastes) collapse to their head by default:
 /// a visible row re-lays-out its full text every frame, so an unbounded
 /// prompt would make every frame O(paste size). Expansion is an explicit
-/// per-row choice, and the right-click Copy always carries the full text.
+/// per-row choice, and the right-click Copy always copies the full text.
 ///
-/// `images` are the thumbnails the prompt carried, `at` is when it was sent,
+/// `images` are the thumbnails the prompt included, `at` is when it was sent,
 /// and `menu` is the row's right-click menu.
 pub(crate) fn user_prompt_row(
     index: usize,
@@ -53,7 +53,7 @@ pub(crate) fn user_prompt_row(
         _ => text.to_string(),
     };
 
-    // A prompt long enough to fold is a pasted block rather than a
+    // A prompt long enough to fold is a pasted block, not a
     // sentence, and it takes the column's whole measure. Sized to its
     // content it would instead be as wide as the longest line of whichever
     // half is on screen, so opening it would move its edges as well as its
@@ -79,15 +79,15 @@ pub(crate) fn user_prompt_row(
                 }))
         });
 
-    // The prompt fold above swaps the text inside one bubble rather than
+    // The prompt fold above swaps the text inside one bubble instead of
     // opening a block below it, so it takes no entrance of its own: fading
     // it in would fade the half of the prompt that was already on screen.
-    // Its toggle still pins the reading position, which is what a paste
-    // long enough to fold actually needs.
+    // Its toggle still pins the reading position, and a paste long enough
+    // to fold needs that.
     let annotations_reveal = disclosures.progress(RevealKey::Annotation(index), Instant::now());
 
     // The quotations open a rounded bubble, and a clip box is a rectangle,
-    // so they fade in place rather than growing by height: squaring off
+    // so they fade in place instead of growing by height: squaring off
     // the corner the bubble is known by would cost more than the height
     // ramp buys on a block this size. The card is shaped for as long as
     // they are on screen and the wording answers the click at once.
@@ -153,7 +153,7 @@ pub(crate) fn user_prompt_row(
                     // A second bubble in the prompt's own language: same
                     // fill, same corner, same edge inset, quieter text.
                     // Its padding and inherited text size come from the
-                    // bubble rather than from a button size, because the
+                    // bubble instead of from a button size, because the
                     // transcript's text size is a setting and a control
                     // with a fixed height would stop matching the bubble
                     // below it as soon as that setting moves.
@@ -212,7 +212,7 @@ pub(crate) fn user_prompt_row(
         .rounded_tr(px(USER_BUBBLE_RADIUS))
         .rounded_bl(px(USER_BUBBLE_RADIUS))
         // The one square-ish corner faces the conversation the prompt was
-        // sent into, which is what marks the bubble as this side of it.
+        // sent into, and so marks the bubble as this side of it.
         .rounded_br(px(USER_BUBBLE_TAIL_RADIUS))
         .bg(cx.theme().muted)
         // Plain, not markdown: the prompt is user-authored text and
@@ -234,12 +234,12 @@ pub(crate) fn user_prompt_row(
             v_flex()
                 // Both bubbles size to their own content and end on this
                 // column's trailing edge, so the cap that keeps a prompt
-                // off the full width lives here rather than on either. The
+                // off the full width is set here instead of on either. The
                 // row above is `w_full`, so the fraction has a definite
                 // width to resolve against and tracks the pane.
                 //
-                // A foldable prompt takes that measure as its width rather
-                // than as a ceiling: a bubble asking for the full width of
+                // A foldable prompt takes that measure as its width, not
+                // as a ceiling: a bubble asking for the full width of
                 // a shrink-to-fit column would still be sized by its own
                 // longest line, since a percentage contributes nothing to
                 // what a column asks for.
@@ -256,7 +256,7 @@ pub(crate) fn user_prompt_row(
         .into_any_element()
 }
 
-/// The images a message carried, under its text. A reader who scrolls back
+/// The images a message included, under its text. A reader who scrolls back
 /// should see what was sent, not the placeholder that stood in for it while
 /// the message was being written.
 fn entry_images(
@@ -275,7 +275,7 @@ fn entry_images(
             .flex_wrap()
             .justify_end()
             .children(images.into_iter().enumerate().map(|(position, image)| {
-                // A click carries the pointer's position, not the
+                // A click reports the pointer's position, not the
                 // thumbnail's; the bounds the layout gave it are kept from
                 // the prepaint that precedes the click, so the preview
                 // knows where to grow from.
@@ -292,7 +292,7 @@ fn entry_images(
                     .overflow_hidden()
                     .border_1()
                     .border_color(cx.theme().border)
-                    // Unique across rows: a row carries at most
+                    // Unique across rows: a row holds at most
                     // `MAX_ATTACHMENTS` images, so its band cannot overlap
                     // the next row's.
                     .id(("entry-image", index * MAX_ATTACHMENTS + position))

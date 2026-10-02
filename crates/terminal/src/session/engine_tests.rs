@@ -398,7 +398,7 @@ fn answer_all(
 }
 
 /// New output bumps the revision, which misses the page cache. Painting keeps
-/// the previous page for those rows until the fresh read lands; exact text
+/// the previous page for those rows until the fresh read arrives; exact text
 /// reads stay pending; removing history drops the retained page.
 #[test]
 fn display_page_outlives_its_revision_until_history_is_removed() {
@@ -452,7 +452,7 @@ fn display_page_outlives_its_revision_until_history_is_removed() {
     assert!(session.screen_page_for_display(&third, 0).is_none());
 }
 
-/// A retained page carries the width it was wrapped at and colors resolved
+/// A retained page records the width it was wrapped at and colors resolved
 /// against the theme of its time, so either change discards it.
 #[test]
 fn display_page_drops_after_reflow_or_theme_change() {

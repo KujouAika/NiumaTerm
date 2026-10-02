@@ -60,7 +60,7 @@ pub enum PauseReason {
 
 impl PauseReason {
     /// Whether the user's explicit Continue clears this pause. These record
-    /// something the user has now seen or a dispatch problem worth retrying;
+    /// something the user has now seen or a retryable dispatch problem;
     /// the rest wait for their own condition (a member returning, an answer,
     /// an uncertain reply settling) or for a dedicated action (adding turns,
     /// skipping or finishing past a failure).

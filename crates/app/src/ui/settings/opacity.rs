@@ -24,7 +24,7 @@ pub(super) fn effective_surface_background_opacity(
 /// The backdrop in effect. macOS has no DWM materials and always draws the
 /// window opaque, so text and chrome keep the same contrast whatever sits
 /// behind the window. Pinning `Off` there also leaves the opacity slider inert
-/// (`effective_background_opacity` returns full opacity), so a value carried
+/// (`effective_background_opacity` returns full opacity), so a value copied
 /// over from a Windows config cannot change a Mac window.
 pub(super) fn window_backdrop(cx: &App) -> WindowBackdrop {
     if cfg!(target_os = "macos") {

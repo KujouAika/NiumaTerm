@@ -37,9 +37,9 @@ pub(crate) fn composer_panel_slot(panel: Div) -> Div {
         .child(panel)
 }
 
-/// The strip above the input that carries what the composer has to say
+/// The strip above the input that holds what the composer has to say
 /// beside the message: command acknowledgements, errors, and the prompts
-/// queued behind a running turn. Drawn as its own panel rather than inside
+/// queued behind a running turn. Drawn as its own panel instead of inside
 /// the card, so the card stays the message and its controls, and the strip
 /// comes and goes without moving the input. `None` when there is nothing to
 /// say, so the card sits flush against what is above it.
@@ -60,7 +60,7 @@ pub(crate) fn composer_notice_panel(notices: Vec<AnyElement>, cx: &App) -> Optio
     )
 }
 
-/// Ordinary and Team conversations share the input card so font and spacing
+/// Regular and Team conversations share the input card so font and spacing
 /// changes stay aligned with the transcript in both views.
 pub(crate) fn composer_card(cx: &App) -> Div {
     v_flex()

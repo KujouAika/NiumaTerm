@@ -71,7 +71,7 @@ impl<M> TranscriptContent<M> {
 
     /// Append live or restored content, preserving duplicate IDs in arrival
     /// order. Different item kinds may share an ID; updates select the first
-    /// compatible entry rather than assuming IDs are unique across kinds.
+    /// compatible entry instead of assuming IDs are unique across kinds.
     pub fn append(&mut self, entry: TranscriptEntry<M>) -> usize {
         let index = self.entries.len();
 
@@ -234,7 +234,7 @@ impl<M> TranscriptContent<M> {
 }
 
 /// Tool calls, file changes, and reasoning are work steps; conversation text and
-/// context compactions describe the conversation rather than another action.
+/// context compactions describe the conversation, not another action.
 pub fn is_work_item(item: &Item) -> bool {
     matches!(
         item,

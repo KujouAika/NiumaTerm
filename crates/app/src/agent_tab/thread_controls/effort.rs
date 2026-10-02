@@ -3,7 +3,7 @@
 //!
 //! Levels are named differently by each harness and there are more of them
 //! than a row has width for, so the control reads as a gauge and opens into
-//! the list rather than showing every step inline.
+//! the list instead of showing every step inline.
 
 use gpui::prelude::*;
 use gpui::{
@@ -31,7 +31,7 @@ use crate::agent_tab::thread_controls::{
 pub(super) struct EffortGaugeIcon(pub(super) usize);
 
 /// Which face a level is drawn on. Levels are counted from one, so the
-/// cheapest still moves the needle off the empty face — that face is reserved
+/// cheapest still moves the needle off the empty face; that face is reserved
 /// for a session whose level has not been reported, which Claude never does
 /// until the user picks one.
 pub(crate) fn effort_gauge_step(level: Option<usize>, stops: usize) -> usize {
@@ -62,11 +62,11 @@ pub(super) fn effort_levels(kind: AgentKind) -> Vec<(String, String)> {
 
 /// Effort as a small panel instead of a menu: the levels are one ordered
 /// axis from cheapest to most thorough, which a list of names does not
-/// show. The track carries a stop per level and names both ends, so which
+/// show. The track has a stop per level and names both ends, so which
 /// way is "more" needs no explaining.
 ///
 /// A press starts a drag the thumb follows, and the release commits the
-/// stop it ends on. Committing on release rather than on every stop the
+/// stop it ends on. Committing on release instead of on every stop the
 /// pointer crosses is what keeps one drag across the track from applying
 /// every level between, which for Claude would send an `/effort` command
 /// per stop.
@@ -91,8 +91,8 @@ pub(super) fn effort_panel(
         .unwrap_or_else(|| "-".to_string());
 
     // Claude never reports the level its session is on, so the label can
-    // name a level that is not one of the stops. The track then carries no
-    // thumb rather than pointing at a stop the session may not be on.
+    // name a level that is not one of the stops. The track then shows no
+    // thumb instead of pointing at a stop the session may not be on.
     let selected = current
         .as_ref()
         .and_then(|value| options.iter().position(|(option, _)| option == value));
@@ -130,8 +130,8 @@ pub(super) fn effort_panel(
             let stops = options.len().max(1);
             let width = relative(1.0 / stops as f32);
 
-            // While a drag is in flight the thumb sits where the pointer
-            // is rather than where the session is.
+            // While a drag is in flight the thumb is drawn where the pointer
+            // is, not where the session is.
             let thumb = pane.read(cx).effort_drag.or(selected);
 
             v_flex()
@@ -171,7 +171,7 @@ pub(super) fn effort_panel(
                         .rounded_full()
                         .bg(cx.theme().muted)
                         // A release away from the stops ends the drag
-                        // without choosing, rather than parking the thumb
+                        // without choosing, instead of parking the thumb
                         // on a level the session is not on.
                         .on_mouse_up_out(MouseButton::Left, {
                             let pane = pane.clone();
@@ -198,7 +198,7 @@ pub(super) fn effort_panel(
                                 .left(relative(index as f32 / stops as f32))
                                 .w(width)
                                 .rounded_full()
-                                // The theme's background carries the
+                                // The theme's background holds the
                                 // window translucency, which the Mica
                                 // materials drive to zero; the thumb would
                                 // then be nothing but its own shadow. It
@@ -245,7 +245,7 @@ pub(super) fn effort_panel(
                                         }
                                     })
                                     // The panel stays open on release: a
-                                    // level is worth comparing against
+                                    // level is best judged against
                                     // its neighbours, and closing on the
                                     // first pick would make trying two of
                                     // them two round trips.

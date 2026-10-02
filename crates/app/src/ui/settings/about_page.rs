@@ -115,7 +115,7 @@ fn update_check_item() -> SettingItem {
             .on_click(|_, _, cx: &mut App| update::check(cx));
 
         // The channel resolved a specific release, so the link goes to that
-        // one rather than to the list the user would have to find it in. It
+        // one instead of to the list the user would have to find it in. It
         // stays available beside the install button: a package that cannot be
         // installed here can still be downloaded by hand.
         let open = status.release().map(|release| {

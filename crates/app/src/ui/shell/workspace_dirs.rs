@@ -55,8 +55,8 @@ fn resolve_directory(path: path::PathBuf) -> Resolved {
 }
 
 /// Draft directory list behind the workspace-directory dialog. Owning the
-/// draft rather than mutating the workspace directly is what lets Cancel leave
-/// a running workspace untouched.
+/// draft instead of mutating the workspace directly lets Cancel leave a
+/// running workspace untouched.
 pub(crate) struct WorkspaceDirsEditor {
     /// `None` while a workspace being created has no directory yet, which the
     /// non-empty [`WorkspaceRoots`] invariant cannot express.

@@ -15,7 +15,7 @@ use crate::agent_tab::transcript::disclosure_row::{
 use crate::agent_tab::transcript::render::menus::copy_entry_menu;
 use crate::agent_tab::view::progress_panel::task_row;
 
-/// A snapshot of the task list. The heading carries the tally, the body the
+/// A snapshot of the task list. The heading shows the tally, the body the
 /// checklist drawn the way the progress panel draws it, so the list reads the
 /// same above the composer and in the stream.
 pub(crate) fn render_task_list_row(

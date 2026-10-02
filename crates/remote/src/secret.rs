@@ -1,6 +1,6 @@
 //! Protects the device private key at rest. Whoever reads that key can run
 //! commands on every host that trusts the device, so it is sealed to the
-//! current OS user rather than with a key compiled into the binary: DPAPI on
+//! current OS user instead of with a key compiled into the binary: DPAPI on
 //! Windows, a Keychain item on macOS and iOS.
 
 use std::io;
@@ -237,7 +237,7 @@ fn add_sealing_key() -> io::Result<Vec<u8>> {
         .set_account_name(KEYCHAIN_ACCOUNT)
         .set_label("NiumaTerm remote sessions");
 
-    // Add-only rather than add-or-update: another NiumaTerm process that
+    // Add-only instead of add-or-update: another NiumaTerm process that
     // created the item first may already have sealed files with it, and
     // overwriting its key would leave those files unreadable.
     match options.add() {

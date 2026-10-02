@@ -98,7 +98,7 @@ fn cache_serves_stale_frame_until_rebuilt() {
     assert!(cache.needs_rebuild(), "invalidation forces a rebuild");
     assert!(
         cache.reusable_frame().is_some(),
-        "ordinary invalidation keeps the frame eligible for line reuse"
+        "a plain invalidation keeps the frame eligible for line reuse"
     );
     assert_eq!(
         first_line(&cache.current().unwrap()),
@@ -389,7 +389,7 @@ fn bold_toggle_changes_shape_cache_key() {
 }
 
 /// Run `vt` through the engine, mirror it into a `RenderBuffer`, and build a live
-/// generation map from the shipped image deltas — the same inputs frame extraction
+/// generation map from the shipped image deltas: the same inputs frame extraction
 /// sees at runtime.
 fn buf_and_generations(cols: u16, rows: u16, vt: &[u8]) -> (RenderBuffer, GenerationMap) {
     let mut engine = GhosttyTerminal::new(cols, rows, 100).unwrap();
@@ -415,20 +415,20 @@ fn buf_and_generations(cols: u16, rows: u16, vt: &[u8]) -> (RenderBuffer, Genera
 }
 
 #[test]
-fn extracts_ordinary_placement_with_source_and_z() {
+fn extracts_overlay_placement_with_source_and_z() {
     let (buf, generations) =
         buf_and_generations(20, 5, b"\x1b_Ga=T,f=32,s=1,v=1,i=1,p=9;/wAA/w==\x1b\\");
 
     let images = extract_frame_images(&buf, &generations);
 
-    assert_eq!(images.len(), 1, "one ordinary image");
+    assert_eq!(images.len(), 1, "one overlay image");
 
     let img = &images[0];
 
     assert_eq!(img.z_layer(), ZLayer::AboveText, "z=0 paints above text");
 
     match img.kind {
-        FrameImageKind::Ordinary {
+        FrameImageKind::Overlay {
             viewport_col,
             viewport_row,
             source,
@@ -437,7 +437,7 @@ fn extracts_ordinary_placement_with_source_and_z() {
             assert_eq!((viewport_col, viewport_row), (0, 0));
             assert_eq!(source, [0.0, 0.0, 1.0, 1.0], "full-image source");
         }
-        _ => panic!("expected ordinary"),
+        _ => panic!("expected overlay"),
     }
 }
 

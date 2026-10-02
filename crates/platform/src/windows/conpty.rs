@@ -86,7 +86,7 @@ impl ConptyApi {
     /// ships it as `OpenConsoleProxy.dll` (which spawns `OpenConsole.exe`), older
     /// WT as `conpty.dll`. This newer ConPTY fully implements the resize quirk
     /// (no full-buffer repaint on resize), so scrollback survives a window
-    /// resize — the in-box system ConPTY does not. Both are searched in PATH and
+    /// resize; the in-box system ConPTY does not. Both are searched in PATH and
     /// the NiumaTerm executable's directory.
     fn load_conpty() -> Option<Self> {
         type LoadedFn = unsafe extern "system" fn() -> isize;
@@ -242,7 +242,7 @@ pub fn new(options: PtyOptions<'_>, job: Option<KillOnCloseJob>) -> Result<Pty> 
     let mut startup_info_ex: STARTUPINFOEXW = unsafe { mem::zeroed() };
 
     // ConPTY projects this console title as OSC 0/2. Seeding it avoids exposing
-    // the executable path before an application deliberately changes its title.
+    // the executable path before an application sets its own title.
     let mut title = starting_title.map(win32_string);
 
     startup_info_ex.StartupInfo.lpTitle = title
@@ -385,7 +385,7 @@ fn build_environment_block(overrides: &[(String, String)]) -> Vec<u16> {
     values.push(("COLORTERM".into(), "truecolor".into()));
 
     // TERM_FEATURES=P advertises OSC 9;4 so progress-aware tools can distinguish a
-    // transient status line from ordinary output instead of relying on CR heuristics.
+    // transient status line from regular output instead of relying on CR heuristics.
     let mut term_features = env::var("TERM_FEATURES").unwrap_or_default();
 
     if !term_features.contains('P') {

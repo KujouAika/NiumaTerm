@@ -30,7 +30,7 @@ pub fn path_identity(path: &Path) -> Vec<String> {
 
 /// A stable component spelling used by persisted directory keys.
 /// Root components and ASCII-only folding retain existing stored keys;
-/// this representation is intentionally distinct from component comparison.
+/// this representation stays distinct from component comparison.
 pub fn lexical_path_spelling(path: &Path) -> String {
     let mut normalized = String::new();
 

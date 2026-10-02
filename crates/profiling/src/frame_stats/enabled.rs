@@ -16,7 +16,7 @@
 //!
 //! The three counters that localize a bottleneck are `vsync` (ticks the
 //! platform pump observed), `req` (redraws it asked windows for), and
-//! `frames` (frames the UI thread actually presented). `vsync` below the
+//! `frames` (frames the UI thread presented). `vsync` below the
 //! display refresh rate means the pump parked for lack of demand; `req` below
 //! `vsync` means nothing was dirty; `frames` below `req` means the UI thread
 //! could not keep up, and the `draw`/`present`/`gpu-wait` splits say which
@@ -172,7 +172,7 @@ pub fn start_timer() -> Option<Timer> {
 }
 
 /// Publish the display refresh interval so the digest can report the frame
-/// rate the machine is actually capable of, and classify long frames.
+/// rate the machine is capable of, and classify long frames.
 pub fn set_vsync_interval(interval: Duration) {
     VSYNC_INTERVAL_US.store((interval.as_micros() as u64).max(1), Ordering::Relaxed);
 }
@@ -208,8 +208,8 @@ pub fn record_request_serviced() {
     }
 }
 
-/// Records one task run on the UI thread. Reported as total occupancy rather
-/// than per-task time: many tasks individually too short to look suspicious can
+/// Records one task run on the UI thread. Reported as total occupancy, not
+/// per-task time: many tasks individually too short to look suspicious can
 /// still fill the thread and leave no room to service a frame request.
 pub fn record_main_thread_task(duration: Duration) {
     if !enabled() {

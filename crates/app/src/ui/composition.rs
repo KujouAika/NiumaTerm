@@ -39,7 +39,7 @@ pub(crate) const TOOLBAR_BUTTON_SIZE: f32 = 30.0;
 /// Edge of the icon a toolbar button centers in itself. The button's pixel
 /// size is a style override, so its icon keeps the component's medium
 /// 16px size. The sidebar sets its whole content column on the edge of this
-/// icon box, which is what lines the section heading, the tab glyphs and
+/// icon box; that lines the section heading, the tab glyphs and
 /// the status rows up under the app menu button.
 pub(crate) const TOOLBAR_ICON_SIZE: f32 = 16.0;
 
@@ -83,7 +83,7 @@ pub(crate) fn panel_header(cx: &App) -> StyleRefinement {
 }
 
 /// Sidebar-content surface shared by the right panel and Settings navigation.
-/// Callers retain ownership of size and any edge they intentionally suppress.
+/// Callers retain ownership of size and any edge they choose to suppress.
 pub(crate) fn sidebar_surface(cx: &App) -> StyleRefinement {
     StyleRefinement::default()
         .border_1()
@@ -157,7 +157,7 @@ pub(crate) enum HoverActionVisibility {
 
 /// A stable auxiliary target whose command remains attached by the owning
 /// view. Layout and visibility are explicit so narrow tab pills can reuse the
-/// glyph slot while ordinary rows retain their inline spacing.
+/// glyph slot while regular rows retain their inline spacing.
 pub(crate) fn hover_action(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -244,8 +244,8 @@ impl GitColors {
     }
 }
 
-/// One breath of a pulsing mark, and how far its opacity travels. Slow enough
-/// to read as ongoing work rather than as a blinking alert.
+/// One breath of a pulsing mark, and the range its opacity spans. Slow enough
+/// to read as ongoing work, not as a blinking alert.
 const PULSE_PERIOD: Duration = Duration::from_millis(1_600);
 
 const PULSE_MIN_OPACITY: f32 = 0.35;
@@ -333,7 +333,7 @@ impl RenderOnce for StatusMark {
                         .with_max_fps(status_animation_fps(window)),
                     |mark, delta| {
                         // One breath per period: the ramp turns at the
-                        // halfway point rather than snapping back to full.
+                        // halfway point instead of snapping back to full.
                         let phase = 1.0 - (delta * 2.0 - 1.0).abs();
 
                         mark.opacity(

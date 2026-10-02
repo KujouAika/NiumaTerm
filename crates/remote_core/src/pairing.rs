@@ -78,7 +78,7 @@ impl PairingCode {
         &self.0[..SLOT_LEN]
     }
 
-    /// The 8 symbols without a separator, as carried in a pairing link.
+    /// The 8 symbols without a separator, as encoded in a pairing link.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -101,7 +101,7 @@ impl fmt::Debug for PairingCode {
 /// A code the host displays, with the limits that keep online guessing
 /// negligible: a five minute lifetime and invalidation after three failed
 /// attempts. A successful pairing consumes the code by dropping it, so it
-/// carries no used flag of its own.
+/// has no used flag of its own.
 #[derive(Debug)]
 pub struct IssuedCode {
     code: PairingCode,
@@ -215,7 +215,7 @@ pub struct ClientPairingHandshake {
 
 impl ClientPairingHandshake {
     /// Consume msg2 and produce msg3, which proves the code to the host and
-    /// carries this device's description.
+    /// includes this device's description.
     pub fn on_msg2(mut self, msg2: &[u8]) -> Result<(ClientPairingConfirm, Vec<u8>), Error> {
         read(&mut self.noise, msg2)?;
 

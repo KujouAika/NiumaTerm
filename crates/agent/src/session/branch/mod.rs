@@ -83,8 +83,8 @@ pub struct BranchFailure {
 }
 
 /// A branch the conversation is now on. A local branch replays the copied
-/// transcript itself; a protocol branch already carries its replay in the
-/// incoming event, which is what `replayed` tells apart.
+/// transcript itself; a protocol branch already includes its replay in the
+/// incoming event, and `replayed` distinguishes the two.
 pub struct BranchCompletion {
     pub prompt: String,
     pub files: FileProgress,

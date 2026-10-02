@@ -2,7 +2,7 @@
 //! is pointed at.
 //!
 //! Only one can be open at a time, so opening one closes whichever was there,
-//! and each is retargeted as the active tab changes rather than rebuilt.
+//! and each is retargeted as the active tab changes instead of rebuilt.
 
 #[cfg(test)]
 #[path = "panels_tests.rs"]

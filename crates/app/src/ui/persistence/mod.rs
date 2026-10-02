@@ -57,7 +57,7 @@ enum SavedTab<'a> {
     /// A terminal session on a paired host, by host id and session id.
     Remote(&'a str, &'a str),
     /// A terminal. An agent kind this build does not know (a newer snapshot)
-    /// degrades to a terminal rather than losing the tab.
+    /// degrades to a terminal instead of losing the tab.
     Terminal,
 }
 
@@ -117,7 +117,7 @@ fn resolve_restored_launch(state: &mut TabState, settings: &AppSettings) {
 
 /// Resolve a restored agent tab's launch profile: the saved name when it
 /// still exists, then the first configured profile of the same kind, then
-/// the built-in profile — so the tab always reopens even after the profile
+/// the built-in profile, so the tab always reopens even after the profile
 /// it was created from was renamed or deleted.
 fn restored_agent_profile(
     name: Option<&str>,
@@ -158,7 +158,7 @@ pub(super) fn default_session(
     next_id: &mut u64,
     cx: &mut Context<AppWindow>,
 ) -> WorkspaceManager {
-    // The default (no-CLI) branch keeps spawning with no cwd — the shell
+    // The default (no-CLI) branch keeps spawning with no cwd; the shell
     // then starts in its own default directory, as before.
     let (cwd, spawn_cwd) = match initial_cwd {
         Some(dir) => (dir.clone(), Some(dir)),
@@ -363,7 +363,7 @@ pub(super) fn hibernate_tab(
 
     // The live surface still holds its device listing until it is dropped,
     // and dropping it withdraws that id later in this update, so the sleeping
-    // tab takes a fresh id rather than one about to be withdrawn.
+    // tab takes a fresh id instead of one about to be withdrawn.
     match saved_tab(&state) {
         SavedTab::Agent(kind) => {
             let shared = new_shared_agent_id();
@@ -643,7 +643,7 @@ fn restore_team_tab(
 }
 
 /// Rebuild a workspace's tabs as pending surfaces: the saved snapshot is
-/// kept per tab and no shell spawns here — `materialize_active_tab` turns
+/// kept per tab and no shell spawns here; `materialize_active_tab` turns
 /// a tab live the first time it is activated.
 fn restore_tabs(
     tabs: Vec<TabState>,

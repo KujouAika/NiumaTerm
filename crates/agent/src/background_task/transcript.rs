@@ -1,14 +1,14 @@
 //! One child agent's conversation, in the same backend-neutral items the
-//! parent conversation uses. Providers deliver these differently — Codex reads
+//! parent conversation uses. Providers deliver these differently (Codex reads
 //! a stored descendant thread in one response, Claude Code streams linked
-//! activity as it happens — so the shared piece is the accumulator, not the
+//! activity as it happens), so the shared piece is the accumulator, not the
 //! loading.
 
 use crate::chat::Item;
 
 /// Items retained per child. A long-running child can emit an unbounded
 /// number, and several children can be open across a session, so the oldest
-/// are dropped rather than letting one child grow without limit.
+/// are dropped instead of letting one child grow without limit.
 pub const MAX_TRANSCRIPT_ITEMS: usize = 512;
 
 /// How far a provider read has got: the child list of a session, or one
@@ -28,7 +28,7 @@ pub enum BackgroundTaskLoadState {
 /// One provider update to a child's conversation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackgroundTaskTranscriptUpdate {
-    /// Whether `items` is the provider's complete read rather than new
+    /// Whether `items` is the provider's complete read instead of new
     /// activity to append.
     pub replace: bool,
 

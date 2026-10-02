@@ -439,7 +439,7 @@ impl SessionController {
     }
 
     /// The transcript content, shared with the view that renders it. The
-    /// handle is lent rather than exposed so the session and its view can
+    /// handle is lent instead of exposed so the session and its view can
     /// never end up holding different conversations.
     pub fn conversation(&self) -> &Rc<RefCell<ConversationState>> {
         &self.conversation
@@ -505,7 +505,7 @@ impl SessionController {
     }
 
     /// Bring the conversation to rest before an update replaces its harness.
-    /// An open approval is cancelled rather than interrupted, because the
+    /// An open approval is cancelled instead of interrupted, because the
     /// harness is blocked on the answer and would not see an interrupt.
     /// Accepted prompts are published so none is lost with the old process.
     pub fn stop_active_work_for_update(&mut self) {
@@ -837,7 +837,7 @@ impl SessionController {
 
     /// The request a read of one member's conversation is made with, or
     /// nothing when the harness keeps no record and was asked over its
-    /// connection instead, where the answer arrives as an ordinary event.
+    /// connection instead, where the answer arrives as a normal event.
     pub fn read_workflow_agent(
         &mut self,
         task_id: &str,

@@ -2,8 +2,8 @@
 //!
 //! Both halves are pure readers over a unary result: the session list an empty
 //! tab offers, and one session's own events rebuilt into the turns the pane
-//! replays. The events are the same ones the live stream carries, so the
-//! rebuild reuses the live mapping rather than describing the vocabulary twice.
+//! replays. The events are the same ones the live stream delivers, so the
+//! rebuild reuses the live mapping instead of describing the event types twice.
 
 use std::collections::HashMap;
 use std::mem::take;
@@ -23,7 +23,7 @@ use crate::json::rfc3339_from_unix_seconds;
 /// A tab works in one project, so a session rooted elsewhere is not something
 /// it can continue. Sessions the harness reports as blank never ran a turn and
 /// have nothing to resume into, and a subagent's session belongs to its parent
-/// rather than to this list.
+/// and not to this list.
 pub(crate) fn sessions(value: &Value, cwd: Option<&str>) -> Vec<SessionSummary> {
     value["items"]
         .as_array()
@@ -38,7 +38,7 @@ pub(crate) fn sessions(value: &Value, cwd: Option<&str>) -> Vec<SessionSummary> 
         .filter_map(|item| {
             let id = item["sessionId"].as_str()?.to_string();
 
-            // The title rides the projection baseline the list row carries. A
+            // The title comes from the projection baseline in the list row. A
             // session too new to have been titled shows its own id, which is
             // still what picking it will open.
             let title = item["projections"]["values"]["title"]
@@ -70,7 +70,7 @@ pub(crate) fn sessions(value: &Value, cwd: Option<&str>) -> Vec<SessionSummary> 
 /// The search answers with matching session ids and an excerpt each, and
 /// nothing else: titles, timestamps, and the working directory a row is
 /// filtered by all belong to the list. So the two are read together and joined
-/// here, which also applies the list's own exclusions to the results — a
+/// here, which also applies the list's own exclusions to the results: a
 /// subagent's session or one rooted elsewhere is no more resumable for having
 /// matched a query.
 pub(crate) fn search_results(
@@ -86,7 +86,7 @@ pub(crate) fn search_results(
         .collect();
 
     // The search ranks its answers and the list is ordered by recency, so the
-    // rows are emitted in the search's order rather than the list's.
+    // rows are emitted in the search's order instead of the list's.
     let rows = sessions(listed, cwd);
 
     matches["items"]
@@ -123,7 +123,7 @@ pub(crate) fn replay(value: &Value) -> Vec<ReplayTurn> {
         match event["type"].as_str() {
             Some("turn/start") => {
                 // A page can begin mid-turn, and those items belong to a turn
-                // whose start is on an older page rather than to this one.
+                // whose start is on an older page, not to this one.
                 if !current.items.is_empty() || !current.generation_samples.is_empty() {
                     turns.push(take(&mut current));
                 }
@@ -208,7 +208,7 @@ pub(crate) fn replay(value: &Value) -> Vec<ReplayTurn> {
                     }
                 }
                 // Turn boundaries are read from the raw events above, and the
-                // rest of the vocabulary describes live state a replay has no
+                // other event types describe live state a replay has no
                 // moment to apply it to.
                 _ => {}
             }
@@ -241,7 +241,7 @@ pub(crate) fn fork_checkpoints(page: &Value) -> Vec<ForkCheckpoint> {
         .filter(|event| event["type"].as_str() == Some("user/message"))
         .filter_map(|event| {
             // The log records more than typed prompts under this type, and a
-            // branch is offered in front of what the person actually asked.
+            // branch is offered in front of what the person really asked.
             // The live mapping decides what counts as a typed prompt, so the
             // rule stays in one place: the log records more than the person's
             // own messages under this type. A prompt maps to exactly one item,

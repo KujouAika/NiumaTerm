@@ -1,5 +1,5 @@
 //! The transcript's row structure: which rows a conversation lays out as, in
-//! what order, and which disclosure each spliced-in row travels with.
+//! what order, and which disclosure each spliced-in row moves with.
 //!
 //! Everything here is a read of the conversation, the disclosure state and the
 //! typed edge of a streaming reply, so the structure can be rebuilt or queried
@@ -82,7 +82,7 @@ impl RowSource<'_> {
         );
 
         // A reply being typed lays out to the part let through so far, so its
-        // signature follows that edge rather than the text behind it. The
+        // signature follows that edge instead of the text behind it. The
         // edge sits above the length bits, which keeps every position of it
         // distinct from every length the text could have.
         let fingerprint = match self.typing.typed_edge(index) {
@@ -133,8 +133,8 @@ impl RowSource<'_> {
 
         // Running (or pre-thread) turn: plain chronological stream, because its
         // work is what the user is watching happen. Folding keys off the turn
-        // having settled rather than off a known duration, so a replayed turn
-        // folds too — the transcript file carries no timing for it.
+        // having settled instead of off a known duration, so a replayed turn
+        // folds too; the transcript file has no timing for it.
         if !self.conversation.turns.is_settled(turn) {
             self.stream_specs(start, end, &|_| false, collapse, rows);
 
@@ -143,7 +143,7 @@ impl RowSource<'_> {
 
         // Only the mode that names work folds a settled turn's work away by
         // default, and only the modes that offer the disclosure can fold at
-        // all. "Only tool calls" reads the work inline, so it carries no
+        // all. "Only tool calls" reads the work inline, so it has no
         // disclosure and no per-turn toggle; the other two keep the control
         // and record hand-folds against whichever direction their default
         // points.
@@ -165,7 +165,7 @@ impl RowSource<'_> {
 
         // What the fold owns: everything the expanded turn shows that the
         // folded one does not. Counting it here keeps the disclosure's label
-        // honest and lets a turn with nothing to hide skip the control.
+        // accurate and lets a turn with nothing to hide skip the control.
         let shown = |i: usize| !hidden(&items[i].item) && Some(i) != opening_user;
 
         let row_count = (start..end)
@@ -278,7 +278,7 @@ impl RowSource<'_> {
     /// compaction boundaries and steered prompts do: an error is what the
     /// user needs to act on, a boundary marks where the conversation above
     /// it stopped being verbatim, and words the user typed are never work to
-    /// hide. The final reply does too, selected by identity rather than
+    /// hide. The final reply does too, selected by identity instead of
     /// moved, because visible events can still arrive after it while the
     /// turn closes; everything between the prompt and that answer is what the
     /// fold hides.
@@ -329,13 +329,13 @@ impl RowGeometry<'_> {
             .collect()
     }
 
-    /// The disclosure whose ramp this list row travels on this frame.
+    /// The disclosure whose ramp this list row moves on this frame.
     ///
     /// Rows that were already there report `None` and render at rest. A step
     /// of a run inside an unfolded turn is on screen by two disclosures at
     /// once; it follows the fold while the fold is moving, because the fold is
     /// then moving everything under it, and its run the rest of the time, so
-    /// a run opened inside a resting turn still travels.
+    /// a run opened inside a resting turn still moves.
     pub(crate) fn revealed_by(&self, ix: usize, now: Instant) -> Option<RevealKey> {
         let fold = self.fold_over(ix).map(RevealKey::Turn);
         let run = self.run_over(ix).map(RevealKey::Group);
@@ -374,8 +374,8 @@ impl RowGeometry<'_> {
     /// The turn whose unfolded "Show work" row put this row on screen.
     ///
     /// The fold heads its turn, and every row of the turn below it that a
-    /// folded turn would not show is the fold's. Rows a folded turn keeps —
-    /// the final reply, an error, a steered prompt — sit among them and are
+    /// folded turn would not show is the fold's. Rows a folded turn keeps
+    /// (the final reply, an error, a steered prompt) are among them and are
     /// walked over, so the work after a steered prompt still finds its fold.
     /// Only a settled turn has one, which spares an unsettled conversation
     /// the walk.

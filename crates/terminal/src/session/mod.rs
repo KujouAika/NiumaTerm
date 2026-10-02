@@ -61,7 +61,7 @@ use crate::vt_modes::Mode;
 
 type SessionBuffer = Arc<FrameStore>;
 
-/// A host event surfaced from the PTY task to the shell. The shell
+/// A host event reported from the PTY task to the shell. The shell
 /// drains these on its render tick via [`TerminalSession::poll_events`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostEvent {
@@ -87,15 +87,15 @@ pub enum HostEvent {
     PromptStarted,
     /// Integrated-shell command metadata changed in the block store. The exit
     /// code rides along so the chrome can grade the result without reaching
-    /// back into the block store for the entry that just landed; a shell that
+    /// back into the block store for the entry that was just added; a shell that
     /// reports no code yields `None`.
     CommandFinished { exit_code: Option<i32> },
     /// An integrated-shell command began executing; read `in_flight_block`.
     CommandStarted,
     /// The program wrote to a clipboard (OSC 52 and its relatives). Delivered
     /// with the other host events so the platform clipboard, which can wait
-    /// on another process holding it, is written from the UI thread rather
-    /// than from the PTY task.
+    /// on another process holding it, is written from the UI thread instead
+    /// of from the PTY task.
     Clipboard { kind: ClipboardType, text: String },
 }
 

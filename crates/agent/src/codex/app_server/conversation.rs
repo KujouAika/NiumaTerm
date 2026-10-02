@@ -359,7 +359,7 @@ impl ThreadState {
                     fatal: false,
                 }]
             }
-            // The status carries a protocol token rather than a sentence, and
+            // The status holds a protocol token, not a sentence, and
             // the working row it would reach shows text to the user. Child-agent
             // rows read the same notification through their own reducer, which
             // maps it to a lifecycle state instead of showing the word.

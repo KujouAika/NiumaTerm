@@ -20,7 +20,7 @@ pub(super) struct WorkspaceStatus {
 
 /// Diameter of a status dot in the sidebar column. Smaller than the agent
 /// spinner's `size_3`, so a stacked pair reads as a spinner with a mark under
-/// it rather than as two equal glyphs.
+/// it, not as two equal glyphs.
 const STATUS_DOT: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

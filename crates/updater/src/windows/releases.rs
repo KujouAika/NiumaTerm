@@ -22,7 +22,7 @@ use crate::windows::Status;
 /// nightlies were published after it; a page of the full list cannot promise
 /// that, since nightlies published daily push a months-old release off it.
 ///
-/// Served as a static file rather than read from the GitHub API, which allows
+/// Served as a static file instead of read from the GitHub API, which allows
 /// sixty unauthenticated requests an hour per address. Users who share an
 /// outbound address behind carrier or corporate NAT exhaust that between them,
 /// and the check then fails for a reason they can neither see nor fix.
@@ -72,7 +72,7 @@ pub struct Release {
 
     /// When the channel published it, as `yyyymmdd`, which is the only thing a
     /// release tag and a nightly label can be ordered by across channels. Left
-    /// unset for a response that carried no timestamp this could read.
+    /// unset for a response that had no timestamp this could read.
     pub(super) published: Option<u32>,
 }
 
@@ -142,8 +142,8 @@ async fn latest(channel: UpdateChannel, version: &str) -> Result<Option<Release>
 }
 
 async fn get(client: &Client, url: &str, version: &str) -> Result<String, CheckError> {
-    // The agent string names the build doing the asking, which is what makes
-    // the serving edge's log useful when a release turns out to be unreadable
+    // The agent string names the build doing the asking, which makes the
+    // serving edge's log useful when a release turns out to be unreadable
     // for one version and fine for the rest.
     let response = client
         .get(url)
@@ -164,7 +164,7 @@ async fn get(client: &Client, url: &str, version: &str) -> Result<String, CheckE
 }
 
 /// Split from the request so the selection can be exercised against a recorded
-/// response rather than the live releases page.
+/// response instead of the live releases page.
 fn select(body: &str, channel: UpdateChannel) -> Result<Option<Release>, CheckError> {
     let entries =
         serde_json::from_str::<Vec<ReleaseEntry>>(body).map_err(|_| CheckError::Unreadable)?;
@@ -203,7 +203,7 @@ fn outcome(found: Result<Option<Release>, CheckError>, version: &str) -> Status 
 /// The list arrives newest first, so the first entry whose tag belongs to the
 /// channel is that channel's newest. Tags that predate the current naming, and
 /// tags that mark something other than a release, parse to nothing and are
-/// skipped rather than guessed at.
+/// skipped instead of guessed at.
 fn newest_in_channel(entries: &[ReleaseEntry], channel: UpdateChannel) -> Option<Release> {
     entries
         .iter()
@@ -226,9 +226,9 @@ fn newest_in_channel(entries: &[ReleaseEntry], channel: UpdateChannel) -> Option
 }
 
 /// `2026-08-14T09:12:33Z` reduced to `20260814`, the form a nightly label
-/// already carries its date in, so the two order against each other as numbers.
-/// Anything else yields nothing rather than a date built from whatever happened
-/// to sit at those offsets.
+/// already writes its date in, so the two order against each other as numbers.
+/// Anything else yields nothing instead of a date built from whatever bytes
+/// happened to be at those offsets.
 fn publish_date(timestamp: &str) -> Option<u32> {
     let date = timestamp.get(..10)?;
     let digits = format!("{}{}{}", date.get(..4)?, date.get(5..7)?, date.get(8..10)?);
@@ -246,9 +246,9 @@ fn channel_of(version: &Version) -> UpdateChannel {
     }
 }
 
-/// Whether `candidate` is worth offering over `current`.
+/// Whether `candidate` should be offered over `current`.
 fn supersedes(current: &Version, candidate: &Release) -> bool {
-    // A tag this build cannot read is offered rather than hidden: the channel
+    // A tag this build cannot read is offered instead of hidden: the channel
     // published it, and a name nothing here understands is no evidence that it
     // is behind.
     let Some(published) = Version::parse(&candidate.label) else {
@@ -275,7 +275,7 @@ fn supersedes(current: &Version, candidate: &Release) -> bool {
             },
             Version::Nightly { date, commit },
         ) => {
-            // A nightly rebuilt later the same day carries that day's date and
+            // A nightly rebuilt later the same day has that day's date and
             // a different revision, and is the one to run: the published list
             // is ordered by when each release was cut, so reaching this entry
             // at all means it is the newest the channel has.
@@ -284,15 +284,16 @@ fn supersedes(current: &Version, candidate: &Release) -> bool {
         // A nightly is cut from the tip of the development line, so a release
         // published before that build existed is behind it however its number
         // reads, and installing it would move the installation backwards. One
-        // published on a later day carries work the nightly cannot, which is
-        // what lets a months-old nightly move to the stable channel.
+        // published on a later day contains work the nightly cannot, so a
+        // months-old nightly can move to the stable channel.
         //
         // A nightly label dates a build to the day, and a release is routinely
         // cut from the same day's tree, so a same-day release is exactly the
         // ambiguous case and is left alone: a release already published when
         // that day's build was made is the downgrade being avoided, and the
-        // next release lands on a later day. For the same reason a release with
-        // no publishing date read from the response is treated as behind.
+        // next release is published on a later day. For the same reason a
+        // release with no publishing date read from the response is treated as
+        // behind.
         (Version::Nightly { date, .. }, Version::Release { .. }) => candidate
             .published
             .is_some_and(|published| published > *date),

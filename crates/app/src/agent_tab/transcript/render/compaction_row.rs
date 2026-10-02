@@ -27,7 +27,7 @@ use crate::agent_tab::transcript::{
     compaction_row_is_expandable, compaction_trigger_label,
 };
 
-/// A context-compaction boundary. Rendered as a divider rather than a card
+/// A context-compaction boundary. Rendered as a divider instead of a card
 /// because it is a structural break in the conversation: the rows above it
 /// are no longer what the model sees. Expanding reveals the accounting and
 /// the summary the thread continued from when the provider exposes it.

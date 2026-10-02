@@ -28,7 +28,7 @@ pub struct AgentConfig {
     pub check_agent_updates: bool,
 
     /// List Codex skills in the `/` command palette and rewrite a chosen one
-    /// to its `$name` form. With this off the `/` palette carries commands
+    /// to its `$name` form. With this off the `/` palette lists commands
     /// only and `$` is the sole skill trigger.
     #[serde(default = "default_bool_true", rename = "codex-skill-command-compat")]
     pub codex_skill_command_compat: bool,
@@ -45,7 +45,7 @@ pub struct AgentConfig {
     #[serde(default, rename = "token-speed-mode")]
     pub token_speed_mode: TokenSpeedMode,
 
-    /// Show the questions an agent asks together one at a time rather than
+    /// Show the questions an agent asks together one at a time instead of
     /// all at once.
     #[serde(default, rename = "answer-questions-one-at-a-time")]
     pub answer_questions_one_at_a_time: bool,

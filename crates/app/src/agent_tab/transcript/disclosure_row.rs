@@ -16,7 +16,7 @@ pub(super) const AGENT_CARD_RADIUS: f32 = 6.0;
 pub(super) const AGENT_CARD_PADDING_X: f32 = 8.0;
 pub(super) const AGENT_CARD_PADDING_Y: f32 = 4.0;
 
-/// Resting height of a card header. A floor rather than a fixed height: the
+/// Resting height of a card header. A floor, not a fixed height: the
 /// row keeps one rhythm down a run of steps, and still grows for a label that
 /// wraps at a narrow pane width.
 pub(super) const AGENT_CARD_HEADER_HEIGHT: f32 = 24.0;
@@ -43,7 +43,7 @@ pub(super) const AGENT_CARD_ICON: f32 = 13.0;
 pub(super) const AGENT_CARD_LINE_HEIGHT: f32 = 1.2;
 
 /// Where a card's title starts, measured from the card's leading edge. The
-/// expanded body lines up with the title rather than with the icon, so a run
+/// expanded body lines up with the title instead of with the icon, so a run
 /// of detail lines reads as belonging to the heading above it.
 pub(super) const AGENT_DISCLOSURE_DETAIL_INSET: f32 =
     AGENT_CARD_PADDING_X + AGENT_CARD_ICON_BLOCK + AGENT_CARD_GAP;
@@ -55,7 +55,7 @@ pub(super) const AGENT_CARD_DETAIL_SIZE: f32 = 12.0;
 pub(super) const AGENT_CARD_HINT_SIZE: f32 = 11.0;
 
 /// How far a work-log title is let down from the conversation's own text. The
-/// steps are what the reply was assembled from rather than the reply itself,
+/// steps are what the reply was assembled from, not the reply itself,
 /// so they read one shade quieter than the prose around them.
 const AGENT_CARD_TITLE_FADE: f32 = 0.65;
 
@@ -66,7 +66,7 @@ const AGENT_CARD_TITLE_FADE: f32 = 0.65;
 pub(super) const USER_BUBBLE_WIDTH_FRACTION: f32 = 0.7;
 
 /// The prompt bubble's corners. The trailing bottom corner is nearly square so
-/// the bubble points back at the conversation it was sent into, which is what
+/// the bubble points back at the conversation it was sent into; that corner
 /// separates it from the assistant's bare prose at a glance.
 pub(super) const USER_BUBBLE_RADIUS: f32 = 18.0;
 
@@ -74,14 +74,14 @@ pub(super) const USER_BUBBLE_TAIL_RADIUS: f32 = 4.0;
 pub(super) const USER_BUBBLE_PADDING_X: f32 = 15.0;
 pub(super) const USER_BUBBLE_PADDING_Y: f32 = 9.0;
 
-/// The annotation bubble's header is one line of label rather than a block of
+/// The annotation bubble's header is one line of label, not a block of
 /// prose, so it is set shallower than the prompt beside it while keeping the
 /// same edge inset.
 pub(super) const USER_ANNOTATION_PADDING_Y: f32 = 6.0;
 
 /// How a card is tinted. A failed step is the one thing in a conversation the
-/// reader has to act on, so it carries the tint across the whole card rather
-/// than on a glyph that has to be found first.
+/// reader has to act on, so the tint covers the whole card instead of only
+/// a glyph that has to be found first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AgentCardTone {
     Neutral,
@@ -110,10 +110,10 @@ impl AgentCardTone {
                 icon: cx.theme().muted_foreground,
                 hover: cx.theme().list_hover,
             },
-            // A wash rather than an outline: an outlined box would be the one
+            // A wash, not an outline: an outlined box would be the one
             // bordered thing in the transcript, and it would be drawn hard
             // against the rule that groups the run it sits in. The wash is
-            // carried a step further than the outlined version needed, since
+            // taken a step further than the outlined version needed, since
             // it is now the whole of the row's resting edge.
             Self::Failed => AgentCardColors {
                 background: cx.theme().danger.opacity(0.06),
@@ -126,10 +126,10 @@ impl AgentCardTone {
 }
 
 /// The container a disclosure row and its expanded body share, so the header,
-/// the failure reason and the detail surface stack as one block. It carries
-/// no fill of its own in either tone: the header and the block under it each
-/// paint the tone themselves, which is what lets a row with nothing under it
-/// size its fill to its own words.
+/// the failure reason and the detail surface stack as one block. It has no
+/// fill of its own in either tone: the header and the block under it each
+/// paint the tone themselves, so a row with nothing under it can size its
+/// fill to its own words.
 pub(super) fn agent_card() -> Div {
     v_flex()
         .w_full()
@@ -154,7 +154,7 @@ pub(crate) struct AgentDisclosureRow {
     label: String,
     preview: Option<String>,
 
-    /// The step's outcome, as the mark for it and the colour that mark carries.
+    /// The step's outcome, as the mark for it and the colour that mark is drawn in.
     status: Option<(IconName, Hsla)>,
 
     accessible_label: String,
@@ -190,7 +190,7 @@ impl AgentDisclosureRow {
         }
     }
 
-    /// Mark the row as a structural break rather than one step of the work log.
+    /// Mark the row as a structural break, not one step of the work log.
     pub(super) fn accent(mut self, color: Hsla) -> Self {
         self.accent = Some(color);
 
@@ -251,11 +251,11 @@ impl AgentDisclosureRow {
         let colors = self.tone.colors(cx);
         let expandable = self.expanded.is_some();
 
-        // The chevron alone: what it means is already carried by the card it
+        // The chevron alone: what it means is already conveyed by the card it
         // heads, and a word beside it repeats that in the widest slot of the
         // row. The state assistive technology reads stays in the row label.
         //
-        // One glyph turned rather than two swapped, because the turn is what
+        // One glyph turned instead of two swapped, because the turn is what
         // says which way the content went; swapping glyphs mid-entrance would
         // put the open mark above content still arriving. It turns clockwise
         // to point at the block it opens, and snaps back on collapse, where
@@ -298,8 +298,8 @@ impl AgentDisclosureRow {
             })
             .gap(px(AGENT_CARD_GAP))
             .items_center()
-            // The fill is the row's only resting edge, so it carries the card
-            // radius itself rather than inheriting it from a container that
+            // The fill is the row's only resting edge, so it has the card
+            // radius itself instead of inheriting it from a container that
             // draws nothing.
             .bg(colors.background)
             .min_h(px(AGENT_CARD_HEADER_HEIGHT))

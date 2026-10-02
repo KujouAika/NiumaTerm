@@ -30,7 +30,7 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// What the Windows packaging job names its archive, up to the version it
-/// appends. A release carries the macOS archive too and both end in `.zip`, so
+/// appends. A release includes the macOS archive too and both end in `.zip`, so
 /// matching on the extension alone would let the order the assets arrive in
 /// decide which system's build an installation downloads.
 const PACKAGE_NAME_PREFIX: &str = "NiumaTerm-windows-x86_64-";
@@ -63,7 +63,7 @@ impl Download {
 ///
 /// The checksum published beside the package is what distinguishes a truncated
 /// or corrupted download from a complete one before any of it replaces an
-/// installed file. It travels with the package rather than independently of it,
+/// installed file. It is published with the package, not independently of it,
 /// so it does not establish who built the package, only that what arrived is
 /// what was published.
 ///
@@ -82,7 +82,7 @@ async fn stage(release: &Release, staging: &Path, version: &str) -> Result<PathB
     })
     .await?;
 
-    // The archive is kept beside the unpacked directory rather than inside it,
+    // The archive is kept beside the unpacked directory instead of inside it,
     // because that directory is read back as the list of files to install: a
     // download left behind by a removal that could not complete would otherwise
     // be installed as though the package had shipped it.
@@ -174,7 +174,7 @@ async fn download(url: &str, into: &Path, version: &str) -> Result<(), InstallEr
         .await
         .map_err(|_| InstallError::NotWritable)?;
 
-    // Counting what actually arrives rather than trusting the declared length,
+    // Counting the bytes that arrive instead of trusting the declared length,
     // which a response is free to understate.
     let mut copied = 0u64;
 
@@ -284,9 +284,9 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), InstallError> {
 /// The entry's name, if it is one a package produces.
 ///
 /// The published package is a flat list of files, so any path structure in a
-/// name belongs to an archive that is not one — including the `..` and absolute
+/// name belongs to an archive that is not one, including the `..` and absolute
 /// forms that would otherwise write outside the staging directory. Rejecting
-/// the archive rather than skipping the entry keeps a package that cannot be
+/// the archive instead of skipping the entry keeps a package that cannot be
 /// trusted from being installed in part.
 fn flat_name(name: &str) -> Option<&str> {
     let plain = !name.is_empty()

@@ -4,8 +4,8 @@ mode = "light"
 # VS Code "Light 2026" gray surfaces with its muted brown chrome accent.
 #
 # Every color the component library reads is named here so no control falls
-# back to the library's own light defaults, which are white-surfaced and
-# blue-accented. The derived families follow the palette already established
+# back to the library's own light defaults, which have white surfaces and
+# blue accents. The derived families follow the palette already established
 # above: buttons reuse the secondary ramp, semantic buttons are solid fills of
 # their status color, and list, table, and skeleton surfaces reuse the
 # black-alpha interaction fills. Corner radii stay unset so the application's

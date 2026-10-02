@@ -33,7 +33,7 @@ impl SettingsSeed {
 
 /// The conversation whose stored history was already read back. Provider
 /// readiness can fire again for the same conversation, so a restore claimed
-/// here runs once per session id rather than once per confirmation.
+/// here runs once per session id instead of once per confirmation.
 #[derive(Default)]
 pub(crate) struct RestoreClaim(Option<String>);
 
@@ -141,7 +141,7 @@ pub struct ConversationRestore {
 
     /// Name of the conversation the latest restore switches to, as the
     /// history list showed it. Most harnesses report no name on resume, so
-    /// this is what names the tab once the switch lands. Every successful
+    /// this names the tab once the switch completes. Every successful
     /// restore passes through `begin`, which replaces it, so a failed
     /// restore's name never reaches a later one.
     title: Option<String>,

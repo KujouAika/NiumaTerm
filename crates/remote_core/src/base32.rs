@@ -22,7 +22,7 @@ pub(crate) fn encode(bytes: &[u8]) -> String {
 }
 
 /// The canonical symbol for a typed character. Case is ignored, and `I`/`L`
-/// read as `1` and `O` as `0`, which is what a user copying a code means.
+/// read as `1` and `O` as `0`, matching what a user copying a code means.
 pub(crate) fn canonical(c: char) -> Option<char> {
     let c = match c.to_ascii_uppercase() {
         'I' | 'L' => '1',

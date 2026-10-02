@@ -12,7 +12,7 @@ use gpui_component::animation::EffectTransition;
 ///
 /// Drag-move events are delivered to every listener registered for a drag
 /// type, matched on the type alone and without any bounds test, so each
-/// resizable column receives the other's gestures too. Carrying the handle's
+/// resizable column receives the other's gestures too. Including the handle's
 /// id lets a listener recognize gestures that are not its own; without it one
 /// drag resizes every column that listens.
 #[derive(Clone)]

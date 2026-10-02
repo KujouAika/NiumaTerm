@@ -93,7 +93,7 @@ impl QuestionPanel {
         self.collapsed = false;
     }
 
-    /// Completed batches release the panel; explicitly opened history stays visible.
+    /// Completed batches release the panel; history the user opened stays visible.
     pub(crate) fn hide_settled(&mut self, input: &SessionInput) {
         let settled = self
             .questions(input)

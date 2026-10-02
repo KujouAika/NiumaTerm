@@ -1321,7 +1321,7 @@ fn a_failed_compaction_reports_its_reason() {
 }
 
 #[test]
-fn provider_command_text_is_not_an_ordinary_prompt_shape() {
+fn provider_command_text_is_not_a_plain_prompt_shape() {
     assert_eq!(slash_command_text("/compact", ""), "/compact");
     assert_eq!(
         slash_command_text("review", "  focus here  "),
@@ -1353,7 +1353,7 @@ fn a_failed_context_usage_request_leaves_the_previous_breakdown_alone() {
     let mut control = pending_control("nmt-3", PendingControlOperation::ContextComposition);
 
     // Nothing is waiting on this, and the accounting beside it is still
-    // accurate, so a failure reports nothing rather than blanking the card.
+    // accurate, so a failure reports nothing instead of blanking the card.
     assert!(control.resolve(&response).is_none());
     assert!(!control.contains(&PendingControlOperation::ContextComposition));
 }
@@ -1696,7 +1696,7 @@ fn launch_arguments(workspace: &AgentWorkspace, resume: Option<&str>) -> Vec<Str
         .collect()
 }
 
-/// The `--add-dir` group of `arguments`, or `None` when the launch carries no
+/// The `--add-dir` group of `arguments`, or `None` when the launch passes no
 /// additional directories at all.
 fn add_dir_group(arguments: &[String]) -> Option<&[String]> {
     let start = arguments.iter().position(|arg| arg == "--add-dir")?;
@@ -1711,7 +1711,7 @@ fn add_dir_group(arguments: &[String]) -> Option<&[String]> {
 }
 
 #[test]
-fn a_single_directory_launch_carries_no_additional_directory_flag() {
+fn a_single_directory_launch_passes_no_additional_directory_flag() {
     for workspace in [
         AgentWorkspace::default(),
         AgentWorkspace::single(Some(r"C:\Work\api".into())),
@@ -1745,7 +1745,7 @@ fn every_additional_directory_is_one_argument_in_workspace_order() {
 }
 
 #[test]
-fn a_resumed_launch_carries_both_the_session_id_and_the_directories() {
+fn a_resumed_launch_passes_both_the_session_id_and_the_directories() {
     let workspace = AgentWorkspace::new(Some(r"C:\Work\api".into()), vec![r"C:\Work\web".into()]);
     let arguments = launch_arguments(&workspace, Some("8365ddfc"));
 

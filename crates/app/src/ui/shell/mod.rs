@@ -382,7 +382,7 @@ pub(super) fn agent_workspace(roots: Option<&WorkspaceRoots>) -> AgentWorkspace 
     )
 }
 
-/// A conversation to reopen in a tab rooted where it ran, carrying the profile
+/// A conversation to reopen in a tab rooted where it ran, with the profile
 /// that continues it: the listing tab's own, or the one of the agent that
 /// recorded it. A conversation that names no directory opens with `fallback`,
 /// the listing tab's directories.
@@ -403,7 +403,7 @@ pub(super) struct PendingAgentSwitch {
 
 /// The launch profile last picked in a composer's agent control, by name.
 /// The unified New Agent Tab entry opens it, so a user who works with one
-/// agent picks it once rather than on every new tab. It lives for the process
+/// agent picks it once instead of on every new tab. It lasts for the process
 /// only: the configured default profile is what a fresh start opens.
 #[derive(Default)]
 pub(crate) struct PickedAgentProfile(Option<String>);
@@ -493,7 +493,7 @@ pub(crate) struct AppWindow {
 
     /// Workspace excluded from session persistence: the user chose Quit in
     /// the close-last-workspace dialog, so it must not be restored on the
-    /// next launch. Only set on the quit path — cancelling keeps everything.
+    /// next launch. Only set on the quit path; cancelling keeps everything.
     pub(crate) doomed_workspace: Option<WorkspaceId>,
 
     settings_close_pending: bool,
@@ -527,7 +527,7 @@ impl AppWindow {
 
         // Stash the window geometry on every move/resize; main.rs flushes it
         // to local_state.toml on quit. Fires for both, and the Maximized
-        // variant carries the restore bounds. Scan-and-update only: a stale
+        // variant includes the restore bounds. Scan-and-update only: a stale
         // event after the window's entry is removed is a no-op.
         let window_id = window.window_handle().window_id();
 
@@ -668,7 +668,7 @@ impl AppWindow {
             cx.global_mut::<LastActiveWindow>().0 = Some(self.window_id);
 
             // Coming back to a window is the person being back at this
-            // computer, which ends pushes to devices they carried away.
+            // computer, which ends pushes to devices they took away.
             remote::note_local_use(cx);
 
             self.acknowledge_visible(window, true, cx);
@@ -704,7 +704,7 @@ impl AppWindow {
     }
 
     /// The focused terminal pane, or `None` when the active tab has no
-    /// terminal (an agent tab). Terminal-only funnels that also run while an
+    /// terminal (an agent tab). Terminal-only entry points that also run while an
     /// agent tab is active must go through this instead of `active_pane`.
     fn try_active_pane(&self) -> Option<Entity<TerminalPane>> {
         self.workspaces
@@ -729,7 +729,7 @@ impl AppWindow {
     }
 
     /// Spawn a still-pending (lazily-restored) active tab, then register its
-    /// panes' agent routes — the startup registration sweep only saw tabs that
+    /// panes' agent routes; the startup registration sweep only saw tabs that
     /// were live at window creation.
     fn ensure_active_tab_live(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !materialize_active_tab(&mut self.workspaces, &mut self.next_id, window, cx) {
@@ -969,7 +969,7 @@ impl AppWindow {
     /// Project each tab's routes once for the two chrome indicators. Busy is
     /// limited to the dedicated Agent surface: a terminal tab reports its own
     /// activity through [`Self::tab_terminal_activity`], which is driven by
-    /// OSC 133 rather than by an agent route.
+    /// OSC 133 instead of by an agent route.
     ///
     /// Every workspace takes part, not just the active one: the vertical
     /// tab-bar style shows every workspace's tabs at once. Tab ids are unique
@@ -1215,7 +1215,7 @@ impl AppWindow {
     /// The tab need not be in the active workspace: the sidebar lists every
     /// workspace's tabs, and closing one there leaves the user where they
     /// are. Every lookup is therefore keyed on the workspace that holds the
-    /// tab rather than on the active one.
+    /// tab, not on the active one.
     pub(crate) fn request_close_tab(
         &mut self,
         id: TabId,
@@ -1619,7 +1619,7 @@ impl AppWindow {
         }
 
         for &id in ids {
-            // This command explicitly includes every temporary workspace, so a
+            // This command includes every temporary workspace by name, so a
             // pin cannot leave an otherwise hidden temporary entry behind.
             self.workspaces.set_pinned(id, false);
 
@@ -1646,7 +1646,7 @@ impl AppWindow {
         );
 
         // Quitting from here saves the session, so the same warning the
-        // window-close dialog carries applies to this choice too.
+        // window-close dialog shows applies to this choice too.
         let note = self.temporary_workspace_note();
 
         let shell = cx.entity();
@@ -2569,7 +2569,7 @@ impl AppWindow {
     /// Open an agent tab rooted at `cwd`, optionally continuing the
     /// conversation `resume` lists once its session is ready. A conversation
     /// belongs to the directory it ran in, so one listed from another tab
-    /// opens here rather than in the tab that listed it.
+    /// opens here, not in the tab that listed it.
     pub(super) fn open_agent_tab_in(
         &mut self,
         profile: &AgentProfile,
@@ -2626,7 +2626,7 @@ impl AppWindow {
         self.register_agent_tab(&pane, cx);
 
         // The conversation is resumed through the history-list path once
-        // the fresh session is ready: a start that carries the id replays
+        // the fresh session is ready: a start that includes the id replays
         // nothing for Claude Code and Codex and never names the tab.
         if let Some(summary) = resume {
             owner
@@ -2738,7 +2738,7 @@ impl AppWindow {
     }
 
     /// Find a terminal by its current directory across this window's workspaces.
-    /// A workspace root alone says nothing about where its shells are now.
+    /// A workspace root alone does not show where its shells are now.
     pub(crate) fn focus_dir_tab(
         &mut self,
         path: &path::Path,
@@ -2927,7 +2927,7 @@ impl AppWindow {
     /// The next tab holding something the user has not looked at: a background
     /// command that finished, or an unread agent reply.
     ///
-    /// Each jump shrinks the set rather than advancing a cursor of its own,
+    /// Each jump shrinks the set instead of advancing a cursor of its own,
     /// because focusing a tab is what clears both marks.
     pub(super) fn next_ready_tab(&self, cx: &App) -> Option<(usize, usize)> {
         self.next_marked_tab(|tab| {
@@ -2946,10 +2946,10 @@ impl AppWindow {
     /// The next tab with work still in flight: a terminal running a command, or
     /// an agent still producing its answer.
     ///
-    /// Unlike the ready set this one does not shrink when the tab is focused —
-    /// watching a tab does not finish its work — so the jump keeps cycling
-    /// while the same tabs stay busy, which is what following several parallel
-    /// runs needs.
+    /// Unlike the ready set this one does not shrink when the tab is focused
+    /// (watching a tab does not finish its work), so the jump keeps cycling
+    /// while the same tabs stay busy, as following several parallel runs
+    /// needs.
     pub(crate) fn next_busy_tab(&self, cx: &App) -> Option<(usize, usize)> {
         self.next_marked_tab(|tab| {
             if Self::tab_terminal_activity(tab, cx) == TerminalActivity::Running {
@@ -3546,7 +3546,7 @@ impl AppWindow {
     }
 
     /// Leave the settings or a remote entry for a normal workspace. Every
-    /// path that adds a local tab funnels through this, so a new tab never
+    /// path that adds a local tab goes through this, so a new tab never
     /// breaks the settings entry's single-tab presentation, and a tab running
     /// on this computer never sits among a host's tabs.
     pub(crate) fn leave_pseudo_workspace(&mut self) {
@@ -3619,7 +3619,7 @@ impl AppWindow {
                             })
                         && let Some(tabs) = self.workspaces.tabs_for_tab_mut(tab_id)
                     {
-                        // The saved session carries the title, so a restore
+                        // The saved session includes the title, so a restore
                         // labels the tab with it before its shell runs.
                         let changed = tabs.set_title(tab_id, title.clone());
 
@@ -3719,7 +3719,7 @@ impl AppWindow {
                     chrome_changed = true;
                 }
                 // A command starting flips the workspace indicator, which lives
-                // in the chrome rather than in the pane's own grid.
+                // in the chrome, not in the pane's own grid.
                 HostEvent::AltScreen(_)
                 | HostEvent::PromptBoundaryTrusted(_)
                 | HostEvent::PromptStarted
@@ -4140,9 +4140,9 @@ impl AppWindow {
             // lifecycle event that accompanies it.
             AgentPaneEvent::Attention { .. } => return,
             AgentPaneEvent::SwitchProfile { profile, resume } => {
-                // Only a pick from the composer says which agent the user
+                // Only a pick from the composer shows which agent the user
                 // wants next time; continuing another agent's conversation
-                // says nothing about that.
+                // does not.
                 if resume.is_none() {
                     cx.set_global(PickedAgentProfile(Some(profile.name.clone())));
                 }
@@ -4310,7 +4310,7 @@ impl Render for AppWindow {
             // The conversation ran in a directory of its own. Where a
             // workspace owns that directory, the reopened tab gets that
             // workspace's whole directory list; otherwise the conversation's
-            // own directory is all this tab can honestly claim.
+            // own directory is the only one this tab can claim with certainty.
             let workspace = match request.cwd {
                 Some(cwd) => exact_match(&self.workspaces.summaries(), path::Path::new(&cwd))
                     .and_then(|id| self.workspaces.roots_of(id))
@@ -4514,7 +4514,7 @@ impl Render for AppWindow {
             .relative()
             .overflow_hidden()
             // A context menu drawn in its own window never takes activation, so
-            // that this window keeps its focused backdrop material — which also
+            // that this window keeps its focused backdrop material, which also
             // means it never receives the press or the key that should dismiss
             // it. This window does. Capture phase, because the input still
             // belongs to whatever it was aimed at.
@@ -4528,8 +4528,8 @@ impl Render for AppWindow {
                 }
             })
             // The window surface itself is never painted (gpui leaves it
-            // white/transparent), and the chrome now has see-through regions —
-            // the tab strip and the gutters around the terminal cards — so the
+            // white/transparent), and the chrome now has see-through regions
+            // (the tab strip and the gutters around the terminal cards), so the
             // shell paints the chrome background across the whole window.
             // `apply_window_translucency` dims this color with the rest of the
             // chrome when window transparency is on.

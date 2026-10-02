@@ -5,8 +5,8 @@
 //! an in-flight request cancellable when its owner goes away, and one reactor
 //! keeps the thread count independent of how many tabs are open.
 //!
-//! The runtime is a static rather than a value handed down from the
-//! application entry point, because library code and its unit tests reach it
+//! The runtime is a static, not a value handed down from the application
+//! entry point, because library code and its unit tests reach it
 //! without an application object. It is never dropped, so no shutdown can run
 //! from inside one of its own tasks.
 

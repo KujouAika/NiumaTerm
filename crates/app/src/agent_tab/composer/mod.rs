@@ -46,8 +46,8 @@ pub(super) struct CommandFeedback {
     pub(super) kind: CommandFeedbackKind,
 
     /// Redrawn on every frame the composer paints while the message is up, so
-    /// it is stored in the form the view hands to `child` rather than copied
-    /// into one each time.
+    /// it is stored in the form the view hands to `child` instead of being
+    /// copied into one each time.
     pub(super) message: SharedString,
 }
 

@@ -313,14 +313,14 @@ impl Sidebar {
             .child(content)
             .children(resize_handle);
 
-        // Until the first toggle, render at the resting width — no slide-in on
+        // Until the first toggle, render at the resting width: no slide-in on
         // startup.
         sidebar_resize::slide_width(wrapper, "sidebar", !collapsed, px(width), self.animated)
     }
 }
 
 /// A section heading of the sidebar, set as a caps label so it is told apart
-/// from the workspace names by case rather than by weight, which the names
+/// from the workspace names by case instead of by weight, which the names
 /// use to mark the active one. Scripts without case are unchanged.
 fn section_heading(label: impl AsRef<str>, cx: &App) -> Div {
     div()
@@ -342,8 +342,8 @@ impl IconNamed for CloseTemporaryWorkspacesIcon {
 }
 
 /// Insets and rhythm of the workspace list. Groups are spaced further apart
-/// than the rows inside them, which is what makes a workspace and its tabs
-/// read as one block rather than as a flat list.
+/// than the rows inside them, so a workspace and its tabs read as one block
+/// instead of a flat list.
 ///
 /// The panel owns the horizontal text inset; row fills extend into its gutter.
 const SIDEBAR_PADDING_X: f32 = 12.0;
@@ -366,7 +366,7 @@ const SIDEBAR_SECTION_TEXT: f32 = 12.0;
 
 /// The status cluster along the bottom edge: today's spend over the
 /// subscription gauges. Both report what the agents have consumed, so they
-/// stack as one block under a single rule rather than each carrying an edge.
+/// stack as one block under a single rule instead of each drawing an edge.
 const SIDEBAR_STATUS_PADDING_TOP: f32 = 8.0;
 
 const SIDEBAR_STATUS_PADDING_BOTTOM: f32 = 2.0;

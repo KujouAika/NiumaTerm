@@ -54,7 +54,7 @@ pub enum AgentRequest {
     },
 }
 
-/// What the host service needs from the application rather than from one
+/// What the host service needs from the application instead of from one
 /// session: what a device may start, and starting it. Both are answered on
 /// the UI thread, and their values are opaque JSON here.
 pub enum HostRequest {
@@ -112,8 +112,8 @@ pub struct SessionRegistry {
     /// watching is shown on the host only.
     viewers_changed: watch::Sender<u64>,
 
-    /// Bumped when the person at the host uses it, which tells the host
-    /// that paired devices away from it are no longer being carried around.
+    /// Bumped when the person at the host uses it, which signals to the host
+    /// that paired devices away from it are no longer with the person.
     local_use: watch::Sender<u64>,
 
     /// Drawn once per registry and put in every terminal id. Ids count up
@@ -149,7 +149,7 @@ pub(crate) struct Viewer {
     pub key: [u8; 32],
     pub name: String,
 
-    /// Reaches the channel carrying the device's views, to end them.
+    /// Reaches the channel holding the device's views, to end them.
     pub kicks: UnboundedSender<Kick>,
 }
 

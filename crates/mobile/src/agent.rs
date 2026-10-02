@@ -579,7 +579,7 @@ impl Drop for AgentHandle {
 }
 
 /// Apply the host's updates as they arrive, telling the observer once per
-/// burst rather than once per message.
+/// burst instead of once per message.
 async fn follow(
     mut updates: UnboundedReceiver<AgentUpdate>,
     replica: Arc<Mutex<Replica>>,

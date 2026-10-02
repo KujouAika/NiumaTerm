@@ -24,7 +24,7 @@ fn smoothstep(t: f32) -> f32 {
 /// A `0..=1` ramp between two states of an effect: where it started, what it
 /// is heading for, and when it left. Reversing mid-ramp starts a fresh one from
 /// wherever the previous had reached, so an effect dismissed while it is still
-/// arriving retreats from the value actually on screen instead of snapping to
+/// arriving retreats from the value on screen instead of snapping to
 /// full first.
 #[derive(Clone, Copy)]
 pub(super) struct Fade {
@@ -38,7 +38,7 @@ impl Fade {
     const DURATION: Duration = Duration::from_millis(150);
 
     /// A ramp that takes `duration` end to end. A layer that only changes
-    /// opacity is done in the default; one that also travels across the pane
+    /// opacity is done in the default; one that also moves across the pane
     /// needs longer, since the eye follows a moving edge and reads the same
     /// span as a jump.
     pub(super) fn lasting(duration: Duration) -> Self {
@@ -48,13 +48,13 @@ impl Fade {
         }
     }
 
-    /// The frame's worth of a layer that is up when `open` and away
+    /// This frame's state of a layer that is up when `open` and away
     /// otherwise, asking for another frame while the ramp is still
     /// travelling. Called from a render, so the notify that produced this
     /// frame already woke the pump; the next-frame request keeps it awake
     /// until the ramp settles.
     ///
-    /// The ramp is retargeted here rather than where the layer is shown and
+    /// The ramp is retargeted here instead of where the layer is shown and
     /// hidden, so every path in and out of it animates without each having
     /// to remember to. Under reduced motion it is still retargeted, so a
     /// layer dismissed while motion is on and reopened after it is off
@@ -124,8 +124,8 @@ impl FadeFrame {
         !self.open && self.opacity <= 0.0
     }
 
-    /// How far along its ramp the layer is, for content that travels with the
-    /// fade rather than only showing through it. The same number as the
+    /// How far along its ramp the layer is, for content that moves with the
+    /// fade instead of only showing through it. The same number as the
     /// opacity, so the travel and the fade settle on the same frame.
     pub(super) fn progress(self) -> f32 {
         self.opacity
@@ -137,7 +137,7 @@ type ClickListener = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 /// A blurred, tinted layer over the whole of its parent, at the point along
 /// its fade that `FadeFrame` describes.
 ///
-/// The layer fades as a whole rather than by blur radius: the renderer
+/// The layer fades as a whole, not by blur radius: the renderer
 /// composites a backdrop blur as a lerp from the sharp backdrop to the
 /// blurred one by element opacity, which crosses smoothly, while its
 /// reduction pass puts a floor under small radii that shows as a jump on a
@@ -168,7 +168,7 @@ impl FrostedLayer {
         }
     }
 
-    /// A lighter frost, for a layer that pushes content back rather than
+    /// A lighter frost, for a layer that pushes content back instead of
     /// covering it.
     pub(super) fn light(mut self) -> Self {
         self.blur = px(16.);

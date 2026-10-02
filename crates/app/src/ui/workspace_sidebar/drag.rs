@@ -53,7 +53,7 @@ impl Render for WorkspaceDragPreview {
             .overflow_hidden()
             .bg(background)
             .text_color(cx.theme().sidebar_accent_foreground)
-            // Laid out like the row it was lifted from, so the ghost stays the
+            // Laid out like the row it was dragged from, so the ghost stays the
             // same height as the gap it will drop into.
             .child(
                 h_flex()

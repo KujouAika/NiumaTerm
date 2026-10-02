@@ -1,6 +1,6 @@
 //! Shared look of the settings tables: the frame, the column header strip,
-//! the row metrics, and the row-operation controls. Two tables use it — the
-//! agent profiles and a profile's environment variables — and they are meant
+//! the row metrics, and the row-operation controls. Two tables use it (the
+//! agent profiles and a profile's environment variables), and they are meant
 //! to read as the same object, so their measurements live in one place.
 
 use gpui::prelude::FluentBuilder as _;
@@ -10,13 +10,13 @@ use gpui_component::{ActiveTheme as _, IconNamed, StyledExt as _, h_flex};
 use crate::ui::composition::{framed_region, table_header as table_header_style};
 
 /// Content height of one row. A table whose rows are virtualized needs every
-/// row to agree on a height, so this is stated rather than measured.
+/// row to agree on a height, so this is fixed instead of measured.
 pub(super) const TABLE_ROW_CONTENT_HEIGHT: Pixels = px(32.0);
 
 /// Height one row occupies: the content plus the vertical padding around it.
 pub(super) const TABLE_ROW_HEIGHT: f32 = 40.0;
 
-/// Header height. It seats text rather than controls, so it stays compact
+/// Header height. It holds text, not controls, so it stays compact
 /// instead of following the row height.
 pub(super) const TABLE_HEADER_HEIGHT: f32 = 32.0;
 
@@ -31,7 +31,7 @@ pub(super) const ENV_OPERATION_COLUMN: Pixels = px(72.0);
 
 /// Delete glyph, backed by the project's `assets/icons/trash.svg`. The icon
 /// set gpui-component ships names a backspace arrow `Delete`, which reads as
-/// "clear the field" rather than "remove this row".
+/// "clear the field" instead of "remove this row".
 pub(super) struct TrashIcon;
 
 impl IconNamed for TrashIcon {

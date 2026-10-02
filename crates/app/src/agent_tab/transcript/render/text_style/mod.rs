@@ -18,7 +18,7 @@ use gpui_component::{ActiveTheme as _, text};
 use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::transcript::render::text_style::file_icons::file_link_icon;
 
-/// Assistant reply: bare markdown — no bubble, no border; alignment and
+/// Assistant reply: bare markdown (no bubble, no border); alignment and
 /// surface carry the distinction.
 pub(crate) fn transcript_code_block_style(font: Font, font_size: f32) -> StyleRefinement {
     StyleRefinement::default()

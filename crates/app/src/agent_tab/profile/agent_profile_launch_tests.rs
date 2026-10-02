@@ -53,7 +53,7 @@ fn a_pinned_effort_reaches_the_launch_and_default_leaves_it_unset() {
 }
 
 #[test]
-fn pinned_approval_and_sandbox_reach_the_launch_only_in_their_harness_vocabulary() {
+fn pinned_approval_and_sandbox_reach_the_launch_only_in_their_harness_values() {
     let profile = |kind, approval: &str, sandbox: &str| AgentProfile {
         kind,
         executable: "agent".into(),
@@ -225,7 +225,7 @@ fn deepseek_custom_endpoint_exports_base_url_and_api_key() {
         Some("sk-deepseek")
     );
 
-    // The endpoint is environment rather than a generated provider entry,
+    // The endpoint is environment, not a generated provider entry,
     // which is the shape only Codex needs.
     assert!(launch.provider.is_none());
 }

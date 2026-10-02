@@ -48,7 +48,7 @@ fn connect(client: &DeviceKey, host: &DeviceKey) -> (Channel, Channel) {
 }
 
 #[test]
-fn channel_carries_messages_both_ways() {
+fn channel_delivers_messages_both_ways() {
     let client = DeviceKey::generate().unwrap();
     let host = DeviceKey::generate().unwrap();
 

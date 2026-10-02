@@ -12,7 +12,7 @@ use crate::terminal_tab::graphics;
 /// A paintable Kitty image in a frame. Metrics-independent: it retains the
 /// shared image generation by `Arc` (no pixel copy) plus the geometry needed to place
 /// it; final pixel geometry is computed at paint from the active cell metrics and grid
-/// bounds. Ordinary and virtual placements normalize to this one descriptor.
+/// bounds. Overlay and virtual placements normalize to this one descriptor.
 #[derive(Clone)]
 pub(crate) struct FrameImage {
     pub(crate) generation: Arc<graphics::ImageGeneration>,
@@ -22,9 +22,9 @@ pub(crate) struct FrameImage {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum FrameImageKind {
-    /// Ordinary overlay placement: Ghostty viewport cell position + grid span + sub-
+    /// Overlay placement: Ghostty viewport cell position + grid span + sub-
     /// cell offsets, with a normalized source rectangle into the full image.
-    Ordinary {
+    Overlay {
         viewport_col: i32,
         viewport_row: i32,
         grid_cols: u32,
@@ -59,7 +59,7 @@ pub(crate) enum ZLayer {
     AboveText,
 }
 
-/// One shared empty `Arc<[FrameImage]>` for graphics-free frames — cloning it is a
+/// One shared empty `Arc<[FrameImage]>` for graphics-free frames; cloning it is a
 /// refcount bump, so the common case allocates nothing.
 pub(super) fn empty_images() -> Arc<[FrameImage]> {
     static EMPTY: sync::OnceLock<Arc<[FrameImage]>> = sync::OnceLock::new();
@@ -71,7 +71,7 @@ impl FrameImage {
     /// Pixel destination rectangle `[x, y, w, h]` and normalized source rectangle
     /// `[u0, v0, u1, v1]` for painting this image. `origin_x`/`origin_y` are
     /// the terminal grid's top-left; `row_offset` is the y displacement the grid
-    /// itself has, the fixed-bottom slack. Ordinary placements map viewport cells + sub-cell
+    /// itself has, the fixed-bottom slack. Overlay placements map viewport cells + sub-cell
     /// offsets directly; virtual runs go through `compute_run_geometry` (aspect-fit).
     /// Returns `None` for degenerate geometry (paint skips it).
     pub(crate) fn destination(
@@ -83,7 +83,7 @@ impl FrameImage {
         row_offset: f32,
     ) -> Option<([f32; 4], [f32; 4])> {
         match self.kind {
-            FrameImageKind::Ordinary {
+            FrameImageKind::Overlay {
                 viewport_col,
                 viewport_row,
                 grid_cols,
@@ -149,16 +149,16 @@ impl FrameImage {
     }
 }
 
-/// Build the paintable image descriptors for a frame. Resolves ordinary and
+/// Build the paintable image descriptors for a frame. Resolves overlay and
 /// virtual placements against the pre-cloned live generation map; a placement whose
 /// image is not cached is skipped (a later update wakes a rebuild). Preserves engine
-/// placement order, ordinary before virtual. Metrics-independent — no cell sizing here.
+/// placement order, overlay before virtual. Metrics-independent: no cell sizing here.
 pub(crate) fn extract_frame_images(
     buf: &RenderBuffer,
     generations: &collections::HashMap<u32, Arc<graphics::ImageGeneration>>,
 ) -> Vec<FrameImage> {
     // No-graphics fast path: with no placements there is nothing to extract, and a
-    // row flagged virtual can only resolve against a virtual placement — so skip the
+    // row flagged virtual can only resolve against a virtual placement, so skip the
     // per-row placeholder scan entirely (zero cost when Kitty graphics are unused).
     if buf.placements().is_empty() {
         return Vec::new();
@@ -166,7 +166,7 @@ pub(crate) fn extract_frame_images(
 
     let mut out = Vec::new();
 
-    extract_ordinary_images(buf, generations, &mut out);
+    extract_overlay_images(buf, generations, &mut out);
 
     extract_virtual_images(buf, generations, &mut out);
 
@@ -180,7 +180,7 @@ fn image_pixel_size(generation: &graphics::ImageGeneration) -> Option<(u32, u32)
     (w > 0 && h > 0).then_some((w, h))
 }
 
-fn extract_ordinary_images(
+fn extract_overlay_images(
     buf: &RenderBuffer,
     generations: &collections::HashMap<u32, Arc<graphics::ImageGeneration>>,
     out: &mut Vec<FrameImage>,
@@ -197,7 +197,7 @@ fn extract_ordinary_images(
         out.push(FrameImage {
             generation: generation.clone(),
             z: placement.z,
-            kind: FrameImageKind::Ordinary {
+            kind: FrameImageKind::Overlay {
                 viewport_col: placement.viewport_col,
                 viewport_row: placement.viewport_row,
                 grid_cols: placement.grid_cols,

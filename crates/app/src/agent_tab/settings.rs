@@ -1,6 +1,6 @@
 //! The narrow settings surface the agent pane reads.
 //!
-//! Mirrors the terminal's snapshot: the application settings global carries
+//! Mirrors the terminal's snapshot: the application settings global holds
 //! every configurable value in the program, and the pane consumes only the
 //! handful below, pre-resolved. The settings layer rebuilds this global
 //! whenever the source settings change, so pane code observes and reads this
@@ -100,7 +100,7 @@ impl AgentSettings {
     }
 }
 
-/// Test scaffolding: panes under test read the global like production code,
+/// Test support: panes under test read the global like production code,
 /// and the defaults mirror a fresh configuration.
 impl Default for AgentSettings {
     fn default() -> Self {

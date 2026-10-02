@@ -509,7 +509,7 @@ fn only_a_timed_out_pairing_code_is_renewed() {
     assert!(host.pairing().is_none());
 }
 
-/// Needs a network interface that carries multicast, which CI runners and
+/// Needs a network interface that supports multicast, which CI runners and
 /// some VPNs lack.
 #[test]
 #[ignore = "needs LAN multicast"]
@@ -574,7 +574,7 @@ fn a_host_off_the_lan_is_paired_and_used_through_the_relay() {
         // The relay won, so no address that worked leads the list: it is
         // exactly what the host said about itself, for when this device is
         // on its network. Its LAN listener is closed here, so trying those
-        // addresses first must not keep the relay from carrying the session.
+        // addresses first must not keep the relay from serving the session.
         let port = host.local_addr().port();
 
         let mut advertised: Vec<String> = lan_addresses()
@@ -648,7 +648,7 @@ fn a_device_paired_through_the_relay_goes_direct_on_the_hosts_lan() {
 
 /// Needs a running relay, as the tests above. A link that came up through the
 /// relay moves to the LAN once the host answers there, and its terminal view
-/// carries on over the new link.
+/// continues over the new link.
 #[test]
 #[ignore = "needs a running relay"]
 fn a_link_through_the_relay_moves_to_the_lan_once_the_host_answers_there() {
@@ -715,7 +715,7 @@ fn a_link_through_the_relay_moves_to_the_lan_once_the_host_answers_there() {
 
 /// Needs a running relay, as the tests above. A link follows the path
 /// policy: pinned to the relay it leaves the LAN, pinned to the LAN it comes
-/// back, and its terminal view carries on across both moves.
+/// back, and its terminal view continues across both moves.
 #[test]
 #[ignore = "needs a running relay"]
 fn a_link_moves_to_the_path_its_policy_allows() {
@@ -1420,7 +1420,7 @@ fn a_device_registers_for_pushes_and_its_presence_follows_its_channels() {
         // The person using the host sends the device back to paired. The
         // channel's task records the close after the host dropped it from
         // its list, and a device still closing counts as connected, so the
-        // signal repeats until the close has landed.
+        // signal repeats until the close has been recorded.
         timeout(WAIT, async {
             while host.presence(&id) != Presence::Paired {
                 registry.note_local_use();
@@ -1556,7 +1556,7 @@ fn a_limited_link_gives_up_on_an_unreachable_host_and_retries_on_request() {
         );
 
         // A request fails once its round does, well before the request
-        // timeout, rather than starting round after round until then.
+        // timeout, instead of starting round after round until then.
         for _ in 0..2 {
             let started = Instant::now();
 

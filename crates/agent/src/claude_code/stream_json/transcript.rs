@@ -132,7 +132,7 @@ impl TranscriptState {
         self.context_window_usage()
     }
 
-    /// The post-compaction boundary. Live it carries only the token accounting:
+    /// The post-compaction boundary. Live it holds only the token accounting:
     /// the replacement summary is written to the transcript file and marked
     /// visible there only, so a resumed thread shows it and this one does not.
     pub(super) fn on_compact_boundary(&mut self, message: &Value) -> Vec<Event> {
@@ -325,9 +325,9 @@ impl TranscriptState {
         }
     }
 
-    /// An `assistant` snapshot finalizes each content block it carries: text
+    /// An `assistant` snapshot finalizes each content block it holds: text
     /// and thinking blocks overwrite their streamed item with the
-    /// authoritative full text (or create it when partial messages were
+    /// final full text (or create it when partial messages were
     /// missed), tool-use blocks become started tool items.
     pub(super) fn on_assistant(&mut self, message: &Value) -> Vec<Event> {
         if !message["parent_tool_use_id"].is_null() {

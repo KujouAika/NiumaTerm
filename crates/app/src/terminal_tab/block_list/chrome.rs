@@ -11,7 +11,7 @@ use crate::terminal_tab::theme::{
 
 /// Chrome of one visible item: gutter accent and right-aligned header.
 /// Element coords (scroll already subtracted); may extend
-/// past the visible window — the paint's content mask clips.
+/// past the visible window; the paint's content mask clips.
 #[derive(Clone)]
 pub(crate) struct FrozenItemChrome {
     pub top: f32,
@@ -80,7 +80,7 @@ pub(crate) fn live_chrome(rows: usize, cell_h: f32, running: bool) -> Option<Fro
     })
 }
 
-/// `1.2s` / `815ms` / `2m05s` — the header's duration label.
+/// `1.2s` / `815ms` / `2m05s`: the header's duration label.
 pub(crate) fn format_duration(d: time::Duration, labels: &DurationLabels) -> String {
     let secs = d.as_secs();
 

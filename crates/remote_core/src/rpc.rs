@@ -1,5 +1,5 @@
 //! Control messages on stream 0: JSON-RPC 2.0 message shapes without
-//! batching. Error codes are names rather than numbers so a peer can match
+//! batching. Error codes are names instead of numbers so a peer can match
 //! on them without a shared numeric table.
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub const SESSIONS_LIST: &str = "sessions.list";
 /// Notification: the host's session list changed; clients list it again.
 pub const SESSIONS_CHANGED: &str = "sessions.changed";
 
-/// Open a view of an agent session: the reply carries a snapshot, and
+/// Open a view of an agent session: the reply includes a snapshot, and
 /// `agent.ops` notifications follow until the view detaches.
 pub const AGENT_ATTACH: &str = "agent.attach";
 

@@ -1,4 +1,4 @@
-//! Backend-neutral vocabulary for agent chat sessions. Each agent backend
+//! Backend-neutral types for agent chat sessions. Each agent backend
 //! (Codex app-server, Claude Code stream-json) translates its protocol into
 //! these types, so the chat UI renders one transcript model
 //! and never touches protocol strings.
@@ -39,8 +39,8 @@ pub enum CompactionTrigger {
 
 /// One finished context compaction: the conversation before it was replaced by
 /// a summary. Every field is optional because backends report different subsets
-/// live and in their persisted transcript, and the boundary is worth showing
-/// even when only part of the accounting is known.
+/// live and in their persisted transcript, and the boundary is still useful
+/// to show when only part of the accounting is known.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compaction {
     pub trigger: Option<CompactionTrigger>,
@@ -58,12 +58,12 @@ pub struct Compaction {
     pub user_context: Option<String>,
 
     /// The summary the conversation continues from. Claude marks it visible in
-    /// the transcript only, so it arrives on resume rather than live.
+    /// the transcript only, so it arrives on resume instead of live.
     pub summary: Option<String>,
 }
 
 /// A typed view of one transcript item, used for both started and completed
-/// notifications. `Option` fields mean "absent in this payload — keep what
+/// notifications. `Option` fields mean "absent in this payload; keep what
 /// streaming already produced".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Item {
@@ -104,7 +104,7 @@ pub enum Item {
         status: Option<String>,
     },
     /// A context-compaction boundary: everything above it was replaced by the
-    /// carried summary. It has no status — the record only exists once the
+    /// included summary. It has no status: the record only exists once the
     /// compaction finished.
     Compaction {
         id: String,
@@ -136,10 +136,10 @@ pub enum Item {
         tasks: TaskList,
     },
     /// What the client wrote into the model's history when it forked a side
-    /// conversation: the developer instructions the fork carries and the
+    /// conversation: the developer instructions the fork includes and the
     /// message marking where the inherited history ends. Neither was typed
     /// by the user, and both steer every answer that follows, so the
-    /// transcript shows them rather than leaving them invisible.
+    /// transcript shows them instead of leaving them invisible.
     SideBoundary {
         id: String,
         instructions: String,
@@ -166,7 +166,7 @@ impl Item {
 
     /// Completed and total entries of an agent-published task list, for items
     /// that are one. Claude's `TodoWrite` restates the entire list on every
-    /// call and carries it as a markdown checklist, so counting the checklist
+    /// call and writes it as a markdown checklist, so counting the checklist
     /// lines of the latest such item describes the plan the agent is on.
     pub fn task_tally(&self) -> Option<(u32, u32)> {
         let Self::Other {
@@ -194,7 +194,7 @@ impl Item {
         (tally.1 > 0).then_some(tally)
     }
 
-    /// Fold an authoritative completed payload into transcript state without
+    /// Fold a final completed payload into transcript state without
     /// discarding streamed fields that the provider omitted at completion.
     /// Returns false when the payload belongs to another item kind or id.
     pub fn merge_completed(&mut self, completed: &Self) -> bool {
@@ -318,9 +318,9 @@ impl Item {
     }
 }
 
-/// One image a message carries, already encoded. Harnesses differ in what
+/// One image attached to a message, already encoded. Harnesses differ in what
 /// they want done with it - one reads a file, another takes the bytes inline -
-/// so this carries the bytes and lets each adapter decide.
+/// so this holds the bytes and lets each adapter decide.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageImage {
     pub bytes: Vec<u8>,
@@ -334,7 +334,7 @@ pub struct MessageImage {
 ///
 /// `id` is what a removal addresses. A backend that reports its pending work
 /// without naming the individual messages leaves it absent, and the row is
-/// then read-only rather than carrying a control that could not address
+/// then read-only instead of showing a control that could not address
 /// anything.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedPrompt {
@@ -351,7 +351,7 @@ impl QueuedPrompt {
 }
 
 /// A provider request failed and is being tried again. The turn is waiting
-/// rather than working, which is otherwise indistinguishable: elapsed time
+/// instead of working, which is otherwise indistinguishable: elapsed time
 /// climbs the same either way and the token count sits still for both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TurnRetry {
@@ -373,20 +373,20 @@ pub struct TeamDecisionRequest {
 /// What a chat UI needs to react to, in transcript order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// Handshake finished; carries the thread's effective settings so the UI
+    /// Handshake finished; holds the thread's effective settings so the UI
     /// can seed its pickers with real values.
     Ready(ThreadSettings),
     Models(Vec<ModelInfo>),
-    /// The backend refused an effort change, carrying the level the session
+    /// The backend refused an effort change, reporting the level the session
     /// stays on. A refused setting is not something the conversation said, so
-    /// it is reported beside the control that asked for it rather than as a
+    /// it is reported beside the control that asked for it instead of as a
     /// transcript entry.
     EffortRejected {
         message: String,
         effort: Option<String>,
     },
     /// The backend answered a model pick sent as a request of its own. It
-    /// carries what the session runs under now, which is the pick when it was
+    /// holds what the session runs under now, which is the pick when it was
     /// taken and the earlier selection beside the reason when it was refused.
     ModelSelection {
         model: Option<String>,
@@ -395,7 +395,7 @@ pub enum Event {
     },
     /// Replacement snapshot of the execution-permission presets this thread can
     /// switch between, and the one it is on. Reported only by a backend whose
-    /// preset table belongs to its deployment rather than to this UI.
+    /// preset table belongs to its deployment, not to this UI.
     ApprovalPresets {
         presets: Vec<ApprovalPreset>,
         current: Option<String>,
@@ -413,7 +413,7 @@ pub enum Event {
     /// Replacement snapshot of provider-discovered skills and load errors.
     Skills(SkillCatalog),
     /// Asynchronous provider/RPC acknowledgement for a command request.
-    /// Actual model work still uses the ordinary turn lifecycle events.
+    /// The model work itself still uses the normal turn lifecycle events.
     SlashCommandResult {
         name: String,
         outcome: SlashCommandOutcome,
@@ -445,7 +445,7 @@ pub enum Event {
     /// output stops until it finishes, so this drives a progress indicator; the
     /// finished boundary arrives separately as [`Item::Compaction`].
     CompactionStarted,
-    /// Compaction ended. A failure is worth surfacing because the turn that
+    /// Compaction ended. A failure is reported to the user because the turn that
     /// triggered it usually dies next with an over-length prompt.
     CompactionFinished {
         error: Option<String>,
@@ -503,7 +503,7 @@ pub enum Event {
     },
     /// One child's own conversation, in the same items the parent transcript
     /// uses. Delivered separately from the summary snapshot because a child's
-    /// content is only worth carrying once someone is reading it.
+    /// content is only needed once someone is reading it.
     BackgroundTaskTranscript {
         key: BackgroundTaskKey,
         update: BackgroundTaskTranscriptUpdate,
@@ -524,13 +524,13 @@ pub enum Event {
     /// reports by never sending this.
     GoalUpdated(Option<GoalStatus>),
     TaskListUpdated(TaskList),
-    /// Whether the backend is currently collaborating on a plan rather than
-    /// carrying out work.
+    /// Whether the backend is currently collaborating on a plan instead of
+    /// doing the work.
     PlanModeUpdated(bool),
     /// A name for this conversation, for whatever shows it in a list. Backends
-    /// differ in where it comes from — one summarizes the conversation with a
-    /// model call, another is told what to call it — so this reports the
-    /// settled name rather than the material for one.
+    /// differ in where it comes from (one summarizes the conversation with a
+    /// model call, another is given the name directly), so this reports the
+    /// final name instead of the material for one.
     TitleUpdated(String),
     /// Replacement whole-log conversation counters.
     SessionStatsUpdated(SessionStats),

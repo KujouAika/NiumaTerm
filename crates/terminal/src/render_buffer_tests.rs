@@ -75,7 +75,7 @@ fn captured_style_id_resolves_bold_text() {
 }
 
 /// A base codepoint plus a combining mark is preserved as a full
-/// grapheme cluster — base in the `Square`, trailing codepoints in `extras`.
+/// grapheme cluster: base in the `Square`, trailing codepoints in `extras`.
 #[test]
 fn grapheme_cluster_fidelity() {
     let mut engine = GhosttyTerminal::new(8, 1, 100).unwrap();

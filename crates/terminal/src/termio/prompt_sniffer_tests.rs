@@ -77,7 +77,7 @@ fn accepts_st_terminator() {
 }
 
 #[test]
-fn ordinary_escape_sequences_are_not_marks() {
+fn plain_escape_sequences_are_not_marks() {
     // The OSC 133 mark and an SGR color escape inside output pass through untouched.
     let sgr = b"\x1b]133;C\x07\x1b[31mred\x1b[0m";
     let out = engine_stream(&[sgr]);
@@ -86,7 +86,7 @@ fn ordinary_escape_sequences_are_not_marks() {
 }
 
 #[test]
-fn mark_split_across_two_reads_is_carried() {
+fn mark_split_across_two_reads_is_reassembled() {
     // The ESC]133;C BEL mark is split mid-sequence across the read boundary.
     let segs = run(&[
         b"\x1b]133;A\x07PS> \x1b]133;B\x07cmd\x1b]13",
@@ -240,7 +240,7 @@ fn split_marker_keeps_trust_when_lifecycle_is_valid() {
 }
 
 #[test]
-fn malformed_carried_mark_clears_trust_before_forwarding() {
+fn malformed_held_over_mark_clears_trust_before_forwarding() {
     let mut s = PromptSniffer::default();
     let mut out = Vec::new();
 
@@ -267,14 +267,14 @@ fn malformed_carried_mark_clears_trust_before_forwarding() {
     assert!(out.starts_with(b"\x1b]133;"));
 }
 
-/// A read boundary landing inside an ordinary escape sequence (any chunk
-/// ending in a bare ESC / partial OSC introducer — constant under
+/// A read boundary inside a plain escape sequence (any chunk
+/// ending in a bare ESC / partial OSC introducer, constant under
 /// ESC-dense output like vtebench) must forward the bytes untouched and
 /// KEEP boundary trust. The vtebench "run to completion, output vanishes"
-/// bug: the carried ESC resolved as NotMark but was handled as a
+/// bug: the held-over ESC resolved as NotMark but was handled as a
 /// boundary glitch, killing trust mid-command with no cycle to recover it.
 #[test]
-fn ordinary_escape_split_across_reads_keeps_trust() {
+fn plain_escape_split_across_reads_keeps_trust() {
     for (a, b_) in [
         (&b"text\x1b"[..], &b"[31mred"[..]),           // CSI split at ESC
         (&b"text\x1b]"[..], &b"0;title\x07"[..]),      // other-OSC split after ]
@@ -303,7 +303,7 @@ fn ordinary_escape_split_across_reads_keeps_trust() {
 }
 
 /// Feed `input` and collect the completed-command captures the `on_mark` hook
-/// delivers (in stream order — multiple completions per read stay ordered).
+/// delivers (in stream order: multiple completions per read stay ordered).
 fn feed_commands(s: &mut PromptSniffer, input: &[u8]) -> Vec<CommandCapture> {
     let mut out = Vec::new();
 
@@ -318,7 +318,7 @@ fn feed_commands(s: &mut PromptSniffer, input: &[u8]) -> Vec<CommandCapture> {
 
 /// A sniffer with boundary trust already established, the way a real session gets
 /// it: the ps1's synthetic session-start `;A;B;C` prime closed by the first prompt's
-/// `;D` — which itself must produce no command block (the trust-establishing cycle).
+/// `;D`, which itself must produce no command block (the trust-establishing cycle).
 fn primed() -> PromptSniffer {
     let mut s = PromptSniffer::default();
 
@@ -338,8 +338,8 @@ fn primed() -> PromptSniffer {
 
 #[test]
 fn escape_split_inside_command_region_keeps_captured_text() {
-    // An ordinary escape split by the read boundary inside the ;B→;C echo
-    // region: the carried ESC must still land in the command buffer so the
+    // A plain escape split by the read boundary inside the ;B→;C echo
+    // region: the held-over ESC must still reach the command buffer so the
     // capture normalization sees the complete escape sequence and strips
     // it. Dropping the carry leaves a bare "[31m" behind as literal
     // command text ("echo [31mhi").
@@ -414,7 +414,7 @@ fn bare_d_records_unknown_exit_code() {
 }
 
 #[test]
-fn exit_code_mark_split_across_reads_is_carried() {
+fn exit_code_mark_split_across_reads_is_reassembled() {
     let mut s = primed();
 
     let cmds = feed_commands(
@@ -465,7 +465,7 @@ fn untrusted_or_partial_cycle_produces_no_block() {
     assert!(cmds.is_empty());
 
     // A first ordered cycle with no prior trust: its ;D establishes trust but the
-    // cycle itself is skipped (Decision 5 — trust-recovery command is not recorded).
+    // cycle itself is skipped (a trust-recovery command is not recorded).
     let mut s = PromptSniffer::default();
 
     let cmds = feed_commands(
@@ -478,7 +478,7 @@ fn untrusted_or_partial_cycle_produces_no_block() {
 }
 
 #[test]
-fn explicitly_empty_command_produces_no_block() {
+fn reported_empty_command_produces_no_block() {
     let mut s = primed();
 
     // The shell reports the empty line on `;C` itself, independently of the echo.
@@ -524,7 +524,7 @@ fn command_echo_redraws_converge_to_final_line() {
 // ---- command lifecycle: mark hook edges + mark bytes ----
 
 /// The `on_mark` hook fires at each mark's exact stream position: after the bytes
-/// before it are forwarded, before any byte after it — with the mark's raw bytes,
+/// before it are forwarded, before any byte after it, with the mark's raw bytes,
 /// the ;A prompt-start edge, and the trusted-;C command-start payload.
 #[test]
 fn mark_hook_fires_in_stream_order_with_edges() {
@@ -562,7 +562,7 @@ fn mark_hook_fires_in_stream_order_with_edges() {
         vec![
             "mark[A]",
             "seg:p>",
-            "mark[]", // ;B — no edge payload
+            "mark[]", // ;B: no edge payload
             "seg:cmd",
             "mark[C:cmd]",
             "seg:OUT",
@@ -620,7 +620,7 @@ fn command_started_only_for_trusted_nonempty_commands() {
         );
     };
 
-    // Synthetic prime: untrusted at its ;C, empty command — no start.
+    // Synthetic prime: untrusted at its ;C, empty command: no start.
     feed(
         &mut s,
         b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07",
@@ -628,7 +628,7 @@ fn command_started_only_for_trusted_nonempty_commands() {
 
     assert!(starts.borrow().is_empty());
 
-    // First real command: trusted, non-empty — one start with the echo text.
+    // First real command: trusted, non-empty; one start with the echo text.
     feed(
         &mut s,
         b"\x1b]133;A\x07> \x1b]133;B\x07sleep 5\r\n\x1b]133;C\x07",
@@ -663,7 +663,7 @@ fn right_prompt_marker_stays_in_prompt_region() {
 
 /// zsh draws its right prompt after the left one, so those bytes arrive inside
 /// the `;B`→`;C` echo region and would otherwise be replayed into the captured
-/// command — the integration closes the right prompt with a second `;B`, and
+/// command; the integration closes the right prompt with a second `;B`, and
 /// every `;B` clears what the echo has accumulated.
 #[test]
 fn a_right_prompt_stays_out_of_the_captured_command() {
@@ -794,7 +794,7 @@ fn reported_empty_or_cancelled_input_starts_no_execution() {
 
 /// PSReadLine erases its prediction rows below the input after Enter; collapsed
 /// onto one line that erase empties the echo estimate. The block must survive
-/// with no title rather than vanish with its output.
+/// with no title instead of vanishing with its output.
 #[test]
 fn erased_echo_without_a_report_still_keeps_the_block() {
     let input = [

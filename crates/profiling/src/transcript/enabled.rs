@@ -44,7 +44,8 @@ thread_local! {
 }
 
 /// A synchronous operation's elapsed time and Rust allocation traffic.
-/// This guard is deliberately thread-bound and must not cross an await.
+/// This guard measures one thread's allocations, so it is thread-bound and
+/// must not cross an await.
 #[must_use]
 pub struct Probe {
     operation: Operation,

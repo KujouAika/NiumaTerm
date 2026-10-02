@@ -70,8 +70,8 @@ pub(super) fn tab_surface_view(
             .overflow_hidden()
             // The Settings widget paints no fill of its own, so without
             // this the translucent surface card shows the window backdrop
-            // through the page area while the sidebar, which carries an
-            // explicit fill, stays opaque.
+            // through the page area while the sidebar, which paints its
+            // own fill, stays opaque.
             .bg(cx
                 .theme()
                 .background
@@ -144,7 +144,7 @@ fn render_pane_node(
     }
 }
 
-/// A cached pane is laid out from this style rather than measured from its
+/// A cached pane is laid out from this style instead of measured from its
 /// contents, so it has to fill the slot its parent gives it.
 fn pane_style() -> StyleRefinement {
     StyleRefinement::default().size_full()

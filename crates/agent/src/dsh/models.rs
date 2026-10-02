@@ -3,7 +3,7 @@
 //! The harness addresses a model by the pair `(provider route, model id)`,
 //! while the pane's picker submits one opaque string. This holds the mapping
 //! between the two, which is also why the directory outlives the frame that
-//! carried it: a later pick has to be turned back into the pair.
+//! delivered it: a later pick has to be turned back into the pair.
 
 use serde_json::Value;
 
@@ -152,9 +152,9 @@ impl ModelDirectory {
     /// Catalog membership is advisory on the way in as well as the way out: a
     /// provider resolves an id it never advertised as a text-only model on its
     /// own route, so an id absent from the directory is still addressable and
-    /// gets routed rather than refused.
+    /// gets routed instead of refused.
     ///
-    /// A prefix is read as a provider only when some route actually serves that
+    /// A prefix is read as a provider only when some route really serves that
     /// provider, because a model id may contain a slash of its own
     /// (`Qwen/Qwen3-32B`) and splitting one would address a provider that does
     /// not exist.

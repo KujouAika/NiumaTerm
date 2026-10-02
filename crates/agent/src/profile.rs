@@ -19,7 +19,7 @@ pub const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
 /// The endpoint DeepSeek Harness routes to when its own settings document names
 /// none, which is the state a stock installation is in. A `baseURL` written
 /// through the harness's own Models page outranks this, because that document is
-/// a deliberate local override rather than a default.
+/// a chosen local override, not a default.
 pub const DEEPSEEK_BASE_URL_ENV: &str = "DEEPSEEK_BASE_URL";
 
 /// The per-tier model overrides Claude Code reads when it dispatches work to
@@ -89,7 +89,7 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
 
     if profile.use_custom_endpoint {
         // Codex is absent because it reaches its endpoint through a generated
-        // provider entry rather than an environment variable; that entry is
+        // provider entry instead of an environment variable; that entry is
         // built from the same field further down.
         let base_url_env = match profile.kind {
             AgentKind::Claude => Some("ANTHROPIC_BASE_URL"),
@@ -225,7 +225,7 @@ fn profile_effort(profile: &AgentProfile) -> Option<String> {
 /// choice to the harness and the remembered pick. Claude Code's permission
 /// modes and Codex's approval policies share the field but not their values,
 /// so a value outside this kind's list (left over from a kind switch or a
-/// hand edit) pins nothing rather than reaching a harness that would refuse
+/// hand edit) pins nothing instead of reaching a harness that would refuse
 /// it. `default` is the picker's own label for "no choice".
 fn profile_approval(profile: &AgentProfile) -> Option<String> {
     let options: &[&str] = match profile.kind {

@@ -6,7 +6,7 @@ Settings: [Cargo.toml](Cargo.toml), [package.json](package.json), [config.yaml](
 
 Documents: [README.md](README.md), [report.pdf](report.pdf), [data.csv](data.csv), [slides.pptx](slides.pptx), [picture.png](picture.png).
 
-Inline code: [`main.rs`](crates/app/src/main.rs:42) and [`config.yaml`](config.yaml). Ordinary code `main.rs` has no icon.
+Inline code: [`main.rs`](crates/app/src/main.rs:42) and [`config.yaml`](config.yaml). Plain code `main.rs` has no icon.
 
 Mixed formatting: [**main**.rs](crates/app/src/main.rs), [source reference][source], and [a website](https://example.com).
 

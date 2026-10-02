@@ -15,19 +15,19 @@ pub use crate::ghostty::types::{
 /// Values mirror Ghostty's `ModeTag` (packed `u16`): a DEC private mode uses its
 /// raw number; an ANSI mode sets bit 15. See Ghostty `src/terminal/modes.zig`.
 pub mod mode {
-    /// DECCKM — application cursor keys.
+    /// DECCKM: application cursor keys.
     pub(crate) const CURSOR_KEYS: u16 = 1;
 
-    /// IRM — insert/replace (ANSI mode 4).
+    /// IRM: insert/replace (ANSI mode 4).
     pub(crate) const INSERT: u16 = 4 | 0x8000;
 
-    /// DECAWM — autowrap / line wrap.
+    /// DECAWM: autowrap / line wrap.
     pub(crate) const WRAPAROUND: u16 = 7;
 
-    /// DECTCEM — cursor visible.
+    /// DECTCEM: cursor visible.
     pub(crate) const CURSOR_VISIBLE: u16 = 25;
 
-    /// DECKPAM — application keypad.
+    /// DECKPAM: application keypad.
     pub(crate) const KEYPAD_KEYS: u16 = 66;
 
     pub(crate) const MOUSE_NORMAL: u16 = 1000;
@@ -118,7 +118,7 @@ pub struct GhosttyTerminal {
 
     /// Output arrived since the override was last decided. Deciding it
     /// formats the whole screen and history, so it is redone once per frame
-    /// capture rather than for every PTY chunk.
+    /// capture instead of for every PTY chunk.
     override_stale: bool,
 }
 
@@ -142,9 +142,9 @@ impl GhosttyTerminal {
         // A new terminal starts on the engine's own scrollback default, so the
         // caller's limit has to be applied before any output reaches it. The
         // engine counts lines itself, to page granularity; a limit of zero
-        // goes through the byte limit, which is what disables scrollback and
-        // erases retained history. A rejected limit is the caller's error, so
-        // the half-built terminal is released.
+        // goes through the byte limit, because only that path disables
+        // scrollback and erases retained history. A rejected limit is the
+        // caller's error, so the half-built terminal is released.
         let scrollback = unsafe {
             if scrollback_lines == 0 {
                 ghostty_terminal_set(
@@ -201,7 +201,7 @@ impl GhosttyTerminal {
         // Match conhost/ConPTY, which defaults to grapheme clustering (mode 2027,
         // permanently on). Without this ghostty measures ZWJ/multi-emoji clusters
         // per-codepoint (a family emoji = 6 cols) while ConPTY uses the clustered
-        // width (2 cols), so the cursor misaligns on any line with such a cluster —
+        // width (2 cols), so the cursor misaligns on any line with such a cluster,
         // independent of resize. Real ptys (macOS/Linux) let the app drive 2027, so
         // this default is Windows-only.
         if nmt_platform::USES_CONPTY {
@@ -305,7 +305,7 @@ impl GhosttyTerminal {
 
     /// The cursor's row in the **active screen** (the region CUP addresses),
     /// 0-based, independent of the viewport scroll pin. Reads
-    /// `terminal.screens.active.cursor.y` via the engine — unlike
+    /// `terminal.screens.active.cursor.y` via the engine. Unlike
     /// `snapshot().cursor.y` (render-state, **viewport-relative**), this stays valid
     /// when the viewport is scrolled into history or has blank rows below the prompt.
     /// Returns `None` if the engine cannot provide the position.
@@ -332,7 +332,7 @@ impl GhosttyTerminal {
     }
 
     /// The engine's scrollbar geometry for the current viewport pin.
-    /// **Expensive for arbitrary (scrolled) pins** — read it via `snapshot()`, not
+    /// **Expensive for arbitrary (scrolled) pins**: read it via `snapshot()`, not
     /// per render frame.
     pub fn scrollbar(&self) -> ScrollbarInfo {
         if let Some(sb) = self.scrollbar_override {
@@ -375,7 +375,7 @@ impl GhosttyTerminal {
         set_kitty_storage_limit(self.terminal, bytes);
     }
 
-    /// Whether the engine currently holds a kitty image with this id —
+    /// Whether the engine currently holds a kitty image with this id:
     /// cheap id lookup, no pixel copy. Used to observe transmit/delete/eviction.
     pub fn kitty_image_exists(&self, image_id: u32) -> bool {
         let mut graphics: VtKittyGraphics = ptr::null_mut();
@@ -415,7 +415,7 @@ impl GhosttyTerminal {
 
     /// The active kitty keyboard protocol flags, mapped to terminal `Mode` bits. These
     /// live in the engine's kitty-keyboard flag stack, NOT the DEC private modes, so
-    /// `mode()` can't read them — the vt_modes facade folds these in separately so
+    /// `mode()` can't read them; the vt_modes facade folds these in separately so
     /// `session_key_flags` / the input path see kitty press+release encoding
     /// for key press and release encoding. Empty when the protocol is inactive.
     pub(crate) fn kitty_keyboard_modes(&self) -> vt_modes::Mode {
@@ -480,7 +480,7 @@ impl GhosttyTerminal {
         // reflow. When columns AND rows both change in one resize, Ghostty's
         // `PageList.resizeCols` computes `self.rows - c.y - 1` against the
         // already-reduced row count; if the cursor sits on a row at or below
-        // the new bottom (common — shells leave the cursor near the last row),
+        // the new bottom (common: shells leave the cursor near the last row),
         // that unsigned subtraction underflows and the Zig side panics
         // ("integer overflow"), aborting the PTY thread. Shrinking the window
         // reproduces this every time.
@@ -561,7 +561,7 @@ impl GhosttyTerminal {
 
     /// Push default foreground/background/cursor colors and the 256-color
     /// palette into the engine so SGR-indexed and default colors resolve to the
-    /// host theme rather than Ghostty's built-in palette.
+    /// host theme instead of Ghostty's built-in palette.
     pub(crate) fn set_colors(
         &mut self,
         fg: [u8; 3],
@@ -631,7 +631,7 @@ impl GhosttyTerminal {
     }
 
     /// The engine's current 256-color palette (OSC 4 overrides applied). Used to
-    /// resolve palette-tagged style colors into concrete RGB at read time — by
+    /// resolve palette-tagged style colors into concrete RGB at read time, by
     /// the harvester (once per batch) and by app-side `BlockRef` readers (once
     /// per acquire).
     pub fn color_palette(&self) -> [VtColorRgb; 256] {
@@ -722,9 +722,9 @@ impl GhosttyTerminal {
 
     /// Finish the current command block: freeze the primary screen into the
     /// engine's block set (O(1) ownership move) and continue on a fresh
-    /// primary screen with writer state carried over. Returns `None` when
+    /// primary screen with writer state preserved. Returns `None` when
     /// the active screen has no content (no block created). Errors with
-    /// `InvalidValue` if the alternate screen is active — callers gate on
+    /// `InvalidValue` if the alternate screen is active; callers gate on
     /// the primary screen because alternate-screen content should not enter history.
     pub fn finish_block(&mut self) -> Result<Option<BlockHandle>> {
         let mut handle = BlockHandle::default();
@@ -769,7 +769,7 @@ impl GhosttyTerminal {
             .then_some(rows)
     }
 
-    /// Total page-storage bytes of all finished blocks — the value the
+    /// Total page-storage bytes of all finished blocks: the value the
     /// block byte budget is enforced against.
     pub fn blocks_bytes(&self) -> usize {
         unsafe { ghostty_terminal_blocks_bytes(self.terminal) }
@@ -790,10 +790,10 @@ impl GhosttyTerminal {
 
     /// Take a read reference on a finished block (engine-refcounted; any
     /// thread). `None` for a stale handle or while the engine is
-    /// reflowing the block — retry next frame. The reference pins an
+    /// reflowing the block; retry next frame. The reference pins an
     /// immutable snapshot: the block cannot be freed or mutated while it
     /// is held, and reads through it take no engine lock. Keep it
-    /// short-lived (one read pass) — a held reference blocks the writer's
+    /// short-lived (one read pass): a held reference blocks the writer's
     /// resize reflow.
     pub fn block_acquire(&self, handle: BlockHandle) -> Option<BlockRef> {
         let mut raw: VtBlockRef = ptr::null_mut();
@@ -860,7 +860,7 @@ impl GhosttyTerminal {
     /// The stream starts with a reset so it also applies over a used engine.
     /// Finished blocks live outside the screen the formatter reads, so they are
     /// written first and scrolled into history: without them a checkpoint in
-    /// block mode carries only the output since the last finished command.
+    /// block mode holds only the output since the last finished command.
     /// A replica receives that history as plain scrollback, not as blocks.
     pub(crate) fn format_vt_state(&mut self) -> Result<Vec<u8>> {
         let mut out = b"\x1bc\x1b[3J".to_vec();
@@ -935,7 +935,7 @@ impl GhosttyTerminal {
     /// Resolve a point (in the given coordinate system) to a `GridRef`. Fast for
     /// `VIEWPORT`/`ACTIVE`; **O(scrollback) for `SCREEN`/`HISTORY`**. The ref is
     /// valid only until the next mutating call (`write_vt`/`resize`/
-    /// `scroll_viewport`) — use it within one read pass, never cache it.
+    /// `scroll_viewport`); use it within one read pass, never cache it.
     pub(crate) fn grid_ref_at(&self, tag: VtPointTag::Type, x: u16, y: u32) -> Result<VtGridRef> {
         let point = VtPoint {
             tag,
@@ -953,7 +953,7 @@ impl GhosttyTerminal {
         Ok(grid_ref)
     }
 
-    /// The SCREEN row of the top visible row (`viewport_top`) — the constant that
+    /// The SCREEN row of the top visible row (`viewport_top`): the constant that
     /// maps between SCREEN and visible coordinates (`screen_row = viewport_top +
     /// visible_row`). One cheap viewport `grid_ref`; `None` if the viewport is
     /// empty. Selection rendering uses this to translate coordinate spaces.
@@ -985,9 +985,9 @@ impl GhosttyTerminal {
 
     /// Walk one absolute `SCREEN` row with styles, invoking `on_cell` for each
     /// content cell (sparse: blank default cells are skipped) instead of
-    /// materializing a `Vec` — the harvester constructs its `LineCell`s in
+    /// materializing a `Vec`: the harvester constructs its `LineCell`s in
     /// place, so no intermediate row buffer exists on the freeze hot path.
-    /// Colors resolve against a caller-supplied palette (hoisted out of
+    /// Colors resolve against a caller-supplied palette (moved out of the
     /// per-row cost: the palette is a 256-entry FFI copy and cannot change
     /// while the engine lock is held). Reaches any scrollback row without
     /// moving the viewport or refreshing the render state. Returns `None`
@@ -1049,8 +1049,8 @@ impl GhosttyTerminal {
         self.kitty.take_image_deltas(self.terminal, placements)
     }
 
-    /// Probe: whether any visible row carries a PROMPT semantic tag (command-blocks-
-    /// rendering — mark-forwarding regression checks in terminal pipeline tests).
+    /// Probe: whether any visible row has a PROMPT semantic tag (command-blocks-
+    /// rendering: mark-forwarding regression checks in terminal pipeline tests).
     #[cfg(test)]
     pub(crate) fn has_prompt_tagged_row(&mut self) -> bool {
         self.semantic_prompt_tags()

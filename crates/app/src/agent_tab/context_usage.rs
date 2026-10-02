@@ -228,7 +228,7 @@ impl RenderOnce for ContextUsageIndicator {
     }
 }
 
-/// Wall time as the largest unit that still reads as a duration rather than as
+/// Wall time as the largest unit that still reads as a duration instead of as
 /// a number: a tool that ran for two minutes is more legible as `2m 5s` than as
 /// either `125s` or `0.03h`.
 fn wall_time_readout(millis: u64) -> String {
@@ -252,7 +252,7 @@ struct ContextSegmentRow {
 }
 
 /// Order segments largest first so the card answers "what is filling this"
-/// before it answers "what else is in here", and drop empty ones rather than
+/// before it answers "what else is in here", and drop empty ones instead of
 /// listing parts that occupy nothing.
 fn context_segment_rows(composition: &ContextComposition) -> Vec<ContextSegmentRow> {
     // Percentages are taken against the measured window when the provider
@@ -288,7 +288,7 @@ impl RenderOnce for ContextSegmentRow {
         let foreground = cx.theme().foreground;
         let muted = cx.theme().muted_foreground;
 
-        // A deferred row is dimmed rather than relabelled: its name arrives as
+        // A deferred row is dimmed, not relabelled: its name arrives as
         // the harness renders it, and Claude's already ends in "(deferred)".
         let label_color = if self.deferred {
             muted.opacity(0.72)
@@ -340,17 +340,17 @@ fn remaining_context_percent(usage: ContextWindowUsage) -> Option<u64> {
 }
 
 /// Share of input the provider served from its cache, measured over the widest
-/// scope it reports rather than over the newest request alone.
+/// scope it reports instead of over the newest request alone.
 ///
 /// A single request is the wrong denominator: every request in a tool loop
 /// replays the whole conversation, and only the first one pays to write the new
 /// content into the cache. The last request of a turn therefore reads near 100%
-/// however much that turn actually cost. Aggregating over the provider's own
+/// however much that turn cost. Aggregating over the provider's own
 /// turn or thread scope keeps those cache writes in the denominator, so the
 /// readout moves when the work does.
 ///
-/// Both providers report cached tokens inside `input_tokens` — Claude by
-/// folding its read and write counts into the total, Codex natively — so the
+/// Both providers report cached tokens inside `input_tokens` (Claude by
+/// folding its read and write counts into the total, Codex natively), so the
 /// share cannot exceed 100% and needs no clamp.
 pub(super) fn cache_hit_percent(usage: ContextWindowUsage) -> Option<u64> {
     // Older protocol revisions and post-compaction snapshots report a

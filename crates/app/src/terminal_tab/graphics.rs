@@ -125,7 +125,7 @@ impl Drop for ImageGeneration {
 /// content mask. For a normalized source `[u0, v0, u1, v1]` and destination
 /// `[dx, dy, dw, dh]` (pixels), returns the `[x, y, w, h]` full-image rectangle to
 /// pass to `paint_image`, or `None` for a degenerate or non-finite source/destination
-/// (which paint skips). Pure — no GPUI types.
+/// (which paint skips). Pure: no GPUI types.
 pub fn expanded_full_bounds(dest: [f32; 4], source: [f32; 4]) -> Option<[f32; 4]> {
     let [dx, dy, dw, dh] = dest;
     let [u0, v0, u1, v1] = source;
@@ -151,7 +151,7 @@ pub fn expanded_full_bounds(dest: [f32; 4], source: [f32; 4]) -> Option<[f32; 4]
         return None;
     }
 
-    // Offset the full image so the source origin (u0, v0) lands at the destination's
+    // Offset the full image so the source origin (u0, v0) falls at the destination's
     // top-left; the caller clips the overflow to `dest`.
     Some([dx - u0 * full_w, dy - v0 * full_h, full_w, full_h])
 }
@@ -160,7 +160,7 @@ pub fn expanded_full_bounds(dest: [f32; 4], source: [f32; 4]) -> Option<[f32; 4]
 /// consuming `pixels` so a valid RGBA buffer is reused in place (only R/B swapped).
 /// RGB is expanded to BGRA with opaque alpha. Returns `None` for zero dimensions, a
 /// pixel count that overflows `usize`, or a byte length that does not match
-/// `width * height * channels`. Pure — no GPUI or window access.
+/// `width * height * channels`. Pure: no GPUI or window access.
 pub fn graphic_to_bgra(
     width: usize,
     height: usize,
@@ -222,7 +222,7 @@ pub fn graphic_to_generation(
 /// block once on first paint, then shared by `Arc`; entries die with their
 /// block (see [`prune_frozen_images`]), so the memory mirrors the engine's
 /// own per-block image ownership, which the engine block budget bounds.
-/// Lives beside the (gpui-free) `BlockStore` rather than inside it because
+/// Kept beside the (gpui-free) `BlockStore` instead of inside it because
 /// the values are gpui images.
 pub(super) type FrozenImageCache = Arc<Mutex<HashMap<(u64, u32), Arc<ImageGeneration>>>>;
 
@@ -265,7 +265,7 @@ impl GenerationStore {
     }
 
     /// Install (or replace) the live generation for `id`. Returns the new generation,
-    /// or `None` on invalid pixels — in which case the previously cached generation is
+    /// or `None` on invalid pixels, in which case the previously cached generation is
     /// left untouched. Replacing drops the store's `Arc` to the old generation; if no
     /// frame or frozen block still holds it and it was uploaded, its `Drop` enqueues an
     /// atlas release.

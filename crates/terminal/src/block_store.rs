@@ -2,11 +2,11 @@
 //!
 //! The [`BlockStore`] consumes the PTY thread's [`BlockEvent`] stream and
 //! keeps one item per finished command: metadata plus the engine block's
-//! HANDLE. The block's content stays in the engine — rendering acquires a
+//! HANDLE. The block's content stays in the engine; rendering acquires a
 //! refcounted `BlockRef` and reads rows/images directly, so the store
 //! retains ~695 B/row of engine pages instead of materialized lines.
 //!
-//! Each `EngineBlock` event carries the command's complete metadata: the
+//! Each `EngineBlock` event includes the command's complete metadata: the
 //! PTY thread latches the launch directory at `;C` and holds command text,
 //! timing, and exit code when `;D` freezes the block, so items are born
 //! whole and nothing is joined by sequence number later. Memory is bounded
@@ -35,7 +35,7 @@ pub struct SegmentMeta {
 }
 
 /// One finished command of the frozen history list: metadata + the engine
-/// block backing it. Born complete — no content ever streams into an item.
+/// block backing it. Born complete: no content ever streams into an item.
 #[derive(Debug, Clone)]
 pub struct BlockItem {
     pub seq: Option<u64>,
@@ -56,7 +56,7 @@ impl BlockItem {
         Some(self.handle)
     }
 
-    /// Cached engine row count (already wrapped at the current width — the
+    /// Cached engine row count (already wrapped at the current width; the
     /// engine reflows blocks eagerly on resize).
     pub fn engine_rows(&self) -> usize {
         self.rows
@@ -111,7 +111,7 @@ impl BlockStore {
                     self.history_epoch += 1;
                 }
                 // Prune items whose engine block is gone (byte-budget
-                // eviction is oldest-first, so removals are a prefix — the
+                // eviction is oldest-first, so removals are a prefix; the
                 // eviction counter keeps list splicing aligned) and refresh
                 // cached rows + generation after a reflow.
                 BlockEvent::EngineBlocksSync(live) => {

@@ -51,7 +51,7 @@ pub enum BlockEvent {
 /// prompt sniffer. `command` is submitted shell text or a legacy echo estimate;
 /// missing text does not prevent output from being retained.
 /// `exit_code` comes from the `;D;<code>` argument (`None` for a foreign bare `;D`).
-/// `cwd` is the **launch** working directory, latched at command start — the ps1 reports
+/// `cwd` is the **launch** working directory, latched at command start: the ps1 reports
 /// the next prompt's OSC 7 just before `;D`, so a `cd` records its origin. Timestamps are
 /// wall-clock at output-start (`;C`) and command-finished (`;D`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +68,7 @@ pub struct CommandCapture {
 }
 
 /// An integrated-shell execution beginning at a trusted `;C`, excluding an
-/// explicitly empty submission. Carries the same launch metadata as the
+/// empty submission reported by the shell. Has the same launch metadata as the
 /// eventual [`CommandCapture`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandStart {
@@ -113,7 +113,7 @@ pub type MsgSender = UnboundedSender<Msg>;
 pub enum TerminalEvent {
     /// New terminal content available.
     Render,
-    /// Terminal content changed — lightweight notification (no damage payload).
+    /// Terminal content changed: lightweight notification (no damage payload).
     /// Damage versions travel in the published frame.
     TerminalDamaged(usize),
     /// Graphics update available from terminal.
@@ -253,7 +253,7 @@ pub struct ProgressReport {
 // Requests the session sends to the PTY thread
 //
 // The engine lives on the PTY thread, so every read of engine state from the
-// UI side travels as a `Msg::Query` or `Msg::Checkpoint` carrying a oneshot
+// UI side is sent as a `Msg::Query` or `Msg::Checkpoint` with a oneshot
 // reply. The PTY thread answers between output batches and marks a reply
 // `Stale` when the frame or block it referred to has since moved on.
 // ---------------------------------------------------------------------------

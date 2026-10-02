@@ -29,7 +29,7 @@ fn line_text(snapshot: &RenderBuffer, row: usize) -> String {
 
 /// Finishing freezes content into an engine block readable
 /// through the block row visitor; the active screen restarts empty with
-/// SGR carried over; stale handles read as absent.
+/// SGR preserved; stale handles read as absent.
 #[test]
 fn finish_block_freezes_and_reads_back() {
     let mut t = GhosttyTerminal::new(20, 5, 10_000).unwrap();
@@ -121,7 +121,7 @@ fn finish_block_freezes_and_reads_back() {
     assert_eq!(t.block_count(), 0);
 }
 
-/// A stream RIS (`ESC c`) clears only the active screen — finished
+/// A stream RIS (`ESC c`) clears only the active screen; finished
 /// blocks survive so a per-sample reset does not erase frozen history.
 #[test]
 fn finish_block_survives_stream_ris() {
@@ -329,7 +329,7 @@ fn kitty_image_placement() {
     assert_eq!(p.image_id, 1);
     assert_eq!(
         p.placement_id, 9,
-        "ordinary placement carries its placement id"
+        "a regular placement keeps its placement id"
     );
     assert_eq!((p.viewport_col, p.viewport_row), (0, 0), "placed at cursor");
     assert!(p.grid_cols >= 1 && p.grid_rows >= 1, "spans >=1 cell");
@@ -338,7 +338,7 @@ fn kitty_image_placement() {
         "has rendered pixels"
     );
 
-    // Ordinary geometry unchanged: full 1×1 source rectangle, no sub-cell offset.
+    // Regular geometry unchanged: full 1×1 source rectangle, no sub-cell offset.
     assert_eq!(
         (p.source_x, p.source_y, p.source_width, p.source_height),
         (0, 0, 1, 1),
@@ -359,7 +359,7 @@ fn kitty_image_placement() {
         "first batch ships image 1's pixels"
     );
 
-    // A second call with no intervening write must yield nothing — neither a
+    // A second call with no intervening write must yield nothing: neither a
     // re-ship nor a removal (idempotent steady state).
     let snap2 = t.snapshot().unwrap();
     let (second, removed2) = t.take_image_deltas(snap2.placements());
@@ -447,7 +447,7 @@ fn kitty_png_decode() {
 
 /// A Kitty Unicode-placeholder cell (U+10EEEE, image id in the foreground)
 /// sets the per-row `KITTY_VIRTUAL_PLACEHOLDER` flag, the snapshot reports a
-/// virtual placement carrying the id, and its pixels still ship via the
+/// virtual placement with the id, and its pixels still ship via the
 /// delta path (virtual placements).
 #[test]
 fn virtual_placeholder_row_flag() {
@@ -470,7 +470,7 @@ fn virtual_placeholder_row_flag() {
 
     assert!(
         snap.row_has_virtual_placeholder(0),
-        "row 0 carries the virtual-placeholder flag"
+        "row 0 has the virtual-placeholder flag"
     );
     assert!(
         (1..snap.rows()).all(|y| !snap.row_has_virtual_placeholder(y)),
@@ -510,7 +510,7 @@ fn kitty_image_scroll() {
 
     t.resize(20, 5, 10, 20).unwrap();
 
-    // Lay down `a b c <image> d e f g h` so the image lands at absolute row 3
+    // Lay down `a b c <image> d e f g h` so the image is placed at absolute row 3
     // and is pushed into scrollback (9 rows, 5-row viewport).
     t.write_vt(b"a\r\nb\r\nc\r\n");
 
@@ -758,8 +758,8 @@ fn screen_coords_stable_across_output() {
 
 /// Verifies the cheap screen↔viewport mapping for selection rendering: the
 /// SCREEN coord of viewport row y is `viewport_top + y` for a single
-/// `viewport_top` (so one cheap viewport grid_ref gives the whole mapping —
-/// no expensive scrollbar read). Holds at the bottom and when scrolled.
+/// `viewport_top` (so one cheap viewport grid_ref gives the whole mapping,
+/// with no expensive scrollbar read). Holds at the bottom and when scrolled.
 #[test]
 fn viewport_top_maps_screen_to_visible() {
     let mut t = GhosttyTerminal::new(20, 3, 1000).unwrap();
@@ -802,7 +802,7 @@ fn resize_drag_does_not_accumulate_scrollback() {
     // engine reflow is accumulating and the bug is upstream (libghostty-vt).
     let mut t = GhosttyTerminal::new(80, 24, 1000).unwrap();
 
-    // Two `ls` runs worth of output.
+    // Output of two `ls` runs.
     for i in 0..40 {
         t.write_vt(format!("file_{i:02}\r\n").as_bytes());
     }
@@ -856,14 +856,14 @@ fn resize_reflow_does_not_duplicate_viewport_content() {
     // the viewport shows the SAME content twice. Write uniquely-tagged long
     // lines (wide `ls`-like rows that wrap when the window narrows), push some
     // into scrollback, then oscillate the geometry. Every visible tag (ROWnnn /
-    // DIRnnn) must appear AT MOST once in the viewport — twice means the engine
+    // DIRnnn) must appear AT MOST once in the viewport; twice means the engine
     // reflow duplicated content into the visible region.
     let mut t = GhosttyTerminal::new(120, 40, 2000).unwrap();
 
     t.resize(120, 40, 10, 20).unwrap();
 
     for i in 0..60 {
-        // ~106 cols — wraps at narrow widths.
+        // ~106 cols: wraps at narrow widths.
         t.write_vt(format!("ROW{i:03} {}\r\n", "x".repeat(100)).as_bytes());
     }
 
@@ -917,15 +917,15 @@ fn resize_reflow_does_not_duplicate_viewport_content() {
 /// The reflow trailing-space trim this asserts is patch 0001 in
 /// `libghostty-vt-sys/patches`. It applies on every platform: upstream trims a
 /// trailing cell only when it was never written, and both of this application's
-/// producers write real spaces into the padding — ConPTY pads every line out to
+/// producers write real spaces into the padding: ConPTY pads every line out to
 /// the console width, and a zsh prompt drawing a right prompt pads the prompt
 /// row.
 #[test]
 fn resize_shrink_does_not_double_full_width_padded_lines() {
     // Regression (remove-crosswords resize double-spacing / 错位). Without the
     // reflow trailing-space trim, a column shrink wrapped that padding onto a
-    // new row — each line became line+blank, ~doubling sb.total, which on
-    // Windows desynced ConPTY's absolute cursor rows from the grid (input landed
+    // new row: each line became line+blank, ~doubling sb.total, which on
+    // Windows desynced ConPTY's absolute cursor rows from the grid (input went
     // on history rows). Padded lines must stay flat across a shrink, like plain
     // unpadded lines.
     let cols = 80u16;
@@ -980,7 +980,7 @@ fn resize_shrink_does_not_double_full_width_padded_lines() {
     );
 }
 
-/// The symptom the trim actually prevents, which the scrollback total above
+/// The visible symptom the trim prevents, which the scrollback total above
 /// only measures indirectly: when a padded row gains a wrapped remainder,
 /// everything below it moves down one row per resize step. A shell redraws its
 /// prompt at the moved cursor and the previous one stays on screen, so dragging
@@ -992,8 +992,8 @@ fn resize_shrink_keeps_a_padded_prompt_row_in_place() {
 
     let mut t = GhosttyTerminal::new(cols, rows, 1000).unwrap();
 
-    // A two-line zsh prompt as it actually reaches the engine: the first row
-    // carries the working directory and is padded with written spaces out to the
+    // A two-line zsh prompt as it reaches the engine from a real shell: the first
+    // row shows the working directory and is padded with written spaces out to the
     // width, which is how the right prompt gets placed; the second row is where
     // the cursor waits for input.
     let padding = " ".repeat(cols as usize - 2);
@@ -1032,7 +1032,7 @@ fn resize_shrink_keeps_a_padded_prompt_row_in_place() {
 fn grapheme_cluster_2027_enabled_matches_conhost() {
     // The terminal enables mode 2027 (grapheme clustering) by default on Windows in `new()`
     // to match ConPTY's permanent Graphemes mode. A ZWJ family emoji must then
-    // measure 2 cols (clustered), not 6 (per-codepoint) — otherwise the cursor
+    // measure 2 cols (clustered), not 6 (per-codepoint); otherwise the cursor
     // misaligns against ConPTY on any line with such a cluster (resize or not).
     let mut t = GhosttyTerminal::new(80, 24, 1000).unwrap();
 
@@ -1108,7 +1108,7 @@ fn reflow_styled_trailing_matches_conhost() {
 
 /// The other side of the 0001 tier split, off Windows. The trim drops trailing
 /// spaces that render exactly like a cell nobody wrote, which is the whole of
-/// what a shell's prompt padding is; a trailing run carrying a background color
+/// what a shell's prompt padding is; a trailing run with a background color
 /// is on screen, so it is content and reflows like any other content. Only
 /// matching conhost justifies trimming it, and that reason exists on Windows
 /// alone -- see `reflow_styled_trailing_matches_conhost`.
@@ -1151,7 +1151,7 @@ fn reflow_keeps_colored_trailing_padding() {
     assert!(
         styled_after > styled_before + 2,
         "a background-colored trailing run is visible content and must reflow \
-         rather than be trimmed: {styled_before}->{styled_after}"
+         instead of being trimmed: {styled_before}->{styled_after}"
     );
 }
 
@@ -1447,8 +1447,8 @@ fn title_change_is_reported_once() {
 /// **OSC 7**. Upstream libghostty-vt reports OSC 7 as an application-runtime
 /// action, which a headless build has no runtime to receive, so the sequence
 /// left the getter empty. The vendored engine routes `report_pwd` into
-/// `Terminal.setPwd` the way it already does for the window title, which is
-/// what lets a caller read one working directory whichever way it was set.
+/// `Terminal.setPwd` the way it already does for the window title, so a
+/// caller can read one working directory whichever way it was set.
 #[test]
 fn pwd_set_via_setter_and_osc7() {
     // Setter → getter roundtrip works (the getter itself is fine).
@@ -1488,7 +1488,7 @@ fn pwd_set_via_setter_and_osc7() {
 }
 
 /// The headless build must process OSC 133 marks written via `write_vt` into per-row
-/// SEMANTIC_PROMPT tags (OSC 7 needed a vendored patch for analogous plumbing).
+/// SEMANTIC_PROMPT tags (OSC 7 needed a vendored patch for the same handling).
 #[test]
 fn osc133_marks_tag_prompt_rows_headless() {
     let mut t = GhosttyTerminal::new(40, 4, 10_000).unwrap();
@@ -1511,7 +1511,7 @@ fn osc133_marks_tag_prompt_rows_headless() {
     );
 }
 
-/// Forwarded OSC 133 marks are zero-width state changes — they must not move the
+/// Forwarded OSC 133 marks are zero-width state changes; they must not move the
 /// cursor or add lines.
 #[test]
 fn osc133_marks_do_not_move_the_cursor() {
@@ -1781,7 +1781,7 @@ fn vt_state_checkpoint_keeps_primary_screen_under_alt_screen() {
 /// mode checkpoint must still carry them, styled and ahead of the current
 /// screen, or an attached replica starts without any command history.
 #[test]
-fn vt_state_checkpoint_carries_finished_blocks() {
+fn vt_state_checkpoint_includes_finished_blocks() {
     let mut source = GhosttyTerminal::new(20, 5, 100).unwrap();
 
     source.write_vt(b"$ ls\r\n\x1b[1mfile.txt\x1b[0m\r\n");

@@ -48,8 +48,8 @@ pub(super) fn accepts(attempt: &Attempt, provider_turn: &str) -> bool {
             .is_none_or(|id| id == provider_turn)
 }
 
-/// Record that the provider accepted attempt `index` as `provider_turn`, which
-/// is what counts its delivered context as given to the recipient. A send
+/// Record that the provider accepted attempt `index` as `provider_turn`; that
+/// acceptance counts its delivered context as given to the recipient. A send
 /// whose delivery was uncertain is known to be running once accepted, so its
 /// arrangement is active again and the uncertainty no longer holds the
 /// discussion.

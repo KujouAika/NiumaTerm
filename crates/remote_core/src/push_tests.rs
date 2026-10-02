@@ -48,7 +48,7 @@ fn two_seals_of_one_message_differ() {
 }
 
 #[test]
-fn a_long_body_is_cut_to_what_a_push_carries() {
+fn a_long_body_is_cut_to_the_push_length_limit() {
     let long = "x".repeat(MAX_BODY_CHARS * 3);
     let message = PushMessage::new(HOST, "a-1", PushKind::Question, "Asks", &long, 0);
 

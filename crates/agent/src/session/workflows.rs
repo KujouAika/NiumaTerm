@@ -76,7 +76,7 @@ impl WorkflowData {
 
     /// Take a replacement snapshot, reporting whether what the chrome shows
     /// changed. The chrome reveals its control and shows a running count, so
-    /// it is told on a change rather than on every refreshed snapshot.
+    /// it is told on a change instead of on every refreshed snapshot.
     pub(crate) fn set_snapshot(&mut self, snapshot: WorkflowSnapshot) -> bool {
         let before = self.activity();
 

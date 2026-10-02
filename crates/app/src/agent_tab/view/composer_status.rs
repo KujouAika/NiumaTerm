@@ -28,7 +28,7 @@ pub(crate) struct ComposerStatusBar {
 }
 
 /// The status footer along the bottom edge of the composer card. It reports
-/// rather than invites input, so it is set below the chrome size to keep the
+/// and does not invite input, so it is set below the chrome size to keep the
 /// prompt above it the loudest thing on the card.
 const COMPOSER_STATUS_PADDING_X: f32 = 14.0;
 
@@ -148,9 +148,9 @@ impl ComposerStatusBar {
             )
         });
 
-        // A backend that folds the count from its whole log is authoritative:
-        // this side's counter sees only the turns it replayed, and a replay is
-        // one page rather than the conversation.
+        // A backend that folds the count from its whole log wins over this
+        // side's counter, which sees only the turns it replayed, and a replay
+        // is one page, not the whole conversation.
         let turns = conversation
             .session_stats
             .map(|stats| stats.turns)
@@ -182,9 +182,9 @@ impl ComposerStatusBar {
             .items_center()
             .justify_between()
             .gap_3()
-            // Everything the footer reports is an identifier or a figure — a
-            // branch name, turn counts, timings, percentages — so the whole
-            // strip is set in the code face rather than each readout choosing
+            // Everything the footer reports is an identifier or a figure (a
+            // branch name, turn counts, timings, percentages), so the whole
+            // strip is set in the code face instead of each readout choosing
             // for itself and the context indicator between them falling back
             // to the prose face.
             .font(cx.global::<AgentSettings>().transcript_font())
@@ -199,7 +199,7 @@ impl ComposerStatusBar {
                     .child(div().min_w_0().truncate().child(branch)),
             )
             .child(
-                // The readouts belong with the context indicator rather than
+                // The readouts belong with the context indicator instead of
                 // centered between it and the branch: both report what the
                 // conversation has spent, and a variable-width group in the
                 // middle would drift as its parts appear.

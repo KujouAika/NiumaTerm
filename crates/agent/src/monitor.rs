@@ -22,7 +22,7 @@ pub enum AgentActivityPolicy {
     /// External Hook delivery can end without a final event, so an inactive
     /// route eventually returns to idle instead of remaining active forever.
     ExpireAfterInactivity,
-    /// An in-process backend reports completion and interruption explicitly,
+    /// An in-process backend reports completion and interruption as events,
     /// so quiet work remains active until one of those events arrives.
     ExplicitLifecycle,
 }

@@ -32,8 +32,8 @@ pub struct ParsedSlashCommand {
     pub has_argument_separator: bool,
 }
 
-/// Parse only an input whose first byte is `/`. A slash later in ordinary
-/// prose is deliberately invisible to command routing.
+/// Parse only an input whose first byte is `/`. A slash later in plain
+/// prose is invisible to command routing by design.
 pub fn parse_slash_command(input: &str) -> Option<ParsedSlashCommand> {
     let tail = input.strip_prefix('/')?;
     let token_end = tail.find(char::is_whitespace).unwrap_or(tail.len());
@@ -70,7 +70,7 @@ fn normalize_command(mut command: SlashCommandInfo) -> Option<SlashCommandInfo> 
 }
 
 /// Merge in precedence order. Keeping the first normalized name makes local
-/// commands authoritative over adapter commands, and adapter commands over
+/// commands win over adapter commands, and adapter commands over
 /// provider discovery, without relying on hash iteration order.
 pub fn merge_catalog(
     local: Vec<SlashCommandInfo>,
@@ -99,7 +99,7 @@ fn input_has_bound_skill_token(input: &str, binding: &SkillReference) -> bool {
 }
 
 /// Editing task text after `$name` is safe; changing the first token turns
-/// the composer back into ordinary unbound text.
+/// the composer back into plain unbound text.
 pub fn reconcile_skill_binding(input: &str, binding: &mut Option<SkillReference>) {
     if binding
         .as_ref()
@@ -229,7 +229,7 @@ pub enum SlashRoute {
     /// Refused; the line stays in the composer for correction.
     Refused(SlashRefusal),
     /// A skill written as a command, which the harness expands when it
-    /// arrives as an ordinary message.
+    /// arrives as a normal message.
     Prompt,
     Model(String),
     Permissions(String),
@@ -285,7 +285,7 @@ pub fn route_slash(
 
     // `/skills` owns a picker stage. A selected row rewrites the composer to
     // `$name`; the slash input itself is never a provider command or an
-    // ordinary user turn.
+    // normal user turn.
     if command.arguments == SlashCommandArguments::Skills {
         let refusal = match skills {
             None => SlashRefusal::SkillsLoading,

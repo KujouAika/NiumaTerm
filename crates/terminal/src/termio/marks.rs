@@ -10,7 +10,7 @@ use crate::termio::prompt_sniffer::SnifferMark;
 const BLOCK_BOUNDARY_CLEAR: &[u8] = b"\x1b[2J\x1b[3J\x1b[H";
 
 /// Engine-blocks mode: the engine's live finished-block list, oldest first,
-/// with current row counts — the payload of
+/// with current row counts: the payload of
 /// [`crate::event::BlockEvent::EngineBlocksSync`]. Cheap FFI walk; called
 /// on the owner thread after finish or resize.
 pub(super) fn engine_blocks_live_list(
@@ -52,7 +52,7 @@ pub(super) fn apply_sniffer_mark(
     }
 
     if let Some(mut start) = mark.command_started.take() {
-        // ;C — latch the launch cwd while the engine still
+        // ;C: latch the launch cwd while the engine still
         // holds THIS prompt's OSC 7, and surface the in-flight block.
         let cwd = engine_cell.borrow().current_directory();
 
@@ -65,7 +65,7 @@ pub(super) fn apply_sniffer_mark(
     }
 
     if let Some(mut cmd) = mark.command_finished.take() {
-        // ;D — attach the launch metadata.
+        // ;D: attach the launch metadata.
         let cwd = launch_cwd.take().unwrap_or(None);
 
         cmd.seq = *mark_seq;
@@ -76,11 +76,11 @@ pub(super) fn apply_sniffer_mark(
         if mark.trusted && !in_alt_screen && engine_blocks {
             // Engine-blocks mode freezes
             // the command into a finished engine block
-            // (O(1)) and hands the HANDLE to the store —
+            // (O(1)) and hands the HANDLE to the store;
             // rendering reads the block via `BlockRef`;
             // nothing is materialized. Budget eviction may
             // fire inside finish_block, so the same batch
-            // carries the live list for the store to prune
+            // includes the live list for the store to prune
             // against. Clearing the boundary gives ConPTY's
             // cursor model a fresh grid for the next command.
             let mut engine = engine_cell.borrow_mut();
@@ -125,13 +125,13 @@ pub(super) fn apply_sniffer_mark(
         }
 
         // Classic mode keeps one continuous grid:
-        // no finish, no boundary clear — plain single
+        // no finish, no boundary clear, plain single
         // grid; only the metadata event fires.
         event_proxy.send_event(TerminalEvent::CommandFinished(cmd));
     }
 
     if mark.history_cleared && mark.trusted && engine_blocks {
-        // ;K — the Clear-Host wrapper announces a user
+        // ;K: the Clear-Host wrapper announces a user
         // A trusted clear drops every finished engine
         // block and wipe the active grid (the shell's
         // own clear follows through ConPTY).

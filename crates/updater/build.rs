@@ -2,10 +2,10 @@
 //! it at run time.
 //!
 //! The framework's install name is `@rpath/Sparkle.framework/Versions/B/Sparkle`,
-//! so the loader finds it through whatever rpaths the executable carries. A
-//! packaged application carries `@executable_path/../Frameworks`; a binary run
-//! straight out of `target/` carries `@executable_path`, which is why a copy
-//! lands beside the executables here rather than only inside a bundle.
+//! so the loader finds it through whatever rpaths the executable has. A
+//! packaged application has `@executable_path/../Frameworks`; a binary run
+//! straight out of `target/` has `@executable_path`, which is why a copy is
+//! placed beside the executables here and not only inside a bundle.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -108,7 +108,7 @@ fn fetch_framework(out_dir: &Path) -> PathBuf {
 }
 
 /// Reject an archive whose bytes are not the pinned ones, and delete it so the
-/// next build refetches rather than failing the same way forever.
+/// next build refetches instead of failing the same way forever.
 fn verify_checksum(archive: &Path) {
     let output = Command::new("shasum")
         .args(["-a", "256"])
@@ -138,7 +138,7 @@ fn verify_checksum(archive: &Path) {
 
 /// Copy the framework into `dir`, replacing any earlier copy.
 ///
-/// `ditto` rather than a recursive file copy: a framework's `Versions/Current`
+/// `ditto` instead of a recursive file copy: a framework's `Versions/Current`
 /// symlinks are part of what its code signature seals, and a copy that resolves
 /// them produces a bundle the loader rejects.
 fn install(framework: &Path, dir: &Path) {
@@ -156,8 +156,8 @@ fn install(framework: &Path, dir: &Path) {
 
     match ditto.status() {
         Ok(status) if status.success() => {}
-        // A running application can hold the framework open. Warn rather than
-        // fail: the copy already in place is the same pinned version.
+        // A running application can hold the framework open. Warn instead of
+        // failing: the copy already in place is the same pinned version.
         Ok(status) => println!(
             "cargo:warning=ditto into {} exited with {status}",
             destination.display()

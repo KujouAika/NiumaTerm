@@ -1,8 +1,8 @@
 //! Which conversation a message from the shared app-server belongs to.
 //!
-//! Every Codex tab talks to one process, so a reply carries a request id and a
-//! notification carries a thread id, and both have to reach the tab that asked
-//! rather than all of them. A thread the server names before its tab has
+//! Every Codex tab talks to one process, so a reply holds a request id and a
+//! notification holds a thread id, and both have to reach the tab that asked
+//! instead of all of them. A thread the server names before its tab has
 //! claimed it is held until the claim arrives, because the two orders are both
 //! legal and dropping the early traffic would lose the opening of a turn.
 
@@ -715,7 +715,7 @@ impl EarlyMessages {
 }
 
 // These tests reach into the retention table directly, so they stay a child
-// of this module rather than joining the host tests.
+// of this module instead of joining the host tests.
 #[cfg(test)]
 mod tests {
     use serde_json::json;

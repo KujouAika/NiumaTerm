@@ -1,5 +1,5 @@
 //! The version label every binary this workspace links is stamped with, and
-//! that every published package and release tag carries.
+//! that every published package and release tag bears.
 //!
 //! A label has exactly one of two forms, so that a running installation and a
 //! release on GitHub can be compared without translating between them:
@@ -59,7 +59,7 @@ fn parse_nightly(label: &str) -> Option<Version> {
     let (date, commit) = label.strip_prefix("nightly-")?.split_once('-')?;
 
     // An abbreviated commit is at least seven characters and grows only when
-    // that many would be ambiguous, so the length is a lower bound rather than
+    // that many would be ambiguous, so the length is a lower bound instead of
     // an exact width.
     if commit.len() < 7 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;

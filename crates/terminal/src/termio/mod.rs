@@ -147,7 +147,7 @@ pub struct Termio<T: AsyncPty, U: EventListener> {
     /// block (`finish_block`, O(1)) whose handle is shipped to the app's
     /// block store; rendering reads the frozen block directly. `false` is
     /// the classic single-grid fallback: no finish, no boundary
-    /// clear, no block events — plain terminal behavior.
+    /// clear, no block events: plain terminal behavior.
     engine_blocks: bool,
 
     /// OSC 133 prompt-boundary sequence number; incremented at each trusted
@@ -176,7 +176,7 @@ pub struct Termio<T: AsyncPty, U: EventListener> {
 }
 
 /// Read the VT-controlled modes from the Ghostty engine into `Mode`.
-/// bits (e.g. `Mode::VI`) are not touched here — see
+/// bits (e.g. `Mode::VI`) are not touched here; see
 /// [`Crosswords::sync_vt_modes`].
 fn ghostty_vt_modes(g: &GhosttyTerminal) -> vt_modes::Mode {
     use crate::ghostty::mode as gm;
@@ -933,7 +933,7 @@ where
             }
 
             // Engine-blocks: resize eagerly reflowed every finished
-            // block (new generations + row counts) — ship the fresh
+            // block (new generations + row counts); ship the fresh
             // list so the store's cached layout follows the engine reflow.
             if self.engine_blocks && engine.block_count() > 0 {
                 blocks_sync = Some(engine_blocks_live_list(engine));

@@ -104,6 +104,6 @@ fn a_shrinking_pane_shrinks_the_card_and_pins_it_top_left() {
         Bounds::new(point(px(0.), px(0.)), size(px(300.), px(200.)))
     );
 
-    // An unmeasured pane leaves the card alone rather than collapsing it.
+    // An unmeasured pane leaves the card alone instead of collapsing it.
     assert_eq!(fit(start(), size(px(0.), px(0.))), start());
 }

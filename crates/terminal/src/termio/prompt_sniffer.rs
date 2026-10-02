@@ -64,7 +64,7 @@ pub(crate) struct PromptSniffer {
     /// the shell lifecycle. Cleared at each `;B`; never grows on the output hot path.
     command_buf: Vec<u8>,
 
-    /// When command output started (`;C`) — the block's `started_at`.
+    /// When command output started (`;C`): the block's `started_at`.
     command_started_at: Option<time::SystemTime>,
 
     /// Submitted text, or a legacy display estimate. Missing text cannot cancel
@@ -78,7 +78,7 @@ pub(crate) struct PromptSniffer {
     command_started_edge: bool,
     command_finished: Option<CommandCapture>,
 
-    /// `;K` — our private "history cleared" mark, emitted by the integration
+    /// `;K`: our private "history cleared" mark, emitted by the integration
     /// script's Clear-Host wrapper (the boundary protocol keeps the engine's
     /// scrollback empty, so a user `clear` is invisible to the
     /// history-collapse heuristic and must be announced in-band).
@@ -86,7 +86,7 @@ pub(crate) struct PromptSniffer {
 }
 
 /// A recognized OSC 133 mark, handed to `feed_hooked`'s `on_mark` hook at its exact
-/// stream position — every byte before it already forwarded, none after. The caller
+/// stream position: every byte before it already forwarded, none after. The caller
 /// forwards `bytes` to the engine and latches launch cwd.
 pub(crate) struct SnifferMark<'a> {
     /// Raw mark bytes (`ESC ] 133 ; …` through its terminator) for engine forwarding.
@@ -111,9 +111,9 @@ pub(crate) struct SnifferMark<'a> {
 }
 
 impl PromptSniffer {
-    /// Feed one PTY read. Calls `forward(region, bytes)` for each run of ordinary (non-mark)
+    /// Feed one PTY read. Calls `forward(region, bytes)` for each run of plain (non-mark)
     /// bytes, tagged with the region they belong to; OSC 133 marks advance the region and
-    /// are dropped (no `on_mark` hook). It uses `memchr` to skip to ESC rather than
+    /// are dropped (no `on_mark` hook). It uses `memchr` to skip to ESC instead of
     /// walking every byte, keeping the PTY hot path allocation-free. Production feeds
     /// through `feed_hooked` (which forwards marks to the engine); this hook-less form is the test
     /// harness's entry point.
@@ -123,7 +123,7 @@ impl PromptSniffer {
     }
 
     /// `feed` with an `on_mark` hook, fired for every recognized OSC 133 mark at its exact
-    /// stream position — after every byte before it has been forwarded and before any byte
+    /// stream position: after every byte before it has been forwarded and before any byte
     /// after it. The caller forwards the mark to the engine (row semantic tags) and latches
     /// the launch cwd at `;C` there: the ps1 emits the NEXT prompt's OSC 7 just before
     /// `;D`, so any later cwd latch would mislabel every `cd`.
@@ -135,7 +135,7 @@ impl PromptSniffer {
     ) {
         let mut pos = 0usize;
 
-        // Resolve a mark carried from the previous read, if any.
+        // Resolve a mark held over from the previous read, if any.
         if !self.carry.is_empty() {
             let cl = self.carry.len();
             let take = (OSC133_MAX - cl).min(input.len());
@@ -163,25 +163,25 @@ impl PromptSniffer {
                 SniffedOsc::Incomplete if cl + take < OSC133_MAX => {
                     self.carry = buf;
 
-                    return; // still incomplete — wait for the next read
+                    return; // still incomplete; wait for the next read
                 }
                 SniffedOsc::NotMark => {
-                    // The carried ESC resolved to an ordinary escape split across
-                    // reads (any chunk ending in "\x1b" or "\x1b]…" lands here —
-                    // constant under ESC-dense output like vtebench). Forward the
-                    // carried bytes and rescan the new input; NOT a boundary
+                    // The held-over ESC resolved to a plain escape split across
+                    // reads (any chunk ending in "\x1b" or "\x1b]…" ends up here,
+                    // constantly under ESC-dense output like vtebench). Forward the
+                    // held-over bytes and rescan the new input; NOT a boundary
                     // glitch, so trust is untouched.
                     //
-                    // Same as the main-scan path: carried bytes inside the
-                    // command region must also land in command_buf, or a
-                    // read boundary through an ordinary escape drops
+                    // Same as the main-scan path: held-over bytes inside the
+                    // command region must also go into command_buf, or a
+                    // read boundary through a plain escape drops
                     // characters from the captured command text.
                     self.pre_forward(&buf[..cl]);
 
                     forward(self.region, self.boundary_trusted(), &buf[..cl]);
                 }
                 _ => {
-                    // Malformed/maxed carry: forward the carried bytes as native output and
+                    // Malformed/maxed carry: forward the held-over bytes as native output and
                     // reprocess the new input under cleared trust.
                     self.reset_boundary_state();
 
@@ -414,8 +414,8 @@ impl PromptSniffer {
             // A re-asserted `;B` is how a shell says the prompt ended again:
             // zsh's right prompt is drawn after the left one and closes with a
             // second mark, and any prompt re-render repeats the pair. Each one
-            // clears the echo accumulated so far, which is what keeps a right
-            // prompt out of the captured command.
+            // clears the echo accumulated so far, so a right prompt stays out
+            // of the captured command.
             (ShellLifecycleProgress::InPrompt, PromptRegion::Command)
             | (ShellLifecycleProgress::InCommand, PromptRegion::Command) => {
                 self.lifecycle = ShellLifecycleProgress::InCommand;
@@ -476,7 +476,7 @@ impl PromptSniffer {
     }
 
     /// OSC 133 marks that bring a fresh sniffer to this one's position in the
-    /// shell lifecycle. A checkpoint carries the screen but no marks, so a
+    /// shell lifecycle. A checkpoint holds the screen but no marks, so a
     /// replica attached mid-session would otherwise need two full command
     /// cycles to trust the marks again, and meanwhile the integration's
     /// post-command clear would erase output it had not frozen into a block.
@@ -564,7 +564,7 @@ fn render_command_echo(bytes: &[u8]) -> String {
                         };
 
                         match fin {
-                            // CUP row;col — only the column matters on our one line.
+                            // CUP row;col: only the column matters on our one line.
                             'H' | 'f' => col = nth(1, 1).saturating_sub(1),
                             'G' => col = nth(0, 1).saturating_sub(1), // CHA
                             'C' => col += nth(0, 1).max(1),           // CUF
@@ -635,7 +635,7 @@ fn render_command_echo(bytes: &[u8]) -> String {
                 col += 1;
                 i += 1;
             }
-            _ => i += 1, // LF (row collapse), TAB, BEL, other controls — drop
+            _ => i += 1, // LF (row collapse), TAB, BEL, other controls: drop
         }
     }
 
@@ -652,15 +652,15 @@ const OSC133_PREFIX: &[u8] = b"\x1b]133;";
 const OSC133_MAX: usize = 16 * 1024;
 
 /// Every other mark is far shorter (`ESC]133;D;<exit>ST`); a longer one is malformed
-/// and resyncs as ordinary bytes.
+/// and resyncs as plain bytes.
 const SHORT_MARK_MAX: usize = 32;
 
 /// Outcome of scanning an ESC in the PTY stream for an OSC 133 prompt mark.
 enum SniffedOsc {
     /// A complete mark: consume `len` bytes; `next` is the region to switch to (`None` =
     /// a recognized 133 mark with no transition, e.g. `;P` right-prompt). `exit` is the
-    /// command exit code carried by a `;D;<code>` mark (`None` for a bare `;D`).
-    /// `cmdline` is the accepted line carried by a `;C;cmdline=<base64>` mark.
+    /// command exit code from a `;D;<code>` mark (`None` for a bare `;D`).
+    /// `cmdline` is the accepted line from a `;C;cmdline=<base64>` mark.
     Mark {
         len: usize,
         sub: u8,
@@ -668,9 +668,9 @@ enum SniffedOsc {
         next: Option<PromptRegion>,
         cmdline: Option<String>,
     },
-    /// Looks like the start of a 133 mark but the slice ends before the terminator — carry.
+    /// Looks like the start of a 133 mark but the slice ends before the terminator: carry.
     Incomplete,
-    /// Not a 133 mark; the ESC is an ordinary terminal byte.
+    /// Not a 133 mark; the ESC is a plain terminal byte.
     NotMark,
     /// Starts like OSC 133 but is malformed or too long.
     Malformed,
@@ -701,7 +701,7 @@ fn parse_sniffed_osc(s: &[u8]) -> SniffedOsc {
     let sub = s[OSC133_PREFIX.len()];
     let arg_start = OSC133_PREFIX.len() + 1;
 
-    // OSC 133 D carries an optional ";<exit code>" before its terminator.
+    // OSC 133 D has an optional ";<exit code>" before its terminator.
     let exit_at = |term: usize| {
         (sub == b'D')
             .then(|| {

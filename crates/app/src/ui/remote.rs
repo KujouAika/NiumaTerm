@@ -425,7 +425,7 @@ impl Remote {
         self.host.as_ref()?.pairing()
     }
 
-    /// The showing code as a link that also carries this host's key, so
+    /// The showing code as a link that also includes this host's key, so
     /// the device pairs only with this host, and its relay, so it pairs
     /// from off the LAN too.
     pub(crate) fn pairing_link(&self) -> Option<String> {
@@ -678,7 +678,7 @@ pub(crate) fn renew_pairing_until_dropped(cx: &mut App) -> Task<()> {
 
             // The count is the remaining time rounded up to whole minutes, so
             // it drops just after the remainder crosses a minute boundary; the
-            // last boundary is the expiry itself. The extra millisecond lands
+            // last boundary is the expiry itself. The extra millisecond falls
             // past the boundary, where the count (or the code) has changed.
             let remaining = expires_at.saturating_sub(now_ms());
 
@@ -1158,7 +1158,7 @@ pub(crate) fn device_workspace_id(window: WindowId, workspace: WorkspaceId) -> S
 /// tab sits in. The window calls this on every render, which follows tabs
 /// opening, closing, and moving and workspaces being renamed or reordered,
 /// so no mutation path has to remember it; the registry tells devices only
-/// when an assignment actually changed.
+/// when an assignment changed.
 pub(crate) fn sync_workspaces(window: WindowId, workspaces: &WorkspaceManager, cx: &App) {
     let remote = cx.global::<Remote>();
 
@@ -1212,7 +1212,7 @@ pub(crate) fn tab_title_changed(pane: &Entity<TerminalPane>, title: &str, cx: &m
 }
 
 /// Pair with the computer named in the connect form. The code field also
-/// takes a pasted pairing link, which carries the code, the host's
+/// takes a pasted pairing link, which includes the code, the host's
 /// addresses, and the host key to insist on. An empty address searches the
 /// LAN for the host showing the code.
 pub(crate) fn pair_with_host(cx: &mut App) {
@@ -1645,7 +1645,7 @@ fn start_for_device(session: &str, cx: &mut App) -> Result<(), String> {
     }
 
     // No window holds the tab any more, as after its window closed, so the
-    // listing goes too rather than failing every attach.
+    // listing goes too instead of failing every attach.
     withdraw_pending_session(session, cx);
 
     Err(format!("no tab here shows {session}"))

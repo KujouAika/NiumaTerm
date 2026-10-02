@@ -22,7 +22,7 @@ pub(crate) fn show_selected_text_menu(
         return;
     }
 
-    // Anchored on the selection rather than the pointer, and opened above
+    // Anchored on the selection, not the pointer, and opened above
     // it, so the text the two actions operate on stays visible while the
     // menu is up. The rect is the union of the selected line boxes, so its
     // top-left is above and left of every selected line.

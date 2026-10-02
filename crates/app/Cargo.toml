@@ -78,7 +78,7 @@ gpui_macos.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 # The same font source GPUI's text system selects families through, so a
-# default face can be checked against what the host actually has.
+# default face can be checked against the fonts installed on the host.
 font-kit.workspace = true
 nmt_agent = { workspace = true, features = ["test-support"] }
 tree-sitter-bash.workspace = true

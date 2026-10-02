@@ -39,7 +39,7 @@ pub fn default_shell() -> String {
 
 /// How PowerShell must be launched so it evaluates the bundled prompt
 /// integration. `-NoExit` keeps the session interactive after the bootstrap
-/// runs, and the script travels UTF-16 Base64 encoded so quoting rules cannot
+/// runs, and the script is passed as UTF-16 Base64 so quoting rules cannot
 /// corrupt it. `None` resolves to the PowerShell default.
 pub fn prompt_integration(shell: Option<&str>) -> Option<crate::PromptIntegration> {
     static ENCODED: OnceLock<String> = OnceLock::new();

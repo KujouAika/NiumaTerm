@@ -1,6 +1,6 @@
 //! Frame payloads here are trimmed copies of ones a real host emitted, so a
-//! mapping that passes these matches what the harness actually sends rather
-//! than what its declarations suggest.
+//! mapping that passes these matches what the harness really sends, not
+//! what its declarations suggest.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpListener;
@@ -191,7 +191,7 @@ fn text_and_reasoning_stream_as_separate_rows() {
 
 #[test]
 fn a_completed_message_reconciles_with_the_blocks_that_streamed() {
-    // The completed message carries its blocks in the same order the chunks
+    // The completed message lists its blocks in the same order the chunks
     // announced, which is the only thing tying the two together.
     let events = map_frame(
         &session_frame(json!({
@@ -465,7 +465,7 @@ fn an_unresolvable_harness_is_reported_as_missing_rather_than_as_a_failed_start(
 }
 
 #[test]
-fn an_approval_request_carries_what_answering_it_needs() {
+fn an_approval_request_holds_what_answering_it_needs() {
     use crate::dsh::mapping::approval_request;
 
     // Shape copied from a real blocked turn: the harness waits here, so a
@@ -619,7 +619,7 @@ fn the_session_list_offers_only_what_this_tab_can_continue() {
             },
             // Never ran a turn, so there is nothing to continue into.
             { "sessionId": "s-2", "updatedAt": 1, "running": false, "blank": true, "cwd": "C:/Workspace/NiumaTerm" },
-            // Belongs to a parent conversation rather than to this list.
+            // Belongs to a parent conversation, not to this list.
             {
                 "sessionId": "s-3",
                 "updatedAt": 2,
@@ -650,7 +650,7 @@ fn the_session_list_offers_only_what_this_tab_can_continue() {
 }
 
 #[test]
-fn a_replayed_page_rebuilds_turns_from_the_same_events_the_stream_carries() {
+fn a_replayed_page_rebuilds_turns_from_the_same_events_the_stream_delivers() {
     use crate::dsh::history;
 
     let entry = |event: Value| json!({ "event": event });
@@ -887,7 +887,7 @@ fn declaring_image_input_rewrites_the_catalog_the_harness_already_serves() {
     // The entry keeps what the harness knew about it; only its modalities move.
     assert_eq!(written[1]["name"], json!("Custom"));
 
-    // A model the catalog never listed carries only what is being declared.
+    // A model the catalog never listed holds only what is being declared.
     let appended = models_with_image(&catalog, "proxy-model", "inputModalities")
         .expect("an unlisted model changes");
 
@@ -1077,7 +1077,7 @@ fn a_conversation_still_waiting_for_a_name_keeps_the_one_it_shows() {
 
     // The unit is registered from the moment a session exists and reports null
     // until the titler has something to work from, so the absent case is a
-    // value that arrives rather than a key that stays missing.
+    // value that arrives, not a key that stays missing.
     let mut projections = ProjectionTracker::default();
 
     assert!(
@@ -1093,7 +1093,7 @@ fn a_conversation_still_waiting_for_a_name_keeps_the_one_it_shows() {
 }
 
 #[test]
-fn a_question_request_carries_the_ids_an_answer_is_matched_against() {
+fn a_question_request_holds_the_ids_an_answer_is_matched_against() {
     use crate::dsh::mapping::question_request;
 
     let frame = json!({
@@ -1175,7 +1175,7 @@ fn a_resolved_approval_takes_the_card_down() {
     );
 }
 
-/// A tool frame carries the host-computed card alongside the logged event.
+/// A tool frame holds the host-computed card alongside the logged event.
 fn tool_frame(event: Value, view: Value) -> Value {
     json!({
         "type": "server-request",
@@ -1255,7 +1255,7 @@ fn a_shell_command_becomes_a_command_row_with_its_output_and_exit_code() {
 }
 
 #[test]
-fn an_edit_becomes_a_file_row_whose_result_diff_carries_context() {
+fn an_edit_becomes_a_file_row_whose_result_diff_includes_context() {
     let mut tools = EventTracker::default();
 
     let started = map_frame(
@@ -1307,7 +1307,7 @@ fn an_edit_becomes_a_file_row_whose_result_diff_carries_context() {
         panic!("the result should complete the file row, got {completed:?}");
     };
 
-    // The result diff carries surrounding lines the arguments never had.
+    // The result diff includes surrounding lines the arguments never had.
     let body = diff.as_deref().unwrap_or_default();
 
     assert!(body.contains("-line one"), "{body}");
@@ -1406,11 +1406,11 @@ fn a_pending_inbox_snapshot_becomes_the_queued_prompt_rows() {
             "id": "msg-2",
             "placement": "steering",
             "message": { "content": [
-                { "type": "text", "text": "actually, " },
+                { "type": "text", "text": "wait, " },
                 { "type": "text", "text": "stop at the parser" },
             ]},
         },
-        // Injected for the model rather than queued by the user; listing it
+        // Injected for the model, not queued by the user; listing it
         // would describe pending work nobody asked for.
         {
             "id": "msg-3",
@@ -1428,7 +1428,7 @@ fn a_pending_inbox_snapshot_becomes_the_queued_prompt_rows() {
             },
             QueuedPrompt {
                 id: Some("msg-2".into()),
-                text: "actually, stop at the parser".into(),
+                text: "wait, stop at the parser".into(),
             },
         ]
     );
@@ -1548,7 +1548,7 @@ fn a_broken_preset_is_listed_by_the_harness_but_not_offered_for_selection() {
     assert_eq!(presets[0].description.as_deref(), Some("Ships code"));
 
     // A preset that published no name is still addressed by its id, so the id
-    // is what the row shows rather than a blank label.
+    // is what the row shows instead of a blank label.
     assert_eq!(presets[1].label, "research");
     assert_eq!(presets[1].description, None);
 

@@ -39,7 +39,7 @@ pub(super) fn claude_settings(
 
     // Which levels exist is this application's call, but whether the
     // model has the setting at all stays the harness's: a model that
-    // advertises none (Haiku) gets no control rather than one whose every
+    // advertises none (Haiku) gets no control instead of one whose every
     // value it would reject.
     let supports_effort = state
         .models
@@ -63,8 +63,8 @@ pub(super) fn claude_settings(
         name: t!("agent-setting-effort"),
         icon: IconName::Zap,
         // The protocol never reports the session's current effort;
-        // until the user picks one, the honest label is the CLI's
-        // own per-model default rather than an empty dash.
+        // until the user picks one, the accurate label is the CLI's
+        // own per-model default, not an empty dash.
         current: state
             .settings
             .effort
@@ -98,13 +98,13 @@ pub(super) fn claude_settings(
 }
 
 /// DeepSeek settings: model, reasoning effort, and permission preset. Each
-/// takes effect on the session immediately rather than riding along with
-/// the next turn.
+/// takes effect on the session immediately instead of waiting for the next
+/// turn.
 ///
 /// The presets come from the harness because its preset table belongs to
 /// the deployment; a list written here would offer values a deployment does
 /// not serve and hide the ones it does. A composition with no permission
-/// service reports none, and then the control is absent rather than empty.
+/// service reports none, and then the control is absent instead of empty.
 pub(super) fn deepseek_settings(
     state: &ConversationSettings,
     kind: AgentKind,
@@ -198,8 +198,8 @@ pub(super) fn codex_settings(
     cx: &App,
 ) -> HarnessSettings {
     // Service tiers are per model, and the catalog only lists the
-    // additional tiers (e.g. "Fast") — the normal tier is implicit, so
-    // the menu carries a synthetic entry for it. Empty protocol value =
+    // additional tiers (e.g. "Fast"); the normal tier is implicit, so
+    // the menu adds a synthetic entry for it. Empty protocol value =
     // normal = explicit `serviceTier: null` on the next turn.
     let mut tier_options: Vec<(String, String)> =
         vec![(String::new(), setting_value_label("normal"))];

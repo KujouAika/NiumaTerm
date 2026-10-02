@@ -113,4 +113,4 @@ and attributes. The patch appends a `vt` flag to `GhosttyBlockFormatOptions`
 that switches the block's screen formatter to VT output. The field sits in the
 struct's existing tail padding, so the struct size and the sized-struct check
 are unchanged and callers that leave it zero keep the plain export.
-Regression: `ghostty::tests::vt_state_checkpoint_carries_finished_blocks`.
+Regression: `ghostty::tests::vt_state_checkpoint_includes_finished_blocks`.

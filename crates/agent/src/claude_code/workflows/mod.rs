@@ -3,10 +3,10 @@
 //! A workflow reaches the stream as a single task of type `local_workflow`
 //! whose agents are entries in a `workflow_progress` array, never as child
 //! agents of their own. The child-agent reducer in `claude_code::tasks`
-//! deliberately rejects that task type, so this module reads the same records
-//! for the other view rather than widening that one.
+//! rejects that task type on purpose, so this module reads the same records
+//! for the other view instead of widening that one.
 //!
-//! Only `task_started` carries `task_type`; the `task_progress` records that
+//! Only `task_started` has `task_type`; the `task_progress` records that
 //! follow identify their run by `task_id` alone, so a run must be remembered
 //! from its start for its own updates to be recognized.
 
@@ -78,7 +78,7 @@ impl ClaudeWorkflows {
 
         match subtype {
             "task_started" => {
-                // The only record carrying the type, so it is the only place a
+                // The only record with the type, so it is the only place a
                 // run can be admitted.
                 if message["task_type"].as_str() != Some("local_workflow") {
                     return false;
@@ -140,7 +140,7 @@ impl ClaudeWorkflows {
         let mut changed = false;
 
         if let Some((phases, agents)) = progress {
-            // The provider repeats the whole array, so it replaces rather than
+            // The provider repeats the whole array, so it replaces instead of
             // merges; a row that vanished from it is genuinely gone.
             if run.phases != phases {
                 run.phases = phases;
@@ -164,7 +164,7 @@ impl ClaudeWorkflows {
         changed |= replace_number(&mut run.total_tool_calls, total_tool_calls);
 
         // A terminal record's summary is the run's own final text; earlier ones
-        // describe the run rather than its outcome.
+        // describe the run, not its outcome.
         if run.state.is_terminal() {
             changed |= replace_text(&mut run.result, &summary);
         } else {
@@ -239,7 +239,7 @@ impl ClaudeWorkflows {
 }
 
 /// Run lifecycle a record reports. A start or progress record means only
-/// that the run is live; the status vocabulary appears on the other two.
+/// that the run is live; the status values appear on the other two.
 fn run_state(subtype: &str, record: &Value) -> Option<WorkflowRunState> {
     let status = match subtype {
         "task_progress" => return Some(WorkflowRunState::Running),
@@ -309,8 +309,8 @@ pub(crate) fn parse_progress(progress: &Value) -> (Vec<WorkflowPhase>, Vec<Workf
 }
 
 /// The provider reports `start`, `done`, or `error`. A started agent that has
-/// not been picked up yet carries a queue time without a start time, which is
-/// what separates Queued from Running.
+/// not been picked up yet has a queue time without a start time, and that
+/// difference separates Queued from Running.
 fn agent_state(entry: &Value) -> WorkflowAgentState {
     match entry["state"].as_str() {
         Some("done") => WorkflowAgentState::Done,

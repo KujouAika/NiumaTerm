@@ -231,7 +231,7 @@ async fn pair_over(
 }
 
 /// Wait for the host's next pairing message. Each relay round trip crosses
-/// the relay twice, so the limit applies per message rather than to the
+/// the relay twice, so the limit applies per message instead of to the
 /// whole exchange.
 async fn recv_pairing_step(ws: &mut RelaySocket) -> Result<Vec<u8>> {
     timeout(CONNECT_TIMEOUT, recv_binary(ws))

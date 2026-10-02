@@ -18,12 +18,12 @@ mod colors;
 /// ```
 ///
 /// Stages, in pipeline order:
-///   1. parse — `engine.write_vt` of 20k distinct 72-col lines (runs on the
+///   1. parse: `engine.write_vt` of 20k distinct 72-col lines (runs on the
 ///      PTY thread today, off the frame critical path).
-///   2. snapshot — `engine.snapshot` of the live viewport (once per rendered frame).
-///   3. extract — forced full extraction plus a one-row incremental update of
+///   2. snapshot: `engine.snapshot` of the live viewport (once per rendered frame).
+///   3. extract: forced full extraction plus a one-row incremental update of
 ///      the viewport (the live-region materialization, render thread).
-///   4. shape — real DirectWrite `layout_line` of NOVEL lines (render thread,
+///   4. shape: real DirectWrite `layout_line` of NOVEL lines (render thread,
 ///      cache-miss cost). Production caches shaped lines by hash, so
 ///      repeated output is ~free; novel output pays this per line.
 ///

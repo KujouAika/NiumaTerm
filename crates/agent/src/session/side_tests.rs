@@ -58,7 +58,7 @@ fn exchanges_render_as_one_turn_per_question() {
 }
 
 #[test]
-fn history_carries_only_answered_exchanges() {
+fn history_includes_only_answered_exchanges() {
     let mut side = SideQuestions::default();
 
     side.ask("first".into(), "nmt-1".into());

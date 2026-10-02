@@ -40,7 +40,7 @@ impl TranscriptView {
         self.sync_content();
     }
 
-    /// Append an item with the images it carries, as the pane does through
+    /// Append an item with the images it includes, as the pane does through
     /// the controller. Submitting a user message returns to the live tail.
     pub(crate) fn push(
         &mut self,
@@ -69,7 +69,8 @@ impl TranscriptView {
         self.conversation.borrow().content.contains_item(id)
     }
 
-    /// Fold an authoritative completed payload into the entry that streamed it.
+    /// Fold a final completed payload, which overrides the streamed text, into
+    /// the entry that streamed it.
     pub(crate) fn merge_completed(&mut self, item: &SessionItem) {
         let _profile = Probe::start(Operation::MergeCompleted);
 
@@ -79,7 +80,7 @@ impl TranscriptView {
     }
 
     /// Extend a streamed item's text. Returns whether the result is non-empty,
-    /// which is what tells the caller the row became visible.
+    /// so the caller knows whether the row became visible.
     pub(crate) fn append_delta(&mut self, item_id: &str, delta: &str, field: TextField) -> bool {
         let _profile = Probe::start(Operation::AppendDelta);
 

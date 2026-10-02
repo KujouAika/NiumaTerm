@@ -27,7 +27,7 @@ pub(crate) struct Candidate {
     pub(crate) point_to_point: bool,
 
     /// The adapter has a physical connector: Ethernet or Wi-Fi hardware
-    /// rather than a software adapter. True where the platform cannot tell.
+    /// instead of a software adapter. True where the platform cannot tell.
     pub(crate) physical: bool,
 }
 
@@ -68,7 +68,7 @@ pub(crate) fn rank(candidates: &[Candidate], route_source: Option<Ipv4Addr>) -> 
 
     // A Hyper-V external switch moves the machine's LAN address onto a
     // virtual adapter, so virtual adapters stay when no physical one has an
-    // address, rather than leaving nothing to offer.
+    // address, instead of leaving nothing to offer.
     let any_physical = usable.iter().any(|candidate| candidate.physical);
 
     let mut ranked: Vec<Ipv4Addr> = Vec::new();

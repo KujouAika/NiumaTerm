@@ -31,7 +31,7 @@ impl ReplyTyping {
     /// Type reply `index` from here on, starting after the `previous_bytes`
     /// of `text` that were on screen before the newest delta. A reply already
     /// being typed keeps its edge. Returns an older reply that stops being
-    /// typed and lands whole, whose row has to be laid out again.
+    /// typed and appears whole, whose row has to be laid out again.
     pub(super) fn begin(
         &mut self,
         index: usize,
@@ -109,7 +109,7 @@ impl ReplyTyping {
 
 // The streamed reply, let onto the screen a character at a time.
 //
-// A backend delivers a reply a few words at a time, and each chunk landing
+// A backend delivers a reply a few words at a time, and each chunk appearing
 // whole makes the text jump in by fits and starts. The typewriter holds a
 // moving edge behind what has arrived and lets the reply through it one
 // character at a time, closing on the streamed text fast enough that the
@@ -117,8 +117,8 @@ impl ReplyTyping {
 
 /// How quickly the edge closes on what has arrived: the backlog behind it
 /// shrinks by a factor of e over this span. A chunk of forty characters is
-/// most of the way on screen a quarter of a second after landing, so the reply
-/// reads as being typed rather than as being held back, and once the stream
+/// most of the way on screen a quarter of a second after arriving, so the reply
+/// reads as being typed instead of as being held back, and once the stream
 /// stops the last chunk finishes within a beat.
 const CATCH_UP: Duration = Duration::from_millis(125);
 
@@ -136,7 +136,7 @@ const FLOOR_RATE: f32 = 60.0;
 struct Typewriter {
     index: usize,
 
-    /// Characters shown, carrying the fraction between frames so a rate
+    /// Characters shown, keeping the fraction between frames so a rate
     /// below one character a frame still moves.
     shown: f32,
 
@@ -144,7 +144,7 @@ struct Typewriter {
 }
 
 impl Typewriter {
-    /// Start typing entry `index` from `shown` characters, which is what the
+    /// Start typing entry `index` from `shown` characters: the count the
     /// entry already had on screen before streamed text reached it.
     fn start(index: usize, shown: usize, now: Instant) -> Self {
         Self {
@@ -163,8 +163,8 @@ impl Typewriter {
     ///
     /// The step is the larger of the catch-up share and the floor, so a big
     /// chunk closes quickly while a lone character still arrives promptly.
-    /// A long gap between frames — a pane that was hidden — closes the whole
-    /// backlog at once rather than typing text the reader was not watching.
+    /// A long gap between frames (a pane that was hidden) closes the whole
+    /// backlog at once instead of typing text the reader was not watching.
     fn advance(&mut self, total: usize, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.ticked).as_secs_f32();
 
@@ -187,8 +187,8 @@ impl Typewriter {
 }
 
 /// The part of `text` an edge `chars` characters in lets through. Counted in
-/// characters rather than bytes so a CJK reply types at the same pace as a
-/// latin one and the cut never lands inside a character.
+/// characters, not bytes, so a CJK reply types at the same pace as a
+/// latin one and the cut never falls inside a character.
 fn shown_prefix(text: &str, chars: usize) -> &str {
     text.char_indices()
         .nth(chars)

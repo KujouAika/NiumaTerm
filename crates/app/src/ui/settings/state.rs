@@ -160,7 +160,7 @@ impl AppSettings {
         }
 
         // Only a never-configured list receives built-ins. A saved empty list
-        // means the user deliberately removed every agent profile.
+        // means the user removed every agent profile on purpose.
         if config.agent_profiles.list.is_empty() && !config.agent_profiles.initialized {
             config.agent_profiles.list = builtin_agent_profiles();
         }
@@ -353,7 +353,7 @@ impl AppSettings {
     /// A profile name that collides with no existing agent profile
     /// (`exclude` skips the entry being edited): the trimmed `desired` name,
     /// the kind label when empty, plus a numeric suffix on collision. Names
-    /// must stay unique — they key the default selector, tab persistence,
+    /// must stay unique: they key the default selector, tab persistence,
     /// and per-profile thread defaults.
     pub fn unique_agent_profile_name(
         &self,

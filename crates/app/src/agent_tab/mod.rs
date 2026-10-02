@@ -180,7 +180,7 @@ pub enum AgentPaneEvent {
     /// A name for the conversation this pane is holding, derived from the
     /// message that opened it. The pane does not know which tab owns it, so
     /// naming the tab is left to the chrome that does. An empty name means the
-    /// pane no longer holds a conversation worth naming, which drops the tab
+    /// pane no longer holds a conversation to name, which drops the tab
     /// back to the name its profile gives it.
     TitleSuggested(String),
     /// The tab holding this pane should close. A pane owns no tab, so the
@@ -195,7 +195,7 @@ pub enum AgentPaneEvent {
     SideChatActivity,
     /// Something here wants the person's attention: a turn ended, or the
     /// agent waits for an approval or an answer. The desktop notifies from
-    /// the lifecycle; this one carries which of them it was, for paired
+    /// the lifecycle; this one records which of them it was, for paired
     /// devices away from the computer.
     Attention {
         kind: AgentAttention,
@@ -213,7 +213,7 @@ pub enum AgentPaneEvent {
     },
 }
 
-/// What the user had typed into a composer, carried to the pane that
+/// What the user had typed into a composer, handed to the pane that
 /// replaces it so a profile switch does not discard an unsent message.
 pub struct ComposerDraft {
     text: String,
@@ -233,7 +233,7 @@ pub struct AgentPane {
     input_history_scope: InputHistoryScope,
     input_history_navigation: InputHistoryNavigation,
 
-    /// Images the pending message carries, anchored to the composer text by
+    /// Images the pending message holds, anchored to the composer text by
     /// their `[Image #N]` placeholders, and the response text quoted into it.
     attachments: ComposerAttachments,
 
@@ -303,7 +303,7 @@ pub struct AgentPane {
 
     /// Ramp of the layer that covers the pane while its backend cannot take
     /// input. Cross-fading the whole layer keeps its arrival readable as the
-    /// tab being held rather than as a blur being switched on.
+    /// tab being held, not as a blur being switched on.
     blocking_overlay: BlockingOverlay,
 
     /// Set when the conversation runs on a paired host: commands go there,
@@ -327,13 +327,13 @@ pub struct AgentPane {
 
 impl AgentPane {
     /// Whether such a flow is past its picker and working. Until then the
-    /// input still holds text worth editing, so only sending is refused.
+    /// input still holds text the user may edit, so only sending is refused.
     pub(crate) fn branch_flow_is_working(&self) -> bool {
         self.session.borrow().branch().is_working()
     }
 
-    /// Whether a list of branch points is on screen, which is what makes the
-    /// palette's highlight something the transcript follows.
+    /// Whether a list of branch points is on screen. While one is, the
+    /// transcript follows the palette's highlight.
     pub(crate) fn branch_picker_is_open(&self) -> bool {
         self.session.borrow().branch().picker_is_open()
     }
@@ -754,8 +754,8 @@ impl AgentPane {
 
     /// Take a pasted image into the pending message, reporting whether the
     /// paste was consumed. A paste this leaves alone falls through to the
-    /// composer's own text handling, which is what a clipboard holding text
-    /// should get.
+    /// composer's own text handling, the right handler for a clipboard
+    /// holding text.
     pub(crate) fn paste_image(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(host) = self.host.upgrade() else {
             return false;
@@ -910,7 +910,7 @@ impl AgentPane {
         };
 
         // The link is a run of text with no picture in it, so the preview
-        // grows out of a thumbnail's worth of space under the pointer: what
+        // grows out of a thumbnail-sized square under the pointer: what
         // was clicked is where the image comes from.
         let origin =
             Bounds::centered_at(window.mouse_position(), size(px(THUMBNAIL), px(THUMBNAIL)));
@@ -935,8 +935,8 @@ impl AgentPane {
             return;
         }
 
-        // Slash lines steer the session (`/new`, `/model`, `/status`) rather
-        // than continue the conversation, so a warning about what the next
+        // Slash lines steer the session (`/new`, `/model`, `/status`) instead of
+        // continuing the conversation, so a warning about what the next
         // answer costs would fire in front of commands that ask for none.
         let text = self.input.read(cx).text().to_string();
 
@@ -1213,7 +1213,7 @@ impl AgentPane {
             });
         }
 
-        // Moving the caret into later prose must not turn an ordinary edit
+        // Moving the caret into later prose must not turn a plain edit
         // into palette navigation; only the first slash token owns the keys.
         if cursor > 1 + parsed.name.len() {
             return None;
@@ -1502,7 +1502,7 @@ impl AgentPane {
                 )
             }
             PaletteAction::Choice { command, value } => (format!("/{command} {value}"), true),
-            // Where a skill is written into the prompt, picking one lands the
+            // Where a skill is written into the prompt, picking one writes the
             // token the harness will recognize and leaves the caret after it,
             // because what follows is the request the skill serves.
             PaletteAction::Skill(skill) if session_kind.caps().slash_skills_are_prompts => {
@@ -1642,7 +1642,7 @@ impl AgentPane {
         }
     }
 
-    /// Route a leading slash before ordinary message handling. Every failure
+    /// Route a leading slash before normal message handling. Every failure
     /// returns false so the user's input stays available for correction.
     pub(super) fn submit_slash_input(
         &mut self,
@@ -1734,7 +1734,7 @@ impl AgentPane {
 
                 // Where the harness adopts a model through its own request,
                 // recording the pick is not applying it. This runs after the
-                // notice so a refusal replaces it rather than hiding under
+                // notice so a refusal replaces it instead of hiding under
                 // a confirmation of something that did not happen.
                 self.apply_model_selection(cx);
 
@@ -1780,7 +1780,7 @@ impl AgentPane {
                 };
 
                 // Answering /status is information the user asked for, so it
-                // holds rather than fading out from under them.
+                // stays on screen instead of fading out from under them.
                 self.palette
                     .set_feedback(CommandFeedbackKind::Status, summary, cx);
 
@@ -2216,7 +2216,7 @@ impl AgentPane {
     }
 
     /// Provider-qualified identity of the parent session child tasks belong to.
-    /// `None` until the backend reports a thread or session id, which is what
+    /// `None` until the backend reports a thread or session id. A `None`
     /// disables the title-bar `Background Tasks` button.
     pub fn background_task_parent(&self) -> Option<BackgroundTaskKey> {
         self.session.borrow().runtime().background_task_parent()
@@ -2236,7 +2236,7 @@ impl AgentPane {
 
     /// Stop one child agent, leaving this tab's own turn running. Reports
     /// whether the request was accepted, so the view can say so when a child
-    /// turns out not to be stoppable after all — the snapshot a row was drawn
+    /// turns out not to be stoppable after all: the snapshot a row was drawn
     /// from can be a moment behind the child finishing on its own.
     pub fn interrupt_background_task(&mut self, key: &BackgroundTaskKey) -> bool {
         if !self.binding.is_current() {
@@ -2260,7 +2260,7 @@ impl AgentPane {
 
     /// The latest snapshot, only while it still describes the session the pane
     /// currently holds. A snapshot left over from a replaced session is hidden
-    /// rather than shown against the new parent.
+    /// instead of being shown against the new parent.
     pub fn background_tasks(&self) -> Option<Ref<'_, BackgroundTaskSnapshot>> {
         Ref::filter_map(self.session.borrow(), |session| session.background_tasks()).ok()
     }
@@ -2274,7 +2274,7 @@ impl AgentPane {
 
     /// Child agents this tab has, running and finished alike. A finished child
     /// is still something to open the view for, so the chrome asks for this
-    /// rather than the running count when deciding to offer the control.
+    /// instead of the running count when deciding to offer the control.
     pub fn background_task_count(&self) -> usize {
         self.background_tasks()
             .map(|tasks| tasks.tasks.len())
@@ -2283,7 +2283,7 @@ impl AgentPane {
 
     /// Pin a title on this conversation.
     ///
-    /// An empty title is refused here rather than sent, because a backend that
+    /// An empty title is refused here before it is sent, because a backend that
     /// normalizes it away answers the same refusal after a round trip and the
     /// composer would have discarded the line in the meantime.
     pub(crate) fn rename_conversation(&mut self, title: &str, cx: &mut Context<Self>) -> bool {
@@ -2351,7 +2351,7 @@ impl AgentPane {
     ///
     /// The answer replaces the recent list, so the list is opened here and the
     /// arriving results land in a surface the user is already looking at
-    /// rather than one they would have to go and find.
+    /// instead of one they would have to go and find.
     pub(crate) fn search_conversations(&mut self, query: &str, cx: &mut Context<Self>) -> bool {
         let Some(session_host) = self.host.upgrade() else {
             return false;
@@ -2399,7 +2399,7 @@ impl AgentPane {
     }
 
     /// Open the Side Chat for `question`. Where the harness answers side
-    /// questions in place, the answer lands in the side transcript; where it
+    /// questions in place, the answer appears in the side transcript; where it
     /// forks a side thread, the question goes to that thread's own session.
     /// Either way the window opens, or comes back from being minimized.
     pub(crate) fn ask_side_question(
@@ -2516,7 +2516,7 @@ impl AgentPane {
             let mut pane = AgentPane::attach_side_chat(&owner, window, cx);
 
             // The fork is still being prepared, so the question waits for the
-            // side session to be ready rather than being refused as early.
+            // side session to be ready instead of being refused as early.
             if !question.is_empty() {
                 pane.pending_side_prompt = Some(question.to_owned());
             }
@@ -2613,7 +2613,7 @@ impl AgentPane {
     /// A side thread forked from a thread this conversation no longer runs
     /// on: a new conversation, a resumed one, or a branch replaced it. The
     /// side chat answers about the conversation it was forked from, so it is
-    /// closed rather than left describing one that is gone.
+    /// closed so it does not keep describing one that is gone.
     fn close_orphaned_side_thread(&mut self, cx: &mut Context<Self>) {
         let parent = self.session.borrow().side_parent_thread();
 
@@ -2906,8 +2906,8 @@ impl AgentPane {
     }
 
     /// A turn a send opened numbered itself and started its timer at send
-    /// time. A command's turn and a turn the harness opened on its own —
-    /// running a prompt it held while the last turn finished — both arrive
+    /// time. A command's turn and a turn the harness opened on its own
+    /// (running a prompt it held while the last turn finished) both arrive
     /// with neither done, and without them the whole turn would be filed
     /// under the previous one and leave the pane looking idle while it runs.
     fn on_turn_started(&mut self, new_turn: bool, cx: &mut Context<Self>) {
@@ -2928,7 +2928,7 @@ impl AgentPane {
         cx.notify();
     }
 
-    /// A backend error lands in the transcript; a fatal one also ends the
+    /// A backend error is shown in the transcript; a fatal one also ends the
     /// session, returns queued work, and reports the interruption outward.
     fn on_error(
         &mut self,
@@ -2970,7 +2970,7 @@ impl AgentPane {
     }
 
     /// A list of what is recent answers a different question than the search
-    /// currently on screen, so it replaces those rows rather than being
+    /// currently on screen, so it replaces those rows instead of being
     /// appended to them.
     fn on_history(&mut self, sessions: Vec<SessionSummary>, cx: &mut Context<Self>) {
         self.history_ui.data.append_page(sessions);
@@ -3037,7 +3037,7 @@ impl AgentPane {
     /// real rows.
     fn load_filesystem_history(&mut self, cx: &mut Context<Self>) {
         // A remote view's conversations are the host's, whatever the harness
-        // keeps them in, and this computer's disk says nothing about them.
+        // keeps them in, and this computer's disk has no record of them.
         if self.remote.is_some() {
             let step = HistoryStep::List(self.history_ui.data.scope);
 
@@ -3063,7 +3063,7 @@ impl AgentPane {
 
     /// Continue `summary`, recorded by the agent its origin names, in a tab
     /// launched on that agent's profile. A profile removed since the row was
-    /// listed leaves nothing to launch, which is reported rather than
+    /// listed leaves nothing to launch, which is reported instead of
     /// silently resuming under a different one.
     fn resume_with_other_agent(&mut self, summary: SessionSummary, cx: &mut Context<Self>) {
         let Some(origin) = summary.origin.as_ref() else {
@@ -3392,7 +3392,7 @@ impl AgentPane {
                 let text = this.input.read(cx).text().to_string();
 
                 // The text is the record of which images the message still
-                // carries, so an edit that removed a placeholder removes its
+                // holds, so an edit that removed a placeholder removes its
                 // image here, whichever way the text was edited.
                 this.sync_attachments(&text, window, cx);
 
@@ -3517,7 +3517,7 @@ impl AgentPane {
         .detach();
 
         // A view on another computer can replace the conversation too, so
-        // the pane follows the session rather than its own `/new`.
+        // the pane follows the session instead of its own `/new`.
         cx.subscribe(host, |this, _, _: &ConversationReset, cx| {
             if this.binding.is_current() {
                 this.forget_conversation(cx);
@@ -4175,7 +4175,7 @@ impl AgentPane {
     }
 
     /// Pass a tab rename through to the conversation, so the name reaches the
-    /// harness's own session record rather than living only in this tab.
+    /// harness's own session record instead of staying only in this tab.
     pub fn rename_session(&mut self, title: &str) {
         if !self.binding.is_current() {
             return;
@@ -4282,7 +4282,7 @@ impl AgentPane {
     /// Launch the harness for input submitted while its launch is deferred,
     /// and hold the input until the harness reports ready. A message leaves
     /// the composer for the transcript, where it shows as sent; a slash
-    /// command stays in the composer, since it steers the session rather than
+    /// command stays in the composer, since it steers the session instead of
     /// adding to the conversation. Returns whether the input was held,
     /// including input submitted again while an earlier one still waits.
     fn launch_for_input(
@@ -4456,7 +4456,7 @@ impl AgentPane {
         }
 
         // Restoring the composer needs the window this handler has, so the
-        // outcome is presented here rather than in a callback.
+        // outcome is presented here instead of in a callback.
         let Some(interrupted) = self.dispatch(Interrupt, cx, |_, interrupted, _| interrupted)
         else {
             return;
@@ -4569,7 +4569,7 @@ impl AgentPane {
     /// Push the current model and effort picks to a harness that applies them
     /// as their own request.
     ///
-    /// A refusal restores both pickers from what the session is actually set
+    /// A refusal restores both pickers from what the session is set
     /// to, because a picker left showing a value the harness never adopted
     /// would misreport which model the next turn runs on.
     pub(crate) fn apply_model_selection(&mut self, cx: &mut Context<Self>) {
@@ -4751,8 +4751,8 @@ impl AgentPane {
         last_response_mark(at.elapsed().as_secs(), cx)
     }
 
-    /// Session id when this pane runs a harness that reports workflows, which
-    /// is what scopes runs to the conversation they belong to.
+    /// Session id when this pane runs a harness that reports workflows; runs
+    /// are scoped by this id to the conversation they belong to.
     pub fn workflow_session_id(&self, cx: &App) -> Option<String> {
         let session_host = self.host.upgrade()?;
 
@@ -4782,7 +4782,7 @@ impl AgentPane {
 
     /// Rows for a skill query, shared by the `/` picker stage and the `$`
     /// prefix. Discovery runs in the background, so a missing catalog is a
-    /// loading state rather than an empty result.
+    /// loading state, not an empty result.
     fn skill_palette_model(&self, query: &str) -> PaletteModel {
         let session = self.session.borrow();
 
@@ -4862,7 +4862,7 @@ impl Render for AgentPane {
         // goes to the Team that owns the room, which sends it and records the
         // exchange for every member. The card under the transcript holds what
         // the member is asking of the user, the input, and the settings its
-        // next turn runs with, on the same column and card as an ordinary
+        // next turn runs with, on the same column and card as a regular
         // conversation.
         if self.team_member {
             let interactions = self.render_team_interactions(window, cx);
@@ -5088,8 +5088,8 @@ impl Render for AgentPane {
 
         v_flex()
             // The pane takes keyboard focus when the transcript is clicked, so
-            // it needs its own node for screen readers to announce it rather
-            // than the whole window.
+            // it needs its own node so screen readers announce it instead of
+            // the whole window.
             .id("agent-pane")
             .role(Role::Pane)
             .size_full()
@@ -5318,7 +5318,7 @@ impl Render for AgentPane {
                                 )
                                 // The status footer reads out what the session has
                                 // spent so far, which is context for the message
-                                // rather than part of composing it. It sits under
+                                // and not part of composing it. It is drawn under
                                 // the card on the pane's own surface, so the card's
                                 // edge still ends at the input it encloses.
                                 .child(self.render_composer_status(cx))
@@ -5352,13 +5352,13 @@ impl Render for AgentPane {
 // two edges line up at every window width.
 
 /// Cap for a tab title taken from a prompt. The strip truncates whatever it is
-/// given, so this only bounds what the tab carries around.
+/// given, so this only bounds what the tab stores.
 const TAB_TITLE_CHARS: usize = 60;
 
 /// The name a composed prompt gives its tab: its first non-empty line. A slash
-/// command names nothing — it instructs the CLI rather than stating a subject,
-/// and the settings controls send some of them on the user's behalf — so a
-/// conversation that opens with one waits for the message that follows.
+/// command names nothing, since it instructs the CLI instead of stating a
+/// subject and the settings controls send some of them on the user's behalf,
+/// so a conversation that opens with one waits for the message that follows.
 fn tab_title_from_prompt(text: &str) -> Option<String> {
     let line = text.lines().find(|line| !line.trim().is_empty())?.trim();
 
@@ -5391,9 +5391,9 @@ enum PaletteControl {
 
 impl PaletteControl {
     /// Which way this control moves a highlighted row, or `None` where it moves
-    /// none. Several lists take the same keys — the command palette, the recent
-    /// conversations, the rewind and fork pickers — so the reading lives here
-    /// rather than beside each list that acts on it.
+    /// none. Several lists take the same keys (the command palette, the recent
+    /// conversations, the rewind and fork pickers), so the mapping is defined
+    /// here once instead of beside each list that acts on it.
     fn direction(self) -> Option<PaletteDirection> {
         match self {
             PaletteControl::Previous => Some(PaletteDirection::Previous),

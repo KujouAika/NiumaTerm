@@ -59,12 +59,12 @@ use crate::agent_tab::transcript::{
 /// structure derived from it, and every piece of view state that structure
 /// depends on.
 ///
-/// This is an entity rather than a set of helpers on the owning view because
+/// This is an entity, not a set of helpers on the owning view, because
 /// its disclosure rows toggle expansion state from click handlers, and because
-/// each conversation needs its own [`ListState`] — that state caches measured
+/// each conversation needs its own [`ListState`]: that state caches measured
 /// row heights, so two conversations cannot share one. Both the Agent pane's
-/// own conversation and a child agent's conversation render through here, which
-/// is what keeps their presentation from drifting apart.
+/// own conversation and a child agent's conversation render through here, so
+/// their presentation cannot drift apart.
 pub struct TranscriptView {
     pub(crate) conversation: Rc<RefCell<ConversationState>>,
     pub(crate) image_previews: RefCell<HashMap<(usize, usize), Arc<Image>>>,
@@ -99,20 +99,20 @@ pub struct TranscriptView {
     /// The reply being let onto the screen a character at a time.
     typing: ReplyTyping,
 
-    /// Presentation inputs rather than owned state: the working directory
+    /// Presentation inputs, not owned state: the working directory
     /// resolves transcript links, and the provider decides a few labels.
     pub(crate) cwd: Option<String>,
 
     pub(crate) kind: AgentKind,
 
     /// Revision of the conversation this view was last filled from, for a view
-    /// that mirrors content someone else owns rather than accumulating its own.
+    /// that mirrors content someone else owns instead of accumulating its own.
     observed_version: (u64, u64),
 
     /// The pane whose conversation this is, for the row actions that address
-    /// the conversation rather than the row: branching in front of a prompt,
+    /// the conversation, not the row: branching in front of a prompt,
     /// rewinding to one. Absent on a view that mirrors somebody else's
-    /// conversation — a child agent's or a workflow member's — where those
+    /// conversation (a child agent's or a workflow member's), where those
     /// actions have no conversation of this pane's to act on.
     owner: Option<gpui::WeakEntity<AgentPane>>,
 
@@ -135,8 +135,8 @@ impl TranscriptView {
             transcript_list: {
                 // Bottom alignment + tail follow give chat-log behavior: pinned
                 // to the newest row until the user scrolls up, re-engaging when
-                // they return to the bottom. The overdraw keeps a viewport's
-                // worth of offscreen rows measured so scrolling doesn't pop.
+                // they return to the bottom. The overdraw keeps one viewport
+                // height of offscreen rows measured so scrolling doesn't pop.
                 // A resumed conversation arrives as hundreds of rows of which
                 // only the last screenful is laid out; estimating the rest
                 // keeps the scrollbar from starting at one screen and jumping
@@ -164,8 +164,8 @@ impl TranscriptView {
         }
     }
 
-    /// Claim this view as one pane's own conversation, which is what makes its
-    /// rows offer the actions that address the conversation.
+    /// Claim this view as one pane's own conversation, so its rows offer the
+    /// actions that address the conversation.
     pub(crate) fn sync_content(&mut self) {
         let shared = self.conversation.clone();
         let conversation = shared.borrow();
@@ -342,8 +342,8 @@ impl TranscriptView {
     }
 
     /// How many actions `turn` has taken: the tool calls, file changes and
-    /// thinking passes it logged. Conversation text is the turn talking rather
-    /// than working, so it does not count.
+    /// thinking passes it logged. Conversation text is the turn talking, not
+    /// working, so it does not count.
     pub(crate) fn turn_steps(&self, turn: u64) -> usize {
         self.conversation.borrow().content.turn_steps(turn)
     }
@@ -390,13 +390,13 @@ impl TranscriptView {
         };
 
         // The list lays each row out on its own, so a run's grouping rule is
-        // drawn per row rather than around the run. A segment has to carry
+        // drawn per row instead of around the run. A segment has to carry
         // the gap below it or consecutive segments meet with a break between
         // them, and a run continues past a boundary exactly when that
         // boundary is step-ranked. The wider ranks all end the run, so their
-        // space belongs below the rule rather than inside it.
+        // space belongs below the rule, not inside it.
         let in_run = is_run_row(&spec);
-        let rule_carries_gap = in_run && gap == RowGap::Step;
+        let rule_includes_gap = in_run && gap == RowGap::Step;
         let gap = gap_px(gap);
 
         // The rows a run or a fold splices in open and shut as list rows of
@@ -441,7 +441,7 @@ impl TranscriptView {
         };
 
         // Each row is laid out on its own by the virtual list, so the reading
-        // column has to be re-established per row rather than once around the
+        // column has to be re-established per row instead of once around the
         // conversation.
         let body = div()
             .w_full()
@@ -449,11 +449,11 @@ impl TranscriptView {
                 this.border_l(px(TRANSCRIPT_RUN_RULE))
                     .border_color(cx.theme().border)
             })
-            .when(rule_carries_gap, |this| this.pb(px(gap)))
+            .when(rule_includes_gap, |this| this.pb(px(gap)))
             .child(row);
 
         // A border is drawn at the element's own leading edge, outside any
-        // padding it carries, so the inset that puts the rule on the text
+        // padding it has, so the inset that puts the rule on the text
         // column has to come from a level above it. Only a run needs one,
         // and only a run pays for it.
         let row = transcript_column(
@@ -467,13 +467,13 @@ impl TranscriptView {
             },
             cx,
         )
-        .when(!rule_carries_gap, |this| this.pb(px(gap)));
+        .when(!rule_includes_gap, |this| this.pb(px(gap)));
 
         // A row a run toggle or a turn fold spliced in grows and shrinks
-        // rather than appearing and vanishing, so the conversation below it
-        // travels with it the whole way instead of catching up in one jump at
-        // the end. The ramp wraps the row entire — its slice of the grouping
-        // rule and the space it owes the row below it — because a rule drawn
+        // instead of appearing and vanishing, so the conversation below it
+        // moves with it the whole way instead of catching up in one jump at
+        // the end. The ramp wraps the row entire (its slice of the grouping
+        // rule and the space it owes the row below it), because a rule drawn
         // down to a step of no height, or a gap left where a step used to be,
         // is the part that would still jump.
         let conversation = self.conversation.borrow();
@@ -498,7 +498,7 @@ impl TranscriptView {
     }
 
     /// The live progress line. While the backend is compacting it names that
-    /// explicitly and spins: compaction produces no streamed output, so a bare
+    /// state and spins: compaction produces no streamed output, so a bare
     /// seconds counter would read as a hung turn for as long as a minute.
     pub(crate) fn render_entry_row(
         &mut self,
@@ -514,7 +514,7 @@ impl TranscriptView {
             SessionItem::UserMessage { text: Some(text) } => {
                 let caps = self.kind.caps();
 
-                // Resolved now rather than when the menu opens: a prompt's
+                // Resolved now, not when the menu opens: a prompt's
                 // place among the turns is a property of the transcript as it
                 // stands, and the rows can move under a menu that is already up.
                 let target = self
@@ -618,7 +618,7 @@ impl TranscriptView {
         )
     }
 
-    /// Thumbnails of the images entry `index` carried, decoded once and kept
+    /// Thumbnails of the images entry `index` included, decoded once and kept
     /// for as long as the conversation is on screen.
     fn entry_thumbnails(&self, index: usize) -> Vec<Arc<Image>> {
         let conversation = self.conversation.borrow();
@@ -646,7 +646,7 @@ impl TranscriptView {
 
     /// One step of the work log, as a card: icon block · heading · outcome
     /// mark. A collapsed card states what the step was and how it went, and
-    /// nothing else — the command it ran and the output it produced are the
+    /// nothing else: the command it ran and the output it produced are the
     /// first thing behind the disclosure. Rows with detail (command output,
     /// reasoning text) expand on click into a bounded transcript surface with
     /// its own scroll position, drawn inside the same card so the detail stays
@@ -807,7 +807,7 @@ impl TranscriptView {
             self.transcript_list.freeze_scroll_position();
         }
 
-        // Reduced motion is read here rather than where progress is reported:
+        // Reduced motion is read here instead of where progress is reported:
         // a disclosure that never records a start has nothing in flight, so
         // the motion, the chevron's turn and the frames the transcript asks
         // for all fall away together while the pinning stays.
@@ -816,7 +816,7 @@ impl TranscriptView {
 
         // A disclosure part-way through its exit is still on screen but is on
         // its way out, so the click that catches it there is asking for it
-        // back rather than asking again for what it is already doing.
+        // back instead of asking again for what it is already doing.
         match self.disclosures.is_disclosing(key) {
             true if reduce_motion => self.take_down_disclosure(key),
             true => self.disclosures.begin_close(key, now),
@@ -866,7 +866,7 @@ impl TranscriptView {
     /// reading position first.
     ///
     /// The pin from the click has held through the exit, but a run's rows
-    /// leave the list here rather than there, and the reader may have scrolled
+    /// leave the list here instead of there, and the reader may have scrolled
     /// in between. Naming the position against the layout this frame is built
     /// on is what keeps that removal from moving it.
     pub(crate) fn settle_shut_disclosures(&mut self, now: Instant) {
@@ -899,10 +899,10 @@ impl TranscriptView {
         self.transcript_list.set_follow_mode(FollowMode::Tail);
     }
 
-    /// Slide down to the live end rather than arriving there at once, so a
+    /// Slide down to the live end instead of arriving there at once, so a
     /// reader who was catching up on an earlier turn sees which direction the
     /// conversation moved instead of finding a different screen of text in
-    /// front of them. The list takes the tail back once the slide lands.
+    /// front of them. The list takes the tail back once the slide ends.
     pub(crate) fn glide_to_bottom(&self) {
         self.transcript_list.scroll_to_end_smooth();
     }
@@ -942,7 +942,7 @@ impl TranscriptView {
         }
     }
 
-    /// The disclosure whose ramp list row `ix` travels on this frame.
+    /// The disclosure whose ramp list row `ix` moves on this frame.
     #[cfg(test)]
     pub(crate) fn revealed_by(&self, ix: usize, now: Instant) -> Option<RevealKey> {
         let conversation = self.conversation.borrow();
@@ -1064,7 +1064,7 @@ impl TranscriptView {
 
     /// The transcript row a branch point names, found the way `prompt_target`
     /// names one: counted back from the newest turn-opening prompt, with the
-    /// text confirming the count landed on the same message. `None` where the
+    /// text confirming the count reached the same message. `None` where the
     /// two disagree, which is a row the transcript should not be moved to.
     pub(crate) fn prompt_row(&self, target: &PromptTarget) -> Option<usize> {
         let openings = turn_opening_prompts(self.conversation.borrow().content.entries());
@@ -1090,10 +1090,10 @@ impl TranscriptView {
     /// Put the prompt a branch point names at the top of the transcript, so
     /// the conversation follows the row a picker is highlighting.
     ///
-    /// Top rather than merely visible: a picker floats over the bottom of the
+    /// Top, not merely visible: a picker floats over the bottom of the
     /// transcript, so a prompt revealed at the lower edge would be hidden
-    /// behind the list naming it — and the turns the cut would discard are
-    /// what the user is deciding about, which is what sits below it.
+    /// behind the list naming it. The turns the cut would discard are what
+    /// the user is deciding about, and they are the rows below it.
     pub(crate) fn scroll_to_prompt(
         &self,
         target: &PromptTarget,
@@ -1119,8 +1119,8 @@ impl TranscriptView {
     }
 }
 
-/// Length in characters of the reply at `index`, which is what its typed
-/// edge closes on.
+/// Length in characters of the reply at `index`, the target its typed edge
+/// closes on.
 fn reply_chars(items: &[Entry], index: usize) -> usize {
     match items.get(index).map(|entry| &entry.item) {
         Some(SessionItem::AgentMessage {
@@ -1148,7 +1148,7 @@ impl Render for TranscriptView {
 
         // Content whose exit has finished leaves the transcript before the
         // rows are built, so the removal and the specs it changes land in one
-        // pass rather than a frame apart.
+        // pass instead of a frame apart.
         let now = Instant::now();
 
         self.settle_shut_disclosures(now);
@@ -1164,7 +1164,7 @@ impl Render for TranscriptView {
 
         // The typed edge moves once per frame, before the rows are built, so
         // the row signatures and the prefix they are measured against describe
-        // the same frame. The stream wakes the pump as each chunk lands; the
+        // the same frame. The stream wakes the pump as each chunk arrives; the
         // frames between chunks are this view's to ask for. Reduced motion
         // shows what has arrived as it arrives.
         let reduce_motion = cx.global::<AgentSettings>().reduce_motion;
@@ -1238,7 +1238,7 @@ impl Render for TranscriptView {
             .relative()
             .size_full()
             .min_h_0()
-            // Set here rather than on each row: every row of a conversation
+            // Set here, not on each row: every row of a conversation
             // shares one leading, including the ones built from Markdown that
             // never see the row builder's own styles.
             .line_height(relative(TRANSCRIPT_LINE_HEIGHT))
@@ -1284,8 +1284,8 @@ impl Render for TranscriptView {
                         .when_some(reserve_below, |this, reserve| this.pb(reserve)),
                     ),
             )
-            // The bare Scrollbar element carries no inset of its own, so it
-            // lands at its static flow position (below the full-height
+            // The bare Scrollbar element has no inset of its own, so it
+            // ends up at its static flow position (below the full-height
             // sibling); the pinned strip gives it a deterministic containing
             // block at the right edge.
             .child(
@@ -1308,11 +1308,11 @@ impl Render for TranscriptView {
                         .justify_center()
                         .child(
                             // The button floats over the conversation, and its
-                            // own fill carries the theme's alpha, so the text
+                            // own fill uses the theme's alpha, so the text
                             // underneath reads through it. Button paints that
                             // fill during its own render, after any background
                             // set from here, so the opaque surface has to be a
-                            // layer behind it rather than a style on it.
+                            // layer behind it, not a style on it.
                             div()
                                 .rounded(UI_RADIUS)
                                 .overflow_hidden()

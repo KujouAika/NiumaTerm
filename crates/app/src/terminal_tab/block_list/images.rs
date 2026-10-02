@@ -26,7 +26,7 @@ pub(crate) struct FrozenImage {
 /// Frozen Kitty images of an engine-block item, mapped to the visible row
 /// range: each placement contributes one cell-row band per
 /// visible row it spans, with the source rectangle subdivided vertically
-/// (boundary-difference math — no cumulative rounding gaps). Placement
+/// (boundary-difference math, so no cumulative rounding gaps). Placement
 /// positions are block-relative rows straight from the engine; generations
 /// come from the store's `(block_id, image_id)` lazy cache.
 pub(crate) fn frozen_block_images(

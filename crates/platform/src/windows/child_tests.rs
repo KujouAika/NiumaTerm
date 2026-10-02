@@ -19,7 +19,7 @@ pub(crate) fn event_is_emitted_when_child_exits() {
     let mut child = Command::new("cmd.exe").spawn().unwrap();
 
     // The watcher owns (and closes) the handle it is given, while
-    // std::process::Child closes its own on drop — hand over a duplicate
+    // std::process::Child closes its own on drop; hand over a duplicate
     // so the handle is not closed twice.
     let mut dup: HANDLE = ptr::null_mut();
 

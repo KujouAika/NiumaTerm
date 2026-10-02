@@ -47,7 +47,7 @@ impl RecoveryIdentity {
     }
 }
 
-/// A provider session using the shared chat event vocabulary.
+/// A provider session using the shared chat event types.
 /// Protocol selection stays here so callers need not dispatch provider operations.
 pub enum Backend {
     Codex(app_server::Session),
@@ -85,7 +85,7 @@ pub enum RenameOutcome {
 }
 
 /// What became of a settings pick handed to a live conversation. Each harness
-/// transports picks differently, and the caller needs the result rather than
+/// transports picks differently, and the caller needs the result, not
 /// the transport: whether the session now runs under the pick, will adopt it
 /// with the next prompt, or refused it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +96,7 @@ pub enum SettingsOutcome {
     /// The request is on its way and its answer arrives as an event. The
     /// caller's recorded settings stand until that event corrects them.
     Requested,
-    /// Nothing was sent. The pick travels with the next submission, so the
+    /// Nothing was sent. The pick is sent with the next submission, so the
     /// caller's recorded settings remain the authority until then.
     RidesNextSubmission,
     /// The harness refused, in its own words. The session's selection still
@@ -126,7 +126,7 @@ impl TaskHistoryRead {
 
 /// How a provider answers a request for one child's conversation.
 pub enum TranscriptLoad {
-    /// The answer is at hand, or arrives later as ordinary session events.
+    /// The answer is at hand, or arrives later as normal session events.
     Events(Vec<Event>),
     /// The answer lives in files the harness wrote; read them off the UI
     /// thread and apply the events it yields.
@@ -192,8 +192,8 @@ impl Backend {
     }
 
     /// Start the harness process for `kind` and wrap it in the matching
-    /// variant. Resume differs by harness — Codex asks the running app-server
-    /// to reopen a thread, Claude Code takes a session id as a launch flag —
+    /// variant. Resume differs by harness (Codex asks the running app-server
+    /// to reopen a thread, Claude Code takes a session id as a launch flag),
     /// so the caller passes an identity and this decides how to use it.
     pub async fn spawn(
         kind: AgentKind,
@@ -259,11 +259,11 @@ impl Backend {
         }
     }
 
-    /// Send a message and the images it carries. Each harness takes them in
+    /// Send a message and the images attached to it. Each harness takes them in
     /// its own shape: Codex receives prepared file paths, while Claude Code
     /// and DeepSeek Harness take the bytes inline.
     ///
-    /// A request carrying a title gives an unnamed conversation its first
+    /// A request with a title gives an unnamed conversation its first
     /// one, and each harness owns the ordering its persistence model needs:
     /// Codex names the thread as part of the submission, while Claude Code is
     /// asked only once the prompt was admitted, so a refused prompt never
@@ -429,7 +429,7 @@ impl Backend {
         match self {
             Backend::Claude(session) => Ok(session.rewind_files(user_message_id)),
             // `Capabilities::file_rewind` gates the command that leads here.
-            // The rejection stays because it is the honest answer for a
+            // The rejection stays because it is the correct answer for a
             // harness with no such operation to run.
             Backend::Codex(_) | Backend::DeepSeek(_) => Err(OperationError::Unsupported(
                 UnsupportedOperation::FileRewind,
@@ -451,7 +451,7 @@ impl Backend {
     pub fn refresh_background_tasks(&mut self) {
         match self {
             Backend::Codex(session) => session.refresh_background_tasks(),
-            // Claude Code rebuilds tasks from session history rather than a
+            // Claude Code rebuilds tasks from session history instead of a
             // provider query, so there is nothing to re-request live.
             Backend::Claude(_) => {}
             Backend::DeepSeek(session) => session.refresh_background_tasks(),
@@ -460,7 +460,7 @@ impl Backend {
         }
     }
 
-    /// Whether `key` names a task this backend published. A key carries the
+    /// Whether `key` names a task this backend published. A key records the
     /// provider that minted it, and one harness's task ids mean nothing to
     /// another, so a key from elsewhere reaches no session at all.
     fn owns_task(&self, key: &BackgroundTaskKey) -> bool {
@@ -490,7 +490,7 @@ impl Backend {
             }
             Backend::Claude(session) => session.load_background_task_transcript(&key.id, cwd),
             // A child's conversation is answered asynchronously and reaches
-            // the pane as an ordinary event; a job row is answered here.
+            // the pane as a normal event; a job row is answered here.
             Backend::DeepSeek(session) => {
                 TranscriptLoad::Events(session.load_background_task_transcript(&key.id))
             }
@@ -811,7 +811,7 @@ impl Backend {
     }
 
     /// Point the session at another model. Only DeepSeek applies a pick as its
-    /// own request: Codex carries thread settings as overrides on the next
+    /// own request: Codex sends thread settings as overrides on the next
     /// turn, and Claude bakes the model into the launch.
     pub(crate) fn select_model(&mut self, model: &str, effort: Option<&str>) -> SettingsOutcome {
         match self {
@@ -827,7 +827,7 @@ impl Backend {
     }
 
     /// Switch the conversation's permission preset. Only DeepSeek switches it
-    /// by its own command: Codex carries the approval policy as an override on
+    /// by its own command: Codex sends the approval policy as an override on
     /// the next turn, and Claude applies its mode through the settings update
     /// sent with each turn.
     pub(crate) fn select_approval(&mut self, preset: &str) -> SettingsOutcome {
@@ -863,7 +863,7 @@ impl Backend {
         }
     }
 
-    /// What the session is actually set to, for restoring the pickers after a
+    /// What the session is currently set to, for restoring the pickers after a
     /// refused pick.
     pub fn selection(&self) -> (Option<&str>, Option<&str>) {
         match self {
@@ -974,7 +974,7 @@ impl Backend {
             .await
             .map(Self::Codex),
             AgentKind::DeepSeek if recovery.is_some() => Err(
-                "DeepSeek cannot resume this saved Team conversation. Keep its history and explicitly create a new member.".into(),
+                "DeepSeek cannot resume this saved Team conversation. Keep its history and create a new member yourself.".into(),
             ),
             AgentKind::Claude | AgentKind::DeepSeek => {
                 Self::spawn(kind, launch, host_catalog, workspace, recovery, deliver).await
@@ -1007,7 +1007,7 @@ impl Backend {
 }
 
 /// Build inline images without writing files, so every supplied attachment
-/// travels with the message even when a scratch directory is unavailable.
+/// is sent with the message even when a scratch directory is unavailable.
 fn inline_images<'a>(attachments: impl Iterator<Item = ImageAttachment<'a>>) -> Vec<MessageImage> {
     attachments
         .map(|attachment| MessageImage {

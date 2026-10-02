@@ -47,7 +47,7 @@ pub(super) struct WorkspaceList {
 
     /// Item position a workspace drag currently hovers: that item shifts down
     /// to open an insertion gap ("make way"). Only overwritten when the
-    /// pointer enters another item — clearing on exit would oscillate, because
+    /// pointer enters another item; clearing on exit would oscillate, because
     /// opening the gap moves the hovered item out from under the pointer.
     drag_over: Option<usize>,
 
@@ -121,7 +121,7 @@ impl WorkspaceList {
                     .track_scroll(&self.scroll)
                     // Fallback drop target for the whole list: a drop released
                     // over the make-way gap (a margin, outside every item's
-                    // hitbox) still lands on the tracked insertion position
+                    // hitbox) still drops at the tracked insertion position
                     // instead of silently ending the drag.
                     .on_drop(cx.listener(|this, drag: &WorkspaceDrag, window, cx| {
                         this.sidebar.list.dragging = None;
@@ -173,8 +173,8 @@ impl WorkspaceList {
         let selection = sidebar_selection(cx);
 
         // In the vertical tab-bar style every tab of this workspace is on
-        // screen as its own row carrying its own status mark and progress, so
-        // the workspace's aggregate of them would say the same thing twice.
+        // screen as its own row with its own status mark and progress, so
+        // the workspace's aggregate of them would repeat the same state.
         let vertical_tabs =
             cx.global::<AppSettings>().config().appearance.tab_bar_style == TabBarStyle::Vertical;
 
@@ -206,7 +206,7 @@ impl WorkspaceList {
             // This row heads the workspace's own tab list here, so its control
             // adds a tab to that list; closing moves to the context menu. The
             // press activates the workspace before the menu opens, so the
-            // profile the user picks lands in the workspace they clicked
+            // profile the user picks opens in the workspace they clicked
             // (a tab always opens in the active workspace). Popover stops the
             // press from reaching the row behind it, so the activation has to
             // run on the capture side of the mouse-down.
@@ -289,8 +289,8 @@ impl WorkspaceList {
         // so its absence from the next session is visible before the user
         // closes the window.
         // Both of these reach the view several times per row and the drag
-        // payload once more, so they are built in the form those take rather
-        // than copied into it at each use.
+        // payload once more, so they are built in the form those take instead
+        // of being copied into it at each use.
         let display_label: SharedString = match ws.temporary {
             true => format!("* {}", workspace_display_label(&ws.name, &ws.cwd)).into(),
             false => workspace_display_label(&ws.name, &ws.cwd).into(),
@@ -346,7 +346,7 @@ impl WorkspaceList {
             .truncate();
 
         // Name and path share one line: consecutive rows repeat most of the
-        // path prefix, so it earns a trailing lane rather than a line of its
+        // path prefix, so it earns a trailing lane instead of a line of its
         // own, and the column fits about twice as many workspaces on screen.
         let name: AnyElement = if let Some(input) = renaming {
             let rename_shell = cx.entity();
@@ -370,7 +370,7 @@ impl WorkspaceList {
                 .items_baseline()
                 .child(name.child(display_label.clone()))
                 // The settings entry has no working directory, so its row
-                // carries the name alone.
+                // shows the name alone.
                 .children((!settings_entry).then(|| {
                     div()
                         .id(("workspace-path", idx))
@@ -559,7 +559,7 @@ impl WorkspaceList {
                 let cwd = cwd.clone();
 
                 // Pinning and closing are the two a user reaches for without
-                // reading, so they lead as a row of buttons rather than taking a
+                // reading, so they lead as a row of buttons instead of taking a
                 // line each. The settings entry is dismissible and nothing else.
                 menu.commands(|row| {
                     row.when(!settings_entry, |row| {
@@ -668,7 +668,7 @@ pub(super) fn tail_preserving_path(path: &str, max_chars: usize) -> String {
 
 /// The mark leading a workspace row whose click folds its tab list, and the
 /// hover that reveals it. The fold already shows in the rows listed below,
-/// so at rest the row carries no mark and its name stands on the tab rows'
+/// so at rest the row shows no mark and its name stands on the tab rows'
 /// icon column, which takes the row starting on the tab rows' inset. While
 /// the pointer is on the row the mark fades in on that column and the name
 /// slides right onto the tab labels' column to make room; both ease back
@@ -779,13 +779,13 @@ impl Disclosure {
     }
 }
 
-/// Long enough to read as the name making way for the mark rather than
+/// Long enough to read as the name making way for the mark instead of
 /// jumping, short enough that sweeping the pointer down the list leaves no
 /// trail of rows still settling.
 const DISCLOSURE_REVEAL: Duration = Duration::from_millis(150);
 
 /// Edge of the disclosure triangle, small enough to read as a mark on the
-/// name rather than as a control of its own.
+/// name, not as a control of its own.
 const DISCLOSURE_SIZE: f32 = 8.0;
 
 /// The filled triangle that marks a workspace's tab fold
@@ -809,7 +809,7 @@ impl IconNamed for PinIcon {
 
 /// The accent bar that marks the selected row. It is drawn out of the row's
 /// flow so it can sit in the gutter left of the row's own padding, and it
-/// carries the accent color on its own: the row fill stays a neutral subtle
+/// paints the accent color on its own: the row fill stays a neutral subtle
 /// wash, which keeps a selected row legible against a translucent pane.
 pub(super) fn selection_bar(cx: &App) -> impl IntoElement {
     div()

@@ -146,7 +146,7 @@ pub(super) fn codex_user_input(
 ) -> Value {
     let mut input = vec![json!({"type": "text", "text": text})];
 
-    // The server reads the files itself, so a turn carries paths rather than
+    // The server reads the files itself, so a turn sends paths instead of
     // bytes. They follow the text in the order the message names them.
     input.extend(images.iter().map(|path| {
         json!({
@@ -215,9 +215,9 @@ pub(super) fn thread_start_params(profile: &ThreadProfile, workspace: &AgentWork
 }
 
 /// Name the thread's primary directory and the whole set of directories it may
-/// reach. The primary directory owns `cwd`, which is what Git discovery,
-/// configuration lookup, and history filtering key on; the runtime root list
-/// carries every directory in workspace order.
+/// reach. The primary directory owns `cwd`, the key for Git discovery,
+/// configuration lookup, and history filtering; the runtime root list
+/// holds every directory in workspace order.
 ///
 /// A single-directory conversation writes neither key, so its request stays
 /// byte-identical to what earlier NiumaTerm builds sent.
@@ -384,9 +384,9 @@ fn reasoning_text(item: &Value) -> Option<String> {
 
 /// The sandbox policy for one turn. Workspace-write is the only mode whose
 /// meaning depends on which directories the workspace owns: it names its
-/// writable roots explicitly, so every selected directory has to be listed or
+/// writable roots by name, so every selected directory has to be listed or
 /// the turn silently loses write access to all but one. Read-only and
-/// danger-full-access are deliberately narrower and broader than the selected
+/// danger-full-access are by design narrower and broader than the selected
 /// roots, so neither takes a root list.
 fn sandbox_policy(sandbox: &str, workspace: &AgentWorkspace) -> Value {
     if sandbox != "workspaceWrite" || !workspace.is_multi_root() {
@@ -541,8 +541,8 @@ fn parse_thread_summary(thread: &Value, own_thread: Option<&str>) -> Option<Sess
 /// opened, and Codex names such a cut by the last turn it keeps, so each
 /// prompt is paired with the id of the turn ahead of it. The oldest prompt has
 /// no turn ahead of it, and branching in front of it would produce an empty
-/// conversation, which starting a new one already is; it is left out rather
-/// than offered as a row that does nothing this composer cannot already do.
+/// conversation, which starting a new one already is; it is left out instead
+/// of being offered as a row that does nothing this composer cannot already do.
 pub(super) fn parse_fork_checkpoints(turns: &Value) -> Vec<ForkCheckpoint> {
     let turns: &[Value] = turns.as_array().map_or(&[], Vec::as_slice);
 
@@ -554,8 +554,8 @@ pub(super) fn parse_fork_checkpoints(turns: &Value) -> Vec<ForkCheckpoint> {
             };
 
             // An unfinished turn cannot anchor a cut, and a turn whose prompt
-            // is gone has no row to show, so both drop out of the list rather
-            // than reaching the server as a request it would refuse.
+            // is gone has no row to show, so both drop out of the list instead of
+            // reaching the server as a request it would refuse.
             if kept["status"].as_str() != Some("completed") {
                 return None;
             }
@@ -598,7 +598,7 @@ pub(super) fn parse_replay(turns: &Value) -> Vec<ReplayTurn> {
 
         for item in turn["items"].as_array().into_iter().flatten() {
             match item["type"].as_str() {
-                // Hook prompts are provider plumbing rather than transcript
+                // Hook prompts are provider internals, not transcript
                 // activity. Every supported transcript item goes through the
                 // live parser so dialogue, command output, diffs, and tool
                 // results cannot diverge between live and restored sessions.
@@ -620,7 +620,7 @@ pub(super) fn parse_replay(turns: &Value) -> Vec<ReplayTurn> {
             }
         }
 
-        // A turn that failed reports its reason here rather than as an item, so
+        // A turn that failed reports its reason here instead of as an item, so
         // without this a failed turn would replay as though it had succeeded.
         if let Some(error) = turn["error"]
             .as_str()
@@ -754,7 +754,7 @@ fn nonempty_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 /// item kind and server version; structured payloads pretty-print as JSON so
 /// the transcript card can render (and highlight) them.
 pub(super) fn tool_output(item: &Value) -> Option<String> {
-    // `results` carries a web search's matches; without it the row shows the
+    // `results` holds a web search's matches; without it the row shows the
     // query and nothing the search found.
     for key in ["output", "result", "results", "aggregatedOutput", "content"] {
         let value = &item[key];

@@ -194,7 +194,7 @@ fn uploaded_generation_releases_exactly_once() {
 
         g.mark_uploaded();
 
-        // Extra clones must not each enqueue a release — only the final drop does.
+        // Extra clones must not each enqueue a release; only the final drop does.
         let _c1 = g.clone();
         let _c2 = g.clone();
     }

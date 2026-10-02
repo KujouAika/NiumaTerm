@@ -283,7 +283,7 @@ fn pairing_item(state: &Remote) -> SettingItem {
     let pairing = state.pairing();
     let link = state.pairing_link();
 
-    // Encoded once per page build rather than per frame; the link only
+    // Encoded once per page build, not per frame; the link only
     // changes when a pairing starts or renews, which rebuilds the page.
     let qr = link
         .as_deref()

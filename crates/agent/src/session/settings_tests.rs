@@ -90,7 +90,7 @@ fn claude_profile_and_local_settings_survive_later_ready_events() {
     assert_eq!(initial.effort.as_deref(), Some("high"));
 
     // Claude reports Ready again during its first turn; that confirmation
-    // keeps the controls in use rather than the ones the CLI reports.
+    // keeps the controls in use instead of the ones the CLI reports.
     controls.ready(
         AgentKind::Claude,
         backend,
@@ -157,7 +157,7 @@ fn a_pinned_profile_approval_outranks_the_thread_and_the_remembered_pick() {
 
     assert_eq!(controls.settings.approval.as_deref(), Some("acceptEdits"));
 
-    // A resumed conversation keeps what the provider restored rather than
+    // A resumed conversation keeps what the provider restored instead of
     // taking the pin again.
     let mut resumed = seeded(SettingsSeed::None);
 

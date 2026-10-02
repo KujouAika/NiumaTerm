@@ -1,6 +1,6 @@
 //! A `WorkspaceManager` owns one or more workspaces; each workspace owns its own
 //! [`TabManager`] plus display metadata (name, cwd). Exactly one workspace is
-//! active, and the set is never empty — `close_workspace` refuses the last one, so
+//! active, and the set is never empty: `close_workspace` refuses the last one, so
 //! `active` always points at a real workspace (mirrors `TabManager`'s invariant).
 //!
 
@@ -155,7 +155,7 @@ pub fn default_workspace_name() -> Cow<'static, str> {
     t!("shell-workspace-default-name")
 }
 
-/// The name a workspace is shown by: its own, or for one still carrying the
+/// The name a workspace is shown by: its own, or for one still using the
 /// default name, the last component of its primary directory, which tells
 /// unnamed workspaces apart.
 pub fn workspace_display_label(name: &str, cwd: &str) -> String {
@@ -613,8 +613,8 @@ impl WorkspaceManager {
     }
 }
 
-/// OSC 9;4 progress of a workspace's tabs. Only tabs carrying a number take
-/// part — an indeterminate report has no percentage to add, and a tab without a
+/// OSC 9;4 progress of a workspace's tabs. Only tabs reporting a number take
+/// part: an indeterminate report has no percentage to add, and a tab without a
 /// running command has no progress at all, so neither drags the bar down while
 /// the others advance.
 fn tabs_progress(tabs: &TabManager<TabSurface>) -> ProgressTally {

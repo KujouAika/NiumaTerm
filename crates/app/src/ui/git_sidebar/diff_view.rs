@@ -125,7 +125,7 @@ impl DiffView {
         }
 
         // The registry resolves file extensions itself, so every bundled
-        // grammar highlights rather than only the ones a table names.
+        // grammar highlights, not only the ones a table names.
         let language = file_extension_lang(path);
 
         let parse = |text: &str| {

@@ -48,7 +48,7 @@ fn main() {
             let to = dir.join(name);
 
             if let Err(e) = fs::copy(&from, &to) {
-                // A running app may hold the file open — warn, don't fail the build.
+                // A running app may hold the file open: warn, don't fail the build.
                 println!(
                     "cargo:warning=failed to copy {} -> {}: {e}",
                     from.display(),

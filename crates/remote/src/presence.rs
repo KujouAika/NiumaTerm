@@ -2,7 +2,7 @@
 //!
 //! A device that opened a channel is connected. Once its last channel closes
 //! it is disconnected: the person has most likely put the phone away while
-//! the session runs on, which is when a push notification is worth sending.
+//! the session runs on, the one case where a push notification helps.
 //! A device that never connected, or whose person came back to this
 //! computer, is merely paired, and hears nothing.
 //!

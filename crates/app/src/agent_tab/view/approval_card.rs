@@ -32,7 +32,7 @@ pub(crate) fn approval_card(
         )
         .child(
             div()
-                // The description carries whatever the request holds:
+                // The description shows whatever the request holds:
                 // a whole plan for ExitPlanMode, a full command line
                 // for Bash. Without a ceiling the card grows past the
                 // pane and the decision buttons below it are clipped

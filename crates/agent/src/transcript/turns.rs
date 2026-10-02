@@ -87,8 +87,8 @@ impl GenerationStats {
 /// doing right now.
 #[derive(Default)]
 pub struct LiveTurn {
-    /// When the running turn began, which is what the elapsed reading counts
-    /// from. `None` between turns.
+    /// When the running turn began; the elapsed reading counts from here.
+    /// `None` between turns.
     started: Option<Instant>,
 
     /// Output tokens reported so far for the running turn.
@@ -98,7 +98,7 @@ pub struct LiveTurn {
     /// reading.
     detail: Option<String>,
 
-    /// The backend is compacting rather than answering, which the progress
+    /// The backend is compacting instead of answering, which the progress
     /// line names instead of the usual reading.
     compacting: bool,
 }
@@ -202,7 +202,7 @@ impl LiveTurn {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TurnLedger {
     /// Turns that have finished, whether in this process or in a session this
-    /// view replayed. Folding keys off this rather than off a known duration,
+    /// view replayed. Folding keys off this instead of off a known duration,
     /// because a replayed turn has no duration to record.
     settled: HashSet<u64>,
 
@@ -214,7 +214,7 @@ pub struct TurnLedger {
 
     /// Turns the user stopped. An interrupted turn reports no elapsed time,
     /// because the reading would describe how long the user waited before
-    /// giving up rather than how long the work took.
+    /// giving up instead of how long the work took.
     interrupted: HashSet<u64>,
 }
 

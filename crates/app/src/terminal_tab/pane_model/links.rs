@@ -35,7 +35,7 @@ impl LinkHover {
     }
 
     /// Record where the pointer is without rescanning, so a later modifier
-    /// change resolves the link where the pointer actually sits.
+    /// change resolves the link at the pointer's current position.
     pub(super) fn record_position(&mut self, position: LocalPoint) {
         self.last_position = Some(position);
     }

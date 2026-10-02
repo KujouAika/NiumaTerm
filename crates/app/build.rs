@@ -47,10 +47,10 @@ fn main() {
 /// framework in `Contents/Frameworks` beside `Contents/MacOS`. A binary run
 /// straight out of `target/` has no bundle around it, and `nmt_updater`'s build
 /// script leaves a copy next to the executable for exactly that case; without
-/// the second entry a development build would fail to launch rather than fail
-/// to update.
+/// the second entry a development build would fail to launch, not just fail to
+/// update.
 ///
-/// Emitted for every link target rather than binaries alone: a test executable
+/// Emitted for every link target, not only binaries: a test executable
 /// links the same dependency graph, so it needs the framework too, and it runs
 /// from `deps/`, where the same build script leaves a second copy.
 fn emit_framework_rpaths() {

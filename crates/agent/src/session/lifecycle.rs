@@ -1,6 +1,6 @@
 //! Session ownership and transitions, independent of window and transcript updates.
 //!
-//! Async work carries an epoch. Only this module advances it or admits a
+//! Async work is tagged with an epoch. Only this module advances it or admits a
 //! completed start, incoming output, or shutdown result into the live session.
 
 #[cfg(test)]

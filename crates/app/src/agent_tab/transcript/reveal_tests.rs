@@ -21,7 +21,7 @@ fn only_a_finished_exit_asks_to_be_taken_down() {
 
 /// The exit runs over a span of its own, short enough that the space comes
 /// back before an entrance would be half over. Content that leaves by fading
-/// rather than by height holds its full height for the whole exit, so an exit
+/// instead of by height holds its full height for the whole exit, so an exit
 /// as long as an entrance leaves the reader watching nothing move: what they
 /// clicked for is the space closing up, and that only happens here.
 #[test]

@@ -125,8 +125,8 @@ pub(crate) enum ListControl {
     Resume(usize),
 }
 
-/// Height of one history row; all rows are uniform, which is what lets
-/// the virtual list precompute its scroll geometry.
+/// Height of one history row; all rows are uniform, so the virtual list
+/// can precompute its scroll geometry.
 const HISTORY_ROW_HEIGHT: f32 = 32.0;
 
 /// Ten rows remain visible; older sessions scroll within this viewport.
@@ -210,7 +210,7 @@ impl SessionHistoryUi {
     /// Hand the highlight to the row under the pointer, reporting whether the
     /// highlight moved.
     ///
-    /// Guarded on the pointer having actually moved. Keyboard navigation
+    /// Guarded on the pointer having moved. Keyboard navigation
     /// scrolls the list to keep its row in view, which slides a different row
     /// under a pointer resting over the strip; letting that count as pointing
     /// would take the highlight straight back off the arrow keys. Real
@@ -311,7 +311,7 @@ impl SessionHistoryUi {
     /// its final height with placeholder rows, then title parsing swaps in the
     /// real rows. The listing depends only on `cwd` and scope, so a session
     /// start while it runs does not retire it; a conversation replacement
-    /// retires it explicitly.
+    /// retires it directly.
     pub(crate) fn load_filesystem_history(
         &mut self,
         cwd: Option<String>,
@@ -627,7 +627,7 @@ impl SessionHistoryUi {
                             .child(session.title.clone()),
                     )
                     // A search excerpt is why this row is on screen at all, so
-                    // it shares the title's line rather than adding a second
+                    // it shares the title's line instead of adding a second
                     // one that would change the list's fixed row height.
                     .children(session.snippet.clone().map(|snippet| {
                         div()
@@ -639,8 +639,8 @@ impl SessionHistoryUi {
                     })),
             )
             // Where the conversation ran, on rows that ran somewhere else.
-            // Clicking one opens it there rather than continuing it here, so
-            // the directory is the row's most load-bearing detail.
+            // Clicking one opens it there instead of continuing it here, so
+            // the directory is the row's most important detail.
             .children(foreign_directory(session, cwd).map(|directory| {
                 h_flex()
                     .flex_none()
@@ -693,7 +693,7 @@ impl SessionHistoryUi {
 }
 
 /// The directory a listed conversation ran in, when that is not this tab's
-/// `cwd`. A row from this tab's own directory says nothing by repeating it, so
+/// `cwd`. A row from this tab's own directory gains nothing by repeating it, so
 /// only the ones that will open elsewhere carry it.
 fn foreign_directory(session: &SessionSummary, cwd: Option<&str>) -> Option<String> {
     let session_cwd = session.cwd.as_deref()?;

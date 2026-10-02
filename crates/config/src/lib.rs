@@ -55,9 +55,9 @@ impl From<CursorShape> for char {
 
 static ACTIVE_COLORS: OnceLock<RwLock<Colors>> = OnceLock::new();
 
-/// Read from the active terminal palette under its lock. `Colors` carries a
-/// field per palette entry, so a caller after one of them reads it here rather
-/// than copying several hundred bytes out to reach it.
+/// Read from the active terminal palette under its lock. `Colors` has a
+/// field per palette entry, so a caller after one of them reads it here instead
+/// of copying several hundred bytes out to reach it.
 pub fn with_active_colors<T>(read: impl FnOnce(&Colors) -> T) -> T {
     read(
         &ACTIVE_COLORS

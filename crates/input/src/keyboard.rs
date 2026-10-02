@@ -1,8 +1,8 @@
 //! Native keyboard input model for the terminal key encoder.
 //!
 //! Copied from winit's keyboard types (winit is MIT/Apache-2.0) so this crate no
-//! longer depends on winit — only the variants the encoder and the GPUI frontend
-//! actually use. Converting `&Key<SmolStr>` to `Key<&str>` lets the encoder
+//! longer depends on winit; only the variants the encoder and the GPUI frontend
+//! use. Converting `&Key<SmolStr>` to `Key<&str>` lets the encoder
 //! match owned keys against string literals without copying the text.
 
 use bitflags::bitflags;
@@ -126,7 +126,7 @@ impl NamedKey {
 }
 
 bitflags! {
-    /// Keyboard modifier state. Bit values are arbitrary (internal-only) — only
+    /// Keyboard modifier state. Bit values are arbitrary (internal-only); only
     /// distinctness matters.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ModifiersState: u32 {

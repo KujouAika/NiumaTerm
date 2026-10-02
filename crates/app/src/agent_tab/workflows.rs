@@ -2,7 +2,7 @@
 //! current.
 //!
 //! Run and agent state arrive on the provider stream, but an agent's own
-//! conversation is never streamed — it exists only as a file the provider
+//! conversation is never streamed: it exists only as a file the provider
 //! appends to. A run that is still going is therefore polled once a second, so
 //! an agent finishing during a quiet stretch of the stream shows up promptly
 //! and an open conversation extends while its agent is still writing.
@@ -90,7 +90,7 @@ impl WorkflowUi {
         .ok()
     }
 
-    /// Open one agent's conversation, reading it immediately rather than
+    /// Open one agent's conversation, reading it immediately instead of
     /// waiting for the next tick.
     pub fn open_workflow_agent(
         &mut self,

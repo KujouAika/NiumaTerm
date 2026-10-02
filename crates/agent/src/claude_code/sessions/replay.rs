@@ -65,7 +65,7 @@ pub(super) fn parse_replay(reader: impl BufRead) -> Vec<ReplayTurn> {
 
 /// A child agent's own file holds nothing but sidechain records, so replaying
 /// it keeps exactly the records the parent conversation drops. Both go through
-/// one parser, which is what makes a child read identically to its parent. A
+/// one parser, so a child reads identically to its parent. A
 /// child's conversation is presented as one stream, so its turns are flattened.
 pub(crate) fn parse_child_replay(reader: impl BufRead) -> Vec<Item> {
     parse_transcript(reader, /*sidechain*/ true)
@@ -86,7 +86,7 @@ fn parse_transcript(reader: impl BufRead, sidechain: bool) -> Vec<ReplayTurn> {
     }
 
     // A turn's duration is written as a `turn_duration` record hanging off the
-    // turn's last message rather than as a link in the parent chain, so it is
+    // turn's last message instead of as a link in the parent chain, so it is
     // collected up front and matched by that parent as the chain is walked.
     let durations = turn_durations(&transcript.records);
 
@@ -97,8 +97,8 @@ fn parse_transcript(reader: impl BufRead, sidechain: bool) -> Vec<ReplayTurn> {
     let mut thinking_seq = 0usize;
     let mut compaction_seq = 0usize;
 
-    // A compaction writes two records, a boundary marker carrying the token
-    // accounting and a synthesized user turn carrying the summary, and their
+    // A compaction writes two records, a boundary marker holding the token
+    // accounting and a synthesized user turn holding the summary, and their
     // order in the chain differs between CLI versions: current builds parent
     // the summary to the boundary, older ones parent the boundary to the
     // summary. Whichever arrives first opens one row and the other fills in its
@@ -337,7 +337,7 @@ fn slice_turns(items: Vec<ReplayItem>, turns: Vec<TurnBuilder>) -> Vec<ReplayTur
 }
 
 /// `durationMs` by the uuid of the message each turn ended on. The record sits
-/// beside the chain rather than in it, so the walk cannot pick it up in order.
+/// beside the chain, not in it, so the walk cannot pick it up in order.
 fn turn_durations(records: &[Value]) -> HashMap<String, u64> {
     records
         .iter()

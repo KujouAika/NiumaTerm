@@ -45,7 +45,7 @@ pub struct SessionHistory {
     own: Vec<SessionSummary>,
 
     /// Rows listed from the records of every other configured agent, each
-    /// carrying the profile that continues it.
+    /// holding the profile that continues it.
     other_agents: Vec<SessionSummary>,
 
     other_agents_request: Option<OtherAgentsRequest>,
@@ -270,8 +270,8 @@ impl SessionHistory {
         true
     }
 
-    /// Whether other agents' rows were listed at all, which is what makes
-    /// the choice to show or hide them meaningful.
+    /// Whether other agents' rows were listed at all; without them, the
+    /// choice to show or hide them means nothing.
     pub fn has_other_agents(&self) -> bool {
         !self.other_agents.is_empty()
     }

@@ -143,7 +143,7 @@ fn row_text(frame: &TerminalFrame, row: u16) -> String {
 }
 
 #[test]
-fn a_frame_carries_resolved_colors_and_leaves_blank_cells_out() {
+fn a_frame_has_resolved_colors_and_leaves_blank_cells_out() {
     let Started {
         mut view, output, ..
     } = start(20, 4);

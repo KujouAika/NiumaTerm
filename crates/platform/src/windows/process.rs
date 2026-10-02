@@ -133,7 +133,7 @@ fn decode_oem(bytes: &[u8]) -> Option<String> {
     Some(String::from_utf16_lossy(&wide[..written as usize]))
 }
 
-/// The value `name` carries in a child started by [`hidden_cmd_command`].
+/// The value `name` has in a child started by [`hidden_cmd_command`].
 ///
 /// A Windows GUI process is started with the user's full environment, so a
 /// child sees the same values this process does.

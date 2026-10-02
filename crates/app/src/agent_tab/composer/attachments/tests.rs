@@ -195,7 +195,7 @@ fn a_range_naming_no_placeholder_resolves_to_nothing() {
 }
 
 #[test]
-fn a_message_carries_no_more_than_the_cap() {
+fn a_message_holds_no_more_than_the_cap() {
     let mut pending = PendingAttachments::default();
 
     for _ in 0..MAX_ATTACHMENTS {
@@ -226,7 +226,7 @@ fn attaching_shrinks_an_oversized_image() {
     let (width, height) = (attached.width(), attached.height());
 
     // Onto the cap, not past it, with the shape kept. The resize fits the
-    // image inside the target box rather than stretching to it, so the long
+    // image inside the target box instead of stretching to it, so the long
     // edge can land a pixel or two short of the cap.
     assert!(width.max(height) <= MAX_IMAGE_EDGE);
     assert!(width.max(height) > MAX_IMAGE_EDGE - 4);

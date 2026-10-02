@@ -14,7 +14,7 @@ use crate::ui::{AppSettings, AppWindow};
 /// size a tab strip and a menu row set their glyphs, a box spends most of the
 /// mark on its own outline and leaves the prompt inside it too small to read
 /// as one; the agent marks beside it carry no frame either, so a framed one
-/// would read as a different kind of entry rather than as a different tab.
+/// would read as a different kind of entry instead of a different tab.
 struct TerminalIcon;
 
 impl IconNamed for TerminalIcon {
@@ -44,7 +44,7 @@ pub(crate) struct ProfileRootChoice {
     pub cwd: String,
 
     /// A restored directory the filesystem cannot currently reach stays listed
-    /// and disabled, so its absence is visible rather than silent.
+    /// and disabled, so its absence is visible instead of silent.
     pub enabled: bool,
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn launch_command(profile: &Profile) -> Option<LaunchCommand> {
 /// Profile-major: one Profile's directories run together before the next
 /// Profile begins. The Profile is what a user picks first and the directory
 /// only narrows it, so grouping the other way would scatter the entries they
-/// are scanning for. Each label carries the Profile name and the directory's
+/// are scanning for. Each label shows the Profile name and the directory's
 /// full path, because two attached directories can share a final component.
 pub(crate) fn profile_root_choices(
     profiles: &[Profile],
@@ -113,7 +113,7 @@ pub(crate) fn new_tab_menu(
     // One snapshot of the active workspace's directories and their last known
     // availability, taken as the menu opens. The re-check runs on the
     // background executor, so a drive that came back reaches the next opening
-    // rather than making this one wait on the filesystem.
+    // instead of making this one wait on the filesystem.
     let roots = shell.update(cx, |this, cx| {
         this.refresh_root_availability(cx);
 

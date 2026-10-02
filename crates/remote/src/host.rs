@@ -75,7 +75,7 @@ const MAX_UNAUTHENTICATED: usize = 16;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a whole pairing exchange may hold its socket: three round trips
-/// at the client's per-message limit. It stays a total rather than a
+/// at the client's per-message limit. It stays a total instead of a
 /// per-message limit so a peer that trickles messages cannot keep one of the
 /// few unauthenticated slots forever.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -384,7 +384,7 @@ impl HostService {
         {
             let mut state = self.shared.state.lock();
 
-            // A cancel may have landed while the code was generated.
+            // A cancel may have arrived while the code was generated.
             if !expired(&state.code) {
                 return Ok(false);
             }
@@ -817,7 +817,7 @@ impl Connection {
 
 impl Connection {
     /// The host ended this device's views of a session: detach them here
-    /// and tell the device why, so it shows that rather than an exit.
+    /// and tell the device why, so it shows that instead of an exit.
     fn kicked(&mut self, kick: Kick) {
         let streams: Vec<u32> = self
             .streams
@@ -1687,7 +1687,7 @@ where
 
     let registry = &shared.config.registry;
 
-    // The views this channel carried detach; their sessions keep running.
+    // The views on this channel detach; their sessions keep running.
     for (session, flow) in connection.streams.values() {
         flow.close();
 

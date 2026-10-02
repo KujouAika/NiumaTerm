@@ -25,7 +25,7 @@ use nmt_agent::session::view::AgentView;
 
 use crate::records::{SkillRecord, SlashCommandRecord};
 
-/// The commands the phone runs itself rather than the harness.
+/// The commands the phone runs itself instead of the harness.
 fn local_commands() -> Vec<SlashCommandInfo> {
     ["new", "clear"]
         .into_iter()
@@ -61,7 +61,7 @@ fn phone_runs(route: &SlashRoute) -> bool {
 
 /// The commands the phone offers for `view`, in the desktop's precedence
 /// order. A host too old to name its harness gets none, and its slash lines
-/// go out as ordinary messages, as they did before commands existed here.
+/// go out as plain messages, as they did before commands existed here.
 pub(crate) fn command_catalog(view: &AgentView) -> Vec<SlashCommandInfo> {
     let Some(kind) = view.slots.catalogs.kind else {
         return Vec::new();
@@ -75,7 +75,7 @@ pub(crate) fn command_catalog(view: &AgentView) -> Vec<SlashCommandInfo> {
 
     // A bare command either runs, or asks for a value or a picker. The phone
     // cannot supply those, so a command it could never finish is left out
-    // rather than offered and refused.
+    // instead of offered and refused.
     merged
         .iter()
         .filter(|command| {
@@ -93,7 +93,7 @@ pub(crate) fn command_catalog(view: &AgentView) -> Vec<SlashCommandInfo> {
         .collect()
 }
 
-/// Route a line the person sent, or `None` for an ordinary message.
+/// Route a line the person sent, or `None` for a plain message.
 pub(crate) fn route_line(text: &str, view: &AgentView) -> Option<(SlashRoute, bool)> {
     let kind = view.slots.catalogs.kind?;
     let busy = busy(view);

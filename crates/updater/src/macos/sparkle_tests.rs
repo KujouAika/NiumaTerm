@@ -1,5 +1,5 @@
 //! What these cover is the Objective-C side of the delegate: that the class is
-//! registered under the selector Sparkle actually sends, and that the set it
+//! registered under the selector Sparkle sends at run time, and that the set it
 //! answers with holds the channel names meant for it. Both are wrong in ways a
 //! Rust-only check cannot see -- a misspelled selector simply never gets called.
 
@@ -12,7 +12,7 @@ use objc2_foundation::{NSSet, NSString, ns_string};
 
 use crate::macos::sparkle::{Channel, UpdaterDelegate};
 
-/// Send the selector the way Sparkle does rather than calling the Rust method,
+/// Send the selector the way Sparkle does instead of calling the Rust method,
 /// so the registered selector name is part of what is checked.
 fn ask_for_channels(delegate: &UpdaterDelegate) -> Retained<NSSet<NSString>> {
     unsafe { msg_send![delegate, allowedChannelsForUpdater: ptr::null_mut::<AnyObject>()] }

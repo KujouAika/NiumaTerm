@@ -227,7 +227,7 @@ fn lock_room(directory: &Path) -> Result<File, StorageError> {
         .write(true)
         .open(directory.join("owner.lock"))?;
 
-    // The lock belongs to the open file rather than to this descriptor, and a
+    // The lock belongs to the open file, not to this descriptor, and a
     // child forked by another thread holds a copy of every open file until it
     // execs, the close-on-exec flag notwithstanding. A PTY child runs its
     // setup between the two, so a room just released here can read as locked

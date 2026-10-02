@@ -30,7 +30,7 @@ fn published_on(label: &str, published: u32) -> Release {
 fn a_release_older_than_a_running_nightly_is_not_offered() {
     let installed = version("nightly-20260822-7567b41");
 
-    // The case a locally built binary lands in: the release predates the
+    // The case a locally built binary falls into: the release predates the
     // revision it was built from, so its lower number is not a downgrade to
     // offer.
     assert!(!supersedes(&installed, &published_on("v1.2.3", 20260814)));
@@ -39,7 +39,7 @@ fn a_release_older_than_a_running_nightly_is_not_offered() {
     // build made from that day's tree keeps being offered.
     assert!(!supersedes(&installed, &published_on("v1.2.3", 20260822)));
 
-    // A later day carries revisions the nightly cannot have.
+    // A later day contains revisions the nightly cannot have.
     assert!(supersedes(&installed, &published_on("v1.2.3", 20260823)));
 
     // With nothing to place it by, it cannot be shown to be ahead.
@@ -47,7 +47,7 @@ fn a_release_older_than_a_running_nightly_is_not_offered() {
 }
 
 /// Shaped like the releases page: newest first, with the entries this
-/// repository actually carries from before the version naming settled.
+/// repository still has from before the current version naming.
 const RELEASES: &str = r#"[
     { "tag_name": "nightly-20260822-bbbbbbb", "html_url": "https://example.invalid/n2",
       "draft": false, "prerelease": true },
@@ -162,15 +162,15 @@ fn a_publishing_timestamp_is_reduced_to_a_comparable_date() {
         Some(20260814)
     );
 
-    // A timestamp in a shape this cannot read leaves the release unplaceable,
-    // rather than dated from whatever sat at those offsets.
+    // A timestamp in a shape this cannot read leaves the release unplaceable
+    // instead of dated from whatever bytes were at those offsets.
     let malformed = r#"{ "tag_name": "v1.3.0", "html_url": "https://example.invalid/r3",
         "draft": false, "prerelease": false, "published_at": "20260814T09:12:33Z" }"#;
 
     assert_eq!(select_latest(malformed).unwrap().unwrap().published, None);
 
-    // A release that was never published carries a null timestamp, and the
-    // recorded responses carry none at all.
+    // A release that was never published has a null timestamp, and the
+    // recorded responses have none at all.
     let null = r#"{ "tag_name": "v1.3.0", "html_url": "https://example.invalid/r3",
         "draft": false, "prerelease": false, "published_at": null }"#;
 

@@ -29,7 +29,7 @@ pub fn default_shell() -> String {
 /// or `None` when no integration is available for it.
 ///
 /// Each shell is reached through the hook that leaves the set of the user's
-/// startup files unchanged — turning the integration on must not add or drop
+/// startup files unchanged: turning the integration on must not add or drop
 /// any of them. The files both shells need are materialized on first use.
 pub fn prompt_integration(shell: Option<&str>) -> Option<PromptIntegration> {
     let shell = resolved_shell(shell);
@@ -43,10 +43,10 @@ pub fn prompt_integration(shell: Option<&str>) -> Option<PromptIntegration> {
 
 /// zsh's own startup files are suppressed with `NO_RCS` and the integration is
 /// typed at the shell instead, so nothing about which files it finds depends on
-/// `ZDOTDIR` — the user's stays untouched and the bootstrap replays their
+/// `ZDOTDIR`; the user's stays untouched and the bootstrap replays their
 /// startup sequence itself. `+Z` turns the line editor off so the line
 /// discipline governs the echo of the bootstrap line, and
-/// `HIST_IGNORE_SPACE` keeps that line, which carries a leading space, out of
+/// `HIST_IGNORE_SPACE` keeps that line, which starts with a space, out of
 /// the session's history; the bootstrap restores both.
 fn zsh_integration() -> Option<PromptIntegration> {
     let directory = zsh_directory()?;
@@ -62,7 +62,7 @@ fn zsh_integration() -> Option<PromptIntegration> {
 }
 
 /// bash is handed its integration the same way, and for the same reason
-/// nothing about which files it reads depends on `--rcfile` any more — which
+/// nothing about which files it reads depends on `--rcfile` any more. That
 /// matters, because bash ignores that flag as a login shell, and the macOS
 /// launch is one.
 ///
@@ -72,7 +72,7 @@ fn zsh_integration() -> Option<PromptIntegration> {
 /// never initialized at startup and the shell stops printing prompts
 /// altogether. So readline stays on and the bootstrap clears the screen
 /// instead. `HISTCONTROL` still keeps the line out of the session's history;
-/// it has no command-line form, so it travels in the environment with the
+/// it has no command-line form, so it is passed in the environment with the
 /// value it displaced, and the bootstrap puts that back.
 fn bash_integration() -> Option<PromptIntegration> {
     let directory = bash_directory()?;
@@ -141,7 +141,7 @@ fn bash_directory() -> Option<&'static Path> {
 
 /// The materialized startup files for one shell, installed once per process.
 ///
-/// A failure to write them yields `None` rather than a path: pointing a shell
+/// A failure to write them yields `None` instead of a path: pointing a shell
 /// at startup files that are not there would silently drop the user's own
 /// configuration, which is far worse than running without the integration.
 fn installed(shell: &str, files: &[(&str, &str)]) -> Option<PathBuf> {

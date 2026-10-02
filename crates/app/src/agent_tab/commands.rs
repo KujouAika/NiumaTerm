@@ -142,7 +142,7 @@ fn command(
 
 /// Normalize a provider/adapter name. Whitespace would make the advertised
 /// command impossible to address as one slash token, so such names are
-/// discarded rather than shown as entries that can never execute.
+/// discarded instead of being shown as entries that can never execute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PaletteCatalogEntry<'a> {
     Command(&'a SlashCommandInfo),
@@ -172,7 +172,7 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 
 fn text_match_rank<'a>(fields: impl IntoIterator<Item = &'a str>, query: &str) -> Option<usize> {
     // Each field is read three times at most and the ranks are ordered, so the
-    // fields are collected once rather than re-walking the iterator per rank.
+    // fields are collected once instead of re-walking the iterator per rank.
     let fields = fields.into_iter().collect::<Vec<_>>();
 
     if fields.iter().any(|field| field.eq_ignore_ascii_case(query)) {

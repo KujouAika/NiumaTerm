@@ -625,7 +625,7 @@ fn a_delayed_query_response_cannot_replace_a_newer_live_state() {
     assert_eq!(
         child.display_name.as_deref(),
         Some("swift-otter"),
-        "stale responses may still fill metadata the live stream never carried"
+        "stale responses may still fill metadata the live stream never sent"
     );
 }
 

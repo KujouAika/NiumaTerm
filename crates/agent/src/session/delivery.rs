@@ -14,11 +14,11 @@ use crate::session::AgentKind;
 /// What a backend does with a prompt submitted while a turn is running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueuedPromptDelivery {
-    /// A user-message echo identifies the input actually consumed. Assistant
+    /// A user-message echo identifies the input the provider consumed. Assistant
     /// output or a turn boundary alone cannot acknowledge later submissions.
     ProviderEcho,
     /// The backend republishes its own pending inbox, so a prompt waiting
-    /// behind the running turn is known rather than guessed at. Guessing
+    /// behind the running turn is known instead of guessed at. Guessing
     /// beside it would show a message as sent while the snapshot still lists
     /// it as waiting.
     PendingInbox,
@@ -34,7 +34,7 @@ pub struct RecoverablePrompt {
 
 /// Owns pending messages and recovery eligibility for one conversation.
 /// Confirmed messages are consumed immediately after each transition with
-/// `pop_confirmed`, retaining the queue allocation between ordinary turns.
+/// `pop_confirmed`, retaining the queue allocation between normal turns.
 pub struct MessageDelivery {
     policy: QueuedPromptDelivery,
     turn: u64,

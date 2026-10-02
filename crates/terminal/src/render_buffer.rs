@@ -76,7 +76,7 @@ pub struct RenderBuffer {
     colors: TermColors,
 
     /// OSC 11 window-background override: `Some` only when a program
-    /// explicitly set it, so the renderer falls back to the config window bg /
+    /// set it, so the renderer falls back to the config window bg /
     /// opacity otherwise.
     window_bg_override: Option<ColorRgb>,
 
@@ -285,7 +285,7 @@ impl RenderBuffer {
         // Every capture rewrites every visible cell (the grid was just
         // cleared above) and re-interns each cell's style, so no style id
         // survives into the next capture. Resetting the interner here bounds
-        // it to one grid's worth of distinct styles; a persistent interner
+        // it to the distinct styles of one grid; a persistent interner
         // grows monotonically under truecolor-gradient output until it
         // saturates at u16::MAX, after which every new style silently renders
         // as the default style.

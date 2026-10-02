@@ -28,7 +28,7 @@ const CARD_INSET: Pixels = px(12.);
 /// window always has one.
 const DEFAULT_SIZE: Size<Pixels> = size(px(420.), px(440.));
 
-/// The size a side thread's window opens at. It carries a whole composer
+/// The size a side thread's window opens at. It holds a whole composer
 /// with its settings row under the transcript, so it needs more room than
 /// a list of answers.
 const THREAD_DEFAULT_SIZE: Size<Pixels> = size(px(480.), px(600.));
@@ -45,7 +45,7 @@ const HANDLE_REACH: Pixels = px(3.);
 /// Side length of a corner handle, which resizes both edges it joins.
 const CORNER: Pixels = px(12.);
 
-/// The payload a card drag carries, naming the pane that owns the card. Every
+/// The payload a card drag holds, naming the pane that owns the card. Every
 /// pane in a split view registers a move listener for this type, so without
 /// the owner a drag in one pane would move the card in the other too.
 #[derive(Clone)]
@@ -192,10 +192,10 @@ impl SideChatWindow {
 }
 
 /// Where a gesture that began at `start` leaves the card after the pointer
-/// travelled `delta`, inside a pane of `pane` size. Every resized edge stops
+/// moved by `delta`, inside a pane of `pane` size. Every resized edge stops
 /// at the pane's edge and at the minimum size, measured against the edge
-/// opposite it, so a handle dragged past either limit pins the card rather
-/// than flipping or pushing it.
+/// opposite it, so a handle dragged past either limit pins the card instead
+/// of flipping or pushing it.
 pub(crate) fn dragged(
     start: Bounds<Pixels>,
     gesture: Gesture,

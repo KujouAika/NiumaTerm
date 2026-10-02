@@ -40,8 +40,8 @@ fn is_url_char(c: char) -> bool {
 
 /// The URL covering char index `col` of `text`, if any, plus its char range
 /// in `text`: expand over URL characters around the click, anchor at a known
-/// scheme, and trim trailing punctuation that in practice ends the sentence
-/// rather than the URL.
+/// scheme, and trim trailing punctuation that in practice ends the sentence,
+/// not the URL.
 fn url_at_col(text: &str, col: usize) -> Option<(String, Range<usize>)> {
     let chars: Vec<char> = text.chars().collect();
 

@@ -1,8 +1,8 @@
-//! Renders history as a real vertical list: frozen items above — each a
-//! finished engine block read directly through a refcounted `BlockRef` —
+//! Renders history as a real vertical list: frozen items above (each a
+//! finished engine block read directly through a refcounted `BlockRef`)
 //! plus one live item for the current engine viewport (with the active
 //! grid's scrollback rows rendered above it while a command runs).
-//! Scrolling is pure UI state over the list — the engine viewport stays
+//! Scrolling is pure UI state over the list; the engine viewport stays
 //! pinned at the bottom.
 
 pub(super) use nmt_terminal::session::BlockPoint as FrozenPoint;

@@ -13,8 +13,8 @@ use crate::ui::settings::agent_profile_page::{agent_profile_list, open_agent_pro
 use crate::ui::settings::card::{card_row, card_text_input};
 use crate::ui::settings::state::{AgentProfile, AppSettings, Profile};
 
-/// The Profiles page: exactly two groups — Terminal Profile and Agent
-/// Profile — so the sidebar shows two stable entries. Profile cards render
+/// The Profiles page: exactly two groups (Terminal Profile and Agent
+/// Profile), so the sidebar shows two stable entries. Profile cards render
 /// inside each group instead of as their own groups, which would otherwise
 /// add one sidebar entry per profile under `single_group_pages`.
 pub(super) fn profiles_page(profiles: &[Profile], agent_profiles: &[AgentProfile]) -> SettingPage {

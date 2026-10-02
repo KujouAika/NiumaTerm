@@ -8,7 +8,7 @@ use crate::terminal_tab::frame::{TerminalColor, TerminalLine};
 use crate::terminal_tab::metrics;
 
 /// Shape terminal lines with per-cell forced width, cached by the caller's
-/// key — the one shaping path for live-frame rows and frozen block rows.
+/// key: the one shaping path for live-frame rows and frozen block rows.
 pub(crate) fn shape_lines<'a>(
     lines: impl Iterator<Item = (u64, &'a TerminalLine)>,
     cell_w: f32,
@@ -83,7 +83,7 @@ pub(crate) fn terminal_text_runs(line: &TerminalLine, base: &TextRun) -> Vec<Tex
         .collect()
 }
 
-/// Paint shaped glyph rows at caller-supplied element-local y offsets — the
+/// Paint shaped glyph rows at caller-supplied element-local y offsets: the
 /// one glyph-paint convention (left-aligned, no wrap, cell-height lines) for
 /// live-frame rows and frozen block rows.
 pub(crate) fn paint_glyph_rows<'a>(

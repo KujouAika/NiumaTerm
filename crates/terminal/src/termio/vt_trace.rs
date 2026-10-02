@@ -61,8 +61,8 @@ fn row_text(snapshot: &RenderBuffer, y: usize) -> String {
 /// `(last_nonblank_row, trailing_blank_rows, cursor_from_bottom)`, all in
 /// viewport rows. ConPTY positions the prompt relative to ITS viewport; comparing
 /// ghostty's cursor-from-bottom against ConPTY's CUP row (`rows - cup_row`) reveals
-/// how many rows the two engines disagree by after a resize — the root of the
-/// repaint-lands-on-wrong-row corruption.
+/// how many rows the two engines disagree by after a resize: the root of the
+/// repaint-on-wrong-row corruption.
 fn viewport_geometry(s: &RenderBuffer) -> (i32, i32, i32) {
     let mut last_nonblank: i32 = -1;
 

@@ -85,9 +85,9 @@ pub(super) fn update_claude_output(usage: &mut Option<TokenUsageBreakdown>, outp
 
 /// Translate a `system/status` message into compaction progress events.
 ///
-/// The subtype multiplexes unrelated notifications — a per-request `requesting`
-/// marker, permission-mode echoes, and compaction — so each transition is
-/// recognized by its own field rather than by `status` alone. `compact_result`
+/// The subtype multiplexes unrelated notifications (a per-request `requesting`
+/// marker, permission-mode echoes, and compaction), so each transition is
+/// recognized by its own field instead of by `status` alone. `compact_result`
 /// appears only on a compaction's final message, and `requesting` also fires for
 /// the summarization call that compaction itself makes, which would otherwise
 /// look like the end of it. `compacting` is re-announced roughly every 30
@@ -179,7 +179,7 @@ pub(super) fn initialize_command_catalog(
     }
 }
 
-/// Commands that belong to the CLI's own terminal session rather than to the
+/// Commands that belong to the CLI's own terminal session, not to the
 /// conversation. Each either reports state this application already shows, or
 /// changes settings its controls own; running one from the palette leaves the
 /// visible controls describing something that is no longer true.
@@ -201,7 +201,7 @@ const HOST_OWNED_COMMANDS: [&str; 10] = [
     "config",
 ];
 
-/// Whether a discovered command is worth offering. The catalog includes the
+/// Whether a discovered command should be offered. The catalog includes the
 /// CLI's own internal entries and ones it has retired but still lists, neither
 /// of which a user can act on usefully.
 fn is_offerable_command(name: &str, description: &str) -> bool {
@@ -269,8 +269,8 @@ pub(super) fn parse_slash_commands(commands: &Value) -> Vec<SlashCommandInfo> {
             parsed.push(SlashCommandInfo {
                 name,
                 description: description.clone(),
-                // The catalog advertises a hint when it has one and says
-                // nothing otherwise; it never states that a command refuses
+                // The catalog advertises a hint when it has one and is silent
+                // otherwise; it never states that a command refuses
                 // arguments. Skills and prompt commands routinely carry no
                 // hint yet take free-form input, so treating a missing hint as
                 // a refusal rejects them before the CLI ever sees them.
@@ -351,7 +351,7 @@ pub(super) fn parse_models(models: &Value, selected_model: Option<&str>) -> Vec<
     // model, but the catalog lists only the base alias, so the bare entry
     // inserted for it would otherwise hide the effort picker. The base is
     // matched by alias or by resolved id, since `claude-opus-5-5[1m]` names
-    // the id rather than the alias.
+    // the id, not the alias.
     if let Some(selected) = parsed.iter_mut().find(|entry| {
         entry.efforts.is_empty() && Some(entry.model.as_str()) == selected_model.map(str::trim)
     }) && let Some((base, _)) = selected

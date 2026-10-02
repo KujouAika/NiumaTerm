@@ -36,8 +36,8 @@ pub struct ConversationSettings {
 
     /// Agent compositions this deployment offers; the one this conversation
     /// was built from is `settings.agent_preset`. Empty where the deployment
-    /// composes none, which is a picker with nothing to choose between rather
-    /// than an unsupported one.
+    /// composes none, which is a picker with nothing to choose between, not an
+    /// unsupported one.
     pub agent_presets: Vec<AgentPreset>,
 }
 
@@ -52,7 +52,7 @@ pub struct ProfilePins {
 }
 
 /// Overlay remembered controls on what a Ready reported: each remembered
-/// pick wins where one exists. A remembered composition already travelled
+/// pick wins where one exists. A remembered composition was already sent
 /// with the creation request, and the harness refuses to recompose a
 /// conversation, so the reported one is kept.
 fn overlay_remembered(next: ThreadSettings, local: &ThreadSettings) -> ThreadSettings {
@@ -77,8 +77,8 @@ impl ConversationSettings {
     ) {
         let effort = settings.effort.clone().or(self.settings.effort.clone());
 
-        // The composition is reported by its own event rather than with the
-        // other controls, so a Ready that carries none keeps the one known.
+        // The composition is reported by its own event instead of with the
+        // other controls, so a Ready that has none keeps the one known.
         let agent_preset = settings
             .agent_preset
             .clone()

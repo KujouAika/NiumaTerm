@@ -34,7 +34,7 @@ fn only_files_whose_version_moved_are_replaced() {
 
 #[test]
 fn a_version_that_cannot_be_read_counts_as_a_difference() {
-    // In order: a file the installation does not have yet, a file that carries
+    // In order: a file the installation does not have yet, a file that has
     // no version resource on either side, and one whose staged copy could not
     // be read. None of them may be assumed to be current.
     let versions = versions([
@@ -95,7 +95,7 @@ fn a_new_syntax_language_dll_is_selected_for_installation() {
     assert!(plan(&staging, &install).contains("tree_sitter.dll"));
 }
 
-/// A file that carries a readable version resource, standing in for a build of
+/// A file that has a readable version resource, standing in for a build of
 /// the application: what attribution compares is a real resource, so a file
 /// written here cannot exercise it. A system DLL is the one such file present
 /// on every machine these tests run on.

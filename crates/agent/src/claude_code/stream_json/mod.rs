@@ -8,7 +8,7 @@
 //! `claude` process; multi-turn conversation is more user messages on stdin.
 //! Permission prompts arrive as `control_request { can_use_tool }` because we
 //! pass `--permission-prompt-tool stdio` (verified: approvals still fire with
-//! `--allow-dangerously-skip-permissions` present — that flag only unlocks
+//! `--allow-dangerously-skip-permissions` present; that flag only unlocks
 //! switching into `bypassPermissions` mode).
 
 mod control;
@@ -69,7 +69,7 @@ const TIMEOUT_METHOD: &str = "nmt/claudeRequestDeadline";
 
 /// Effort level standing for Claude Code's ultracode mode. The CLI does not
 /// take it as a level: it is xhigh effort plus standing dynamic-workflow
-/// orchestration, carried by a separate session flag. Passing the word as a
+/// orchestration, set by a separate session flag. Passing the word as a
 /// level would be aliased back to plain xhigh with the orchestration off, so
 /// the adapter splits it into the two settings the CLI expects.
 pub const ULTRACODE_EFFORT: &str = "ultracode";
@@ -115,8 +115,8 @@ pub struct Session {
     applied_permission: Option<String>,
     active_slash_command: Option<String>,
 
-    /// A structured initialize catalog carries richer metadata than the
-    /// string-only first-turn fallback and must remain authoritative.
+    /// A structured initialize catalog has richer metadata than the
+    /// string-only first-turn fallback, so the fallback must not replace it.
     structured_commands_published: bool,
 
     /// A compaction is running. Tracked because the CLI re-announces it every
@@ -187,13 +187,13 @@ impl Session {
 
     /// Spawn `claude` in bidirectional stream-json mode and send the SDK-style
     /// `initialize` control request. Every parsed stdout line is handed to
-    /// `deliver` (from a reader thread — hop threads before calling
+    /// `deliver` (from a reader thread; hop threads before calling
     /// [`Session::process`]); stderr lines go to `on_stderr`.
     ///
     /// With `resume`, the CLI reloads that persisted session and appends to
     /// it (same session id, same transcript file). Resume lookup is scoped to
     /// the project directory derived from `cwd`, so the id must come from a
-    /// listing for the same directory. Nothing is replayed by the backend — the
+    /// listing for the same directory. Nothing is replayed by the backend; the
     /// UI pre-fills its transcript from the session file instead.
     pub fn spawn(
         launch: &LaunchConfig,
@@ -384,8 +384,8 @@ impl Session {
             events.push(Event::Workflows(snapshot));
         }
 
-        // A child's own conversation travels separately from its summary; the
-        // parent transcript above has already dropped this content.
+        // A child's own conversation is delivered separately from its summary;
+        // the parent transcript above has already dropped this content.
         for (key, update) in self.tasks.take_transcripts() {
             events.push(Event::BackgroundTaskTranscript { key, update });
         }
@@ -402,7 +402,7 @@ impl Session {
     /// Write the user message, applying changed settings first via control
     /// requests (model, permission mode and effort are session state on the
     /// CLI, so they are set once per change instead of per turn).
-    /// Send a user message carrying `images`, which the CLI takes inline as
+    /// Send a user message with `images`, which the CLI takes inline as
     /// content blocks beside the text; it has no path input.
     pub(crate) fn send_user_message(
         &mut self,
@@ -524,7 +524,7 @@ impl Session {
     }
 
     /// Send a provider command through Claude's stream-json command path.
-    /// This intentionally bypasses `send_user_message`: the UI must not add
+    /// This bypasses `send_user_message`: the UI must not add
     /// a user bubble or steer a running model turn for slash commands.
     pub fn execute_slash_command(&mut self, name: &str, arguments: &str) -> SlashCommandOutcome {
         if ui_owns_slash_command(name) {
@@ -566,7 +566,7 @@ impl Session {
     /// Restore files tracked by Claude to the state captured before the user
     /// message. Completion arrives asynchronously as `FileRewindCompleted`.
     /// Ask the CLI how the context window is currently filled. This is a local
-    /// computation rather than a model call, so it is cheap enough to refresh
+    /// computation, not a model call, so it is cheap enough to refresh
     /// whenever the conversation grows; the answer arrives as an event.
     pub(crate) fn request_context_composition(&mut self) -> bool {
         if !self.ready || !self.process.has_stdin() {
@@ -590,14 +590,14 @@ impl Session {
     }
 
     /// Ask the CLI to name this conversation. The CLI summarizes `description`
-    /// with a model call, so the answer is a name for the subject rather than
+    /// with a model call, so the answer is a name for the subject instead of
     /// a truncation of the prompt, and it arrives later as
     /// [`Event::TitleUpdated`]. `persist` writes the name into the session
     /// file, so resuming the conversation finds it under the same name.
     ///
     /// The CLI answers with a null title when `description` is under ten
     /// characters, and a build without this request answers with an error;
-    /// both leave the conversation unnamed rather than reporting anything.
+    /// both leave the conversation unnamed instead of reporting anything.
     pub(crate) fn request_session_title(&mut self, description: &str) -> bool {
         if !self.ready || !self.process.has_stdin() {
             return false;
@@ -636,7 +636,7 @@ impl Session {
     ///
     /// Fire-and-forget, like the model and permission requests: a refusal
     /// reaches the user through the generic control-error path, and there is
-    /// nothing to put back when a name the tab already carries is rejected.
+    /// nothing to put back when a name the tab already shows is rejected.
     pub fn rename_session(&mut self, title: &str) -> bool {
         let title = title.trim();
 
@@ -663,7 +663,7 @@ impl Session {
     /// answers from the live context, including a turn still running, in one
     /// response with no tool execution, so the question needs no idle session
     /// and cannot change the workspace. The CLI keeps no side history of its
-    /// own for this client: `history` carries the earlier answered exchanges,
+    /// own for this client: `history` holds the earlier answered exchanges,
     /// oldest first, so a follow-up can refer back to them.
     ///
     /// Returns the request id the answer arrives under as
@@ -746,15 +746,15 @@ impl Session {
     /// Start rebuilding child agents from this session's persisted history.
     /// The returned order counter must be passed back to
     /// [`Session::finish_task_restoration`] so a slow read cannot overwrite
-    /// live updates that landed while it was running.
+    /// live updates that arrived while it was running.
     pub fn begin_task_restoration(&mut self) -> u64 {
         self.tasks.begin_restoration()
     }
 
     /// Read one child's stored conversation. The CLI publishes a child's own
     /// turns only in the file it writes for that child; the parent stream
-    /// carries the launch instruction and the lifecycle records but none of
-    /// the replies, so this read is what the child's row has to show.
+    /// includes the launch instruction and the lifecycle records but none of
+    /// the replies, so the child's row can only show what this read returns.
     ///
     /// A session that wrote no child files leaves the row as the stream left
     /// it, which keeps older CLI versions (whose stream did carry the child's
@@ -766,7 +766,7 @@ impl Session {
     ) -> TranscriptLoad {
         let key = BackgroundTaskKey::claude_code(tool_use_id);
 
-        // A background shell keeps its content in an output file rather than
+        // A background shell keeps its content in an output file instead of
         // in a child session, so it is read from there and never looks for a
         // transcript that does not exist.
         if let Some(detail) = self.tasks.shell_detail(tool_use_id) {
@@ -941,7 +941,7 @@ impl Session {
         self.session_id.as_deref()
     }
 
-    /// Answer the pending `can_use_tool` request. The UI decision vocabulary
+    /// Answer the pending `can_use_tool` request. The UI decision values
     /// maps onto the CLI's allow/deny responses: `accept` allows once,
     /// `acceptForSession` allows and applies the CLI's own permission
     /// suggestions (e.g. switching to acceptEdits for the session), `decline`
@@ -1070,7 +1070,7 @@ impl Session {
             .collect()
     }
 
-    /// Fold one run's refresh back in. The transcript travels as its own event
+    /// Fold one run's refresh back in. The transcript is sent as its own event
     /// because it is read only while someone has that agent open.
     pub fn apply_workflow_refresh(&mut self, mut result: WorkflowRefreshResult) -> Vec<Event> {
         let mut events = Vec::new();
@@ -1179,7 +1179,7 @@ impl Session {
             self.session_id = Some(session_id.to_string());
         }
 
-        // `init` — emitted when the first turn opens — carries the session's
+        // `init` (emitted when the first turn opens) reports the session's
         // ACTUAL permission mode, which the initialize response does not
         // (its value is this client's best guess from config). Always
         // applied: any user pick was already sent as a control request
@@ -1217,7 +1217,7 @@ impl Session {
         // The window grew with whatever this turn loaded, so the breakdown is
         // refreshed here too. A resumed conversation is covered earlier, at the
         // initialize response, because the CLI withholds this message until a
-        // model turn actually starts.
+        // model turn starts.
         self.request_context_composition();
 
         events
@@ -1265,7 +1265,7 @@ impl Session {
         }
 
         // The window only changes as the conversation grows, so a settled turn
-        // is the point where a fresh breakdown is worth asking for.
+        // is the point where a fresh breakdown can differ from the last one.
         self.request_context_composition();
 
         events
@@ -1298,7 +1298,7 @@ impl Session {
 
         // AskUserQuestion is a permission request only in shape: the CLI runs
         // the tool with whatever answers the client merges into `updatedInput`,
-        // so it needs the question card rather than an allow/deny card.
+        // so it needs the question card instead of an allow/deny card.
         if tool_name == "AskUserQuestion" {
             let questions = parse_questions(&request["input"]);
 
@@ -1395,7 +1395,7 @@ impl Session {
             }];
         }
 
-        // The initialize response arrives before any turn and carries the
+        // The initialize response arrives before any turn and includes the
         // model catalog, so the pickers show real values immediately. It
         // does NOT report the session's current permission mode. A mode
         // passed as a launch flag is the one the CLI runs under; otherwise
@@ -1457,7 +1457,7 @@ const FILE_CHECKPOINTING_ENV: &str = "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"
 
 /// The model the CLI must start on. `ANTHROPIC_MODEL` comes first because it
 /// is exported into the child environment and would win there anyway; the
-/// launch config's own field carries the model the tab asked for otherwise.
+/// launch config's own field holds the model the tab asked for otherwise.
 fn launch_model(launch: &LaunchConfig) -> Option<String> {
     // Command environment overrides are last-value-wins, so the adapter must
     // resolve duplicate entries the same way as the spawned Claude process.
@@ -1480,8 +1480,8 @@ fn launch_model(launch: &LaunchConfig) -> Option<String> {
 
 /// Assemble the CLI invocation for one conversation. Kept apart from the spawn
 /// so the exact argument boundaries can be inspected without starting a
-/// process: a path pushed as its own argument is never re-parsed, which is what
-/// keeps a directory containing spaces or shell metacharacters intact.
+/// process: a path pushed as its own argument is never re-parsed, so a
+/// directory containing spaces or shell metacharacters stays intact.
 fn claude_command(
     launcher: &AgentCli,
     launch: &LaunchConfig,
@@ -1535,7 +1535,7 @@ fn claude_command(
 
     // A mode given at launch holds from the first turn. Switching after the
     // handshake would leave the CLI on its configured mode until the first
-    // message carries a `set_permission_mode` request.
+    // message is preceded by a `set_permission_mode` request.
     if let Some(mode) = &launch.approval {
         command.args(["--permission-mode", mode]);
     }
@@ -1610,7 +1610,7 @@ struct TurnObservation {
     /// The line opened the turn, which has not been reported as started yet.
     started: bool,
 
-    /// The turn it opened was queued by the CLI rather than sent from this
+    /// The turn it opened was queued by the CLI instead of sent from this
     /// side, so nothing has begun its transcript.
     adopted: bool,
 
@@ -1645,7 +1645,7 @@ impl TurnTracker {
     /// so it must open the transcript before the prompt is published.
     fn observe(&mut self, message: &Value) -> TurnObservation {
         let adopted = self.state == TurnState::Idle
-            && (carries_model_output(message) || user_prompt_text(message).is_some());
+            && (is_model_output(message) || user_prompt_text(message).is_some());
 
         if adopted {
             self.accepted = None;
@@ -1732,6 +1732,6 @@ impl TurnTracker {
 /// Whether a line is model output, which the CLI only emits inside a turn.
 /// The turn's `system`/`init` line arrives first but is also emitted on
 /// startup and on resume, where no turn has opened yet.
-fn carries_model_output(message: &Value) -> bool {
+fn is_model_output(message: &Value) -> bool {
     matches!(message["type"].as_str(), Some("assistant" | "stream_event"))
 }

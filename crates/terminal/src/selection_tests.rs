@@ -72,7 +72,7 @@ fn line_search_stops_at_hard_newline() {
 fn line_search_clips_offscreen_megaline() {
     // A logical line that soft-wraps across the entire viewport (every visible
     // row wraps into the next): `row_search` clips at the visible top/bottom
-    // rather than chasing the off-screen tail and turning a viewport scan unbounded.
+    // instead of chasing the off-screen tail and turning a viewport scan unbounded.
     // 12 chars on 4 cols fill rows 0,1,2; rows 0,1 wrap, row 2 ends.
     let buf = buffer(4, 3, b"aaaaaaaaaaaa");
     let g = VisibleGrid::new(buf.grid(), buf.cols(), buf.row_wrapped_all());

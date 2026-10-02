@@ -80,7 +80,7 @@ impl TitleGenerationResult {
     }
 }
 
-/// Cancellation arrives as a message rather than by aborting the task, so the
+/// Cancellation arrives as a message instead of by aborting the task, so the
 /// cleanup that interrupts the title turn and detaches the registration runs.
 pub(super) fn start_title_generation(
     host: Arc<CodexHost>,
@@ -307,9 +307,9 @@ fn finish_title_thread(
     host.detach(registration_id);
 }
 
-/// Derive the immediate local title from the first ordinary prompt. Commands
-/// leave the conversation unnamed because they describe an operation rather
-/// than the subject the user wants to discuss.
+/// Derive the immediate local title from the first plain prompt. Commands
+/// leave the conversation unnamed because they describe an operation, not
+/// the subject the user wants to discuss.
 pub(crate) fn provisional_title_from_prompt(prompt: &str) -> Option<String> {
     provisional_title(prompt, None)
 }

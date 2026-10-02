@@ -18,7 +18,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Every scenario configures PSReadLine prediction, which arrived in
 /// PSReadLine 2.1. Windows PowerShell 5.1 ships 2.0 and rejects the option,
-/// and its error text lands on screen among the input being counted, so the
+/// and its error text appears on screen among the input being counted, so the
 /// scenarios run under PowerShell 7 resolved from PATH.
 const SHELL: &str = "pwsh.exe";
 

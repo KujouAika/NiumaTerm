@@ -31,7 +31,7 @@ fn startup_preserves_the_protocol_failure_reason() {
 }
 
 #[test]
-fn retiring_routes_cancels_only_their_ordinary_pending_inputs() {
+fn retiring_routes_cancels_only_their_regular_pending_inputs() {
     let router = router();
     let (owner, _) = register(&router);
     let (other, _) = register(&router);

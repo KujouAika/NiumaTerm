@@ -19,7 +19,7 @@ use crate::terminal_tab::frame::{BackgroundColors, EngineRowBuilder, TerminalLin
 /// still being materialized by the engine owner.
 #[derive(Clone)]
 pub(crate) struct HandleItemInfo {
-    /// Cached engine row count — the layout height source.
+    /// Cached engine row count: the layout height source.
     pub rows: usize,
 
     pub accent: u32,
@@ -144,9 +144,9 @@ fn block_row_shape_key(handle: BlockHandle, theme: u64, row: usize) -> u64 {
 }
 
 /// The live item's scrolled-up history: active-grid scrollback rows read as
-/// physical lines rendered above the live grid. Rows carry
+/// physical lines rendered above the live grid. Rows hold
 /// an out-of-band item index that the hit map converts back to their absolute
-/// SCREEN row; selection remains in the pane session rather than BlockStore.
+/// SCREEN row; selection remains in the pane session, not in BlockStore.
 pub(crate) fn live_history_view(
     lines: Vec<(u64, TerminalLine)>,
     total_rows: u64,

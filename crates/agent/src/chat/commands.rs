@@ -1,8 +1,8 @@
 //! Slash commands and skills as the composer sees them.
 //!
 //! Where a command comes from decides who runs it, and how it takes arguments
-//! decides what the palette offers after the name, so both travel with the
-//! command rather than being inferred from it.
+//! decides what the palette offers after the name, so both are stored on the
+//! command instead of being inferred from it.
 
 use serde::{Deserialize, Serialize};
 

@@ -554,8 +554,8 @@ impl Render for GitSidebar {
 
         h_flex()
             // The sidebar takes keyboard focus for its file-list shortcuts, so
-            // it needs its own node for screen readers to announce it rather
-            // than the whole window.
+            // it needs its own node so screen readers announce it instead of
+            // the whole window.
             .id("git-sidebar")
             .role(Role::Pane)
             .size_full()

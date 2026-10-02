@@ -75,8 +75,8 @@ struct StartupArgs {
 }
 
 /// The concrete Windows platform, kept as a gpui global so settings toggles
-/// can reach platform-level knobs (UI thread priority). The one knob behind it
-/// is Windows-only, and so is the handle: elsewhere nothing would read it.
+/// can reach platform-level settings (UI thread priority). The one setting
+/// behind it is Windows-only, and so is the handle: elsewhere nothing would read it.
 #[cfg(windows)]
 pub(crate) struct PlatformHandle(pub(crate) Rc<Platform>);
 
@@ -98,7 +98,7 @@ fn main() {
 
     // A second launch forwards its action to the existing process so one process
     // URL (or an activate request) to the running instance and exits. A
-    // malformed URL degrades to activate — the primary just comes forward.
+    // malformed URL degrades to activate: the primary just comes forward.
     let (argv_action, argv_error) = match url.map(|url| cli::parse_nmt_url(&url)) {
         Some(Ok(action)) => (Some(action), None),
         Some(Err(error)) => (Some(CliAction::Activate), Some(error)),
@@ -121,7 +121,7 @@ fn main() {
             Err(error) => pipe_error = Some(error),
         }
         // The mutex holder never answered (booting forever, or hung): serve
-        // the user with a fresh primary rather than doing nothing.
+        // the user with a fresh primary instead of doing nothing.
     }
 
     // Logging starts only once this process is known to stay. Initializing
@@ -311,8 +311,8 @@ fn on_finish_launching(
     // startup is where the files that instance renamed aside are
     // finally removable and where a package file it was too old to know
     // about gets installed. Syntax highlighting loads one of those
-    // files, which is why this runs before it rather than beside the
-    // rest of the update setup below.
+    // files, so this runs before it and not beside the rest of the
+    // update setup below.
     #[cfg(windows)]
     settle_previous_update(&nmt_config::config_dir_path(), &utils::get_exe_dir());
 
@@ -369,7 +369,7 @@ fn on_finish_launching(
     cx.observe_global::<AppSettings>(on_settings_changed)
         .detach();
 
-    // A closed window is discarded — except the last one, whose
+    // A closed window is discarded, except the last one, whose
     // geometry and session the quit hook still has to write out. On
     // Windows that quit is immediate; on macOS the process stays alive,
     // and `reopen_after_last_window_closed` consumes the entry if the
@@ -474,7 +474,7 @@ fn on_settings_changed(cx: &mut App) {
     ui::remote::sync_hosting(cx);
     ui::remote::sync_lan_browse(cx);
 
-    // Terminal and agent scrolling are their own elements carrying
+    // Terminal and agent scrolling are their own elements with
     // their own switch; this one covers every container that scrolls
     // through a plain scroll handle, which is the rest of the app.
     let enable_smooth_scrolling = cx
@@ -648,10 +648,10 @@ fn foreground_last_active(cx: &mut App) {
 /// stays in the Dock and AppKit routes the click here; with no handler the
 /// click does nothing and quitting is the only way back into a running app.
 /// AppKit also asks when every window is merely minimized or hidden, so an
-/// existing window is brought forward rather than joined by a second one.
+/// existing window is brought forward instead of joined by a second one.
 fn reopen_after_last_window_closed(cx: &mut App) {
     // Menu popups outlive terminal windows, so reopening depends on the
-    // registry's open entries rather than GPUI's complete window list.
+    // registry's open entries, not GPUI's complete window list.
     if cx.global::<WindowRegistry>().windows().is_empty() {
         open_window_without_a_source(cx);
     } else {

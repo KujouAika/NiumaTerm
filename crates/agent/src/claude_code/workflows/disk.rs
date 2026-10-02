@@ -1,7 +1,7 @@
 //! Reading a workflow run's persisted record.
 //!
-//! The stream carries run and agent state but never conversation, so the only
-//! source for what an agent actually said is the transcript the provider
+//! The stream reports run and agent state but never conversation, so the only
+//! source for what an agent wrote is the transcript the provider
 //! writes. Two on-disk records matter, and they serve different phases:
 //!
 //! - `<session>/subagents/workflows/<run-id>/journal.jsonl` is appended while
@@ -29,7 +29,7 @@ use crate::workflow::{
 };
 
 /// One agent's line in a run journal. `result` is present once the agent has
-/// finished, which is what makes the journal worth polling: it reports a
+/// finished, which is why the journal is polled: it reports a
 /// completion the stream may not mention for another few seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct WorkflowJournalEntry {
@@ -112,8 +112,8 @@ fn run_id_for_task(session: &Path, task_id: &str) -> Option<String> {
 /// Per-agent progress recorded in a live run's journal.
 ///
 /// A journal being appended to as this reads can end mid-line; the records
-/// read so far are still valid, so a trailing partial line is dropped rather
-/// than failing the refresh.
+/// read so far are still valid, so a trailing partial line is dropped instead
+/// of failing the refresh.
 pub(super) fn read_journal(dir: &Path) -> Result<Vec<WorkflowJournalEntry>, String> {
     let path = dir.join("journal.jsonl");
     let file = fs::File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -346,14 +346,14 @@ pub(super) fn read_run_snapshots_at(
     Ok(restored)
 }
 
-/// Runs whose completion snapshot never landed. The snapshot is written after
-/// a run ends, so a run the process outlived leaves only the directory it was
-/// writing into — and those are exactly the long runs worth reopening.
+/// Runs whose completion snapshot was never written. The snapshot is written
+/// after a run ends, so a run the process outlived leaves only the directory
+/// it was writing into, and those are exactly the long runs users reopen.
 ///
 /// What survives is the run's own name, the agents it started, and their
 /// conversations. Phases, ordering, and per-agent accounting live in the
 /// snapshot alone, so a run restored this way reports what it has and omits
-/// the rest rather than inventing it.
+/// the rest instead of inventing it.
 fn restore_interrupted_runs(session: &Path, recorded: &HashSet<String>) -> Vec<WorkflowRun> {
     let Ok(entries) = fs::read_dir(session.join("subagents").join("workflows")) else {
         return Vec::new();
@@ -404,8 +404,8 @@ fn restore_interrupted_runs(session: &Path, recorded: &HashSet<String>) -> Vec<W
 }
 
 /// Agents of an interrupted run, oldest transcript first. The journal records
-/// only the agents whose results were cached, so the transcripts are what says
-/// which agents actually ran; the journal then settles which of them finished.
+/// only the agents whose results were cached, so the transcripts show which
+/// agents ran; the journal then decides which of them finished.
 fn restore_interrupted_agents(dir: &Path) -> Vec<WorkflowAgent> {
     let finished: HashSet<String> = read_journal(dir)
         .unwrap_or_default()
@@ -489,7 +489,7 @@ fn interrupted_run_name(session: &Path, run_id: &str) -> Option<String> {
 }
 
 /// A label for an agent whose run recorded no metadata: the opening line of
-/// the prompt it was given, which is what its author wrote to identify it.
+/// the prompt it was given, which its author wrote to identify it.
 fn agent_prompt_label(path: &Path) -> Option<String> {
     /// The prompt is the first user record; scanning a few lines covers a
     /// file that opens with attachments instead.
@@ -546,7 +546,7 @@ fn restore_run(snapshot: &Value) -> Option<WorkflowRun> {
         name: text_field(snapshot, &["workflowName"]),
         summary: text_field(snapshot, &["summary"]),
         // A run recorded by a previous process cannot still be advancing,
-        // so an unrecognized status settles as stopped rather than active.
+        // so an unrecognized status maps to stopped instead of active.
         state: match snapshot["status"].as_str() {
             Some("completed") => WorkflowRunState::Done,
             Some("failed") => WorkflowRunState::Failed,
@@ -562,7 +562,7 @@ fn restore_run(snapshot: &Value) -> Option<WorkflowRun> {
 }
 
 /// The run's own final text. It is recorded as an array of per-agent results,
-/// so the parts are joined rather than showing only the first.
+/// so the parts are joined instead of showing only the first.
 fn restored_result(snapshot: &Value) -> Option<String> {
     if let Some(text) = text_field(snapshot, &["result"]) {
         return Some(text);

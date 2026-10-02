@@ -35,7 +35,7 @@ use crate::session::naming::provisional_title;
 const HEAD_SCAN_BYTES: u64 = 256 * 1024;
 
 /// Rows one listing returns at most. Every candidate's head has to be read to
-/// learn its directory, so the walk stops once this many matched rather than
+/// learn its directory, so the walk stops once this many matched instead of
 /// parsing years of rollouts for a list that shows the newest few.
 const LISTING_LIMIT: usize = 200;
 
@@ -152,7 +152,7 @@ pub fn list_sessions(
 }
 
 /// Every `rollout-*.jsonl` below `dir`, with its modification time. The tree
-/// is date-partitioned a few levels deep, so this recurses rather than
+/// is date-partitioned a few levels deep, so this recurses instead of
 /// assuming the depth.
 fn collect_rollouts(dir: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -227,7 +227,7 @@ fn parse_head(reader: impl BufRead) -> Option<RolloutHead> {
                     branch: non_empty(&payload["git"]["branch"]),
                     provider: non_empty(&payload["model_provider"]),
                     // A subagent's thread belongs to the parent that spawned
-                    // it rather than to a list of conversations to reopen.
+                    // it, not to a list of conversations to reopen.
                     subagent: payload["source"].get("subagent").is_some(),
                     first_prompt: None,
                 });

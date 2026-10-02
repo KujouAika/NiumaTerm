@@ -41,7 +41,7 @@ pub(super) fn close_description(
     }
 }
 
-/// "1 child process is running" / "N child processes are running" — the
+/// "1 child process is running" / "N child processes are running": the
 /// lead-in of every close-confirmation description.
 fn processes_running(count: usize) -> String {
     if count == 1 {
@@ -51,7 +51,7 @@ fn processes_running(count: usize) -> String {
     }
 }
 
-/// Shared scaffolding of every close-confirmation alert: title +
+/// Shared structure of every close-confirmation alert: title +
 /// description, OK runs `on_confirm` against this shell. `note` adds a
 /// bold line under the description for a consequence the description
 /// itself does not cover.

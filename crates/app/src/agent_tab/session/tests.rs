@@ -622,7 +622,7 @@ mod queued_prompt_placement_tests {
         (pane.expect("create Agent pane"), window)
     }
 
-    /// Every user row as the turn it was filed under and the text it carries.
+    /// Every user row as the turn it was filed under and the text it holds.
     fn user_rows(pane: &AgentPane, cx: &gpui::App) -> Vec<(u64, String)> {
         pane.transcript
             .read(cx)
@@ -1165,7 +1165,7 @@ mod shared_host_recovery_tests {
     }
 }
 
-/// The merged `/` catalog is held between frames rather than rebuilt on each
+/// The merged `/` catalog is held between frames instead of rebuilt on each
 /// one, so the two ways of getting it wrong are keeping a command the harness
 /// has withdrawn and never showing one it has just published.
 mod command_catalog_cache_tests {

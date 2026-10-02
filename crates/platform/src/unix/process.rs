@@ -58,8 +58,8 @@ pub fn spawn_piped(command: Command) -> io::Result<PipedChild> {
 ///
 /// There is no console window to suppress on Unix, but the containment half of
 /// the Windows counterpart still applies: a child in its own group can be
-/// signalled as a unit without the signal reaching this process, which is what
-/// [`KillOnCloseJob`] relies on.
+/// signalled as a unit without the signal reaching this process, and
+/// [`KillOnCloseJob`] relies on that.
 pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
 
@@ -74,8 +74,8 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 /// Node-based tools install; `execvp` already searches `PATH` for a bare name,
 /// so the extra hop would only add a process that swallows signals.
 ///
-/// The child carries the environment a GUI launch did not inherit, PATH
-/// included. A bare name is resolved against the child's own PATH rather than
+/// The child gets the environment a GUI launch did not inherit, PATH
+/// included. A bare name is resolved against the child's own PATH, not
 /// against this process's, so setting it here is what lets a tool installed
 /// under the user's home directory be found at all.
 #[cfg(target_os = "macos")]
@@ -100,9 +100,9 @@ pub fn hidden_cmd_command(executable: impl AsRef<OsStr>) -> Command {
     hidden_command(executable)
 }
 
-/// The value `name` carries in a child started by [`hidden_cmd_command`].
+/// The value `name` has in a child started by [`hidden_cmd_command`].
 ///
-/// A caller that resolves an executable itself rather than leaving it to the
+/// A caller that resolves an executable itself instead of leaving it to the
 /// spawn has to search the same PATH the spawn would, or it reports a tool as
 /// missing that the spawn would have found.
 #[cfg(target_os = "macos")]
@@ -114,7 +114,7 @@ pub fn launch_env_var(name: &str) -> Option<OsString> {
         .or_else(|| env::var_os(name))
 }
 
-/// The value `name` carries in a child started by [`hidden_cmd_command`],
+/// The value `name` has in a child started by [`hidden_cmd_command`],
 /// which inherits this process's environment unchanged.
 #[cfg(not(target_os = "macos"))]
 pub fn launch_env_var(name: &str) -> Option<OsString> {
@@ -132,7 +132,7 @@ pub fn decode_child_output(bytes: &[u8]) -> String {
 
 /// Build the status a process that exited with `code` would report.
 ///
-/// `ExitStatus` wraps a `wait` status rather than the exit code, and the exit
+/// `ExitStatus` wraps a `wait` status, not the exit code, and the exit
 /// code lives in the upper byte of the low 16 bits.
 pub fn exit_status_from_code(code: u32) -> ExitStatus {
     ExitStatus::from_raw(((code & 0xff) as i32) << 8)
@@ -176,8 +176,8 @@ impl KillOnCloseJob {
         // Idempotent when the command already asked for its own group; the
         // call is what covers a `Command` built without `process_group`. The
         // kernel refuses it once the child has exec'd (`EACCES`) or made
-        // itself a session leader (`EPERM`) — both mean the child settled its
-        // own group, so membership is read back rather than assumed.
+        // itself a session leader (`EPERM`); both mean the child already chose
+        // its own group, so membership is read back instead of assumed.
         // SAFETY: both arguments are plain integers.
         if unsafe { libc::setpgid(pid, pid) } != 0 {
             let error = io::Error::last_os_error();
@@ -233,7 +233,7 @@ impl ProcessTree {
 /// Linux exposes the group of a process only through `/proc/<pid>/stat`, so
 /// membership is counted by scanning the live pids. Field 5 is the group id,
 /// and it follows the comm field, which may itself contain spaces or
-/// parentheses — hence the split on the last `')'` rather than on whitespace.
+/// parentheses, hence the split on the last `')'` instead of on whitespace.
 #[cfg(not(target_os = "macos"))]
 fn group_process_count(pgid: libc::pid_t) -> io::Result<usize> {
     let entries = fs::read_dir("/proc")?;

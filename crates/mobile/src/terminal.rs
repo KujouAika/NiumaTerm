@@ -51,7 +51,7 @@ static NEXT_ROUTE: AtomicUsize = AtomicUsize::new(1);
 pub trait TerminalObserver: Send + Sync {
     /// The screen or the view's state changed. Further calls wait until the
     /// app reads a frame, so a flood of output costs one call per frame the
-    /// app draws rather than one per batch the host sends.
+    /// app draws instead of one per batch the host sends.
     fn changed(&self);
 }
 
@@ -202,7 +202,7 @@ struct View {
     interaction: TerminalInteraction,
     palette: List,
 
-    /// What the app already drew, so a frame carries only changed rows.
+    /// What the app already drew, so a frame includes only changed rows.
     drawn: Option<Drawn>,
 }
 
@@ -439,8 +439,8 @@ impl View {
         })
     }
 
-    /// A viewport cell as a history-anchored point, which is what the
-    /// selection is kept in so it stays on its text while output scrolls.
+    /// A viewport cell as a history-anchored point, the form the selection
+    /// is kept in so it stays on its text while output scrolls.
     fn screen_cell(&self, col: u16, row: u16) -> SurfaceScreenCell {
         let top = self.session.snapshot().viewport_top().unwrap_or(0);
 
@@ -458,11 +458,11 @@ impl TerminalHandle {
     }
 
     /// What changed since the last call. The first call after attaching,
-    /// and any after a resize or a scroll through history, carries every
+    /// and any after a resize or a scroll through history, includes every
     /// row.
     pub fn frame(&self) -> TerminalFrame {
-        // Cleared before reading, so a change landing while this reads
-        // reports again rather than being lost.
+        // Cleared before reading, so a change arriving while this reads
+        // reports again instead of being lost.
         self.wake.pending.store(false, Ordering::Release);
 
         let mut frame = self.view.lock().frame();

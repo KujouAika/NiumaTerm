@@ -889,7 +889,7 @@ fn background_save_completes_only_after_edits_made_during_the_write_are_saved(
 
     assert!(config.appearance.reduce_motion);
 
-    // Both writes landed, so a quit now has nothing left to save.
+    // Both writes were saved, so a quit now has nothing left to save.
     cx.update(|_, cx| assert!(!cx.global::<AppSettings>().should_save_on_exit()));
 
     fs::write(&path, "invalid [ configuration").unwrap();

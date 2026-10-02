@@ -66,7 +66,7 @@ pub(crate) fn normalize(
                 .unwrap_or("Claude Code is waiting for input"),
         ),
         "PostToolUse" => (AgentEventKind::ToolFinished, "", ""),
-        // SubagentStop is deliberately ignored: the parent turn is still
+        // SubagentStop is ignored: the parent turn is still
         // running when a subagent finishes.
         "Stop" => (
             AgentEventKind::Stopped,

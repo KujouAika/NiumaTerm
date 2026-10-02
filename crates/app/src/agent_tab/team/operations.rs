@@ -334,8 +334,8 @@ pub(super) fn command(
 }
 
 /// Apply a backend signal to the attempt it was addressed to. Returns whether
-/// it carried a moderator decision the room took, which is what the caller
-/// answers the moderator with; a signal for an attempt the room no longer
+/// it held a moderator decision the room took; the caller answers the
+/// moderator with that result. A signal for an attempt the room no longer
 /// tracks, a plain turn event, and a rejected decision all answer no.
 pub(super) fn execution(
     session: &mut TeamSession,

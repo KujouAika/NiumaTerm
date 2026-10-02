@@ -1,4 +1,4 @@
-//! JSON payloads carried inside the pairing and channel handshakes. Unknown
+//! JSON payloads sent inside the pairing and channel handshakes. Unknown
 //! fields are ignored and unknown enum values decode to `Unknown`, so a newer
 //! peer can add fields and values without breaking an older one.
 
@@ -42,7 +42,7 @@ pub fn device_name(input: &str) -> Option<String> {
 }
 
 /// Payload of the client's first channel handshake message. That message is
-/// replayable and not forward secret, so it carries no application data.
+/// replayable and not forward secret, so it holds no application data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientHello {
     pub proto_minor: u32,

@@ -1,6 +1,6 @@
 //! Several watchers ask for the branch of one directory, so the answer is held
 //! between reads. What that must never do is pin an answer a caller asked to be
-//! fresh, which is what would leave a tab naming the branch the user just left.
+//! fresh; that would leave a tab naming the branch the user just left.
 
 #![cfg(windows)]
 
@@ -58,8 +58,8 @@ fn a_held_answer_is_shared_but_never_outlives_the_freshness_asked_for() {
 
     git(&dir, &["checkout", "-b", "topic"]);
 
-    // A watcher that accepts an answer this recent gets the held one, which is
-    // what keeps every tab on this directory to one git process between them.
+    // A watcher that accepts an answer this recent gets the held one, so all
+    // tabs on this directory share one git process.
     assert_eq!(
         branch_of(&dir, Duration::from_secs(600)).as_deref(),
         Some("trunk"),
@@ -67,7 +67,7 @@ fn a_held_answer_is_shared_but_never_outlives_the_freshness_asked_for() {
     );
 
     // A watcher that accepts nothing older than its own poll reads again, so
-    // the label follows the switch rather than being pinned by the hold.
+    // the label follows the switch instead of being pinned by the hold.
     assert_eq!(
         branch_of(&dir, Duration::ZERO).as_deref(),
         Some("topic"),

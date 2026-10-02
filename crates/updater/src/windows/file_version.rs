@@ -1,6 +1,6 @@
 //! Reading a named string out of a file's Windows version resource.
 //!
-//! Every binary this workspace links carries one, and an updater uses it to
+//! Every binary this workspace links has one, and an updater uses it to
 //! decide whether a file on disk is already the one it was about to install.
 
 #[cfg(test)]
@@ -30,8 +30,8 @@ struct Translation {
 /// no version resource, no string block, or no such key in it.
 ///
 /// Which string block holds the key is declared by the resource itself, so the
-/// language and code page naming it are read from the translation table rather
-/// than assumed to be the resource compiler's default: a file built by another
+/// language and code page naming it are read from the translation table instead
+/// of being assumed to be the resource compiler's default: a file built by another
 /// toolchain, such as a vendored Microsoft binary, names its block differently.
 pub(crate) fn version_string(path: &Path, key: &str) -> Option<String> {
     let path = wide(path.as_os_str());
@@ -100,7 +100,7 @@ fn query(block: &[u8], sub_block: &str) -> Option<(*const c_void, u32)> {
     let mut length = 0u32;
 
     // SAFETY: both wide strings are NUL-terminated, and `block` was filled by
-    // GetFileVersionInfoW, which is what this call is documented to parse.
+    // GetFileVersionInfoW, the format this call is documented to parse.
     let found = unsafe {
         VerQueryValueW(
             block.as_ptr().cast(),

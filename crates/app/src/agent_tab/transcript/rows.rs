@@ -50,7 +50,7 @@ pub(crate) enum RowSpec {
     },
     /// The live progress line. `compacting` is part of the spec because the
     /// compaction form is a different, taller row, so flipping it has to
-    /// remeasure rather than only repaint.
+    /// remeasure instead of only repaint.
     Working {
         compacting: bool,
     },
@@ -59,7 +59,7 @@ pub(crate) enum RowSpec {
 impl RowSpec {
     /// Whether `other` describes the row this one does, whatever has since
     /// changed about it. Equality asks whether a row still measures the same;
-    /// this asks whether it is still there, which is what decides if the list
+    /// this asks whether it is still there, and that decides if the list
     /// may keep the height and the reading position it holds for the row.
     pub(crate) fn is_same_row(&self, other: &Self) -> bool {
         match (self, other) {
@@ -78,15 +78,15 @@ impl RowSpec {
 }
 
 /// Whether a row belongs to a run of work steps, and so is drawn inside the
-/// run's grouping rule. The turn fold heads the whole turn rather than one
+/// run's grouping rule. The turn fold heads the whole turn, not one
 /// run, so it stays outside.
 pub(crate) fn is_run_row(spec: &RowSpec) -> bool {
     matches!(spec, RowSpec::Work { .. } | RowSpec::RunToggle { .. })
 }
 
-/// How much air a row holds below it, as a rank rather than a measurement.
-/// What the rhythm is follows from what the rows are, which is what this
-/// module decides; how many pixels a rank is worth belongs to the renderer
+/// How much air a row holds below it, as a rank, not a measurement.
+/// What the rhythm is follows from what the rows are, and this module
+/// decides that; how many pixels a rank spans belongs to the renderer
 /// that owns the transcript's geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowGap {
@@ -114,7 +114,7 @@ pub(crate) struct TranscriptRow {
     pub(crate) gap: RowGap,
 }
 
-/// Whether a row reports on how the turn was worked rather than on what it
+/// Whether a row reports on how the turn was worked instead of on what it
 /// said: the steps themselves, the toggle that collapses a run of them, and
 /// the disclosure that heads a whole turn's work.
 fn is_work_block(spec: &RowSpec) -> bool {
@@ -135,7 +135,7 @@ fn is_turn_edge(items: &[Entry], spec: &RowSpec) -> bool {
 }
 
 /// The space at one boundary between rows. A gap is a property of the
-/// boundary rather than of either row: the same work row wants the tight step
+/// boundary, not of either row: the same work row wants the tight step
 /// rhythm above the next step of its run and a wider one above the prose that
 /// follows the run, and a rank read off the upper row alone cannot say both.
 /// The last row is spaced as though a turn followed it, so gaining a row
@@ -170,7 +170,7 @@ pub(super) fn spaced_rows(items: &[Entry], specs: &[RowSpec], rows: &mut Vec<Tra
 }
 
 /// Where the reader was before something else began moving the transcript for
-/// them. The live end is recorded as such rather than as the offset it stands
+/// them. The live end is recorded as such instead of as the offset it stands
 /// at, because the end moves as the conversation grows.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReadingPosition {
@@ -308,7 +308,7 @@ pub(super) struct PickerReservation {
     pub(super) stashed_position: Option<ReadingPosition>,
 
     /// A picker is following the transcript, so empty space is left below the
-    /// conversation. Without that room a prompt near the end cannot be lifted
+    /// conversation. Without that room a prompt near the end cannot be raised
     /// clear of the picker: the list stops scrolling once its last row is on
     /// screen, which leaves exactly those prompts behind the list naming
     /// them.
@@ -325,7 +325,7 @@ impl PickerReservation {
     /// carry a view that was sitting at the live end down into it.
     ///
     /// The newer hold replaces any older one: a picker that closed by cutting
-    /// the conversation rather than by being cancelled leaves its own behind,
+    /// the conversation instead of by being cancelled leaves its own behind,
     /// and that position describes a conversation the user has since left.
     pub(crate) fn hold_for_picker(&mut self, list: &ListState) {
         self.stashed_position = Some(if list.is_following_tail() {
@@ -343,10 +343,10 @@ impl PickerReservation {
     /// reserved space goes away and the conversation returns to where the
     /// reader left it.
     ///
-    /// The return is a jump rather than an eased scroll. Dropping the reserve
+    /// The return is a jump, not an eased scroll. Dropping the reserve
     /// shortens what the list can travel in the same frame, so a view sitting
     /// on a prompt near the end is already outside the range an animation
-    /// could start from; easing from where it lands after that would read as a
+    /// could start from; easing from where it stops after that would read as a
     /// jump followed by a slide.
     pub(crate) fn release_from_picker(
         &mut self,

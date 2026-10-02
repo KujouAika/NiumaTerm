@@ -89,7 +89,7 @@ pub(crate) fn font_with_default_fallback(family: impl Into<SharedString>) -> Fon
 /// system has it, otherwise the platform's default UI face.
 ///
 /// A family that is not installed does not fail to load; GPUI quietly draws it
-/// in Helvetica. A config carried over from Windows names `Segoe UI`, which
+/// in Helvetica. A config copied over from Windows names `Segoe UI`, which
 /// macOS lacks, and Helvetica's short ascent then centers every line box below
 /// the glyphs, so chrome text rides visibly above the icons beside it.
 pub(crate) fn chrome_font(cx: &App) -> Font {
@@ -111,11 +111,11 @@ pub(crate) fn chrome_font(cx: &App) -> Font {
     }
 }
 
-/// Keep the context menu window built and carrying the chrome font.
+/// Keep the context menu window built and using the chrome font.
 ///
 /// The menu is drawn in a window of its own, so it inherits no text style from
 /// the window it opens over and would otherwise miss the CJK preference the rest
-/// of the chrome carries. Both halves are cheap once they have taken effect, so
+/// of the chrome uses. Both halves are cheap once they have taken effect, so
 /// this is called from the shell's render and follows a font setting that
 /// changes underneath it.
 pub(crate) fn sync_modern_menu(cx: &mut App) {

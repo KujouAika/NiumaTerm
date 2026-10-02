@@ -117,7 +117,7 @@ impl WindowTitleBar {
             .h(px(TITLE_BAR_HEIGHT))
             .map(Host::title_bar)
             // The default X calls `remove_window()` directly (no
-            // WM_CLOSE), skipping `on_window_should_close` — so the
+            // WM_CLOSE), skipping `on_window_should_close`, so the
             // shared close confirmation is handled here too.
             .on_close_window(cx.listener(|this, _, window, cx| {
                 this.request_window_close(window, cx);
@@ -143,15 +143,15 @@ impl WindowTitleBar {
                     // sidebar width or the session title: repeated clicks can
                     // cycle through targets without the pointer chasing them.
                     // Both stay mounted and go disabled when there is nowhere
-                    // to jump, which is what keeps that position stable.
+                    // to jump, and that keeps their position stable.
                     .child(
                         div().flex_none().occlude().child(
                             leading_button("next-ready-tab")
                                 .icon(IconName::Bell)
                                 .tooltip(t!("shell-next-ready-tab"))
                                 .disabled(!has_ready_tab)
-                                // The target is picked on the click rather
-                                // than captured here, so a tab that went ready
+                                // The target is picked on the click instead of
+                                // captured here, so a tab that went ready
                                 // (or was closed) since this frame is still
                                 // reached by the very next click.
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -190,7 +190,7 @@ impl WindowTitleBar {
             .child(
                 div()
                     .flex_1()
-                    // A floor rather than `min_w_0`: without it flexbox drains
+                    // A floor instead of `min_w_0`: without it flexbox drains
                     // this zero-basis column to nothing before squeezing its
                     // neighbours, and a zero-width strip cannot be scrolled
                     // back into view. The strip's own horizontal scroll takes
@@ -247,9 +247,9 @@ impl WindowTitleBar {
     }
 }
 
-/// The leading control of the title bar. It carries the commands that have
+/// The leading control of the title bar. It holds the commands that have
 /// no chrome of their own; anything with a visible button of its own stays
-/// on that button rather than being listed here as well.
+/// on that button instead of being listed here as well.
 fn app_menu_button(cx: &mut Context<AppWindow>) -> impl IntoElement {
     let shell = cx.entity();
 
@@ -262,10 +262,10 @@ fn app_menu_button(cx: &mut Context<AppWindow>) -> impl IntoElement {
     )
 }
 
-/// Upper-right `Workflows` control, revealed once a run exists. It carries
-/// the number of agents running right now in the active tab, which is the one
-/// thing about a workflow worth watching without opening the view; a run with
-/// nothing in flight shows the icon alone rather than a zero.
+/// Upper-right `Workflows` control, revealed once a run exists. It shows
+/// the number of agents running right now in the active tab, the one thing
+/// about a workflow a user watches without opening the view; a run with
+/// nothing in flight shows the icon alone instead of a zero.
 fn workflows_button(toggle: PanelToggle, cx: &mut Context<AppWindow>) -> impl IntoElement {
     let PanelToggle { running, open } = toggle;
 
@@ -285,8 +285,8 @@ fn workflows_button(toggle: PanelToggle, cx: &mut Context<AppWindow>) -> impl In
 }
 
 /// Upper-right `Background Tasks` control, shown when the active session has
-/// running or finished children. It carries the number of tasks running in the
-/// active tab; a session with none in flight shows the icon alone rather than
+/// running or finished children. It shows the number of tasks running in the
+/// active tab; a session with none in flight shows the icon alone instead of
 /// a zero. The `ToggleBackgroundTasks` action still reaches the view while the
 /// control is hidden.
 fn background_tasks_button(toggle: PanelToggle, cx: &mut Context<AppWindow>) -> impl IntoElement {
@@ -366,7 +366,7 @@ impl IconNamed for SideBarIcon {
 
 /// The application menu: opening things, then the two application-wide
 /// commands. Every entry here is reachable by keyboard as well, so the menu is
-/// a place to find them rather than the only way to reach them.
+/// a place to find them, not the only way to reach them.
 fn app_menu(menu: ModernMenu, shell: &Entity<AppWindow>, _cx: &mut App) -> ModernMenu {
     let window_shell = shell.clone();
     let workspace_shell = shell.clone();
@@ -423,7 +423,7 @@ impl IconNamed for GitIcon {
 /// Titlebar busy-tab jump icon, backed by the project's `assets/icons/
 /// circle-arrow-right.svg`. The arrow is what separates it from the busy
 /// spinner drawn on the tabs themselves: this control navigates to that work
-/// rather than reporting it.
+/// instead of reporting it.
 struct NextBusyTabIcon;
 
 impl IconNamed for NextBusyTabIcon {

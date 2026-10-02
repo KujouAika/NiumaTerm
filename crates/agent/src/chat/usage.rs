@@ -40,8 +40,8 @@ pub struct SessionStats {
     pub decode_ms: u64,
 }
 
-/// Token accounting from one provider reporting scope. The total is
-/// authoritative; optional categories describe parts of that total and stay
+/// Token accounting from one provider reporting scope. The total wins over
+/// the parts; optional categories describe parts of that total and stay
 /// absent when a protocol does not expose them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsageBreakdown {
@@ -106,14 +106,14 @@ pub struct ContextSegment {
     /// the provider's own string because a UI may prefer its theme instead.
     pub color: Option<String>,
 
-    /// The segment is reserved rather than occupied: counted against the
+    /// The segment is reserved, not occupied: counted against the
     /// window, but holding no conversation content yet.
     pub deferred: bool,
 }
 
 /// How the context window is currently filled, as opposed to how tokens were
 /// billed. A provider that only reports accounting never publishes this, so
-/// its absence is a normal state rather than a failure.
+/// its absence is a normal state, not a failure.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextComposition {
     pub segments: Vec<ContextSegment>,

@@ -48,7 +48,7 @@ impl BackgroundTaskKey {
 }
 
 /// Provider-specific identifiers kept beside the shared summary. These live in
-/// an enum rather than as unrelated optional fields so a Codex-only or
+/// an enum instead of as unrelated optional fields so a Codex-only or
 /// Claude-only identifier can never be read for the wrong provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackgroundTaskRefs {
@@ -67,8 +67,8 @@ pub enum BackgroundTaskRefs {
     },
     DeepSeek {
         /// Whether the child accepts further prompts or was one execution. The
-        /// two are read through different transports, so the row carries which
-        /// one it is rather than probing.
+        /// two are read through different transports, so the row records which
+        /// one it is instead of probing.
         continuable: bool,
     },
 }
@@ -77,7 +77,7 @@ impl BackgroundTaskRefs {
     /// Fill identifiers this reference does not know yet. Known values are kept
     /// because a later record can omit an id it already established.
     ///
-    /// Only Claude carries identifiers that arrive piecemeal. A provider
+    /// Only Claude has identifiers that arrive piecemeal. A provider
     /// mismatch means the key was reused across providers, which the qualified
     /// key already prevents; the current value is kept.
     fn merge_from(&mut self, other: &Self) {
@@ -179,7 +179,7 @@ pub struct BackgroundTaskSummary {
 
     /// Whether this child can be stopped right now. Only the adapter knows
     /// whether its provider exposes an operation that reaches this child, so the
-    /// view renders a Stop control from this rather than inferring one from the
+    /// view renders a Stop control from this instead of inferring one from the
     /// provider and the lifecycle state.
     pub can_stop: bool,
 }
@@ -211,7 +211,7 @@ impl BackgroundTaskSummary {
 }
 
 /// A patch applied to one task. Every field beyond the key is optional so a
-/// record that only carries a status line cannot erase a known lifecycle state.
+/// record that only has a status line cannot erase a known lifecycle state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BackgroundTaskUpdate {
     pub refs: Option<BackgroundTaskRefs>,

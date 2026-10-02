@@ -12,7 +12,7 @@ use crate::session::ConversationTitleRequest;
 use crate::workspace::AgentWorkspace;
 
 /// Replayed conversation with its turn grouping flattened away, for the tests
-/// that assert what a thread replays rather than how it is divided.
+/// that assert what a thread replays, not how it is divided.
 fn replayed_items(turns: &Value) -> Vec<Item> {
     parse_replay(turns)
         .into_iter()
@@ -1461,8 +1461,8 @@ fn a_branch_is_never_anchored_on_a_turn_that_did_not_finish() {
         ]}
     ]);
 
-    // The server refuses a cut through an unfinished turn, so "third" — whose
-    // only anchor is the interrupted turn2 — is not offered at all.
+    // The server refuses a cut through an unfinished turn, so "third" (whose
+    // only anchor is the interrupted turn2) is not offered at all.
     assert_eq!(
         parse_fork_checkpoints(&turns),
         vec![ForkCheckpoint {

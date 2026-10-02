@@ -83,7 +83,7 @@ pub(crate) fn working_row(
 
     // The dots stand in the slot a card gives its type icon, so the label
     // starts on the column a tool call's title starts on and the live line
-    // reads as the next step of the work above it rather than as a stray
+    // reads as the next step of the work above it instead of as a stray
     // line under it. A ring turning in that slot reads as one more step
     // with an icon; a travelling swell reads as the pane waiting.
     h_flex()
@@ -114,7 +114,7 @@ pub(crate) fn working_row(
                     // mixes the text toward the background on light
                     // themes, which fades the band into the page instead,
                     // and its default peak leaves the muted label only
-                    // slightly lifted at the twelve-pixel detail size.
+                    // only slightly brighter at the twelve-pixel detail size.
                     ShimmerText::new(label)
                         .id("agent-working-label")
                         .highlight_color(cx.theme().foreground)
@@ -171,7 +171,7 @@ pub(crate) fn agent_reply_row(
             // ending assistant output short of the pane by a strip that is
             // blank whenever the pointer is elsewhere. Out of the flow it
             // costs nothing until it appears, and the tinted chip keeps it
-            // legible where it lands over the last line.
+            // legible where it overlaps the last line.
             hover_stamp(at, cx)
                 .absolute()
                 .right_1()

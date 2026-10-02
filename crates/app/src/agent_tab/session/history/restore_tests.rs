@@ -133,7 +133,7 @@ fn install_backend(pane: &mut AgentPane) {
 }
 
 /// Make the installed backend answer like a harness that picks its
-/// conversation at launch, which is what sends a resume to the disk read.
+/// conversation at launch, so that a resume goes to the disk read.
 fn resume_by_reading_history(pane: &mut AgentPane) {
     match pane.session.borrow_mut().runtime_mut().backend_mut() {
         Some(Backend::Test(backend)) => backend.resume_outcome = ResumeOutcome::NeedsReplayRead,

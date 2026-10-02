@@ -69,7 +69,7 @@ pub(super) fn working_status_label(
 ///
 /// Past an hour it stops counting. The reading answers "did this conversation
 /// just settle, or has it been sitting"; once the answer is "it has been
-/// sitting", a more precise number says nothing more, and the label can stop
+/// sitting", a more precise number adds nothing, and the label can stop
 /// changing altogether.
 pub(crate) fn last_response_label(seconds: u64) -> String {
     if seconds >= LAST_RESPONSE_LIMIT.as_secs() {
@@ -271,7 +271,7 @@ pub(crate) fn command_execution_detail(command: &str, aggregated_output: Option<
     detail
 }
 
-/// The one line of a failed command's output worth putting on the card
+/// The one line of a failed command's output to put on the card
 /// itself. A reader deciding what to do next needs the first thing that went
 /// wrong, and the lines after it are usually the same failure restated as a
 /// stack or a usage dump; the whole output stays one click away.
@@ -284,7 +284,7 @@ pub(crate) fn command_failure_reason(aggregated_output: Option<&str>) -> Option<
     })
 }
 
-/// Full text of an entry for the right-click Copy action — the whole message,
+/// Full text of an entry for the right-click Copy action: the whole message,
 /// independent of any partial selection or truncated preview.
 pub(crate) fn entry_copy_text(item: &SessionItem) -> String {
     match item {
@@ -403,7 +403,7 @@ pub(crate) fn compaction_trigger_label(trigger: CompactionTrigger) -> Cow<'stati
 }
 
 /// Token and message accounting of a compaction, as display-ready fragments.
-/// Only what the backend actually reported appears, so a partially described
+/// Only what the backend reported appears, so a partially described
 /// compaction shows fewer fragments instead of zeros.
 pub(crate) fn compaction_accounting(detail: &Compaction) -> Vec<String> {
     let mut parts = Vec::new();

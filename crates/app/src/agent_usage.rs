@@ -192,7 +192,7 @@ impl Render for AgentUsageView {
 
         // Neither provider reports a limit at all, so there is nothing to
         // gauge. A row of bare icons over empty tracks would read as two
-        // exhausted subscriptions rather than as two unknown ones.
+        // exhausted subscriptions instead of two unknown ones.
         if codex_gauge.is_none() && claude_gauge.is_none() {
             return div().into_any_element();
         }

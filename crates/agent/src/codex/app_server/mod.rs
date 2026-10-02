@@ -464,7 +464,7 @@ impl Session {
     /// Send text plus the exact skill identity selected by a client picker.
     /// Text-only callers keep the original one-item request shape.
     /// Send text plus the exact skill identity selected by a client picker,
-    /// and the local images the message carries. The server reads each image
+    /// and the local images attached to the message. The server reads each image
     /// from the path given, so the caller keeps the file readable until the
     /// request has been written.
     pub(crate) fn send_user_message_with_skill(
@@ -526,8 +526,8 @@ impl Session {
 
     /// Submit the first primary prompt and start its isolated title request
     /// only after the primary thread accepts the prompt. The title is
-    /// generated from the request's description rather than from `text`:
-    /// the two differ when the prompt carries instructions around what the
+    /// generated from the request's description instead of from `text`:
+    /// the two differ when the prompt wraps instructions around what the
     /// user asked, and the title should name what the user asked.
     pub(crate) fn send_user_message_with_generated_title(
         &mut self,
@@ -616,7 +616,7 @@ impl Session {
         true
     }
 
-    /// Switch this session onto a persisted thread. The response carries the
+    /// Switch this session onto a persisted thread. The response holds the
     /// reconstructed turn history (emitted as [`Event::Replay`]) and the
     /// thread's persisted settings (emitted as [`Event::Ready`]); subsequent
     /// `turn/start` calls append to the resumed thread. On failure the
@@ -647,8 +647,8 @@ impl Session {
     ///
     /// The thread's own history answers it, so the list covers turns from
     /// before this session resumed the thread as well as the ones it watched
-    /// run. Reading it per request rather than accumulating it as turns go by
-    /// also keeps the offer honest after a compaction rewrites the thread.
+    /// run. Reading it per request instead of accumulating it as turns go by
+    /// also keeps the offer correct after a compaction rewrites the thread.
     pub fn request_fork_checkpoints(&mut self) -> bool {
         let Some(thread_id) = self.conversation.thread_id.clone() else {
             return false;
@@ -667,9 +667,9 @@ impl Session {
 
     /// Branch the thread at `anchor` and move this session onto the copy.
     ///
-    /// The reply carries the same reconstructed history and persisted settings
+    /// The reply holds the same reconstructed history and persisted settings
     /// `thread/resume` answers with, so it is read by the same handler and the
-    /// tab lands in the branch exactly as it lands in a resumed conversation.
+    /// tab opens the branch exactly as it opens a resumed conversation.
     /// The source thread is left untouched.
     pub(crate) fn fork_thread(&mut self, anchor: &ForkAnchor) -> Result<(), String> {
         let ForkAnchor::CodexThrough(last_turn_id) = anchor else {
@@ -749,7 +749,7 @@ impl Session {
 
     /// Stop one child agent, leaving the parent's turn running. Returns whether
     /// the request went out: a child whose active turn is not known cannot be
-    /// named in `turn/interrupt`, and the caller reports that rather than
+    /// named in `turn/interrupt`, and the caller reports that instead of
     /// pretending the child was stopped.
     pub fn interrupt_background_task(&mut self, thread_id: &str) -> bool {
         let rpc_id = self.alloc_rpc_id();
@@ -1134,7 +1134,7 @@ impl Session {
                         .unwrap_or_default(),
                 );
 
-                // The boundary lands after Ready so it opens the side
+                // The boundary is emitted after Ready so it opens the side
                 // transcript, above the first question.
                 [ready]
                     .into_iter()
@@ -1259,7 +1259,7 @@ impl Session {
 
         // A branch-point list nobody could read leaves the picker with
         // nothing to show, which is the picker's own failure to report
-        // rather than something that happened to the conversation.
+        // and not something that happened to the conversation.
         if query == Some(QueryKind::Checkpoints) {
             return vec![Event::ForkCheckpoints(Err(error.to_string()))];
         }
@@ -1334,8 +1334,9 @@ impl Session {
 
         if method == "thread/compacted" {
             // Current servers can publish this deprecated notification beside
-            // the authoritative item lifecycle. Ignoring it prevents a second
-            // boundary for the same context rewrite.
+            // the item lifecycle, which is the source this client follows.
+            // Ignoring it prevents a second boundary for the same context
+            // rewrite.
             return Vec::new();
         }
 
@@ -1372,7 +1373,7 @@ impl Session {
 
                     return Vec::new();
                 }
-                // A thread-scoped notification that carries no usable thread id
+                // A thread-scoped notification that has no usable thread id
                 // keeps parent handling: the parent's running state is the only
                 // conversation this session can be describing.
                 ThreadScope::Parent | ThreadScope::Unscoped => {}

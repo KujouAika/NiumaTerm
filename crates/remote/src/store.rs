@@ -1,5 +1,5 @@
-//! Pairing records live as JSON in the application state directory rather
-//! than in `config.toml`: pairing creates them, nobody edits them by hand.
+//! Pairing records are stored as JSON in the application state directory, not
+//! in `config.toml`: pairing creates them, nobody edits them by hand.
 //! Public keys are not secret, and anyone able to rewrite these files already
 //! runs as the user. The private key is the one secret and goes through
 //! [`crate::secret`].

@@ -36,8 +36,8 @@ fn the_cache_share_is_measured_over_the_turn_not_its_last_request() {
 
     assert_eq!(cache_hit_percent(usage), Some(90));
 
-    // Without an aggregate — a sparse or post-compaction snapshot — the
-    // newest request is still worth reporting.
+    // Without an aggregate (a sparse or post-compaction snapshot), the
+    // newest request is still reported.
     assert_eq!(
         cache_hit_percent(ContextWindowUsage {
             cumulative: None,
@@ -69,7 +69,7 @@ fn the_live_context_and_the_last_turn_report_the_same_categories() {
     };
 
     // Both sections are built the same way, so the two can be read against
-    // each other rather than one omitting a figure the other shows.
+    // each other without one omitting a figure the other shows.
     let labels: Vec<_> = token_usage_rows(usage)
         .iter()
         .map(|row| row.label.clone())

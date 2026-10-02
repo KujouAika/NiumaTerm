@@ -79,7 +79,7 @@ pub(crate) fn list_sessions(cwd: Option<&str>) -> Vec<SessionSummary> {
 }
 
 /// Sessions resumable from any project the CLI has recorded, newest first.
-/// Each carries the working directory it ran in, because resuming one outside
+/// Each holds the working directory it ran in, because resuming one outside
 /// the current directory has to happen where it worked.
 pub(crate) fn list_all_sessions() -> Vec<SessionSummary> {
     sorted_newest_first(
@@ -198,7 +198,7 @@ struct HeadSummary {
 /// Read the first user prompt, its recorded git branch, and the session's
 /// working directory from the head of a transcript file.
 ///
-/// The working directory is taken from whichever record carries it first,
+/// The working directory is taken from whichever record has it first,
 /// which is usually earlier than the first prompt: the directory the CLI ran
 /// in is the only record of it, since the project directory's name encodes it
 /// irreversibly.
@@ -289,9 +289,9 @@ pub(super) fn is_interruption(record: &Value) -> bool {
 }
 
 /// A `user` record the CLI synthesized to report a background agent's state.
-/// It reads as plumbing addressed to the model — task and tool-use ids, an
-/// output-file path, a status — so replaying it as a prompt shows the user
-/// something they never typed.
+/// It reads as internal bookkeeping addressed to the model (task and tool-use
+/// ids, an output-file path, a status), so replaying it as a prompt shows the
+/// user something they never typed.
 fn is_task_notification(record: &Value) -> bool {
     match record["origin"]["kind"].as_str() {
         Some(kind) => kind == "task-notification",
@@ -302,13 +302,13 @@ fn is_task_notification(record: &Value) -> bool {
     }
 }
 
-/// A `user` record the CLI synthesized to carry a compaction summary rather
-/// than to record something the user sent.
+/// A `user` record the CLI synthesized to hold a compaction summary, not to
+/// record something the user sent.
 fn is_compaction_summary(record: &Value) -> bool {
     record["type"].as_str() == Some("user") && record["isCompactSummary"].as_bool() == Some(true)
 }
 
-/// The summary a compaction left behind, if this record is the one carrying it.
+/// The summary a compaction left behind, if this record is the one holding it.
 pub(super) fn compaction_summary_text(record: &Value) -> Option<String> {
     is_compaction_summary(record)
         .then(|| record_text(record))
@@ -324,7 +324,7 @@ fn record_text(record: &Value) -> Option<String> {
 
 /// Strip the wrappers the CLI stores around prompts (injected
 /// `<system-reminder>` context, slash-command wrappers) down to what the
-/// user actually typed.
+/// user typed.
 pub(super) fn clean_prompt(text: &str) -> String {
     let mut text = text.to_string();
 

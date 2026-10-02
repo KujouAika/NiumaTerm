@@ -72,10 +72,10 @@ impl UsageSnapshot {
     }
 
     /// Fill windows this snapshot is missing from one taken through another
-    /// source. Sources disagree about which windows they report at all rather
-    /// than about their values, so a window already present is never replaced:
+    /// source. Sources disagree about which windows they report at all, not
+    /// about their values, so a window already present is never replaced:
     /// two readings of the same window differ only by the seconds between
-    /// them, and the first one asked is the more authoritative source.
+    /// them, and the first one asked is the source that wins.
     pub(crate) fn filled_from(mut self, other: &Self) -> Self {
         self.five_hour = self.five_hour.or_else(|| other.five_hour.clone());
         self.weekly = self.weekly.or_else(|| other.weekly.clone());
@@ -93,8 +93,8 @@ pub type FetchCancellation = CancellationToken;
 
 /// Why a usage fetch produced no snapshot. Cancellation is its own variant
 /// because callers treat it differently from failure: a cancelled fetch was
-/// abandoned deliberately and may be worth restarting, while a failed one is
-/// worth reporting. A message string cannot carry that distinction without the
+/// abandoned on purpose and may be restarted, while a failed one should be
+/// reported. A message string cannot carry that distinction without the
 /// caller comparing against its exact wording, which then breaks silently the
 /// first time the wording changes.
 #[derive(Debug)]
@@ -113,7 +113,7 @@ impl fmt::Display for UsageFetchError {
 }
 
 /// Lets the `?` operator lift a provider's `Result<_, String>` helpers, whose
-/// failures are all genuine failures rather than cancellations.
+/// failures are all genuine failures, not cancellations.
 impl From<String> for UsageFetchError {
     fn from(message: String) -> Self {
         UsageFetchError::Failed(message)

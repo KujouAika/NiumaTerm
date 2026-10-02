@@ -525,7 +525,7 @@ fn workspaces_sharing_a_primary_directory_keep_separate_histories() {
     assert_eq!(with_web, equivalent);
 
     // A single-directory workspace still resolves to the scope that predates
-    // multi-directory workspaces, which is what keeps its history reachable.
+    // multi-directory workspaces, so its history stays reachable.
     assert_eq!(alone, scope("local", AgentKind::Codex, &primary));
 
     let mut history = HistoryStore::default();

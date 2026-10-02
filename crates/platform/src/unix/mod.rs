@@ -148,9 +148,9 @@ impl io::Read for Pty {
 
 /// The terminal type a session announces to its child.
 ///
-/// It is stated rather than inherited, because neither way of starting the
+/// It is stated, not inherited, because neither way of starting the
 /// application supplies a usable one. Started from another terminal, the
-/// environment names that terminal rather than this one. Started from Finder or
+/// environment names that terminal instead of this one. Started from Finder or
 /// the Dock, it names nothing at all: launchd exports no `TERM`, and
 /// `/usr/bin/login` substitutes `network` for the missing value even under
 /// `-p`. No terminfo entry by that name exists, so the shell concludes it
@@ -158,7 +158,7 @@ impl io::Read for Pty {
 /// happens to sit instead of redrawing it in place. Every window resize then
 /// leaves another copy of the prompt behind.
 ///
-/// `xterm-256color` is the entry every system carries and describes what this
+/// `xterm-256color` is the entry every system ships and describes what this
 /// emulator does; `xterm` covers a terminfo database old enough to lack it.
 fn terminal_type() -> &'static str {
     if terminfo_exists("xterm-256color") {
@@ -261,7 +261,7 @@ fn create_termp() -> libc::termios {
         c_ospeed: Default::default(),
     };
 
-    // The PTY always carries UTF-8: the engine decodes it and every shell
+    // The PTY always transports UTF-8: the engine decodes it and every shell
     // launched through it is given a UTF-8 locale.
     #[cfg(not(target_os = "freebsd"))]
     {
@@ -312,7 +312,7 @@ impl ShellUser {
 
         // The passwd entry only fills in what the environment does not carry,
         // so a session that exports all three never has to read it and a
-        // failed read is reported only when something is actually missing.
+        // failed read is reported only when something is missing.
         let (user, home, shell) = match (env::var("USER"), env::var("HOME"), env::var("SHELL")) {
             (Ok(user), Ok(home), Ok(shell)) => (user, home, shell),
             (user, home, shell) => {
@@ -364,7 +364,7 @@ fn require_executable_shell(shell: &str) -> Result<(), Error> {
 }
 
 /// The initial pixel size a PTY reports. The window has not been laid out
-/// when the shell starts, and `set_winsize` carries the real dimensions from
+/// when the shell starts, and `set_winsize` reports the real dimensions from
 /// the first resize onward; zero is the value programs already read as
 /// "unknown".
 const UNKNOWN_PIXEL_SIZE: u16 = 0;
@@ -374,7 +374,7 @@ const UNKNOWN_PIXEL_SIZE: u16 = 0;
 /// The write happens before the child exists, so the bytes simply wait in the
 /// line discipline's queue for the shell's first read. Echo is decided when a
 /// character arrives, not when it is read, so clearing `ECHO` for the duration
-/// of this write is enough to hide it — and the launch turns the shell's own
+/// of this write is enough to hide it; the launch also turns the shell's own
 /// line editor off, because an editor would otherwise draw the line itself and
 /// never consult `ECHO` at all.
 fn queue_bootstrap(main: libc::c_int, child: libc::c_int, bootstrap: &str) -> Result<(), Error> {
@@ -511,7 +511,7 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
             // Build the exec command to replace the intermediate shell with
             // our target shell. Every interpolated value is a shell word in a
             // script zsh parses, so a path with a space, or an argument that
-            // is itself a command line, has to arrive quoted rather than be
+            // is itself a command line, has to arrive quoted so it is not
             // re-split here.
             let mut exec_cmd = format!(
                 "exec -a {} {}",
@@ -593,8 +593,8 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
 
     builder.env("HOME", user.home);
 
-    // Name the terminal to what runs inside it. Startup files branch on this —
-    // macOS `/etc/bashrc` sources `/etc/bashrc_$TERM_PROGRAM` — so inheriting
+    // Name the terminal to what runs inside it. Startup files branch on this
+    // (macOS `/etc/bashrc` sources `/etc/bashrc_$TERM_PROGRAM`), so inheriting
     // the value of whichever terminal launched the app would attach that
     // terminal's machinery to our sessions. Apple's copy, for one, repoints
     // `HISTFILE` into its own session store.
@@ -602,7 +602,7 @@ pub fn create_pty_with_env(options: PtyOptions<'_>) -> Result<Pty, Error> {
 
     builder.env("TERM", terminal_type());
 
-    // Announced rather than inherited for the same reason as `TERM`: the
+    // Announced instead of inherited for the same reason as `TERM`: the
     // Windows backend declares it on every session it creates, so a Unix child
     // that only sees it when some outer terminal happened to export it would
     // pick a color depth from how the application was started.

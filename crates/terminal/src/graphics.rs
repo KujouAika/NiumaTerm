@@ -1,6 +1,6 @@
 //! Terminal graphics-protocol data types (kitty / sixel / iTerm2 inline
 //! images) and the kitty Unicode placeholder decoder. These are pure data
-//! the terminal engine produces from the PTY, carrying no renderer/GPU state.
+//! the terminal engine produces from the PTY, with no renderer/GPU state.
 
 #[cfg(test)]
 #[path = "graphics_tests.rs"]
@@ -399,7 +399,7 @@ fn diacritic_to_index(c: char) -> Option<u32> {
 /// or placement id. The encoding depends on color mode:
 /// - `Indexed(n)`: id = n (0..=255). 256-color slot maps to itself.
 /// - `Spec(rgb)`: id = (R << 16) | (G << 8) | B (full 24 bits).
-/// - `Named(_)`: id = 0 (no encoding possible — caller treats as "no id").
+/// - `Named(_)`: id = 0 (no encoding possible; caller treats as "no id").
 fn color_to_id(color: AnsiColor) -> u32 {
     match color {
         AnsiColor::Indexed(n) => n as u32,
@@ -486,17 +486,17 @@ pub struct PlaceholderRun {
     pub image_id: u32,
     pub placement_id: u32,
 
-    /// Image row (0-indexed) — within the placement's `rows` grid.
+    /// Image row (0-indexed), within the placement's `rows` grid.
     pub row: u32,
 
-    /// Leftmost image column (0-indexed) — within the placement's `cols` grid.
+    /// Leftmost image column (0-indexed), within the placement's `cols` grid.
     pub col: u32,
 
     /// Number of cells in this run (each cell = one column).
     pub width: u32,
 }
 
-/// Output of `compute_run_geometry` — what the renderer should actually
+/// Output of `compute_run_geometry`: what the renderer should
 /// draw for a `PlaceholderRun`. All values in pixels, in the screen's
 /// coordinate space (offsets already applied).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -527,7 +527,7 @@ pub struct RunGeometry {
 /// 2. Aspect-fit the image inside the box → `fit_w × fit_h` plus
 ///    centering padding `pad_x` / `pad_y`.
 /// 3. Compute the run's rect in placement-box coordinates.
-/// 4. Intersect with the image's fitted rect — anything in the
+/// 4. Intersect with the image's fitted rect; anything in the
 ///    centering padding is dropped.
 /// 5. Map the visible intersection back to a normalised source rect on
 ///    the image, and to a screen position (the run's leftmost cell +

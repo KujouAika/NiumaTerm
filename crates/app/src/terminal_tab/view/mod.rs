@@ -242,7 +242,7 @@ impl TerminalPane {
 
         Ok(cx.new(|cx| {
             // The connection banner follows the link, whose changes come
-            // from the network runtime rather than a frame.
+            // from the network runtime, not from a frame.
             cx.spawn(async move |this, cx| {
                 while status.changed().await.is_ok() {
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
@@ -463,7 +463,7 @@ impl TerminalPane {
     /// The tab is closing: end its remote session if this client owns it.
     /// A session the host ended or took back is no longer this client's.
     /// Leave the session this pane follows running on its host when the
-    /// pane closes, as when its user disconnects from it rather than ends it.
+    /// pane closes, as when its user disconnects from it instead of ending it.
     pub fn keep_remote_session(&mut self) {
         if let Some(remote) = &mut self.identity.remote {
             remote.ends_with_tab = false;
@@ -1216,7 +1216,7 @@ impl EntityInputHandler for TerminalPane {
         let cell = self.model.cell_metrics?;
 
         // `element_bounds` is the terminal leaf's content rect (padding already
-        // excluded), so the cursor cell offsets from its origin directly — plus
+        // excluded), so the cursor cell offsets from its origin directly, plus
         // the inter-block gap offset for the cursor's row.
         let cursor_y = self.model.viewport().cursor_y(cursor.row, cell.height_px);
 
@@ -1303,7 +1303,7 @@ impl Render for TerminalPane {
         self.wake.mark_delivered();
 
         // Host events are drained by the shell pump (observer), and the surface
-        // is resized from the leaf's actual bounds in paint — neither happens
+        // is resized from the leaf's painted bounds in paint; neither happens
         // here, so background tabs and chrome offsets are handled correctly.
         let cell = self.cell_metrics(window, cx);
 
@@ -1344,7 +1344,7 @@ impl Render for TerminalPane {
             // below) needs element state.
             .id(("terminal-pane", self.identity.id as usize))
             // The pane holds keyboard focus, so it needs its own node for
-            // screen readers to announce a terminal rather than the window.
+            // screen readers to announce a terminal instead of the window.
             .role(Role::Terminal)
             .size_full()
             .relative()

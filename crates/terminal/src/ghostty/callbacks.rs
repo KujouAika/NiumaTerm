@@ -160,7 +160,7 @@ unsafe extern "C" fn progress_report_cb(
     };
 
     // `-1` marks an omitted percentage (PowerShell ends its indicator with
-    // `ESC ] 9 ; 4 ; 0 ST`). Values past 100 clamp rather than drop so a
+    // `ESC ] 9 ; 4 ; 0 ST`). Values past 100 clamp instead of drop so a
     // miscounting emitter still gets a full bar.
     let progress = u8::try_from(report.progress)
         .ok()
@@ -362,7 +362,7 @@ pub(super) fn register_png_decoder() {
     });
 }
 
-/// Kitty image storage limit. The `.lib` default is 10 MB — small
-/// enough to evict real images; 64 MB holds typical multi-image use with a bounded
-/// resident footprint (~2–3× at saturation). Future `graphics` config knob.
+/// Kitty image storage limit. The `.lib` default is 10 MB, small
+/// enough to evict real images; 64 MB holds typical multi-image use with bounded
+/// resident memory (~2–3× at saturation). Future `graphics` config setting.
 pub(super) const KITTY_IMAGE_STORAGE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;

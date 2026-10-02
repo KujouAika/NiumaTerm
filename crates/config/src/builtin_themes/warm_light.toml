@@ -13,7 +13,7 @@ mode = "light"
 # warm ground. The derived families follow the palette already established
 # above: buttons reuse the secondary ramp, semantic buttons are solid fills of
 # their status color, and a selected row keeps this theme's floating-white-card
-# idiom rather than an alpha fill. Corner radii stay unset so the application's
+# idiom instead of an alpha fill. Corner radii stay unset so the application's
 # own radii apply.
 
 [colors.terminal]

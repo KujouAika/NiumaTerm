@@ -27,7 +27,7 @@ pub(crate) enum RevealKey {
     Turn(u64),
 }
 
-/// A piece of the transcript with a height of its own, which is what a height
+/// A piece of the transcript with a height of its own, the target a height
 /// ramp has to run towards.
 ///
 /// A disclosure's block opens inside the row that heads it, while a run's
@@ -67,10 +67,10 @@ const REVEAL_RISE: f32 = 4.0;
 /// How long any disclosure takes to arrive.
 ///
 /// One duration for every kind of content, so a run of steps and a block of
-/// output opened moments apart read as one gesture rather than as two
+/// output opened moments apart read as one gesture instead of as two
 /// mechanisms. The ramp spends almost the whole distance in the first fifth,
 /// so a span this long still reads as answered immediately while leaving a
-/// block worth hundreds of pixels enough travel to resolve rather than stop
+/// block hundreds of pixels tall enough travel to resolve instead of stopping
 /// dead. A run's steps start together for the same reason: held back from
 /// each other they arrive as a cascade, which is a second gesture on top of
 /// the one the reader asked for.
@@ -83,7 +83,7 @@ const REVEAL_DURATION: Duration = Duration::from_millis(300);
 /// distance: an exit is down to a few percent within its first fifth whatever
 /// span it is given. The rest of the span is the reader waiting for space they
 /// were already shown is going, and the wait is the whole of it for content
-/// that leaves by fading rather than by height — a folded prompt's text swaps
+/// that leaves by fading instead of by height: a folded prompt's text swaps
 /// back in one step, and an annotation card fades in place because a
 /// rectangular clip would square off the bubble it is drawn as. Both hold
 /// their full height until the exit ends, so this span is what the reader
@@ -94,8 +94,8 @@ const DISMISS_DURATION: Duration = Duration::from_millis(120);
 ///
 /// Having the pair is what lets one entry serve both halves of the
 /// interaction: a disclosure that is shutting reports the same progress
-/// running backwards, so every place that reads it — the height of the block,
-/// the fade, the chevron's angle — mirrors without knowing a second direction
+/// running backwards, so every place that reads it (the height of the block,
+/// the fade, the chevron's angle) mirrors without knowing a second direction
 /// exists.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -122,7 +122,7 @@ struct Reveal {
 
 impl Reveal {
     /// Whether this motion has run its course. The entrance and the exit run
-    /// over spans of their own, so the span is read from the entry rather than
+    /// over spans of their own, so the span is read from the entry instead of
     /// from whichever one the caller had in mind.
     fn finished(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.started) >= self.direction.span()
@@ -143,8 +143,8 @@ pub(crate) struct Reveals {
 }
 
 impl Reveals {
-    /// Start one disclosure opening at `now`. The instant is passed in rather
-    /// than read here so a caller that also reports progress does both against
+    /// Start one disclosure opening at `now`. The instant is passed in instead of
+    /// read here so a caller that also reports progress does both against
     /// one reading of the clock.
     pub(crate) fn open(&mut self, key: RevealKey, now: Instant) {
         self.start(key, Direction::Opening, now);
@@ -191,8 +191,8 @@ impl Reveals {
     }
 
     /// How far along a disclosure is, from 0 shut to 1 open. Every piece it
-    /// discloses reports the same figure, which is what makes a run of steps
-    /// travel as one thing.
+    /// discloses reports the same figure, so a run of steps moves as one
+    /// thing.
     ///
     /// Content whose disclosure is not moving reports 1: a row the reader
     /// scrolled to long after opening it renders at rest, not mid-entrance.
@@ -210,8 +210,8 @@ impl Reveals {
         }
     }
 
-    /// Whether every moving disclosure has finished, which is what decides if
-    /// the transcript still needs frames of its own.
+    /// Whether every moving disclosure has finished. The answer decides if the
+    /// transcript still needs frames of its own.
     pub(crate) fn settled(&self, now: Instant) -> bool {
         self.active.values().all(|reveal| reveal.finished(now))
     }
@@ -237,7 +237,7 @@ impl Reveals {
 
     /// Whether this disclosure is part-way through its motion, either way.
     /// An entry that has run its course reports false even though it is kept,
-    /// which is what tells a settled disclosure from one still travelling.
+    /// and that distinguishes a settled disclosure from one still travelling.
     pub(crate) fn moving(&self, key: RevealKey, now: Instant) -> bool {
         self.active
             .get(&key)
@@ -257,9 +257,9 @@ impl Reveals {
 /// Exponential ease-out over a parameter clamped to `0..=1`: fastest at the
 /// start, asymptotic at the end. Half the distance is gone in a tenth of the
 /// time, so content on this curve is where the reader is looking before they
-/// can look for it, and finishes by settling rather than by arriving.
+/// can look for it, and finishes by settling instead of by arriving.
 ///
-/// Every disclosure travels on it, over the same span.
+/// Every disclosure moves on it, over the same span.
 fn ease_out(t: f32) -> f32 {
     match t >= 1.0 {
         true => 1.0,
@@ -283,7 +283,7 @@ fn ease_out_inverse(covered: f32) -> f32 {
 /// thing at three lifetimes: a click writes the set, the clock runs the ramp
 /// the set makes visible, and the height is what that ramp interpolates
 /// towards. Taking a disclosure down has to retire all three together, which
-/// is why they are held here rather than as six fields on the view.
+/// is why they are held here instead of as six fields on the view.
 pub(crate) struct Disclosures {
     /// Work-log rows whose detail (command output, reasoning text) is
     /// expanded, keyed by transcript index.
@@ -299,7 +299,7 @@ pub(crate) struct Disclosures {
     /// Settled turns the user has flipped away from what the collapse setting
     /// does by default: unfolded where it folds a turn's work behind the
     /// "Show work" row, folded where it leaves the work on screen. Recorded
-    /// as departures rather than as absolute states because turns keep
+    /// as departures instead of as absolute states because turns keep
     /// settling after the setting was read, and each new one has to take the
     /// default.
     toggled_turns: HashSet<u64>,
@@ -315,7 +315,7 @@ pub(crate) struct Disclosures {
     /// Full height of each piece of the transcript a disclosure opens,
     /// measured while that piece is on screen. A piece being opened or shut is
     /// drawn inside a box ramped towards this, so the height comes from what
-    /// the content actually lays out to rather than being guessed at.
+    /// the content lays out to instead of being guessed at.
     revealed_heights: HashMap<RevealedPart, Pixels>,
 }
 
@@ -334,8 +334,8 @@ impl Disclosures {
         }
     }
 
-    /// Whether the disclosure is open or heading there, which is what its
-    /// wording reports: a click that starts an exit has already answered the
+    /// Whether the disclosure is open or heading there; its wording reports
+    /// this: a click that starts an exit has already answered the
     /// reader, whatever is still leaving the screen behind it.
     pub(crate) fn is_disclosing(&self, key: RevealKey) -> bool {
         self.is_disclosed(key) && !self.reveals.is_closing(key)
@@ -402,8 +402,8 @@ impl Disclosures {
         }
     }
 
-    /// Start the exit. The content stays until [`Self::take_down`] runs, which
-    /// is what gives the exit something to move.
+    /// Start the exit. The content stays until [`Self::take_down`] runs, so
+    /// the exit has something to move.
     pub(crate) fn begin_close(&mut self, key: RevealKey, now: Instant) {
         self.reveals.close(key, now);
     }
@@ -537,7 +537,7 @@ impl Disclosures {
 }
 
 /// Open and shut one piece of the transcript by its height, so whatever
-/// follows it travels with the content instead of jumping once it is all
+/// follows it moves with the content instead of jumping once it is all
 /// there.
 ///
 /// While the piece is moving it is taken out of flow and the box around it is
@@ -545,14 +545,14 @@ impl Disclosures {
 /// measured: the content always lays out at its full size, and the bounds
 /// reported back through `view` are the height the ramp runs to. At rest the
 /// box goes away entirely, so a row whose output is still streaming grows with
-/// it rather than staying pinned to a height measured once.
+/// it instead of staying pinned to a height measured once.
 ///
 /// `shut_height` is what the box still occupies once the piece has finished
 /// shutting, for a piece whose space is taken over by something else at the
 /// moment it leaves. Holding that much back makes the two changes cancel, so
 /// the removal itself moves nothing.
 ///
-/// A free function rather than a method because the callers build the content
+/// A free function, not a method, because the callers build the content
 /// out of a borrow of the entry it belongs to, which a second borrow of the
 /// view would conflict with.
 pub(crate) fn revealed_block(
@@ -598,7 +598,7 @@ pub(crate) fn revealed_block(
 ///
 /// The rise is an offset on a relatively positioned element, so it moves the
 /// content without changing the height around it. This is what content opens
-/// with when a clip box cannot hold it — a rounded bubble, whose corner a
+/// with when a clip box cannot hold it: a rounded bubble, whose corner a
 /// rectangular clip would square off for as long as the ramp ran.
 pub(crate) fn revealed(element: Div, progress: f32) -> Div {
     element

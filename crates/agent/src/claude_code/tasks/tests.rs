@@ -109,9 +109,9 @@ fn a_result_for_another_tool_leaves_every_task_untouched() {
 
 /// `stop_task` names a child by the task id the CLI registered it under. A row
 /// that exists only from the parent's tool-use block has not been given one, so
-/// it offers no Stop control until a lifecycle record supplies the id — and the
+/// it offers no Stop control until a lifecycle record supplies the id, and the
 /// tool-use id is never substituted, because it belongs to the parent's tool
-/// call rather than to the task registry.
+/// call, not to the task registry.
 #[test]
 fn a_child_is_stoppable_once_a_lifecycle_record_names_its_task() {
     let mut tasks = reducer();
@@ -145,7 +145,7 @@ fn a_child_is_stoppable_once_a_lifecycle_record_names_its_task() {
     assert!(snapshot.tasks[0].can_stop);
 
     // The row keeps its original key, so the lookup has to resolve the alias
-    // rather than assume the key is the task id.
+    // instead of assuming the key is the task id.
     assert_eq!(tasks.stop_target(&key), Some("task-9"));
 
     tasks.observe(&json!({
@@ -244,7 +244,7 @@ fn a_paused_task_shows_needs_input_while_a_parent_approval_does_not() {
         1
     );
 
-    // The parent's own approval arrives as a control request, which carries no
+    // The parent's own approval arrives as a control request, which has no
     // task association and therefore changes no child row.
     let baseline = tasks.snapshot();
 
@@ -257,7 +257,7 @@ fn a_paused_task_shows_needs_input_while_a_parent_approval_does_not() {
 }
 
 #[test]
-fn identifiers_are_aliased_only_when_one_record_carries_them_together() {
+fn identifiers_are_aliased_only_when_one_record_holds_them_together() {
     let mut tasks = reducer();
 
     tasks.observe(&launch("toolu_1"));
@@ -359,7 +359,7 @@ fn a_process_boundary_stops_children_the_previous_process_owned() {
 fn a_child_started_in_this_process_survives_its_own_init() {
     let mut tasks = reducer();
 
-    // The launch lands after this process announced itself, so the boundary
+    // The launch arrives after this process announced itself, so the boundary
     // that created its epoch must not retire it.
     tasks.observe(&launch("toolu_1"));
 
@@ -401,7 +401,7 @@ fn the_live_background_set_never_retires_a_running_child() {
 }
 
 #[test]
-fn a_subagent_stop_hook_lands_only_on_a_child_an_earlier_record_identified() {
+fn a_subagent_stop_hook_applies_only_to_a_child_an_earlier_record_identified() {
     let mut tasks = reducer();
 
     tasks.observe(&launch("toolu_1"));
@@ -426,7 +426,7 @@ fn a_subagent_stop_hook_lands_only_on_a_child_an_earlier_record_identified() {
     })));
     assert_eq!(state_of(&tasks, "toolu_1"), Some(BackgroundTaskState::Done));
 
-    // An unmatched hook stays ignored rather than being charged to the most
+    // An unmatched hook stays ignored instead of being charged to the most
     // recent task.
     let baseline = tasks.snapshot();
 
@@ -486,11 +486,11 @@ fn linked_activity_becomes_the_childs_own_conversation() {
     assert_eq!(*key, BackgroundTaskKey::claude_code("toolu_1"));
     assert!(
         !update.replace,
-        "live activity extends rather than replaces"
+        "live activity extends instead of replacing"
     );
 
     // The same item kinds the parent conversation renders, so a child reads
-    // identically rather than through a second presentation.
+    // identically instead of through a second presentation.
     assert!(matches!(update.items[0], Item::Reasoning { .. }));
     assert!(matches!(update.items[1], Item::AgentMessage { .. }));
     assert!(matches!(update.items[2], Item::Other { .. }));
@@ -684,7 +684,7 @@ fn a_backgrounded_commands_tool_result_is_not_its_outcome() {
     tasks.observe(&shell_started(true));
 
     // The `Bash` call is answered the moment the command is handed off, with
-    // the id it was backgrounded under rather than with what it did.
+    // the id it was backgrounded under instead of with what it did.
     tasks.observe(&json!({
         "type": "user",
         "session_id": SESSION,

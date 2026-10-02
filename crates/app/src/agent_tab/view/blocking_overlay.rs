@@ -14,7 +14,7 @@ use crate::agent_tab::session::UpdateSuspension;
 use crate::agent_tab::{AgentPane, AgentPaneEvent};
 
 /// The frosted layer that holds the whole pane while the harness starts or
-/// while an update owns the backend. It owns the fade that carries the layer
+/// while an update owns the backend. It owns the fade that brings the layer
 /// in and out.
 #[derive(Default)]
 pub(crate) struct BlockingOverlay {
@@ -24,7 +24,7 @@ pub(crate) struct BlockingOverlay {
 impl BlockingOverlay {
     /// The layer over the pane, while it is showing `body` or still fading out
     /// after the state it showed has ended. The body belongs to that state, so
-    /// a fading layer carries nothing.
+    /// a fading layer shows nothing.
     pub(crate) fn render(
         &mut self,
         body: Option<AnyElement>,

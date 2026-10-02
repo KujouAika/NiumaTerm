@@ -11,7 +11,7 @@ use crate::chat::MessageImage;
 use crate::dsh::api::ApiClient;
 use crate::dsh::catalogs;
 
-/// Image bytes travel inline rather than by reference: the harness's
+/// Image bytes are sent inline, not by reference: the harness's
 /// attachment method reads what a conversation already holds and is no route
 /// for putting something into one. A model that declines image input refuses
 /// the whole prompt, which is a business error the transcript reports, so
@@ -41,7 +41,7 @@ pub(super) fn prompt_payload(
 }
 
 /// Run one command line against the session's registry and describe the
-/// harness's answer as the settled command a frame carries.
+/// harness's answer as the settled command a frame holds.
 pub(super) async fn run_slash(
     client: &ApiClient,
     session_id: &str,

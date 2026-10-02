@@ -1,8 +1,8 @@
-//! Earlier conversations: how they are listed, what replaying one carries, and
+//! Earlier conversations: how they are listed, what replaying one returns, and
 //! where a branch can be cut.
 //!
 //! A conversation is addressed by an id only its own harness can resolve, so a
-//! summary travels with the scope it was listed under.
+//! summary keeps the scope it was listed under.
 
 use std::time::SystemTime;
 
@@ -32,7 +32,7 @@ pub struct SessionSummary {
 
     pub branch: Option<String>,
 
-    /// Working directory the session ran in. Carried because a list can span
+    /// Working directory the session ran in. Kept because a list can span
     /// directories, and resuming a session outside the current one has to
     /// happen where it worked. `None` for a source that does not record it.
     pub cwd: Option<String>,
@@ -40,13 +40,13 @@ pub struct SessionSummary {
     pub last_active: SystemTime,
 
     /// Why a search returned this row. Present only in a list produced by a
-    /// content search, because the excerpt describes the query rather than the
-    /// session, and an ordinary list has no query to describe.
+    /// content search, because the excerpt describes the query, not the
+    /// session, and a plain list has no query to describe.
     pub snippet: Option<String>,
 
     /// Which agent, launched on which profile, recorded the conversation.
     /// `None` on a row the listing tab's own agent reported, which the tab
-    /// continues itself; a row listed from another agent's records carries
+    /// continues itself; a row listed from another agent's records holds
     /// the profile a tab must be launched on to continue it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<SessionOrigin>,
@@ -54,7 +54,7 @@ pub struct SessionSummary {
 
 /// The agent and launch profile a listed conversation belongs to. A resume id
 /// only resolves in the harness that issued it, and for Codex also only under
-/// the model provider it ran against, so the profile travels with the row.
+/// the model provider it ran against, so the row stores the profile.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionOrigin {
     pub kind: AgentKind,
@@ -62,8 +62,8 @@ pub struct SessionOrigin {
 }
 
 /// One turn of a resumed conversation. A live turn's shape comes from the turn
-/// lifecycle events — where it started, how long it ran, what it cost, whether
-/// the user stopped it — none of which a flat list of items can express, so a
+/// lifecycle events (where it started, how long it ran, what it cost, whether
+/// the user stopped it), none of which a flat list of items can express, so a
 /// replay that dropped it left restored conversations unfoldable and without
 /// their durations. Every field is optional because providers persist
 /// different parts of it.
@@ -98,12 +98,12 @@ pub struct ReplayItem {
 ///
 /// The three coordinates are not interchangeable: one addresses a transcript
 /// record, one a turn, one an event, and only their own backend can resolve
-/// them. Carrying the backend's own name for the position keeps this side from
+/// them. Storing the backend's own name for the position keeps this side from
 /// maintaining a parallel numbering it would have to hold in step with a
 /// history it does not own.
 ///
-/// Every variant names the same cut — the conversation stops before one human
-/// prompt — but the backends anchor it from opposite sides, so the variants
+/// Every variant names the same cut (the conversation stops before one human
+/// prompt), but the backends anchor it from opposite sides, so the variants
 /// spell out which side they mean.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForkAnchor {

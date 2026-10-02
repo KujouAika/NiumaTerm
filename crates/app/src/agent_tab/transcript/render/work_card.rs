@@ -149,7 +149,7 @@ pub(crate) fn work_card(
         None => t!("agent-transcript-no-status"),
     };
 
-    // The outcome is a mark rather than a word: it lands in the same slot
+    // The outcome is a mark, not a word: it appears in the same slot
     // on every card, so a run of steps can be scanned down that column
     // instead of read. The wording stays in the row's accessible label.
     let tone = match status.as_deref() {
@@ -205,15 +205,15 @@ pub(crate) fn work_card(
         )
     });
 
-    // The block under the header carries the header's own fill, so a
-    // failed step reads as one tinted shape rather than as a tinted
+    // The block under the header uses the header's own fill, so a
+    // failed step reads as one tinted shape instead of as a tinted
     // heading with untinted output hanging off it.
     let card_body = heads_body.then(|| {
         div()
             .w_full()
             .bg(tone.colors(cx).background)
             .rounded_b(px(AGENT_CARD_RADIUS))
-            // Why a step failed belongs on the card rather than behind the
+            // Why a step failed belongs on the card instead of behind the
             // disclosure: it is what the reader decides their next move from,
             // and the full transcript below it is usually a stack trace.
             .children(reason.map(|reason| {
@@ -231,7 +231,7 @@ pub(crate) fn work_card(
                     // Expanded content takes the card's own inset on both
                     // sides. The rule above it already says the detail belongs
                     // to the header, so indenting it as well would spend a
-                    // third of a narrow card on saying it twice — and command
+                    // third of a narrow card on saying it twice, and command
                     // output is exactly the content that needs the width.
                     .w_full()
                     .border_t_1()

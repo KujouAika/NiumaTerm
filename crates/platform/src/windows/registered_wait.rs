@@ -58,7 +58,7 @@ impl<T> RegisteredWait<T> {
     }
 
     /// Stop the callback. Returns only after any callback still running has
-    /// finished, which is what makes freeing `context` afterwards sound. It
+    /// finished, so freeing `context` afterwards is sound. It
     /// never runs on the wait-callback thread, so it cannot self-deadlock.
     /// Dropping does the same; calling it earlier lets the owner take over
     /// the object the callback was watching.

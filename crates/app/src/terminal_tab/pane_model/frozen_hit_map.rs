@@ -32,7 +32,7 @@ impl FrozenHitMap {
     }
 
     /// Element-local top of the live grid; rows at or below it belong to the
-    /// engine viewport rather than to the frozen region.
+    /// engine viewport, not to the frozen region.
     pub(crate) fn active_top(&self) -> f32 {
         self.hit.active_top
     }

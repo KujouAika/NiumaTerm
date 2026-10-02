@@ -109,7 +109,7 @@ pub enum RemoveOutcome {
         index: usize,
     },
     /// The parent split collapsed into its surviving child; its state handle
-    /// was dropped with it — nothing to fix up.
+    /// was dropped with it, so there is nothing to fix up.
     Collapsed,
 }
 

@@ -33,7 +33,7 @@ pub struct Tab<S> {
     exited: bool,
 
     /// A background tab rang the bell. Cleared when the tab is focused, which
-    /// is the acknowledgement — a bell on the tab you are already looking at
+    /// is the acknowledgement; a bell on the tab you are already looking at
     /// never sets this, so no timer is needed to expire it.
     bell: bool,
 
@@ -156,7 +156,7 @@ impl<S> TabManager<S> {
     }
 
     /// Set the terminal-supplied title. An empty OSC title restores the default,
-    /// while an explicit user title remains authoritative.
+    /// while a user-set title keeps overriding terminal titles.
     pub fn set_title(&mut self, id: TabId, title: String) -> bool {
         let Some(tab) = self.tabs.find_mut(id) else {
             return false;
@@ -247,7 +247,7 @@ impl<S> TabManager<S> {
     }
 
     /// Record an OSC 9;4 report. Panes in one tab share a single bar, so the
-    /// most recent report wins — a split running two progress-reporting
+    /// most recent report wins: a split running two progress-reporting
     /// commands shows whichever spoke last.
     pub fn set_progress(&mut self, id: TabId, report: ProgressReport) {
         if let Some(tab) = self.tabs.find_mut(id) {
@@ -274,7 +274,7 @@ impl<S> TabManager<S> {
 
 impl From<Option<i32>> for CommandOutcome {
     /// Grade an OSC 133 `;D` exit code. A shell that reports no code offers no
-    /// evidence of failure, so silence reads as success rather than flagging
+    /// evidence of failure, so silence reads as success instead of flagging
     /// every command from a partially integrated shell.
     fn from(exit_code: Option<i32>) -> Self {
         match exit_code {

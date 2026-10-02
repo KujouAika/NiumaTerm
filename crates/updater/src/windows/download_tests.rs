@@ -35,7 +35,7 @@ fn the_package_is_taken_with_the_checksum_published_for_it() {
 
 #[test]
 fn the_archive_built_for_another_system_is_passed_over() {
-    // A release carries both systems' archives and both end in `.zip`, so
+    // A release includes both systems' archives and both end in `.zip`, so
     // without the name to go on, the order they arrive in would decide which
     // one an installation downloads. They are listed here in the order that
     // gets it wrong.

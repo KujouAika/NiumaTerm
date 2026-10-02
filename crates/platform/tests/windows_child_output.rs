@@ -1,6 +1,6 @@
 #![cfg(windows)]
 //! Runs a real `cmd.exe` so its own diagnostics, which it writes in the
-//! console OEM code page rather than UTF-8, go through the child output
+//! console OEM code page instead of UTF-8, go through the child output
 //! decoder the way production captures do.
 
 use nmt_platform::process::{decode_child_output, hidden_cmd_command};

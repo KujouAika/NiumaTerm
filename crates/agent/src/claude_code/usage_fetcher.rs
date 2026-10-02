@@ -47,7 +47,7 @@ const CLI_EXECUTABLE: &str = "claude";
 /// says otherwise, and with it on the CLI registers a remote session named
 /// after this machine as soon as it starts. The probe is killed within seconds
 /// and never unregisters that session, so every run would leave one more dead
-/// entry in Claude's remote-session lists. The override travels with the launch
+/// entry in Claude's remote-session lists. The override is passed at launch
 /// so the outcome stays the same whatever the user's global settings say.
 const CLI_SETTINGS_OVERRIDE: &str = r#"{"remoteControlAtStartup":false}"#;
 
@@ -123,8 +123,8 @@ pub async fn fetch_with_cancel(
         Err(OAuthFetchError::Final(error)) => Err(UsageFetchError::Failed(error)),
         Err(OAuthFetchError::Fallback(oauth_error)) => match fetch_via_cli(cancellation).await {
             Ok(usage) => Ok(usage),
-            // Only the OAuth path's own diagnosis is worth pairing with the CLI
-            // fallback's; a cancellation says nothing about either.
+            // Only the OAuth path's own diagnosis is paired with the CLI
+            // fallback's; a cancellation reveals nothing about either.
             Err(UsageFetchError::Cancelled) => Err(UsageFetchError::Cancelled),
             Err(UsageFetchError::Failed(cli_error)) => Err(UsageFetchError::Failed(format!(
                 "Claude OAuth usage unavailable: {oauth_error}; interactive CLI fallback failed: {cli_error}"
@@ -153,7 +153,7 @@ fn parse_oauth_token(bytes: &[u8]) -> Result<String, String> {
 
 async fn read_oauth_token() -> Result<String, String> {
     // Claude Code's Windows subscription login is persisted in its config
-    // directory. Environment API keys are intentionally excluded because the
+    // directory. Environment API keys are excluded because the
     // OAuth usage endpoint rejects them even though they authenticate API calls.
     let path = oauth_credentials_path()
         .ok_or_else(|| "Claude credentials directory unavailable".to_string())?;
@@ -271,13 +271,13 @@ async fn request_oauth_usage() -> Result<UsageSnapshot, OAuthFetchError> {
 /// an account with one is otherwise invisible here.
 ///
 /// Runs only after OAuth already answered, and only when it left the Fable
-/// window out while reporting at least one other — an account the endpoint
-/// says nothing about is not one the panel can be trusted to describe either.
+/// window out while reporting at least one other: the panel cannot be trusted
+/// to describe an account the endpoint reports nothing about either.
 /// A supplement that fails leaves the OAuth reading untouched: it is a
 /// complete answer for the windows it does cover.
 ///
-/// The panel costs an interactive Claude process, so this is worth its price
-/// only because a subscription's Fable allowance has no other source.
+/// The panel costs an interactive Claude process, a price paid only because
+/// a subscription's Fable allowance has no other source.
 async fn supplement_from_cli(
     usage: UsageSnapshot,
     cancellation: &FetchCancellation,

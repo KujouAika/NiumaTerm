@@ -129,7 +129,7 @@ pub enum WindowBackdrop {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WindowBackdropValue {
-    // Parsed as a plain string rather than as the enum so that an unknown
+    // Parsed as a plain string instead of as the enum so that an unknown
     // material degrades to a usable window instead of failing the whole file.
     Mode(String),
     Legacy(bool),
@@ -173,10 +173,10 @@ fn default_git_status_refresh_interval() -> u64 {
 
 /// The proportional face the interface is drawn in.
 ///
-/// Named through GPUI's `.SystemUIFont` token rather than by family wherever
-/// the system face is not a family the font list carries: macOS keeps San
+/// Named through GPUI's `.SystemUIFont` token instead of by family wherever
+/// the system face is not a family in the font list: macOS keeps San
 /// Francisco out of the enumerable families, and asking for a name that is not
-/// installed does not fail — it silently resolves to Helvetica.
+/// installed does not fail; it silently resolves to Helvetica.
 #[cfg(target_os = "windows")]
 fn default_ui_font() -> String {
     DEFAULT_UI_FONT.to_string()

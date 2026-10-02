@@ -224,7 +224,7 @@ impl Room {
     /// What `member` has already been given: the context of each of its turns
     /// the provider accepted, apart from summary turns, and its own replies.
     /// The room keeps every attempt and message for its lifetime, so this is
-    /// read from them rather than kept beside them.
+    /// read from them instead of kept beside them.
     pub(crate) fn coverage(&self, member: MemberId) -> AcceptedCoverage {
         let mut coverage = AcceptedCoverage::default();
 

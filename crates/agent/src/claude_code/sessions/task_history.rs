@@ -45,7 +45,7 @@ pub struct RestoredTask {
 /// transcript and composer never depend on this succeeding.
 ///
 /// A conversation that has not written its transcript yet restores nothing
-/// rather than failing: the CLI creates the file as the first turn produces
+/// instead of failing: the CLI creates the file as the first turn produces
 /// records, so a fresh session legitimately has no history to read.
 pub(crate) fn load_task_history(
     cwd: Option<&str>,
@@ -69,12 +69,12 @@ pub(super) fn load_task_history_at(
 }
 
 /// One child's conversation, read from the file the CLI wrote for it. Recent
-/// versions publish a child's own turns only there: the parent stream carries
+/// versions publish a child's own turns only there: the parent stream includes
 /// the launch instruction and lifecycle records but none of the child's
 /// replies, so a live row has nothing to show without this read.
 ///
 /// Returns `None` when this session kept no child files, which leaves whatever
-/// the stream did supply in place rather than blanking it.
+/// the stream did supply in place instead of blanking it.
 pub(crate) fn load_child_transcript(
     cwd: Option<&str>,
     session_id: &str,

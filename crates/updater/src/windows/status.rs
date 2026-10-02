@@ -2,14 +2,14 @@ use crate::windows::{CheckError, InstallError, Release};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Status {
-    /// Nothing has been asked yet, which is what a build with checking turned
-    /// off reports for as long as it stays off.
+    /// Nothing has been asked yet. A build with checking turned off reports
+    /// this for as long as it stays off.
     #[default]
     Unknown,
     Checking,
     /// The channel has published nothing this build can be compared against,
-    /// which is not the same as being current: an empty channel says nothing
-    /// about what is running.
+    /// which is not the same as being current: an empty channel gives no
+    /// information about what is running.
     NothingPublished,
     UpToDate,
     Available(Release),
@@ -19,7 +19,7 @@ pub enum Status {
     /// The package is staged, but replacing files restarts the application,
     /// which would kill running commands and interrupt an agent CLI update
     /// halfway through its own file replacement. Installation resumes once
-    /// the host reports no such work, or the user explicitly overrides.
+    /// the host reports no such work, or the user chooses to override.
     WaitingForIdle(Release),
     InspectingFileUse(Release),
     AwaitingFileUse(Release),

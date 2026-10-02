@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 /// A forwarder that has not answered by now is not going to; the push is
-/// dropped rather than held.
+/// dropped instead of held.
 const SEND_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, PartialEq, Eq)]

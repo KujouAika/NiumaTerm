@@ -6,7 +6,7 @@
 //! by session id. A caller that would rather tell the user than wait can
 //! limit the attempts instead (see [`Retry`]). A reattached view starts
 //! over from a checkpoint, which is
-//! why views are addressed by session rather than by stream: stream ids
+//! why views are addressed by session instead of by stream: stream ids
 //! last only as long as one channel.
 //!
 //! A link through the relay keeps trying the host's LAN addresses in the
@@ -252,7 +252,7 @@ struct View {
 
     /// Input typed before the view's first attach completes, sent once it
     /// does, so typing right after opening a tab loses nothing. After that,
-    /// input during a reconnect is dropped rather than replayed later into a
+    /// input during a reconnect is dropped instead of replayed later into a
     /// terminal whose state the user no longer sees.
     early_input: Option<Vec<u8>>,
 }
@@ -596,7 +596,7 @@ impl RemoteHost {
     }
 
     /// End any session the host lists, host tabs included, and return once
-    /// the host closed it. The error carries the host's reason for refusing.
+    /// the host closed it. The error holds the host's reason for refusing.
     pub async fn close_session(&self, session: String) -> Result<()> {
         let _: Value = self
             .call(rpc::SESSION_CLOSE, &SessionRef { session })
@@ -606,7 +606,7 @@ impl RemoteHost {
     }
 
     /// Rename a session the host lists, and return once the host renamed it.
-    /// The error carries the host's reason for refusing.
+    /// The error holds the host's reason for refusing.
     pub async fn rename_session(&self, session: String, title: String) -> Result<()> {
         let _: Value = self
             .call(rpc::SESSION_RENAME, &SessionRename { session, title })
@@ -1298,7 +1298,7 @@ fn send_request(link: &Link, id: u64, method: &str, params: &impl Serialize) -> 
 }
 
 /// Up to a quarter more or less than `delay`, so clients that lost the same
-/// host at the same moment do not retry in lockstep.
+/// host at the same moment do not all retry at the same instant.
 fn jitter(delay: Duration) -> Duration {
     let mut byte = [0u8; 1];
 

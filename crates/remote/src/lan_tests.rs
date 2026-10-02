@@ -40,7 +40,7 @@ fn a_tun_proxy_holding_the_default_route_does_not_hide_the_wifi_address() {
 
 #[test]
 fn a_proxy_adapter_that_is_not_point_to_point_is_dropped_by_its_range() {
-    // Windows Wintun adapters report an ordinary interface type.
+    // Windows Wintun adapters report a regular interface type.
     let candidates = [lan(198, 19, 0, 1), lan(10, 0, 0, 7)];
 
     let ranked = rank(&candidates, Some(Ipv4Addr::new(198, 19, 0, 1)));

@@ -1,6 +1,6 @@
 //! The terminal-activity mark, shared by the workspace sidebar entry and the
 //! tab it belongs to. Both surfaces grade the same state, so the color and
-//! wording live here rather than being spelled out twice.
+//! wording are defined here once instead of being spelled out twice.
 
 use std::borrow::Cow;
 

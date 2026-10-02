@@ -35,7 +35,7 @@ pub(super) fn handoff_output_file(text: &str, task_id: &str) -> Option<String> {
 }
 
 /// What one shell's records have said about it so far. No single record
-/// carries all of it: the command comes from the `Bash` block, the description
+/// holds all of it: the command comes from the `Bash` block, the description
 /// and tool-use id from `task_started`, and the output file from whichever of
 /// the handoff result and the completion notification arrives first.
 #[derive(Default)]
@@ -76,7 +76,7 @@ impl ShellIndex {
         self.shell_meta.get(canonical)
     }
 
-    /// Keep what a shell record carries whether or not the shell is
+    /// Keep what a shell record holds whether or not the shell is
     /// backgrounded yet. `task_started` is the only record naming both the
     /// task and the `Bash` call behind it, so it is the one chance to tie a
     /// row to the command it runs.
@@ -194,11 +194,11 @@ impl ShellIndex {
 // command card whose output is read back from that file each time the view
 // asks for it. Re-reading is what makes a still-running command grow on
 // screen: the file is appended to while the command runs, and the transcript
-// update replaces the card only when the text actually differs.
+// update replaces the card only when the text differs.
 
 /// How much of the output file to show. A background command can be a server
-/// or a watch loop that never stops writing, and the end is the part worth
-/// reading, so an oversized file is shown from its tail.
+/// or a watch loop that never stops writing, and the end is the useful part
+/// to read, so an oversized file is shown from its tail.
 pub(super) const MAX_OUTPUT_BYTES: u64 = 256 * 1024;
 
 /// The one item a background shell's detail view renders.
@@ -222,7 +222,7 @@ pub(crate) fn shell_items(detail: &ShellDetail) -> Vec<Item> {
 /// The last [`MAX_OUTPUT_BYTES`] of a file, decoded leniently. Command output
 /// is whatever bytes the program wrote, which is not guaranteed to be UTF-8 and
 /// is cut mid-character by the tail bound either way, so invalid sequences are
-/// replaced rather than failing the read.
+/// replaced instead of failing the read.
 fn read_tail(path: &str) -> Option<String> {
     let mut file = File::open(path).ok()?;
 

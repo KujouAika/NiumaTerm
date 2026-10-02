@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::windows::file_version::version_string;
 
-/// A system DLL rather than one of this workspace's outputs: the reader has to
+/// A system DLL instead of one of this workspace's outputs: the reader has to
 /// work before anything can be concluded from what our own build stamps, and
 /// this file is present on every machine the tests run on.
 fn system_dll() -> PathBuf {
@@ -25,7 +25,7 @@ fn reads_a_named_string_from_a_version_resource() {
 
     // Microsoft's own resources are not written by the resource compiler this
     // workspace uses, so a readable value here is also evidence that the
-    // translation table is being consulted rather than a default assumed.
+    // translation table is being consulted instead of a default assumed.
     assert!(
         version_string(&path, "FileVersion")
             .is_some_and(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))

@@ -20,7 +20,7 @@ pub enum PrefaceKind {
     Channel,
     Pairing,
     /// The host shares no major with the offer; `major..=min_major` then
-    /// carries the host's own range.
+    /// holds the host's own range.
     Rejected,
 }
 
@@ -44,7 +44,7 @@ impl Preface {
     }
 
     /// The host's answer to a client offer: the highest shared major, or a
-    /// rejection carrying the host's range so the client can tell which side
+    /// rejection with the host's range so the client can tell which side
     /// is older.
     pub fn answer(&self) -> Self {
         let (major, min_major) = own_range(self.kind);

@@ -8,7 +8,7 @@ use crate::claude_code::sessions::*;
 use crate::session::children::ChildTranscript;
 
 /// Replayed conversation with its turn grouping flattened away, for the tests
-/// that assert what a session replays rather than how it is divided.
+/// that assert what a session replays, not how it is divided.
 fn replayed_items(reader: impl BufRead) -> Vec<Item> {
     parse_replay(reader)
         .into_iter()
@@ -377,7 +377,7 @@ fn a_compaction_summary_is_never_mistaken_for_a_prompt() {
 /// The ordering current CLI builds write: the boundary marker opens the
 /// compacted chain with no parent, and the summary turn hangs off it.
 #[test]
-fn a_compaction_replays_as_one_row_carrying_summary_and_accounting() {
+fn a_compaction_replays_as_one_row_with_summary_and_accounting() {
     let lines = [
         serde_json::json!({"type": "system", "subtype": "compact_boundary",
             "uuid": "boundary-uuid", "parentUuid": null, "isMeta": false,
@@ -879,9 +879,9 @@ fn task_history_rebuilds_a_childs_own_conversation_from_linked_sidechains() {
 
     assert_eq!(tasks.len(), 1);
 
-    // Assert on the accumulated conversation rather than the raw records: a
-    // tool result carries its call's id, and folding it into that row is what
-    // the accumulator does for both live and restored content.
+    // Assert on the accumulated conversation instead of the raw records: a
+    // tool result holds its call's id, and the accumulator folds it into that
+    // row for both live and restored content.
     let mut transcript = ChildTranscript::default();
 
     assert!(transcript.apply(BackgroundTaskTranscriptUpdate::restored(
@@ -1015,9 +1015,9 @@ fn a_child_conversation_is_read_from_its_own_file_and_linked_by_metadata() {
     fs::remove_dir_all(&root).ok();
 }
 
-/// The parent stream carries a child's launch instruction and its lifecycle
+/// The parent stream includes a child's launch instruction and its lifecycle
 /// records but none of its replies, so the row's conversation is read from the
-/// child's own file on demand rather than accumulated from the stream.
+/// child's own file on demand instead of accumulated from the stream.
 #[test]
 fn one_childs_conversation_is_readable_without_rebuilding_the_session() {
     use std::fs;
@@ -1186,8 +1186,8 @@ fn a_task_notification_without_an_origin_is_still_not_a_prompt() {
 }
 
 #[test]
-fn an_ordinary_prompt_mentioning_a_notification_is_still_a_prompt() {
-    // Only the record's own origin, or a block it starts with, marks plumbing;
+fn a_plain_prompt_mentioning_a_notification_is_still_a_prompt() {
+    // Only the record's own origin, or a block it starts with, marks internals;
     // a person discussing one is still speaking.
     let lines = task_history_lines(&[serde_json::json!({
         "type": "user",
@@ -1211,7 +1211,7 @@ fn replay_divides_a_session_into_the_turns_it_recorded() {
             "timestamp": "2026-08-07T01:00:42Z",
             "message": {"content": [{"type": "text", "text": "first answer"}],
                 "usage": {"output_tokens": 120}}}),
-        // Written beside the chain rather than in it: nothing links to it.
+        // Written beside the chain, not in it: nothing links to it.
         serde_json::json!({"type": "system", "subtype": "turn_duration", "uuid": "d1",
             "parentUuid": "a1", "isMeta": false, "durationMs": 42_000, "messageCount": 2}),
         serde_json::json!({"type": "user", "uuid": "u2", "parentUuid": "a1",

@@ -3,7 +3,7 @@
 //! block-mode bugs:
 //!
 //! 1. A command interrupted (or exiting) while the engine is on the alternate
-//!    screen left `AltScreen(true)` latched forever — block mode never
+//!    screen left `AltScreen(true)` latched forever; block mode never
 //!    re-engaged at the next prompt.
 //! 2. A command that ends its output with a RIS (`ESC c`, what vtebench writes
 //!    between samples and before printing results) lost the post-RIS output:
@@ -12,7 +12,7 @@
 //! The second group drives PowerShell 7 with PSReadLine's list view.
 //!
 //! These tests require ConPTY, PowerShell, and the bundled integration script.
-//! Missing prerequisites fail explicitly so the checks cannot silently pass.
+//! Missing prerequisites fail the test so the checks cannot silently pass.
 
 #![cfg(windows)]
 
@@ -121,7 +121,7 @@ pub(super) fn block_texts(session: &TerminalSession) -> Vec<(Option<String>, Str
 }
 
 /// Type `cmd` + Enter and wait for its CommandFinished, up to `timeout`.
-/// Bails immediately (false) if the shell process dies — a hung 10-minute
+/// Bails immediately (false) if the shell process dies: a hung 10-minute
 /// wait on a dead session helps nobody.
 fn run_command_within(
     session: &TerminalSession,
@@ -287,7 +287,7 @@ fn full_tail_survives_after_alt_screen_roundtrip() {
 
 /// Engine-block handle store: with `engine_blocks`
 /// enabled, command output freezes into a finished engine block whose HANDLE
-/// lands in the store; the content reads back through a `BlockRef`.
+/// is added to the store; the content reads back through a `BlockRef`.
 #[test]
 fn engine_blocks_bridge_freezes_command_output() {
     let mut config = integration_config();
@@ -347,8 +347,8 @@ fn engine_blocks_bridge_freezes_command_output() {
 }
 
 /// Bug 2: vtebench's final sample ends with RIS (`ESC c`) and the results table
-/// is printed right after it. The results must survive — in the finalized block
-/// and/or on the visible screen — not be swallowed by the boundary clear.
+/// is printed right after it. The results must survive (in the finalized block
+/// and/or on the visible screen), not be swallowed by the boundary clear.
 #[test]
 fn output_after_ris_survives_into_the_block() {
     let (session, mut all) = trusted_session();

@@ -3,7 +3,7 @@
 //! Claude describes a child agent across several record shapes: the parent's
 //! `Task`/`Agent` tool-use launch, its matching tool result, task lifecycle
 //! records, and sidechain traffic tagged with `parent_tool_use_id`. Parent
-//! transcript handling deliberately drops the sidechain content so child text
+//! transcript handling drops the sidechain content on purpose so child text
 //! is not duplicated under the parent's tool row, so this reducer observes
 //! every message first and keeps the child state that would otherwise be lost.
 //!
@@ -71,7 +71,7 @@ pub(super) const AGENT_TASK_TYPE: &str = "local_agent";
 
 /// The task type of a shell command the CLI runs as a task. Every `Bash` call
 /// registers one; only the backgrounded ones belong in this view, which is why
-/// admission tests `is_backgrounded` rather than the type alone.
+/// admission tests `is_backgrounded` instead of the type alone.
 const SHELL_TASK_TYPE: &str = "local_bash";
 
 #[derive(Default)]
@@ -230,7 +230,7 @@ impl ClaudeTasks {
     fn observe_lifecycle(&mut self, kind: &str, record: &Value) -> bool {
         // Every task type shares these records. A record that names a type
         // this view does not show is not its work, and one that names no type
-        // at all is not assumed to be either kind — it may still enrich a row
+        // at all is not assumed to be either kind; it may still enrich a row
         // an earlier record already created.
         let task_type = record["task_type"].as_str();
 
@@ -284,7 +284,7 @@ impl ClaudeTasks {
 
     /// A `SubagentStop` hook ends one child. Without a stable identifier that
     /// matches a known task it is ignored, exactly as the parent turn handling
-    /// already ignores it, rather than being charged to the newest task.
+    /// already ignores it, instead of being charged to the newest task.
     fn observe_subagent_stop(&mut self, record: &Value) -> bool {
         let ids = record_identifiers(record);
 
@@ -421,7 +421,7 @@ impl ClaudeTasks {
 
     /// Hook events reach the stream only when the CLI was launched with hook
     /// events enabled. A `SubagentStop` identifies its child by `agent_id`
-    /// alone, so it lands only when an earlier record tied that id to a task.
+    /// alone, so it applies only when an earlier record tied that id to a task.
     fn observe_hook(&mut self, message: &Value) -> bool {
         let event = message["hook_event"]
             .as_str()
@@ -498,8 +498,8 @@ impl ClaudeTasks {
     }
 
     /// Open a child's conversation with the instructions it was launched on,
-    /// which is what the restored transcript of the same child begins with.
-    /// The launch block carries them, so the child reads the same way whether
+    /// matching how the restored transcript of the same child begins.
+    /// The launch block includes them, so the child reads the same way whether
     /// or not the CLI version streams the child's own copy of the prompt.
     fn open_child_conversation(&mut self, tool_use_id: &str, objective: Option<String>) -> bool {
         let Some(prompt) = objective else {
@@ -510,7 +510,7 @@ impl ClaudeTasks {
     }
 
     /// Parent user messages carry tool results and, in some versions, task
-    /// notification records. Ordinary user text and results for other tools
+    /// notification records. Plain user text and results for other tools
     /// are left untouched.
     fn observe_parent_user(&mut self, message: &Value) -> bool {
         let mut changed = false;
@@ -533,7 +533,7 @@ impl ClaudeTasks {
 
                 // A backgrounded command answers its `Bash` call the moment it
                 // is handed off, so its result is the acknowledgement that it
-                // started rather than what it did. Its outcome arrives later,
+                // started, not what it did. Its outcome arrives later,
                 // as the task records that own the row.
                 if self.is_shell(&canonical) {
                     self.shells.remember_handoff_output_file(&canonical, block);
@@ -612,7 +612,7 @@ impl ClaudeTasks {
             }
 
             // Ambient work is the CLI watching something on its own behalf
-            // rather than a command this conversation asked for.
+            // and not a command this conversation asked for.
             if entry["ambient"].as_bool().unwrap_or(false) {
                 continue;
             }
@@ -680,8 +680,8 @@ impl ClaudeTasks {
     }
 
     /// The command and output file behind one background shell row. Returns
-    /// nothing for a row that is not a shell, which is what tells the caller
-    /// to read a child conversation instead.
+    /// nothing for a row that is not a shell, and the caller then reads a
+    /// child conversation instead.
     pub(crate) fn shell_detail(&self, id: &str) -> Option<ShellDetail> {
         let canonical = self.canonical(id)?;
 

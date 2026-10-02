@@ -1,6 +1,6 @@
 //! The slice of Sparkle this application drives.
 //!
-//! Sparkle is reached by sending messages rather than through generated
+//! Sparkle is reached by sending messages instead of through generated
 //! bindings: the surface is a handful of selectors, and a framework this
 //! application ships a pinned copy of cannot drift out from under them between
 //! builds.
@@ -12,8 +12,8 @@
 //! it. Naming the symbols makes the dependency real and moves "does this class
 //! exist" from a run-time branch to the link.
 //!
-//! `SPUStandardUpdaterController` is the usual entry point and is deliberately
-//! not used. It reacts to a misconfigured host by showing the user an alert
+//! `SPUStandardUpdaterController` is the usual entry point and is not used
+//! here. It reacts to a misconfigured host by showing the user an alert
 //! telling them to contact the developer, which is the wrong answer for a
 //! development build that was never meant to update itself. Driving `SPUUpdater`
 //! directly turns that into a value the caller can decide about.
@@ -40,7 +40,7 @@ use objc2_foundation::{NSBundle, NSError, NSSet, NSString, ns_string};
 /// a nightly user when it was cut after the nightly they are running.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Channel {
-    /// The default channel, which carries no channel name at all.
+    /// The default channel, which has no channel name at all.
     #[default]
     Stable,
     Nightly,
@@ -59,7 +59,7 @@ struct DelegateState {
 }
 
 define_class!(
-    // Sparkle asks whether the delegate answers each selector rather than
+    // Sparkle asks whether the delegate answers each selector instead of
     // requiring it to declare the protocol, so implementing the one method that
     // matters is the whole conformance needed.
     #[unsafe(super(NSObject))]
@@ -97,7 +97,7 @@ pub enum StartError {
     /// thread only.
     NotMainThread,
     /// The running bundle names no update feed. A development build is the
-    /// ordinary case: the feed URL and the update signing key are stamped into
+    /// normal case: the feed URL and the update signing key are stamped into
     /// the bundle when it is packaged, so a locally assembled one has neither
     /// and has no business reaching the published feed.
     NoFeedConfigured,
@@ -123,8 +123,8 @@ impl Error for StartError {}
 /// A running updater, alive for as long as the application is.
 ///
 /// Dropping this stops scheduled checks. The type holds Objective-C references
-/// and is neither `Send` nor `Sync`, which is what keeps every call below on the
-/// thread that created it.
+/// and is neither `Send` nor `Sync`, so every call below stays on the thread
+/// that created it.
 pub(super) struct Updater {
     updater: Retained<AnyObject>,
 

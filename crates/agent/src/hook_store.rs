@@ -1,6 +1,6 @@
 //! Claude Code (`~/.claude/settings.json`) and Codex (`~/.codex/hooks.json`)
-//! use the same layout — a root object with a `"hooks"` map of event name to
-//! matcher groups, each group holding a `"hooks"` array of command entries —
+//! use the same layout (a root object with a `"hooks"` map of event name to
+//! matcher groups, each group holding a `"hooks"` array of command entries),
 //! so install/uninstall/status logic lives here once, parametrized by the
 //! per-agent event list and entry shape. Only entries whose command references
 //! the NiumaTerm hook binary are ever touched, and a file that fails to parse
@@ -121,7 +121,7 @@ impl HookRegistration {
 /// Markers that identify hook entries owned by NiumaTerm: the current
 /// env-var command and legacy installs that baked in an absolute path. The
 /// former executable name stays listed so an entry written before the rename
-/// is still recognized as ours and gets replaced rather than duplicated.
+/// is still recognized as ours and gets replaced instead of duplicated.
 const HOOK_MARKERS: [&str; 3] = [AGENT_HOOK_EXE_ENV, "NmtAgentHook.exe", "NiumaTermHook.exe"];
 
 pub(crate) fn uninstall_from(settings: &mut Value) {
@@ -187,7 +187,7 @@ pub(crate) fn is_marked(command: &str) -> bool {
 }
 
 /// A missing or empty file reads as an empty object; anything unparseable is
-/// surfaced as an error so a broken file is never overwritten. `file_label`
+/// returned as an error so a broken file is never overwritten. `file_label`
 /// names the file in error messages.
 pub(crate) fn read(path: &Path, file_label: &str) -> io::Result<Value> {
     let text = match fs::read_to_string(path) {

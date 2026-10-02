@@ -467,7 +467,7 @@ fn failed_native_operations_cannot_clear_internal_attention() {
 
     let id = monitor.notification(&r).unwrap().id.clone();
 
-    // Native delivery is intentionally fire-and-forget. Recording a failed
+    // Native delivery is fire-and-forget by design. Recording a failed
     // attempt changes only its retry marker, never the internal projection.
     assert!(monitor.mark_native_requested(&r, &id));
     assert_eq!(monitor.project([&r]).status, AgentRuntimeStatus::NeedsInput);

@@ -1,6 +1,6 @@
 //! The application's key bindings.
 //!
-//! Windows and macOS get separate tables rather than one table with a
+//! Windows and macOS get separate tables instead of one table with a
 //! substituted modifier. A terminal has to leave Control to the shell, so on
 //! Windows every application chord is pushed onto Ctrl-Shift and Ctrl-Alt;
 //! macOS has a Command key that no terminal program claims and puts the same
@@ -52,7 +52,7 @@ fn window_bindings() -> Vec<KeyBinding> {
         // `\x1b[1;7A..D` / `\x1b[1;4A..D` arrow sequences before the terminal
         // encodes them, so a program that binds Ctrl+Alt+arrows or
         // Alt+Shift+arrows never receives them; pane control on those chords
-        // is worth that loss because few terminal programs bind them.
+        // costs little because few terminal programs bind them.
         KeyBinding::new("ctrl-alt-up", SplitUp, Some("AppWindow")),
         KeyBinding::new("ctrl-alt-down", SplitDown, Some("AppWindow")),
         KeyBinding::new("ctrl-alt-left", SplitLeft, Some("AppWindow")),
@@ -81,14 +81,14 @@ fn window_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-n", NewWindow, Some("AppWindow")),
         KeyBinding::new("cmd-shift-n", NewWorkspace, Some("AppWindow")),
         // Apple keyboards have no PageUp/PageDown, so switching workspaces
-        // rides the arrow keys rather than the page keys the Windows table
+        // uses the arrow keys instead of the page keys the Windows table
         // uses. Control-Command keeps it clear of the split chords below.
         KeyBinding::new("ctrl-cmd-right", NextWorkspace, Some("AppWindow")),
         KeyBinding::new("ctrl-cmd-left", PrevWorkspace, Some("AppWindow")),
         KeyBinding::new("cmd-shift-b", ToggleSidebar, Some("AppWindow")),
         KeyBinding::new("cmd-,", ShowSettings, Some("AppWindow")),
         KeyBinding::new("cmd-shift-a", NewAgentTab, Some("AppWindow")),
-        // Splitting takes Command-Option rather than the Windows table's
+        // Splitting takes Command-Option instead of the Windows table's
         // Control-Option, which a macOS terminal encodes and sends to the
         // shell as an escape sequence.
         KeyBinding::new("cmd-alt-up", SplitUp, Some("AppWindow")),

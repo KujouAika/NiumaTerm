@@ -2,7 +2,7 @@
 //!
 //! Both sides ask the repository the same questions from different views
 //! (the pane's branch label, the sidebar's status), so the process-spawning
-//! primitive and the branch query live here rather than growing a copy per
+//! primitive and the branch query are defined here instead of growing a copy per
 //! consumer.
 
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ async fn git_output(dir: &str, args: &[&str]) -> Result<Output, String> {
 }
 
 /// What `HEAD` points at. Presentation of the detached form is the caller's:
-/// the label is localized, and this crate carries no catalog.
+/// the label is localized, and this crate has no catalog.
 #[derive(Clone)]
 pub enum CheckedOut {
     Branch(String),
@@ -75,7 +75,7 @@ const BRANCH_RETENTION: Duration = Duration::from_secs(600);
 /// command failures remain errors.
 ///
 /// An answer read less than `max_age` ago is returned without running git, so
-/// the watchers of one directory cost one process between them rather than one
+/// the watchers of one directory cost one process between them instead of one
 /// each. Passing the caller's own polling interval keeps that to a single
 /// process per directory per interval, and bounds how far a branch label can
 /// lag a real switch at one further interval.

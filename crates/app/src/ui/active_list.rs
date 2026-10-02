@@ -10,7 +10,7 @@ pub trait HasId {
     fn id(&self) -> Self::Id;
 }
 
-/// Invariant: never empty — `close` refuses the last element, so `active`
+/// Invariant: never empty. `close` refuses the last element, so `active`
 /// always points at a real element.
 pub struct ActiveList<T: HasId> {
     items: Vec<T>,

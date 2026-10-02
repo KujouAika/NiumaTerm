@@ -199,7 +199,7 @@ fn question_editors_keep_multiline_text_and_mask_secrets(cx: &mut TestAppContext
             let QuestionEditorState::Text(plain) =
                 &prompt.editors[0].as_ref().expect("plain editor").state
             else {
-                panic!("ordinary answers use a textarea");
+                panic!("plain answers use a textarea");
             };
 
             plain.update(cx, |plain, cx| {
@@ -278,7 +278,7 @@ fn the_highlight_walks_every_option_across_questions_and_wraps() {
 
     assert!(presentation.is_focused(0, 0));
 
-    // Down crosses the question boundary rather than stopping at it, so one
+    // Down crosses the question boundary instead of stopping at it, so one
     // pair of keys reaches every option on the card.
     let walked: Vec<(usize, usize)> = (0..4)
         .map(|_| {
@@ -309,8 +309,8 @@ fn a_question_with_no_options_cannot_trap_the_highlight() {
         ],
     );
 
-    // The first press reaches the first drawn option rather than stepping
-    // over it, which is what an out-of-range starting highlight would do.
+    // The first press reaches the first drawn option. An out-of-range
+    // starting highlight would step over it instead.
     let mut presentation = QuestionPresentation::new(&prompt);
 
     assert!(presentation.move_focus(&mut prompt, true));

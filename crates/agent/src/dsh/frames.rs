@@ -5,8 +5,8 @@
 //! them up front replaces the field-by-field `as_str()` probing that decoded
 //! a renamed or missing field as a silent empty result: the bridge publishes
 //! these frames for this client alone, so a payload that fails to parse is
-//! version drift worth a log line. List-shaped fields stay as raw values
-//! because their readers are deliberately tolerant per entry — one malformed
+//! version drift that gets a log line. List-shaped fields stay as raw values
+//! because their readers are tolerant per entry by design: one malformed
 //! row drops that row, never the whole catalog.
 
 use serde::Deserialize;
@@ -92,7 +92,7 @@ pub(crate) struct CommandsFrame {
 
 /// The pending-inbox snapshot. The session id is checked by the dispatch
 /// guard before this parses, because a mismatched queue frame falls through
-/// to ordinary log-event mapping instead of being dropped.
+/// to normal log-event mapping instead of being dropped.
 #[derive(Deserialize)]
 pub(crate) struct QueueFrame {
     #[serde(default)]
@@ -166,7 +166,7 @@ pub(crate) struct SettledFrame {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum SettledCommand {
     PromptRefused {
-        /// Whether the prompt was aimed at a running turn rather than
+        /// Whether the prompt was aimed at a running turn instead of
         /// opening one, which decides what has to be taken back.
         steering: bool,
 

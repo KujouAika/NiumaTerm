@@ -21,7 +21,7 @@ use crate::ipc_message::read_message;
 /// not on every system, so the uid is part of the name and the directory is
 /// created with owner-only access. A socket path also has to fit in
 /// `sockaddr_un`, which is why this stays a short name directly under the
-/// runtime directory rather than a nested app path.
+/// runtime directory instead of a nested app path.
 fn runtime_dir() -> io::Result<PathBuf> {
     let base = env::var_os("XDG_RUNTIME_DIR")
         .map(|value| -> PathBuf { value.into() })
@@ -55,8 +55,8 @@ fn lock_path(testing: bool) -> io::Result<PathBuf> {
 /// Try to become the primary instance.
 ///
 /// The exclusive lock lives as long as the file descriptor, and the kernel
-/// releases it when the process exits — including a crash, which is what
-/// keeps a stale lock from blocking the next launch. The descriptor is
+/// releases it when the process exits, including a crash, so a stale lock
+/// never blocks the next launch. The descriptor is
 /// therefore leaked on purpose, the way the Windows mutex handle is.
 pub fn try_become_primary(testing: bool) -> bool {
     let path = match lock_path(testing) {

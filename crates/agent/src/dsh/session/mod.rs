@@ -83,7 +83,7 @@ pub struct Session {
     profile: ModelProfile,
 
     /// The turn state this side knows about, so a stop is only offered while a
-    /// turn is actually running.
+    /// turn is running.
     running: bool,
 
     /// The Harness's latest whole-inbox snapshot. Closing removes its entries
@@ -103,7 +103,7 @@ pub struct Session {
     switch: SwitchSlot,
 
     /// The approval the harness is currently blocked on. Held because the
-    /// answer has to carry identities the transcript vocabulary does not.
+    /// answer has to include identities the transcript types do not hold.
     pending_approval: Option<ApprovalRequest>,
 
     /// The question batch the harness is currently blocked on, held for the
@@ -113,7 +113,7 @@ pub struct Session {
     controls: Controls,
 
     /// Tool calls awaiting their result, so a result can complete the row its
-    /// call opened rather than starting a second one.
+    /// call opened instead of starting a second one.
     tools: EventTracker,
 
     /// The usage projections seen so far. Each arrives as its own frame, and
@@ -121,13 +121,13 @@ pub struct Session {
     usage: ProjectionTracker,
 
     /// What the picker offers, and what a pick from it addresses. Empty until
-    /// the catalog arrives, which is a background call rather than part of
-    /// opening the conversation.
+    /// the catalog arrives; it comes from a background call, not from opening
+    /// the conversation.
     models: ModelDirectory,
 
-    /// Counter carried by each child-agent catalog read. The catalog is a call
-    /// and several can be in flight, so this is what tells a stale answer from
-    /// the newest one.
+    /// Counter attached to each child-agent catalog read. The catalog is a
+    /// call and several can be in flight, so comparing this counter separates
+    /// a stale answer from the newest one.
     subagent_activity: u64,
 
     /// Which of the harness's two child kinds each known child is. Reading a
@@ -146,8 +146,8 @@ pub struct Session {
     /// ordinal still advances when only a job starts or settles.
     job_activity: u64,
 
-    /// Workflow runs accumulated from the log. Each event carries only its own
-    /// increment, so the run is what they add up to rather than a value any one
+    /// Workflow runs accumulated from the log. Each event holds only its own
+    /// increment, so a run is the sum of those increments, not a value any one
     /// of them reports.
     workflows: WorkflowTracker,
 }
@@ -155,7 +155,7 @@ pub struct Session {
 /// Frame type this adapter mints locally to carry the model catalog.
 ///
 /// The catalog is a unary call, not a downlink push, but the pane only reacts
-/// to what arrives on the delivery channel — a result parked anywhere else
+/// to what arrives on the delivery channel; a result parked anywhere else
 /// would sit unread until some unrelated frame happened to wake the tab. The
 /// `nmt/` prefix keeps it out of the harness's own type space.
 const MODELS_FRAME: &str = "nmt/models";
@@ -178,21 +178,20 @@ const FORK_CHECKPOINTS_FRAME: &str = "nmt/fork-checkpoints";
 const SETTLED_FRAME: &str = "nmt/command-settled";
 
 /// The pending-inbox snapshot and the job list are the frame types the
-/// harness itself publishes under its own names rather than through the nmt
-/// bridge.
+/// harness itself publishes under its own names, not through the nmt bridge.
 const QUEUE_FRAME: &str = "session/queue";
 
 /// One conversation's background jobs, relayed from the control stream.
 const JOBS_FRAME: &str = "session/jobs";
 
 /// How much of a resumed conversation is rebuilt. The harness pages history at
-/// whole-message boundaries, so this is a count of messages rather than of
-/// events; one page is what the pane shows, and older turns stay in the log.
+/// whole-message boundaries, so this is a count of messages, not of events;
+/// the pane shows one page, and older turns stay in the log.
 const REPLAY_MESSAGES: u64 = 200;
 
 /// How far back the branch-point picker looks. Larger than the replay window
-/// because a row costs one line here rather than a rebuilt turn, and a cut is
-/// worth offering at prompts that scrolled out of the rebuilt transcript.
+/// because a row costs one line here instead of a rebuilt turn, and users
+/// still want to cut at prompts that scrolled out of the rebuilt transcript.
 const FORK_CHECKPOINT_MESSAGES: u64 = 1000;
 
 /// Combine the independently loaded model directory and permission projection
@@ -221,16 +220,16 @@ pub(super) struct OpenedConversation {
 /// Open a conversation on the host, or reattach to an existing one.
 ///
 /// The same call serves both: naming an existing id returns that session
-/// unchanged when the directory matches, and refuses when it does not, which is
-/// what makes reattaching safe to attempt without a separate probe.
+/// unchanged when the directory matches, and refuses when it does not, so
+/// reattaching is safe to attempt without a separate probe.
 /// What NiumaTerm asks the harness to open a conversation with.
 ///
-/// The header carries exactly one working directory, which the harness
-/// resolves into the single workspace root of the session's sandbox. Additional
-/// workspace directories therefore have no field to travel in and are
-/// deliberately absent rather than approximated: no common ancestor is
-/// substituted, and no broader permission preset is selected on the user's
-/// behalf. The Agent Tab discloses what that leaves out.
+/// The header holds exactly one working directory, which the harness resolves
+/// into the single workspace root of the session's sandbox. Additional
+/// workspace directories therefore have no field to go in and are left out
+/// instead of approximated: no common ancestor is substituted, and no
+/// broader permission preset is selected on the user's behalf. The Agent Tab
+/// discloses what that leaves out.
 ///
 /// A preset is only named for a new conversation: reattaching to one composed
 /// from another preset is refused, and the composition it already has is the
@@ -323,9 +322,9 @@ impl Session {
     /// Commands this adapter serves itself, beside the ones the harness's own
     /// registry reports.
     ///
-    /// Each one addresses a session-management method rather than the command
+    /// Each one addresses a session-management method instead of the command
     /// registry, so none of them can arrive through discovery; the harness
-    /// serves them to its own browser UI as ordinary buttons, which this
+    /// serves them to its own browser UI as plain buttons, which this
     /// composer has no equivalent of.
     pub fn adapter_commands() -> Vec<SlashCommandInfo> {
         vec![
@@ -500,7 +499,7 @@ impl Session {
         self.downlinks = downlinks;
 
         // Everything below describes the conversation this tab just
-        // left; carrying it over would attribute it to the new one.
+        // left; keeping it would attribute it to the new one.
         self.running = false;
 
         self.queued_prompts.clear();
@@ -561,7 +560,7 @@ impl Session {
             return self.on_question_request(request, questions);
         }
 
-        // A projection frame carries one unit's whole value, and the snapshots
+        // A projection frame holds one unit's whole value, and the snapshots
         // the pane renders are folded from several of them, so this is the one
         // mapping that has to remember what the earlier frames said.
         if let Some(events) = self.usage.apply(&frame, &self.session_id) {
@@ -611,7 +610,7 @@ impl Session {
             Some(HISTORY_FRAME) => return history_events(payload),
             Some(SEARCH_FRAME) => return search_events(payload),
             // A queue snapshot for a conversation this tab has since left is
-            // not this tab's inbox, but the frame still carries ordinary log
+            // not this tab's inbox, but the frame still holds regular log
             // events, so it falls through to the mapping below instead of
             // being swallowed here.
             Some(QUEUE_FRAME) if self.is_current_session(payload) => {
@@ -629,7 +628,7 @@ impl Session {
         // a call the pane would otherwise have no reason to make: the panel
         // that would ask for one is hidden until a child is known to exist.
         // A finished turn re-reads it because a child's activity is sampled
-        // when asked rather than pushed.
+        // when asked, not pushed.
         let event_type = payload["event"]["type"].as_str();
 
         if self.is_current_session(payload)
@@ -665,9 +664,9 @@ impl Session {
             _ => {}
         }
 
-        // Workflow rows are folded from the log rather than mapped one event to
+        // Workflow rows are folded from the log instead of mapped one event to
         // one row, so they are published beside whatever else the frame
-        // produced instead of through the transcript vocabulary.
+        // produced instead of through the transcript item types.
         if self.is_current_session(payload) && self.workflows.apply(&payload["event"]) {
             events.push(Event::Workflows(self.workflows.snapshot(&self.session_id)));
         }
@@ -931,8 +930,8 @@ impl Session {
                 reasoning_effort,
                 error,
             } => {
-                // The harness answers with the selection it committed, which
-                // is what the directory records: an effort it declined to pin
+                // The harness answers with the selection it committed, and the
+                // directory records that: an effort it declined to pin
                 // is absent there.
                 if error.is_none() {
                     self.models.set_selected(model, reasoning_effort);
@@ -991,7 +990,7 @@ impl Session {
     }
 
     /// The harness republishes its whole pending inbox after every change,
-    /// so this replaces what the tab holds rather than amending it: an
+    /// so this replaces what the tab holds instead of amending it: an
     /// increment would have to guess at removals another client made.
     fn on_queue(&mut self, payload: &Value) -> Vec<Event> {
         let Some(frame) = frames::parse::<frames::QueueFrame>(QUEUE_FRAME, payload) else {
@@ -1034,9 +1033,9 @@ impl Session {
             page["projections"]["asOfSeq"].as_i64(),
         );
 
-        // A run's rows are folded from the same events the log carries, so
-        // a resumed conversation rebuilds them from its own history rather
-        // than from a record kept beside it.
+        // A run's rows are folded from the same events the log holds, so a
+        // resumed conversation rebuilds them from its own history instead of
+        // from a record kept beside it.
         let mut events = Vec::new();
         let mut folded = false;
 
@@ -1077,7 +1076,7 @@ impl Session {
         events.push(Event::Replay(replay));
         events.extend(baseline);
         // Replay can replace the conversation after a newer projection has
-        // arrived. Republish the retained totals rather than an older page.
+        // arrived. Republish the retained totals instead of an older page.
         events.extend(self.usage.session_stats().map(Event::SessionStatsUpdated));
 
         if self.running {
@@ -1115,9 +1114,9 @@ impl Session {
             Event::Ready(ready_settings(&self.models, &self.usage)),
         ];
 
-        // A refused selection travels with the catalog that outlived it, so
-        // the level reported alongside the reason is the one the session is
-        // actually on rather than the one that was asked for.
+        // A refused selection is reported with the catalog that outlived it,
+        // so the level reported alongside the reason is the one the session is
+        // on, not the one that was asked for.
         if let Some(message) = frame.error {
             events.push(Event::EffortRejected {
                 message,
@@ -1306,9 +1305,9 @@ impl Session {
 
     /// Ask the harness for a fresher child-agent catalog.
     ///
-    /// The catalog is a call rather than a stream, so it reports what was true
-    /// when it was asked. The counter travels with it and is what stops a slow
-    /// answer from replacing a newer one.
+    /// The catalog is a call, not a stream, so it reports what was true when
+    /// it was asked. The counter is sent with it and stops a slow answer from
+    /// replacing a newer one.
     pub fn refresh_background_tasks(&mut self) {
         self.subagent_activity += 1;
 
@@ -1358,9 +1357,9 @@ impl Session {
 
     /// Stop a continuable child's current turn.
     ///
-    /// The request rides the parent's durable authority rather than a live
-    /// parent agent, and it acknowledges the signal rather than the child
-    /// having stopped, so the row can stay visibly running for a moment.
+    /// The request uses the parent's durable authority instead of a live
+    /// parent agent, and it acknowledges the signal, not the child having
+    /// stopped, so the row can stay visibly running for a moment.
     pub fn interrupt_background_task(&mut self, child: &str) -> bool {
         let payload = json!({
             "parentSessionId": self.session_id,
@@ -1378,13 +1377,13 @@ impl Session {
 
     /// Point the session at another model, optionally pinning a reasoning
     /// effort. The answer arrives as [`crate::chat::Event::ModelSelection`],
-    /// carrying why the harness refused when it did, because a picker that
+    /// including why the harness refused when it did, because a picker that
     /// silently keeps showing a value the session never adopted is worse than
     /// an error.
     ///
-    /// An absent `effort` is how the adapter's own default is asked for, which
-    /// is what a model switch wants: the levels belong to the exact model, so
-    /// carrying the previous one over could pin a level this route rejects.
+    /// An absent `effort` is how the adapter's own default is asked for, and a
+    /// model switch needs exactly that: the levels belong to the exact model, so
+    /// keeping the previous one could pin a level this route rejects.
     pub(crate) fn select_model(&mut self, model: &str, effort: Option<&str>) {
         let (provider, id) = self.models.route(model);
 
@@ -1418,7 +1417,7 @@ impl Session {
         });
     }
 
-    /// What the session is actually set to, for a caller restoring its pickers
+    /// What the session is currently set to, for a caller restoring its pickers
     /// after a refused pick.
     pub fn selection(&self) -> (Option<&str>, Option<&str>) {
         (self.models.selected(), self.models.effort())
@@ -1458,7 +1457,7 @@ impl Session {
     ///
     /// The harness allows this only while no turn has run: the logged history
     /// was produced under the previous composition's tools, and a new one may
-    /// not be able to make the calls that history records. Rather than
+    /// not be able to make the calls that history records. Instead of
     /// predicting that here, the preset catalog is published again either way:
     /// naming the new preset, or the one still in force beside the harness's
     /// own reason for keeping it.
@@ -1498,10 +1497,10 @@ impl Session {
         });
     }
 
-    /// Send a prompt and the images it carries.
+    /// Send a prompt and the images attached to it.
     ///
-    /// A message sent while a turn is running is steered into that turn rather
-    /// than queued behind it, which is what makes a correction land before the
+    /// A message sent while a turn is running is steered into that turn instead
+    /// of queued behind it, so a correction reaches the model before the
     /// work it is correcting finishes. The harness treats a steer whose window
     /// has already closed as the next queued message, so both outcomes leave
     /// the message pending and the reply is reported as steered either way.
@@ -1575,7 +1574,7 @@ impl Session {
     /// The harness normalizes what it accepts and republishes the title it
     /// keeps, which is how the tab learns the final wording. The recent list
     /// is re-read afterwards because the row it holds for this conversation
-    /// still carries the old one.
+    /// still holds the old one.
     pub fn rename(&mut self, title: &str) {
         let payload = json!({ "sessionId": self.session_id, "title": title });
 
@@ -1643,7 +1642,7 @@ impl Session {
     /// Run one of the harness's own commands. The outcome arrives as
     /// [`crate::chat::Event::SlashCommandResult`].
     ///
-    /// The registry is reached directly rather than through a prompt: the host
+    /// The registry is reached directly, not through a prompt: the host
     /// admits a prompt to the agent whatever it starts with, so a slash line
     /// sent that way would reach the model as text instead of running.
     pub fn execute_slash_command(&mut self, name: &str, arguments: &str) -> SlashCommandOutcome {

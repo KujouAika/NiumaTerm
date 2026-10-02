@@ -29,7 +29,7 @@ fn parse_skips_startup_output_before_the_marker() {
 }
 
 /// A shell function exported into the environment spans several lines, which
-/// is why the dump is separated by NUL rather than by newline.
+/// is why the dump is separated by NUL instead of by newline.
 #[test]
 fn parse_keeps_values_containing_newlines_and_equals_signs() {
     let output = dump(&["BODY=first\nsecond", "OPTIONS=a=1,b=2"]);
@@ -79,7 +79,7 @@ fn capture_reads_a_path_from_a_real_shell() {
         .expect("the shell produced a dump")
         .into_iter()
         .find(|(name, _)| name == "PATH")
-        .expect("the dump carries PATH");
+        .expect("the dump includes PATH");
 
     assert!(!path.1.is_empty());
 }

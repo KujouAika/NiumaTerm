@@ -2,17 +2,17 @@
 //! Windows App SDK (`Microsoft.UI/Themes/generic.xaml`), so this application's
 //! chrome measures the same as the navigation surfaces Windows draws itself.
 //!
-//! Each entry names the resource key it came from, which is what makes a value
-//! checkable: a number that looks wrong can be compared against the system
-//! resource rather than re-derived by eye. Values the application chooses for
-//! itself — its own gutters and column widths — belong in
+//! Each entry names the resource key it came from, so a value is checkable: a
+//! number that looks wrong can be compared against the system resource
+//! instead of re-derived by eye. Values the application chooses for itself
+//! (its own gutters and column widths) belong in
 //! `crate::ui::composition` instead, because changing one of those is a design
 //! decision while changing one of these is correcting a transcription.
 
 use gpui::{Pixels, px};
 
-/// `ButtonPadding` (11px) plus the 1px control stroke it sits inside, which is
-/// what the eye measures from the button's outer edge.
+/// `ButtonPadding` (11px) plus the 1px control stroke around it, so the value
+/// matches what the eye measures from the button's outer edge.
 pub(crate) const BUTTON_PADDING_X: Pixels = px(12.0);
 
 /// `NavigationViewSelectionIndicator{Width,Height,Radius}`: the accent mark on

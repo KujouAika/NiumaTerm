@@ -61,8 +61,8 @@ enum RowEdge {
 }
 
 /// A line on one edge of a row: the divider to the next row, or the marker for
-/// the gap a drop would insert into. It floats over the row rather than sitting
-/// in the row's box as a border, because a marker that thickened a border would
+/// the gap a drop would insert into. It floats over the row instead of being
+/// drawn in the row's box as a border, because a marker that thickened a border would
 /// shrink the space the row centres its contents in and nudge them by a pixel
 /// for as long as the drag hovers there.
 fn row_line(edge: RowEdge, height: Pixels, color: Hsla) -> Div {
@@ -119,7 +119,7 @@ fn delete_profile(ix: usize, window: &mut Window, cx: &mut App) {
 /// Insert a copy of the profile at `ix` directly below it. A duplicate is the
 /// starting point for a variant of what it was copied from, and the order of
 /// this list is the user's own, so the copy belongs next to its original
-/// rather than at the end.
+/// and not at the end.
 fn duplicate_profile(ix: usize, cx: &mut App) {
     cx.global_mut::<AppSettings>().duplicate_agent_profile(ix);
 }
@@ -144,7 +144,7 @@ impl Render for ProfileDragPreview {
             .border_1()
             .border_color(cx.theme().border)
             // The preview floats over the list under the cursor, so it needs an
-            // opaque fill; the theme's background carries the window
+            // opaque fill; the theme's background includes the window
             // translucency, which the Mica materials drive to zero.
             .bg(cx.theme().background.alpha(1.0))
             .text_sm()
@@ -152,19 +152,19 @@ impl Render for ProfileDragPreview {
     }
 }
 
-/// Row source for the list. It holds its own copy of the profiles rather than
+/// Row source for the list. It holds its own copy of the profiles instead of
 /// reading the global while rendering, so the settings view can compare and
-/// refresh it, which is also what marks the list dirty after an add, an edit,
+/// refresh it; that refresh also marks the list dirty after an add, an edit,
 /// or a delete.
 struct AgentProfileList {
     profiles: Vec<AgentProfile>,
 
     /// Gap a profile drag currently hovers, counted in row edges: `0` is above
     /// the first row and `profiles.len()` below the last. It is marked with a
-    /// line rather than a highlighted row because the row under the pointer
-    /// says nothing about which side of it the profile ends up on. The gap the
+    /// line instead of a highlighted row because the row under the pointer
+    /// does not show which side of it the profile ends up on. The gap the
     /// profile already occupies is marked too, so a drag that would put it back
-    /// where it started still shows where the release lands it.
+    /// where it started still shows where the release drops it.
     drop_gap: Option<usize>,
 }
 
@@ -208,7 +208,7 @@ impl ListDelegate for AgentProfileList {
             ListItem::new(("agent-profile-row", row))
                 .h(px(TABLE_ROW_HEIGHT))
                 // The row's padding moves onto the content below, which then
-                // spans the row exactly, so a line placed on its edge lands on
+                // spans the row exactly, so a line placed on its edge falls on
                 // the row's edge.
                 .p_0()
                 .child(
@@ -256,14 +256,14 @@ impl ListDelegate for AgentProfileList {
 
                             // Removing the profile first shifts every gap below
                             // it up by one, so a gap past the profile's own
-                            // position lands one row earlier than it reads.
+                            // position ends up one row earlier than it reads.
                             let to = gap.map(|gap| if from < gap { gap - 1 } else { gap });
 
                             if let Some(to) = to {
                                 cx.global_mut::<AppSettings>().move_agent_profile(from, to);
                             }
 
-                            // Refresh the rows directly: the drop lands on
+                            // Refresh the rows directly: the drop happens on
                             // this list, so no outer render is guaranteed to
                             // push the reordered profiles back in.
                             this.delegate_mut().profiles = cx
@@ -277,7 +277,7 @@ impl ListDelegate for AgentProfileList {
                         }))
                         // The row's buttons stop their clicks from reaching
                         // the row, so a quick double press on edit still opens
-                        // one dialog rather than two.
+                        // one dialog, not two.
                         .on_click(move |event: &ClickEvent, window, cx| {
                             if event.click_count() == 2 {
                                 open_agent_profile_dialog(Some(row), window, cx);
@@ -286,7 +286,7 @@ impl ListDelegate for AgentProfileList {
                         // The same operations as the row's own controls, plus
                         // duplication, which has no button: it is reached
                         // rarely enough that a third icon would cost the name
-                        // column more width than it is worth.
+                        // column more width than such a rare action justifies.
                         .modern_context_menu(move |menu, _, _| {
                             menu.item(t!("settings-common-edit"), move |window, cx| {
                                 open_agent_profile_dialog(Some(row), window, cx);
@@ -406,7 +406,7 @@ pub(super) fn agent_profile_list(window: &mut Window, cx: &mut App) -> AnyElemen
 
     state.update(cx, |state, cx| {
         // Drop the insertion line once the drag is gone without a drop on
-        // the list (cancelled via Escape, or released elsewhere) — the cancel
+        // the list (cancelled via Escape, or released elsewhere); the cancel
         // itself refreshes the window, so this always gets a chance to run.
         if state.delegate().drop_gap.is_some() && !cx.has_active_drag() {
             state.delegate_mut().drop_gap = None;
@@ -423,7 +423,7 @@ pub(super) fn agent_profile_list(window: &mut Window, cx: &mut App) -> AnyElemen
 
     // The header plus the profiles, until the list is tall enough to scroll
     // on its own. An empty list still reserves one row for its empty state.
-    // The height sits on the list rather than the frame, because the frame's
+    // The height is set on the list instead of the frame, because the frame's
     // border counts against a height set on it and would shrink the list by
     // those two pixels, leaving it scrollable by that much.
     let height = TABLE_HEADER_HEIGHT + TABLE_ROW_HEIGHT * rows.clamp(1.0, MAX_VISIBLE_ROWS);
@@ -438,13 +438,13 @@ pub(super) fn agent_profile_list(window: &mut Window, cx: &mut App) -> AnyElemen
 }
 
 /// Reasoning-effort choices a profile can pin. `default` is stored as an
-/// empty string, which is also what a profile written before this field
-/// existed carries, so both mean "leave the effort to the agent".
+/// empty string, the same value a profile written before this field existed
+/// has, so both mean "leave the effort to the agent".
 const PROFILE_EFFORT_OPTIONS: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
 
 /// Codex takes one level above the shared list. It is the only harness whose
 /// top mode a profile can pin: Claude Code reaches its own through a slash
-/// command mid-conversation rather than through a launch setting.
+/// command mid-conversation, not through a launch setting.
 const CODEX_EFFORT_OPTION: &str = "ultra";
 
 /// The levels a profile of this kind can pin, in order.
@@ -518,7 +518,7 @@ fn pinned_value_choice(
             .collect(),
         move |option| option == selected,
         move |draft, option| {
-            // Stored empty rather than as `default`, so the harness keeps
+            // Stored empty instead of as `default`, so the harness keeps
             // resolving its own configured value instead of being handed one.
             *field(&mut draft.profile) = if option == UNPINNED_VALUE {
                 String::new()
@@ -534,8 +534,8 @@ fn pinned_value_choice(
 const UNPINNED_VALUE: &str = "default";
 
 /// Idle spans a profile can warn at before the next message rebuilds the
-/// provider's prompt cache, in minutes. `0` is off, which is also what a
-/// profile written before this field existed carries.
+/// provider's prompt cache, in minutes. `0` is off, the same value a profile
+/// written before this field existed has.
 const CACHE_WARN_OPTIONS: [u32; 4] = [0, 5, 30, 60];
 
 fn cache_warn_label(minutes: u32) -> Cow<'static, str> {
@@ -693,7 +693,7 @@ fn select_profile_kind(draft: &mut AgentProfileDraft, profile_kind: AgentKind) {
         draft.profile.launcher = builtin.launcher;
     }
 
-    // Approval and sandbox values are each harness's own vocabulary, so a
+    // Approval and sandbox values are names each harness defines, so a
     // pin made for the previous kind means nothing to the new one.
     draft.profile.approval.clear();
     draft.profile.sandbox.clear();
@@ -868,7 +868,7 @@ fn agent_profile_dialog_content(
         move |option| option == selected_effort,
         |draft, option| {
             // `default` is the absence of a choice, so it is stored empty
-            // rather than as a level the agent would be asked to honor.
+            // instead of as a level the agent would be asked to honor.
             draft.profile.effort = if option == PROFILE_EFFORT_OPTIONS[0] {
                 String::new()
             } else {
