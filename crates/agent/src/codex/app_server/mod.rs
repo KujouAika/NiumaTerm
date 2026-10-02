@@ -79,8 +79,8 @@ use crate::codex::app_server::title_generation::{
     TITLE_GENERATION_RESULT_METHOD, TitleGenerationHandle, TitleGenerationRequest,
     parse_title_generation_result, start_title_generation,
 };
+use crate::session::ConversationTitleRequest;
 use crate::session::team_capabilities::{ModeratorAdmission, RecoveredTeamTurn, TeamLaunch};
-use crate::session::{AgentKind, ConversationTitleRequest};
 use crate::subprocess::DROP_SHUTDOWN_GRACE;
 use crate::workspace::AgentWorkspace;
 
@@ -1596,17 +1596,15 @@ impl Session {
     }
 
     pub fn team_capabilities(&self, backend_generation: u64) -> ModeratorAdmission {
-        let mut capabilities = ModeratorAdmission::unverified(AgentKind::Codex);
-
         if self
             .team
             .as_ref()
             .is_some_and(|team| team.ready && team.moderation_registered)
         {
-            capabilities = ModeratorAdmission::CodexDynamicTools { backend_generation };
+            ModeratorAdmission::CodexDynamicTools { backend_generation }
+        } else {
+            ModeratorAdmission::Unavailable
         }
-
-        capabilities
     }
 
     pub(super) fn start_initial_thread(&mut self) {

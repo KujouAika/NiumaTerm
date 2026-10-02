@@ -2,7 +2,6 @@ use tempfile::{TempDir, tempdir};
 
 use crate::AgentWorkspace;
 use crate::chat::SendOutcome;
-use crate::session::AgentKind;
 use crate::session::team_capabilities::ModeratorAdmission;
 use crate::team::attempt::{AttemptState, BudgetScope};
 use crate::team::budget::TurnPurpose;
@@ -28,7 +27,7 @@ fn ready_team() -> (TempDir, TeamSession, MemberId, MemberId) {
 
     for id in [alice, bob] {
         session
-            .member_ready(id, 1, ModeratorAdmission::unverified(AgentKind::Codex))
+            .member_ready(id, 1, ModeratorAdmission::Unavailable)
             .unwrap();
     }
 
@@ -774,11 +773,7 @@ fn work_sent_under_an_ended_generation_awaits_recovery() {
         .recipient;
 
     session
-        .member_ready(
-            recipient,
-            2,
-            ModeratorAdmission::unverified(AgentKind::Codex),
-        )
+        .member_ready(recipient, 2, ModeratorAdmission::Unavailable)
         .unwrap();
 
     assert_eq!(

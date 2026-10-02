@@ -2,7 +2,6 @@ use tempfile::tempdir;
 
 use crate::AgentWorkspace;
 use crate::chat::{SendOutcome, ThreadSettings};
-use crate::session::AgentKind;
 use crate::session::team_capabilities::ModeratorAdmission;
 use crate::team::attempt::{AttemptState, BudgetScope, DispatchIntent};
 use crate::team::budget::TurnPurpose;
@@ -38,7 +37,7 @@ fn native_member_settings_allow_concurrent_work_without_room_permission_gates() 
 
     for id in [alice, bob] {
         session
-            .member_ready(id, 1, ModeratorAdmission::unverified(AgentKind::Codex))
+            .member_ready(id, 1, ModeratorAdmission::Unavailable)
             .unwrap();
     }
 
@@ -136,7 +135,7 @@ fn live_dispatch_requires_a_ready_member_and_reopen_rejects_uncertain_retry() {
     ));
 
     session
-        .member_ready(alice, 1, ModeratorAdmission::unverified(AgentKind::Codex))
+        .member_ready(alice, 1, ModeratorAdmission::Unavailable)
         .unwrap();
 
     let id = session.reserve_dispatches(vec![intent.clone()]).unwrap()[0];
@@ -166,7 +165,7 @@ fn live_dispatch_requires_a_ready_member_and_reopen_rejects_uncertain_retry() {
     let mut session = TeamSession::open(directory.path(), room_id).unwrap();
 
     session
-        .member_ready(alice, 2, ModeratorAdmission::unverified(AgentKind::Codex))
+        .member_ready(alice, 2, ModeratorAdmission::Unavailable)
         .unwrap();
 
     assert!(
@@ -227,7 +226,7 @@ fn accepted_coverage_and_root_reply_commit_once_and_survive_reopening() {
     let mut session = TeamSession::create(directory.path(), room).unwrap();
 
     session
-        .member_ready(alice, 7, ModeratorAdmission::unverified(AgentKind::Codex))
+        .member_ready(alice, 7, ModeratorAdmission::Unavailable)
         .unwrap();
 
     let operation = OperationId::new();

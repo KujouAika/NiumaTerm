@@ -153,7 +153,7 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
         .unwrap();
 
     saved
-        .member_ready(member, 1, ModeratorAdmission::unverified(AgentKind::Codex))
+        .member_ready(member, 1, ModeratorAdmission::Unavailable)
         .unwrap();
 
     let discussion = saved

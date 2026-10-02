@@ -565,10 +565,9 @@ impl TeamSession {
                 .get(&moderator)
                 .ok_or(TeamError::Unavailable)?;
 
-            readiness
-                .capabilities
-                .check(readiness.backend_generation)
-                .map_err(|_| TeamError::Unavailable)?;
+            if !readiness.capabilities.admits(readiness.backend_generation) {
+                return Err(TeamError::Unavailable);
+            }
         }
 
         Ok(())

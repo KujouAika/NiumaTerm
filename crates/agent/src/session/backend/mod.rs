@@ -982,16 +982,12 @@ impl Backend {
         }
     }
 
-    pub fn team_capabilities(
-        &self,
-        kind: AgentKind,
-        backend_generation: u64,
-    ) -> ModeratorAdmission {
+    pub fn team_capabilities(&self, backend_generation: u64) -> ModeratorAdmission {
         match self {
             Self::Codex(session) => session.team_capabilities(backend_generation),
-            Self::Claude(_) | Self::DeepSeek(_) => ModeratorAdmission::unverified(kind),
+            Self::Claude(_) | Self::DeepSeek(_) => ModeratorAdmission::Unavailable,
             #[cfg(any(test, feature = "test-support"))]
-            Self::Test(_) => ModeratorAdmission::unverified(kind),
+            Self::Test(_) => ModeratorAdmission::Unavailable,
         }
     }
 

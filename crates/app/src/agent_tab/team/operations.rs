@@ -48,9 +48,9 @@ impl MemberSnapshot {
             epoch,
             settings: state.controls.settings.clone(),
             provider: backend.and_then(|backend| backend.recovery_identity()),
-            capabilities: backend
-                .map(|backend| backend.team_capabilities(session.kind, epoch))
-                .unwrap_or_else(|| ModeratorAdmission::unverified(session.kind)),
+            capabilities: backend.map_or(ModeratorAdmission::Unavailable, |backend| {
+                backend.team_capabilities(epoch)
+            }),
             recovered: backend
                 .map(|backend| backend.team_recovered_turns().to_vec())
                 .unwrap_or_default(),
@@ -111,7 +111,7 @@ pub(super) fn refresh(
                 .ok_or(TeamError::Unavailable)?;
 
             let registered =
-                recorded.moderator_registered() || member.capabilities.check(member.epoch).is_ok();
+                recorded.moderator_registered() || member.capabilities.admits(member.epoch);
 
             session.record_provider_identity(member.id, &provider.id, registered)?;
         }
@@ -226,7 +226,7 @@ pub(super) fn refresh(
         }
 
         if member.ready_epoch != Some(member.epoch) {
-            session.member_ready(member.id, member.epoch, member.capabilities.clone())?;
+            session.member_ready(member.id, member.epoch, member.capabilities)?;
 
             member.ready_epoch = Some(member.epoch);
         }
