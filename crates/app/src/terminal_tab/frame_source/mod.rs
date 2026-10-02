@@ -1,7 +1,3 @@
-pub(super) use crate::terminal_tab::frame_source::items::ItemViewport;
-
-mod items;
-
 #[cfg(test)]
 #[cfg(all(test, windows, enable_profiling))]
 mod profile_tests;
@@ -37,6 +33,13 @@ use crate::terminal_tab::graphics::{FrozenImageCache, GenerationStore, prune_fro
 use crate::terminal_tab::pane_model::FrameTheme;
 use crate::terminal_tab::wake::WakeSignal;
 use crate::terminal_tab::{block_list, frame, graphics, metrics};
+
+pub(super) struct ItemViewport {
+    pub top: f32,
+    pub height: f32,
+    pub cell_height: f32,
+    pub pad_rows: f32,
+}
 
 pub struct TerminalFrameSource {
     pub(super) session: TerminalSession,

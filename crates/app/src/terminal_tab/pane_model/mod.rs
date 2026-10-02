@@ -3,14 +3,9 @@ pub(super) use crate::terminal_tab::pane_model::settings::FrameTheme;
 pub(super) mod frame_cache;
 pub(super) mod frame_record;
 pub(super) mod frozen_hit_map;
-pub(super) mod key_action;
 pub(super) mod list_mirror;
-pub(super) mod mouse;
-pub(super) mod scroll;
-pub(super) mod selection_geometry;
 pub(super) mod viewport;
 
-mod blocks;
 mod links;
 mod scrollbar_activity;
 mod settings;
@@ -20,6 +15,8 @@ pub(super) mod test_session;
 #[cfg(test)]
 mod tests;
 
+use std::path::PathBuf;
+
 use nmt_config::colors::Colors;
 use nmt_input::keyboard::ModifiersState;
 use nmt_terminal::clipboard::ClipboardType;
@@ -27,7 +24,7 @@ use nmt_terminal::input::{TerminalKey, WheelDelta};
 use nmt_terminal::links::{follows_link, resolve_link};
 use nmt_terminal::selection::SelectionType;
 use nmt_terminal::session::interaction::{
-    CopyCompletion, InputOutcome, TerminalInteraction, selection_type_for_click_count,
+    CopyCompletion, InputOutcome, PendingCopy, TerminalInteraction, selection_type_for_click_count,
 };
 use nmt_terminal::session::{
     HostEvent, InFlightBlock, SurfaceMouseButton, SurfaceMouseEventKind, SurfaceScreenCell,
@@ -43,19 +40,12 @@ use crate::terminal_tab::frame::TerminalFrame;
 use crate::terminal_tab::frame_source::TerminalFrameSource;
 use crate::terminal_tab::layout::{bottom_slack, frame_content_rows};
 use crate::terminal_tab::metrics::CellMetrics;
-use crate::terminal_tab::pane_model::blocks::ListPlan;
 use crate::terminal_tab::pane_model::frame_cache::TerminalFrameCache;
 use crate::terminal_tab::pane_model::frame_record::FrameRecord;
 use crate::terminal_tab::pane_model::frozen_hit_map::FrozenHitMap;
-use crate::terminal_tab::pane_model::key_action::{KeyOutcome, TextInput};
 use crate::terminal_tab::pane_model::links::{LinkHit, LinkHover};
 use crate::terminal_tab::pane_model::list_mirror::{BlockListMirror, ListOp, ListPosition};
-use crate::terminal_tab::pane_model::mouse::{
-    MouseInput, MouseOutcome, MouseRelease, WheelOutcome,
-};
-use crate::terminal_tab::pane_model::scroll::ScrollOutcome;
 use crate::terminal_tab::pane_model::scrollbar_activity::ScrollbarActivity;
-use crate::terminal_tab::pane_model::selection_geometry::selection_drag_started;
 use crate::terminal_tab::pane_model::settings::{CursorShapeFailure, CursorShapeUpdate};
 use crate::terminal_tab::pane_model::viewport::{LocalPoint, LocalRect, Viewport};
 use crate::terminal_tab::settings::TerminalSettings;
@@ -64,6 +54,71 @@ pub(super) trait ClipboardAccess {
     fn read(&mut self) -> Option<String>;
 
     fn write(&mut self, kind: ClipboardType, text: String) -> bool;
+}
+
+pub(crate) struct ListPlan {
+    pub ops: Vec<ListOp>,
+    pub history_rows: u64,
+    pub live_index: usize,
+    pub cols: u32,
+}
+
+#[derive(Debug)]
+pub(crate) enum ScrollOutcome {
+    Ignored,
+    GridRequested,
+    List(ListOp),
+}
+
+#[derive(Debug)]
+pub(crate) enum KeyOutcome {
+    Ignored,
+    Written,
+    CopyPending(PendingCopy),
+    Scrolled(ScrollOutcome),
+}
+
+pub(crate) enum TextInput<'a> {
+    Commit(&'a str),
+    DropPaths(&'a [PathBuf]),
+}
+
+pub(crate) struct MouseInput {
+    pub position: LocalPoint,
+    pub button: Option<SurfaceMouseButton>,
+    pub modifiers: ModifiersState,
+    pub click_count: usize,
+}
+
+pub(crate) enum MouseOutcome {
+    Ignored,
+    OpenUrl(String),
+    SelectionChanged,
+    FrozenSelectionStarted,
+    EngineHandled,
+    Scrolled(ScrollOutcome),
+    HoverChanged,
+}
+
+pub(crate) struct MouseRelease {
+    pub outcome: MouseOutcome,
+    pub scrollbar_released: bool,
+}
+
+pub(crate) struct WheelOutcome {
+    pub handled: bool,
+    pub hover_changed: bool,
+}
+
+pub(crate) fn selection_drag_started(
+    origin: LocalPoint,
+    position: LocalPoint,
+    cell_width: f32,
+) -> bool {
+    let dx = position.x - origin.x;
+    let dy = position.y - origin.y;
+
+    dx * dx + dy * dy >= cell_width * cell_width / 16.0
 }
 
 pub(super) struct PaneController {

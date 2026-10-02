@@ -39,12 +39,11 @@ use crate::terminal_tab::block_list::live::LiveItemState;
 use crate::terminal_tab::frame::TerminalFrame;
 use crate::terminal_tab::frame_source::TerminalFrameSource;
 use crate::terminal_tab::metrics::CellMetrics;
-use crate::terminal_tab::pane_model::key_action::{KeyOutcome, TextInput};
 use crate::terminal_tab::pane_model::list_mirror::ListPosition;
-use crate::terminal_tab::pane_model::mouse::{MouseInput, MouseOutcome};
-use crate::terminal_tab::pane_model::scroll::ScrollOutcome;
 use crate::terminal_tab::pane_model::viewport::LocalPoint;
-use crate::terminal_tab::pane_model::{ClipboardAccess, PaneController};
+use crate::terminal_tab::pane_model::{
+    ClipboardAccess, KeyOutcome, MouseInput, MouseOutcome, PaneController, ScrollOutcome, TextInput,
+};
 use crate::terminal_tab::scrollbar::geometry::SCROLLBAR_AUTO_HIDE_DELAY;
 use crate::terminal_tab::scrollbar::scrollbar_element;
 use crate::terminal_tab::settings::{TerminalSettings, duration_labels};

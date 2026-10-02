@@ -15,13 +15,12 @@ use crate::terminal_tab::block_list::reconcile::BlockListRenderMetrics;
 use crate::terminal_tab::layout::frame_content_rows;
 use crate::terminal_tab::metrics::CellMetrics;
 use crate::terminal_tab::pane_model::frame_record::FrameRecord;
-use crate::terminal_tab::pane_model::key_action::{KeyOutcome, TextInput};
 use crate::terminal_tab::pane_model::list_mirror::{BlockListMirror, ListOp, ListPosition};
-use crate::terminal_tab::pane_model::mouse::{MouseInput, MouseOutcome};
-use crate::terminal_tab::pane_model::scroll::ScrollOutcome;
-use crate::terminal_tab::pane_model::selection_geometry::selection_drag_started;
 use crate::terminal_tab::pane_model::test_session::{TestClipboard, assert_input, controller};
 use crate::terminal_tab::pane_model::viewport::{LocalPoint, Viewport};
+use crate::terminal_tab::pane_model::{
+    KeyOutcome, MouseInput, MouseOutcome, ScrollOutcome, TextInput, selection_drag_started,
+};
 
 #[test]
 fn progress_repaint_keeps_live_height_and_scroll_extent() {
