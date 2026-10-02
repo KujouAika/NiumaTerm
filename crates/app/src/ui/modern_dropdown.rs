@@ -32,6 +32,11 @@ pub(crate) fn modern_dropdown(
         // on mouse down so releasing the button opens the menu again.
         .on_mouse_down(MouseButton::Left, |_, _, cx| dismiss_modern_menu(cx))
         .child(button.on_click(move |_, window, cx| {
+            // The button only stops a click while loading, so the click would
+            // otherwise also reach a clickable row the trigger sits on, such
+            // as a sidebar workspace row that folds its tab list.
+            cx.stop_propagation();
+
             let mut position = measured.get().bottom_left();
 
             // Native menus position their content, leaving the rounded outer
