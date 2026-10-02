@@ -29,7 +29,6 @@ pub(crate) struct TerminalCell {
     pub(crate) background: Option<TerminalColor>,
     pub(crate) wide: Wide,
     pub(crate) extras: Vec<char>,
-    pub(crate) has_cursor: bool,
 }
 
 pub(crate) type TerminalColor = ColorRgb;
@@ -284,7 +283,6 @@ impl EngineRowBuilder {
             background: colors.engine_background(style),
             wide: if is_wide { Wide::Wide } else { Wide::Narrow },
             extras: cell_text.chars().skip(1).collect(),
-            has_cursor: false,
         });
 
         self.col = x + if is_wide { 2 } else { 1 };

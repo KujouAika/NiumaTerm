@@ -550,8 +550,6 @@ fn rgba_update(route_id: usize, image_id: u32, w: usize, h: usize) -> TerminalEv
         height: h,
         color_type: ColorType::Rgba,
         pixels: vec![0u8; w * h * 4],
-        is_opaque: true,
-        transmit_time: time::Instant::now(),
     };
 
     TerminalEvent::UpdateGraphics {

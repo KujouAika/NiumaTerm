@@ -1,4 +1,4 @@
-use std::{ptr, slice, time};
+use std::{ptr, slice};
 
 use libghostty_vt_sys::{
     KittyGraphics as VtKittyGraphics, KittyGraphicsData as VtKittyGraphicsData,
@@ -490,15 +490,11 @@ pub(super) unsafe fn kitty_image_graphic_data(
         _ => return None, // PNG/unknown shouldn't reach here post-decode
     };
 
-    let is_opaque = color_type == ColorType::Rgb;
-
     Some(GraphicData {
         id: GraphicId(image_id as u64),
         width: width as usize,
         height: height as usize,
         color_type,
         pixels,
-        is_opaque,
-        transmit_time: time::Instant::now(),
     })
 }

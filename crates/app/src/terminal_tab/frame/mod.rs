@@ -260,7 +260,6 @@ fn extract_row_with_colors(
             background,
             wide,
             extras,
-            has_cursor: cursor_shape.is_some(),
         });
     }
 

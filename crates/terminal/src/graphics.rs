@@ -6,8 +6,6 @@
 #[path = "graphics_tests.rs"]
 mod graphics_tests;
 
-use std::time;
-
 use nmt_config::colors::AnsiColor;
 
 /// Unique identifier for every graphic added to a grid.
@@ -56,13 +54,6 @@ pub struct GraphicData {
 
     /// Pixels data.
     pub pixels: Vec<u8>,
-
-    /// Indicate if there are no transparent pixels.
-    pub is_opaque: bool,
-
-    /// Generation counter for cache invalidation.
-    /// Incremented when image data changes (re-transmission with same ID).
-    pub transmit_time: time::Instant,
 }
 
 /// One batch of image changes handed to the renderer's image store. The engine

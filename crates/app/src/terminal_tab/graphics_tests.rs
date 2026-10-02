@@ -1,5 +1,3 @@
-use std::time;
-
 use nmt_terminal::graphics::GraphicId;
 
 use crate::terminal_tab::graphics::*;
@@ -11,8 +9,6 @@ fn data(id: u32, w: usize, h: usize, color_type: ColorType, pixels: Vec<u8>) -> 
         height: h,
         color_type,
         pixels,
-        is_opaque: true,
-        transmit_time: time::Instant::now(),
     }
 }
 
