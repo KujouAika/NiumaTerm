@@ -5,8 +5,11 @@
 //! background executor while it holds the run's store, one at a time in the
 //! order queued. The UI reads the last saved copy of the run.
 
+pub use crate::agent_tab::orchestration::view::OrchestrationPane;
+
 mod slot;
 mod turn;
+mod view;
 
 #[cfg(test)]
 mod tests;
@@ -255,6 +258,10 @@ impl OrchestrationRuntime {
         );
 
         cx.spawn(async move |_, _| Ok(read.await?.map(|items| saved_entries(&items))))
+    }
+
+    fn slot_owner(&self, slot: usize) -> Option<&SessionOwner> {
+        self.slots.get(slot)?.as_ref().map(|host| &host.owner)
     }
 
     fn live_host(&self, node: usize) -> Option<&SlotHost> {

@@ -44,6 +44,8 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                                 agent: None,
                                 agent_profile: None,
                                 team_room: None,
+                                orchestration: false,
+                                orchestration_run: None,
                                 git_cwd: None,
                                 title: Some("vim notes.md".into()),
                                 agent_conversation: None,
@@ -74,6 +76,13 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                             },
                             TabState {
                                 team_room: Some("40000000-0000-4000-8000-000000000000".into()),
+                                ..TabState::default()
+                            },
+                            TabState {
+                                orchestration: true,
+                                orchestration_run: Some(
+                                    "50000000-0000-4000-8000-000000000000".into(),
+                                ),
                                 ..TabState::default()
                             },
                         ],
@@ -189,6 +198,8 @@ fn pane_layout_roundtrips_and_old_snapshots_load_without_it() {
         agent: None,
         agent_profile: None,
         team_room: None,
+        orchestration: false,
+        orchestration_run: None,
         grid_size: Some((80, 36)),
         git_cwd: None,
         title: None,

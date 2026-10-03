@@ -61,6 +61,20 @@ pub(super) fn tab_surface_view(
                 .child(t!("team-disabled").into_owned())
                 .into_any_element();
         }
+        TabSurface::Orchestration(pane) => {
+            return div()
+                .size_full()
+                .overflow_hidden()
+                .child(pane.clone().cached(pane_style()))
+                .into_any_element();
+        }
+        TabSurface::OrchestrationDisabled(_) => {
+            return div()
+                .size_full()
+                .p_4()
+                .child(t!("orchestration-disabled").into_owned())
+                .into_any_element();
+        }
         _ => {}
     }
 

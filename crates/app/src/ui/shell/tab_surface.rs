@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use app::agent_tab::execution::{AgentSession, SessionOwner};
+use app::agent_tab::orchestration::OrchestrationPane;
 use app::agent_tab::team::TeamPane;
 use app::agent_tab::{AgentKind, AgentPane};
 use app::terminal_tab::view::TerminalPane;
@@ -49,6 +50,8 @@ pub(crate) enum TabSurface {
         message: String,
     },
     TeamDisabled(Box<TabState>),
+    Orchestration(Entity<OrchestrationPane>),
+    OrchestrationDisabled(Box<TabState>),
 }
 
 impl TabSurface {
@@ -68,6 +71,7 @@ impl TabSurface {
             Self::Pending(state)
                 if state.git_cwd.is_none()
                     && state.team_room.is_none()
+                    && !state.orchestration
                     && state
                         .agent
                         .as_deref()
@@ -116,6 +120,12 @@ impl TabSurface {
             Self::Pending(state) if state.team_room.is_some() => {
                 Icon::new(IconName::Network).xsmall()
             }
+            Self::Orchestration(_) | Self::OrchestrationDisabled(_) => {
+                Icon::new(IconName::LayoutDashboard).xsmall()
+            }
+            Self::Pending(state) if state.orchestration => {
+                Icon::new(IconName::LayoutDashboard).xsmall()
+            }
             _ => tab_icon(self.agent_kind(cx), self.is_settings()),
         }
     }
@@ -125,6 +135,33 @@ impl TabSurface {
             Self::Team(pane) => Some(pane),
             _ => None,
         }
+    }
+
+    pub(crate) fn orchestration(&self) -> Option<&Entity<OrchestrationPane>> {
+        match self {
+            Self::Orchestration(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    /// Close an Orchestration tab's run and keep only what reopens it, for
+    /// when the feature is turned off. The run stays saved.
+    pub(super) fn disable_orchestration(&mut self, cx: &mut App) -> bool {
+        let Self::Orchestration(pane) = self else {
+            return false;
+        };
+
+        let saved = TabState {
+            orchestration: true,
+            orchestration_run: pane.read(cx).run_id(cx).map(|id| id.to_string()),
+            ..TabState::default()
+        };
+
+        pane.update(cx, |pane, cx| pane.close(cx));
+
+        *self = Self::OrchestrationDisabled(Box::new(saved));
+
+        true
     }
 
     pub(super) fn disable_team(&mut self, cx: &mut App) -> bool {
@@ -164,7 +201,9 @@ impl TabSurface {
             | Self::Settings
             | Self::Team(_)
             | Self::TeamUnavailable { .. }
-            | Self::TeamDisabled(_) => None,
+            | Self::TeamDisabled(_)
+            | Self::Orchestration(_)
+            | Self::OrchestrationDisabled(_) => None,
         }
     }
 
@@ -181,7 +220,9 @@ impl TabSurface {
             | Self::Settings
             | Self::Team(_)
             | Self::TeamUnavailable { .. }
-            | Self::TeamDisabled(_) => false,
+            | Self::TeamDisabled(_)
+            | Self::Orchestration(_)
+            | Self::OrchestrationDisabled(_) => false,
         }
     }
 
@@ -222,7 +263,9 @@ impl TabSurface {
             | Self::Settings
             | Self::Team(_)
             | Self::TeamUnavailable { .. }
-            | Self::TeamDisabled(_) => false,
+            | Self::TeamDisabled(_)
+            | Self::Orchestration(_)
+            | Self::OrchestrationDisabled(_) => false,
         }
     }
 

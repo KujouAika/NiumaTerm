@@ -12,6 +12,7 @@ use std::mem;
 use std::time::SystemTime;
 
 use app::agent_tab::execution::AgentSession;
+use app::agent_tab::orchestration::OrchestrationPane;
 use app::agent_tab::team::{TeamPane, TeamRuntime};
 use app::agent_tab::{AgentKind, AgentPane, thread_settings_from_saved};
 use app::terminal_tab::view::TerminalPane;
@@ -19,6 +20,7 @@ use dirs::home_dir;
 use gpui::{App, AppContext, Axis, Context, Entity, Window};
 use gpui_component::resizable::ResizableState;
 use nmt_agent::chat::SessionSummary;
+use nmt_agent::orchestration::run::RunId;
 use nmt_agent::team::model::RoomId;
 use nmt_config::config_dir_path;
 use nmt_config::local_state::{
@@ -51,6 +53,8 @@ enum SavedTab<'a> {
     Git(&'a str),
     /// The team room with this saved id.
     Team(&'a str),
+    /// An Orchestration tab, showing the run with this saved id if any.
+    Orchestration(Option<&'a str>),
     /// A conversation of this agent kind: the saved one when the tab held
     /// one, otherwise a fresh one.
     Agent(AgentKind),
@@ -68,6 +72,10 @@ fn saved_tab(state: &TabState) -> SavedTab<'_> {
 
     if let Some(room) = state.team_room.as_deref() {
         return SavedTab::Team(room);
+    }
+
+    if state.orchestration {
+        return SavedTab::Orchestration(state.orchestration_run.as_deref());
     }
 
     if let (Some(host), Some(session)) = (
@@ -374,7 +382,10 @@ pub(super) fn hibernate_tab(
             state.shared_agent = Some(shared);
         }
         SavedTab::Terminal => state.shared_terminal = offer_pending_terminal(title, cx),
-        SavedTab::Git(_) | SavedTab::Team(_) | SavedTab::Remote(..) => {}
+        SavedTab::Git(_)
+        | SavedTab::Team(_)
+        | SavedTab::Orchestration(_)
+        | SavedTab::Remote(..) => {}
     }
 
     let tab = workspaces
@@ -408,13 +419,24 @@ pub(super) fn materialize_active_tab(
         {
             (**state).clone()
         }
+        TabSurface::OrchestrationDisabled(state)
+            if cx
+                .global::<AppSettings>()
+                .config()
+                .agent
+                .enable_agent_orchestration =>
+        {
+            (**state).clone()
+        }
         TabSurface::Live(_)
         | TabSurface::Agent(_)
         | TabSurface::Git(_)
         | TabSurface::Settings
         | TabSurface::Team(_)
         | TabSurface::TeamDisabled(_)
-        | TabSurface::TeamUnavailable { .. } => return false,
+        | TabSurface::TeamUnavailable { .. }
+        | TabSurface::Orchestration(_)
+        | TabSurface::OrchestrationDisabled(_) => return false,
     };
 
     let roots = workspaces.active_roots().cloned();
@@ -478,6 +500,7 @@ fn restored_surface(
             })
         }
         SavedTab::Team(saved_id) => restore_team_tab(saved_id, &state, window, cx),
+        SavedTab::Orchestration(run) => restore_orchestration_tab(run, &state, roots, window, cx),
         SavedTab::Agent(kind) => {
             let workspace = agent_workspace(roots);
 
@@ -642,6 +665,30 @@ fn restore_team_tab(
     }
 }
 
+fn restore_orchestration_tab(
+    run: Option<&str>,
+    state: &TabState,
+    roots: Option<&WorkspaceRoots>,
+    window: &mut Window,
+    cx: &mut App,
+) -> TabSurface {
+    if !cx
+        .global::<AppSettings>()
+        .config()
+        .agent
+        .enable_agent_orchestration
+    {
+        return TabSurface::OrchestrationDisabled(Box::new(state.clone()));
+    }
+
+    let run = run.and_then(|id| id.parse::<RunId>().ok());
+    let workspace = agent_workspace(roots);
+
+    TabSurface::Orchestration(
+        cx.new(|cx| OrchestrationPane::new(config_dir_path(), workspace, run, window, cx)),
+    )
+}
+
 /// Rebuild a workspace's tabs as pending surfaces: the saved snapshot is
 /// kept per tab and no shell spawns here; `materialize_active_tab` turns
 /// a tab live the first time it is activated.
@@ -674,7 +721,7 @@ fn restore_tabs(
                     .shared_agent
                     .get_or_insert_with(new_shared_agent_id);
             }
-            SavedTab::Git(_) | SavedTab::Team(_) => {}
+            SavedTab::Git(_) | SavedTab::Team(_) | SavedTab::Orchestration(_) => {}
         }
 
         let name = tab_state
@@ -688,6 +735,7 @@ fn restore_tabs(
         let default_title = match saved_tab(&tab_state) {
             SavedTab::Git(_) => t!("git-tab-title").into_owned(),
             SavedTab::Team(_) => t!("team-title").into_owned(),
+            SavedTab::Orchestration(_) => t!("orchestration-title").into_owned(),
             SavedTab::Agent(kind) => {
                 let name = restored_agent_profile(
                     tab_state.agent_profile.as_deref(),

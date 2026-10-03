@@ -221,9 +221,14 @@ pub(crate) fn surface_snapshot(
             team_room: Some(pane.read(cx).room_id(cx).to_string()),
             ..TabState::default()
         },
-        TabSurface::TeamUnavailable { saved, .. } | TabSurface::TeamDisabled(saved) => {
-            (**saved).clone()
-        }
+        TabSurface::TeamUnavailable { saved, .. }
+        | TabSurface::TeamDisabled(saved)
+        | TabSurface::OrchestrationDisabled(saved) => (**saved).clone(),
+        TabSurface::Orchestration(pane) => TabState {
+            orchestration: true,
+            orchestration_run: pane.read(cx).run_id(cx).map(|id| id.to_string()),
+            ..TabState::default()
+        },
     };
 
     normalize_saved_launch(&mut state, default_profile);

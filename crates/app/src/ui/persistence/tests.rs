@@ -42,6 +42,8 @@ fn tab(shell: Option<&str>, args: &[&str]) -> TabState {
         agent: None,
         agent_profile: None,
         team_room: None,
+        orchestration: false,
+        orchestration_run: None,
         git_cwd: None,
         title: None,
         agent_conversation: None,

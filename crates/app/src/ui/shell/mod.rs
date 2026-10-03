@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::{collections, io, iter, mem, path, time};
 
 use app::agent_tab::execution::{AgentSession, SessionOwner};
+use app::agent_tab::orchestration::OrchestrationPane;
 use app::agent_tab::team::{TeamPane, TeamRuntime};
 use app::agent_tab::{AgentPane, AgentPaneEvent};
 use app::design::SETTINGS_NAV_WIDTH_PX;
@@ -513,6 +514,7 @@ impl AppWindow {
     ) -> Self {
         cx.observe_global_in::<AppSettings>(window, |this, window, cx| {
             this.sync_team_setting(window, cx);
+            this.sync_orchestration_setting(window, cx);
 
             cx.notify();
         })
@@ -785,6 +787,42 @@ impl AppWindow {
         }
     }
 
+    fn sync_orchestration_setting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cx
+            .global::<AppSettings>()
+            .config()
+            .agent
+            .enable_agent_orchestration
+        {
+            if matches!(
+                self.workspaces.active_tabs().active(),
+                TabSurface::OrchestrationDisabled(_)
+            ) {
+                self.on_active_tab_changed(window, cx);
+            }
+
+            return;
+        }
+
+        let tabs: Vec<_> = self
+            .workspaces
+            .all_tabs()
+            .flat_map(|tabs| tabs.list().items())
+            .filter(|tab| tab.surface().orchestration().is_some())
+            .map(Tab::id)
+            .collect();
+
+        for id in tabs {
+            if let Some(tab) = self
+                .workspaces
+                .tabs_for_tab_mut(id)
+                .and_then(|tabs| tabs.list_mut().find_mut(id))
+            {
+                tab.surface_mut().disable_orchestration(cx);
+            }
+        }
+    }
+
     fn sync_active_terminal_title(&mut self, cx: &App) {
         let Some(pane) = self.try_active_pane() else {
             return;
@@ -858,9 +896,23 @@ impl AppWindow {
             return;
         }
 
+        if let Some(pane) = self
+            .workspaces
+            .active_tabs()
+            .active()
+            .orchestration()
+            .cloned()
+        {
+            pane.update(cx, |pane, cx| pane.focus(window, cx));
+
+            return;
+        }
+
         if matches!(
             self.workspaces.active_tabs().active(),
-            TabSurface::TeamUnavailable { .. } | TabSurface::TeamDisabled(_)
+            TabSurface::TeamUnavailable { .. }
+                | TabSurface::TeamDisabled(_)
+                | TabSurface::OrchestrationDisabled(_)
         ) {
             return;
         }
@@ -2054,6 +2106,35 @@ impl AppWindow {
             TabId(id),
             surface,
             t!("team-title").into_owned(),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn open_orchestration_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx
+            .global::<AppSettings>()
+            .config()
+            .agent
+            .enable_agent_orchestration
+        {
+            return;
+        }
+
+        self.leave_pseudo_workspace();
+
+        let workspace = agent_workspace(self.workspaces.active_roots());
+
+        let surface = TabSurface::Orchestration(
+            cx.new(|cx| OrchestrationPane::new(config_dir_path(), workspace, None, window, cx)),
+        );
+
+        let id = Self::alloc_id(&mut self.next_id);
+
+        self.insert_tab(
+            TabId(id),
+            surface,
+            t!("orchestration-title").into_owned(),
             window,
             cx,
         );

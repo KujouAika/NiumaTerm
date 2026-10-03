@@ -198,6 +198,14 @@ pub struct TabState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_room: Option<String>,
 
+    /// Marks an Orchestration tab, which may show no run at all.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub orchestration: bool,
+
+    /// The run an Orchestration tab showed, reopened with the tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestration_run: Option<String>,
+
     /// Last terminal grid, in columns and rows. Restoring the grid before
     /// spawning the shell avoids a resize during its initial prompt rendering.
     #[serde(default, skip_serializing_if = "Option::is_none")]

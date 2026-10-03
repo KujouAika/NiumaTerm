@@ -205,6 +205,18 @@ pub(super) fn agent_page(agent_profiles: &[AgentProfile], cx: &App) -> SettingPa
                 ),
             )
             .description(t!("settings-agent-unified-tab-description").into_owned()),
+        )
+        .item(
+            SettingItem::new(
+                t!("settings-agent-enable-orchestration"),
+                settings_switch(
+                    |config| config.agent.enable_agent_orchestration,
+                    |settings, value| {
+                        settings.edit_agent(|section| section.enable_agent_orchestration = value);
+                    },
+                ),
+            )
+            .description(t!("settings-agent-enable-orchestration-description").into_owned()),
         );
 
     let mut cli_updates = SettingGroup::new()

@@ -189,7 +189,7 @@ pub(crate) fn new_tab_menu(
             })
             .icon(icon);
 
-        return team_entry(menu, shell, cx);
+        return closing_entries(menu, shell, cx);
     }
 
     for (ix, profile) in agent_profiles.into_iter().enumerate() {
@@ -211,18 +211,34 @@ pub(crate) fn new_tab_menu(
             .icon(icon);
     }
 
-    team_entry(menu, shell, cx)
+    closing_entries(menu, shell, cx)
 }
 
-/// The Agent Team entry closing the new-tab menu, where teams are enabled.
-fn team_entry(menu: ModernMenu, shell: &Entity<AppWindow>, cx: &App) -> ModernMenu {
-    if !cx.global::<AppSettings>().config().agent.enable_agent_team {
-        return menu;
+/// The Agent Team and Orchestration entries closing the new-tab menu, under
+/// one separator, each where it is enabled.
+fn closing_entries(mut menu: ModernMenu, shell: &Entity<AppWindow>, cx: &App) -> ModernMenu {
+    let agent = &cx.global::<AppSettings>().config().agent;
+    let (team, orchestration) = (agent.enable_agent_team, agent.enable_agent_orchestration);
+
+    if team || orchestration {
+        menu = menu.separator();
     }
 
-    let item_shell = shell.clone();
+    if team {
+        let item_shell = shell.clone();
 
-    menu.separator().item(t!("team-new"), move |window, cx| {
-        item_shell.update(cx, |this, cx| this.open_team_tab(None, window, cx));
-    })
+        menu = menu.item(t!("team-new"), move |window, cx| {
+            item_shell.update(cx, |this, cx| this.open_team_tab(None, window, cx));
+        });
+    }
+
+    if orchestration {
+        let item_shell = shell.clone();
+
+        menu = menu.item(t!("orchestration-new"), move |window, cx| {
+            item_shell.update(cx, |this, cx| this.open_orchestration_tab(window, cx));
+        });
+    }
+
+    menu
 }
