@@ -2,7 +2,8 @@
 //! `agent-orchestrations/runs` in the data directory.
 //!
 //! `run.json` holds the [`RunRecord`] as a whole-state snapshot. The text
-//! sent for each node and each node's output are separate files, because a
+//! sent for each node, each node's output and the transcript items of each
+//! node's turn are separate files, because a
 //! snapshot is rewritten on every state change and long outputs would make
 //! each of those writes cost as much as all outputs together. A file is
 //! written before the snapshot that refers to it, so a crash between the two
@@ -18,7 +19,8 @@ use std::{fs, io};
 use nmt_platform::durable_file;
 use thiserror::Error;
 
-use crate::orchestration::run::{RunId, RunRecord, RunState};
+use crate::chat::Item;
+use crate::orchestration::run::{NodeState, RunId, RunRecord, RunState};
 use crate::snapshot_store::{self, SnapshotError, SnapshotFormat, SnapshotStore};
 
 const FORMAT: SnapshotFormat = SnapshotFormat {
@@ -31,6 +33,7 @@ const ORCHESTRATIONS_DIRECTORY: &str = "agent-orchestrations";
 const RUNS_DIRECTORY: &str = "runs";
 const PROMPTS_DIRECTORY: &str = "prompts";
 const OUTPUTS_DIRECTORY: &str = "outputs";
+const TRANSCRIPTS_DIRECTORY: &str = "transcripts";
 
 #[derive(Debug, Error)]
 pub enum RunStoreError {
@@ -38,6 +41,8 @@ pub enum RunStoreError {
     Snapshot(#[from] SnapshotError),
     #[error("run storage is unavailable: {0}")]
     Io(#[from] io::Error),
+    #[error("a saved transcript cannot be decoded: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("the saved run does not match its directory")]
     IdentityChanged,
     #[error("a saved run cannot change its definition or input")]
@@ -68,6 +73,7 @@ impl RunStore {
 
         fs::create_dir(directory.join(PROMPTS_DIRECTORY))?;
         fs::create_dir(directory.join(OUTPUTS_DIRECTORY))?;
+        fs::create_dir(directory.join(TRANSCRIPTS_DIRECTORY))?;
 
         Ok(Self { snapshots })
     }
@@ -116,7 +122,7 @@ impl RunStore {
     /// sending. Sending a node again replaces it.
     pub fn save_prompt(&self, node: usize, text: &str) -> Result<(), RunStoreError> {
         Ok(durable_file::write(
-            &self.node_file(PROMPTS_DIRECTORY, node),
+            &self.node_file(PROMPTS_DIRECTORY, node, "md"),
             text.as_bytes(),
         )?)
     }
@@ -124,14 +130,23 @@ impl RunStore {
     /// Save `node`'s output, before the node is recorded as completed.
     pub fn save_output(&self, node: usize, text: &str) -> Result<(), RunStoreError> {
         Ok(durable_file::write(
-            &self.node_file(OUTPUTS_DIRECTORY, node),
+            &self.node_file(OUTPUTS_DIRECTORY, node, "md"),
             text.as_bytes(),
+        )?)
+    }
+
+    /// Save the transcript items of `node`'s turn, before the node is
+    /// recorded as completed, failed or stopped.
+    pub fn save_transcript(&self, node: usize, items: &[Item]) -> Result<(), RunStoreError> {
+        Ok(durable_file::write(
+            &self.node_file(TRANSCRIPTS_DIRECTORY, node, "json"),
+            &serde_json::to_vec(items)?,
         )?)
     }
 
     /// The text last sent for `node`, if any was sent.
     pub fn prompt(&self, node: usize) -> Result<Option<String>, RunStoreError> {
-        read_optional(&self.node_file(PROMPTS_DIRECTORY, node))
+        read_optional(&self.node_file(PROMPTS_DIRECTORY, node, "md"))
     }
 
     /// `node`'s output when the run records it as completed. An output file
@@ -142,18 +157,37 @@ impl RunStore {
             return Ok(None);
         }
 
-        read_optional(&self.node_file(OUTPUTS_DIRECTORY, node))
+        read_optional(&self.node_file(OUTPUTS_DIRECTORY, node, "md"))
+    }
+
+    /// The transcript of `node`'s turn when the run records that turn as
+    /// ended. A file for a node in any other state was written by a turn
+    /// whose end was never saved, or by an earlier attempt of a resumed node.
+    pub fn transcript(&self, node: usize) -> Result<Option<Vec<Item>>, RunStoreError> {
+        let ended = matches!(
+            self.run().nodes()[node].state,
+            NodeState::Completed { .. } | NodeState::Failed { .. } | NodeState::Stopped
+        );
+
+        if !ended {
+            return Ok(None);
+        }
+
+        match read_optional(&self.node_file(TRANSCRIPTS_DIRECTORY, node, "json"))? {
+            Some(text) => Ok(Some(serde_json::from_str(&text)?)),
+            None => Ok(None),
+        }
     }
 
     /// Node ids are restricted to characters that are valid in file names
     /// on every platform, so they name the files directly.
-    fn node_file(&self, kind: &str, node: usize) -> PathBuf {
+    fn node_file(&self, kind: &str, node: usize, extension: &str) -> PathBuf {
         let id = &self.run().definition().nodes[node].id;
 
         self.snapshots
             .directory()
             .join(kind)
-            .join(format!("{id}.md"))
+            .join(format!("{id}.{extension}"))
     }
 }
 

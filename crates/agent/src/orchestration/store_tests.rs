@@ -3,6 +3,7 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
+use crate::chat::Item;
 use crate::orchestration::definition::Definition;
 use crate::orchestration::graph::Graph;
 use crate::orchestration::run::{RunRecord, RunState};
@@ -175,4 +176,47 @@ fn recent_runs_lists_the_workspace_newest_first_and_skips_damaged_runs() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn a_turn_transcript_is_shown_once_the_turn_has_ended() {
+    let directory = tempdir().unwrap();
+    let graph = graph();
+    let run = record(&graph, "C:/project", 0);
+    let id = run.id();
+
+    let mut store = RunStore::create(directory.path(), run).unwrap();
+
+    let items = vec![
+        Item::UserMessage {
+            text: Some("Plan: Add search".into()),
+        },
+        Item::AgentMessage {
+            id: "reply".into(),
+            text: Some("the plan".into()),
+            questions: None,
+        },
+    ];
+
+    assert!(store.update(|run| run.begin_send(0, EPOCH, 10)).unwrap());
+
+    store.save_transcript(0, &items).unwrap();
+
+    // Saved, but the turn's end is not recorded yet.
+    assert_eq!(store.transcript(0).unwrap(), None);
+    assert!(
+        store
+            .update(|run| run.fail(0, Some(EPOCH), "error".into(), 20))
+            .unwrap()
+    );
+
+    drop(store);
+
+    let mut store = RunStore::open(directory.path(), id).unwrap();
+
+    assert_eq!(store.transcript(0).unwrap(), Some(items));
+
+    // Resuming sends the node again; the earlier attempt's file is hidden.
+    assert!(store.update(RunRecord::resume).unwrap());
+    assert_eq!(store.transcript(0).unwrap(), None);
 }
