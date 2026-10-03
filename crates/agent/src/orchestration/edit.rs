@@ -84,6 +84,11 @@ impl Editor {
         &self.definition
     }
 
+    /// The version last read from or written to the file.
+    pub fn saved(&self) -> &Definition {
+        &self.saved
+    }
+
     /// Whether the definition differs from the file's version, which
     /// undoing back to that version clears.
     pub fn is_dirty(&self) -> bool {
@@ -142,10 +147,11 @@ impl Editor {
         true
     }
 
-    /// The current definition was written to the file. The history stays,
-    /// so an edit made before saving can still be undone.
-    pub fn mark_saved(&mut self) {
-        self.saved = self.definition.clone();
+    /// `written` is now the file's version. A save writes in the background,
+    /// so an edit made meanwhile stays unsaved. The history stays, so an
+    /// edit made before saving can still be undone.
+    pub fn mark_saved(&mut self, written: Definition) {
+        self.saved = written;
     }
 
     /// Replace everything with the file's `definition`, as reloading after an

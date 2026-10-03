@@ -2,7 +2,9 @@ use std::fs;
 
 use tempfile::tempdir;
 
-use crate::orchestration::library::{definitions_directory, load_definitions};
+use crate::orchestration::library::{
+    CreateError, create_definition, definitions_directory, load_definitions,
+};
 
 const VALID: &str = r#"{
     "version": 1,
@@ -59,4 +61,38 @@ fn a_missing_directory_lists_nothing() {
     let directory = tempdir().unwrap();
 
     assert!(load_definitions(directory.path()).unwrap().is_empty());
+}
+
+#[test]
+fn a_new_definition_holds_only_the_version_and_refuses_a_used_name() {
+    let directory = tempdir().unwrap();
+
+    let path = create_definition(directory.path(), "triage").unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "{\n  \"version\": 1,\n  \"slots\": {},\n  \"nodes\": []\n}\n"
+    );
+
+    let definitions = load_definitions(directory.path()).unwrap();
+
+    assert_eq!(definitions[0].name, "triage");
+    assert!(definitions[0].definition.is_some());
+    assert!(
+        definitions[0].graph.is_err(),
+        "a definition without nodes is invalid"
+    );
+
+    assert!(matches!(
+        create_definition(directory.path(), "triage"),
+        Err(CreateError::NameInUse(name)) if name == "triage"
+    ));
+    assert!(matches!(
+        create_definition(directory.path(), "../escape"),
+        Err(CreateError::InvalidName)
+    ));
+    assert!(matches!(
+        create_definition(directory.path(), ""),
+        Err(CreateError::InvalidName)
+    ));
 }

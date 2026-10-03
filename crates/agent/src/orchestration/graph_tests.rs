@@ -307,3 +307,29 @@ fn layout_is_optional_and_ignored_by_validation() {
     assert!(without.layout.is_empty());
     assert!(!serde_json::to_string(&without).unwrap().contains("layout"));
 }
+
+#[test]
+fn errors_name_the_nodes_and_slots_they_are_about() {
+    let cycle = DefinitionError::Cycle(vec!["plan".into(), "review".into()]);
+
+    assert_eq!(cycle.nodes(), ["plan", "review"]);
+    assert!(cycle.slots().is_empty());
+
+    let unordered = DefinitionError::UnorderedSlot {
+        slot: "dev".into(),
+        first: "a".into(),
+        second: "b".into(),
+    };
+
+    assert_eq!(unordered.nodes(), ["a", "b"]);
+    assert_eq!(unordered.slots(), ["dev"]);
+
+    let unknown = DefinitionError::UnknownSlot {
+        node: "a".into(),
+        slot: "web".into(),
+    };
+
+    assert_eq!(unknown.nodes(), ["a"]);
+    assert!(unknown.slots().is_empty());
+    assert!(DefinitionError::NoNodes.nodes().is_empty());
+}

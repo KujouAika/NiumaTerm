@@ -4,10 +4,16 @@
 #[path = "library_tests.rs"]
 mod library_tests;
 
+use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use crate::orchestration::definition::Definition;
+use thiserror::Error;
+
+use crate::orchestration::canonical::to_canonical_json;
+use crate::orchestration::definition::{DEFINITION_VERSION, Definition};
 use crate::orchestration::graph::Graph;
 
 const DEFINITIONS_DIRECTORY: [&str; 2] = ["agent-orchestrations", "definitions"];
@@ -27,6 +33,16 @@ pub struct DefinitionEntry {
     /// The validated graph, or every error that kept the file from decoding
     /// or validating.
     pub graph: Result<Graph, Vec<String>>,
+}
+
+#[derive(Debug, Error)]
+pub enum CreateError {
+    #[error("a definition name uses only letters, digits, `_` and `-`")]
+    InvalidName,
+    #[error("a definition named `{0}` already exists")]
+    NameInUse(String),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 pub fn definitions_directory(data_directory: &Path) -> PathBuf {
@@ -97,4 +113,45 @@ fn read_definition(path: &Path) -> (Option<Definition>, Result<Graph, Vec<String
         }
         Err(error) => (None, Err(vec![error])),
     }
+}
+
+/// Write a new definition file named `name` holding only the version and
+/// no slots or nodes, and return its path. A name already in use is
+/// refused, also when another program creates the file at the same moment,
+/// because the file is opened only if it does not exist yet.
+pub fn create_definition(data_directory: &Path, name: &str) -> Result<PathBuf, CreateError> {
+    let valid = !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'));
+
+    if !valid {
+        return Err(CreateError::InvalidName);
+    }
+
+    let directory = definitions_directory(data_directory);
+
+    fs::create_dir_all(&directory)?;
+
+    let path = directory.join(format!("{name}.{DEFINITION_EXTENSION}"));
+
+    let empty = Definition {
+        version: DEFINITION_VERSION,
+        max_parallel: None,
+        slots: Vec::new(),
+        nodes: Vec::new(),
+        layout: BTreeMap::new(),
+    };
+
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(CreateError::NameInUse(name.to_owned()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    file.write_all(to_canonical_json(&empty).as_bytes())?;
+
+    Ok(path)
 }

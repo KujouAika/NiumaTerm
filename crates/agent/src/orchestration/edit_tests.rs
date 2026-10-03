@@ -244,7 +244,7 @@ fn undo_and_redo_walk_the_history_and_track_unsaved_edits() {
     assert!(editor.redo());
     assert!(editor.is_dirty());
 
-    editor.mark_saved();
+    editor.mark_saved(editor.definition().clone());
 
     assert!(!editor.is_dirty());
     assert!(editor.can_undo(), "saving keeps the history");

@@ -64,6 +64,39 @@ pub enum DefinitionError {
     },
 }
 
+impl DefinitionError {
+    /// The ids of the declared nodes this error is about, for marking them
+    /// on a canvas. An unknown dependency names only the node that lists it.
+    pub fn nodes(&self) -> Vec<&str> {
+        match self {
+            Self::InvalidNodeId(node) | Self::DuplicateNode(node) => vec![node],
+            Self::UnknownSlot { node, .. }
+            | Self::UnknownDependency { node, .. }
+            | Self::RepeatedDependency { node, .. }
+            | Self::EmptyPrompt { node }
+            | Self::Template { node, .. }
+            | Self::NotAncestor { node, .. } => vec![node],
+            Self::Cycle(nodes) => nodes.iter().map(String::as_str).collect(),
+            Self::UnorderedSlot { first, second, .. } => vec![first, second],
+            Self::UnsupportedVersion(_)
+            | Self::NoNodes
+            | Self::TooManyNodes(_)
+            | Self::MaxParallelOutOfRange(_)
+            | Self::EmptySlotName
+            | Self::DuplicateSlot(_) => Vec::new(),
+        }
+    }
+
+    /// The names of the declared slots this error is about. An unknown slot
+    /// is not declared, so it names none.
+    pub fn slots(&self) -> Vec<&str> {
+        match self {
+            Self::DuplicateSlot(slot) | Self::UnorderedSlot { slot, .. } => vec![slot],
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// A node that lists itself is one node depending on itself, which reads
 /// wrong as several nodes depending on each other.
 fn cycle_message(names: &[String]) -> String {
