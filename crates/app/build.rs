@@ -33,6 +33,15 @@ fn main() {
             .set("ProductVersion", &version)
             .compile()
             .unwrap();
+
+        // The UI runs on the main thread, whose stack the executable header
+        // sizes at 1 MB by default. Laying out an agent's approval or question
+        // panel inside a Team or Orchestration view needs more than that in a
+        // debug build, and overflowing it aborts the app with no panic. The
+        // reservation is address space; pages are committed only as used.
+        if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+        }
     }
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
