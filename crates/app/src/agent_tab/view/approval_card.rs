@@ -50,11 +50,17 @@ pub(crate) fn approval_card(
                 .child(approval),
         )
         .child(
+            // A narrow pane, such as an orchestration node's details beside
+            // the definitions list, is narrower than all four buttons. Ending
+            // flush right without wrapping would push the first ones out past
+            // the pane's left edge.
             h_flex()
+                .flex_wrap()
                 .justify_end()
                 .gap_2()
                 .child(
                     Button::new("approval-cancel")
+                        .debug_selector(|| "approval-cancel".into())
                         .ghost()
                         .label(t!("agent-approval-cancel-turn"))
                         .on_click(

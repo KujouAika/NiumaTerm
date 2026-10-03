@@ -2,6 +2,10 @@
 //! and the selected run as a graph of node states with a detail view per
 //! node.
 
+#[cfg(test)]
+#[path = "view_tests.rs"]
+mod view_tests;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
@@ -32,7 +36,7 @@ use crate::agent_tab::orchestration::{OrchestrationRuntime, missing_profile};
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
 use crate::agent_tab::transcript::{TranscriptView, elapsed_label, relative_time};
 
-const SIDEBAR_WIDTH: f32 = 280.;
+pub(super) const SIDEBAR_WIDTH: f32 = 280.;
 
 /// File events arrive in bursts while an editor saves; one reload after the
 /// burst is enough.
@@ -976,6 +980,7 @@ impl Render for OrchestrationPane {
 
         h_flex()
             .id("orchestration-surface")
+            .debug_selector(|| "orchestration-surface".into())
             .role(Role::Pane)
             .size_full()
             .min_h_0()
