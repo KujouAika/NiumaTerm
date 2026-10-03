@@ -24,7 +24,7 @@ use gpui_component::notification::{Notification, NotificationType};
 use gpui_component::{Root, WindowExt as _};
 use nmt_platform::environment::computer_name;
 use nmt_platform::runtime;
-use nmt_remote::client::pair;
+use nmt_remote::client::{LinkPath, pair};
 use nmt_remote::connection::{RemoteHost, Retry, Status};
 use nmt_remote::discovery::{Browser, NearbyHost};
 use nmt_remote::host::{DEFAULT_PORT, HostConfig, HostService};
@@ -154,6 +154,10 @@ pub(crate) struct RemoteWorkspace {
     /// The sessions some tab of the window follows, which the window fills
     /// in too: only those can be disconnected from.
     pub(crate) followed: Vec<String>,
+
+    /// Display text for the host's link: its path while connected,
+    /// otherwise its status.
+    pub(crate) link: SharedString,
 }
 
 /// Whether this computer browses the LAN for other hosts.
@@ -499,6 +503,26 @@ impl Remote {
             .map_or(Status::Idle, |host| *host.status().borrow())
     }
 
+    /// How the link to a paired host reaches it, while one is up.
+    pub(crate) fn host_path(&self, id: &DeviceId) -> Option<LinkPath> {
+        self.connections.get(id).and_then(|host| host.path())
+    }
+
+    /// A paired host's link state for display: the path it takes while
+    /// connected, otherwise the status.
+    pub(crate) fn host_link_text(&self, id: &DeviceId) -> SharedString {
+        let status = self.host_status(id);
+
+        match (status, self.host_path(id)) {
+            (Status::Connected, Some(path)) => {
+                let path = link_path_text(&path);
+
+                t!("remote-link-connected", path = path.as_str()).into()
+            }
+            _ => status_text(status),
+        }
+    }
+
     /// Other computers announcing themselves on the LAN.
     pub(crate) fn nearby_hosts(&self) -> Nearby {
         match self.browse {
@@ -545,6 +569,7 @@ impl Remote {
                 offers: self.host_offers(&host.id).cloned(),
                 selected: None,
                 followed: Vec::new(),
+                link: self.host_link_text(&host.id),
             })
             .collect()
     }
@@ -565,6 +590,27 @@ impl Remote {
         self.busy = false;
         self.status = result.err().map(|error| format!("{error:#}").into());
     }
+}
+
+fn status_text(status: Status) -> SharedString {
+    match status {
+        Status::Idle => t!("settings-remote-status-idle"),
+        Status::Connecting => t!("settings-remote-status-connecting"),
+        Status::Connected => t!("settings-remote-status-connected"),
+        Status::Reconnecting => t!("settings-remote-status-reconnecting"),
+        Status::Refused => t!("settings-remote-status-refused"),
+        Status::Unreachable => t!("settings-remote-status-unreachable"),
+    }
+    .into()
+}
+
+fn link_path_text(path: &LinkPath) -> String {
+    match path {
+        LinkPath::Lan(address) => t!("remote-link-lan", address = address.as_str()),
+        LinkPath::Relay => t!("remote-link-relay"),
+        LinkPath::Direct(address) => t!("remote-link-direct", address = address.as_str()),
+    }
+    .into_owned()
 }
 
 /// Start or stop accepting paired devices. Stopping ends the terminals they

@@ -14,7 +14,6 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 use gpui_component::{
     ActiveTheme as _, AxisExt as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
-use nmt_remote::connection::Status;
 use nmt_remote::discovery::NearbyHost;
 use nmt_remote::presence::Presence;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
@@ -794,13 +793,18 @@ fn host_item(host: PairedHost) -> SettingItem {
         let forget_host = host.clone();
         let rename_host = host.clone();
 
-        let status = match cx.global::<Remote>().host_status(&host.id) {
-            Status::Idle => t!("settings-remote-status-idle"),
-            Status::Connecting => t!("settings-remote-status-connecting"),
-            Status::Connected => t!("settings-remote-status-connected"),
-            Status::Reconnecting => t!("settings-remote-status-reconnecting"),
-            Status::Refused => t!("settings-remote-status-refused"),
-            Status::Unreachable => t!("settings-remote-status-unreachable"),
+        let remote = cx.global::<Remote>();
+
+        // A connected host shows the path its link takes, which names the
+        // address in use; the remembered LAN addresses only help to tell
+        // where a host that is not connected was last seen.
+        let status = match remote.host_path(&host.id) {
+            Some(_) => remote.host_link_text(&host.id).to_string(),
+            None => format!(
+                "{}    {}",
+                remote.host_link_text(&host.id),
+                host.lan_hints.join(", ")
+            ),
         };
 
         // A connected host's sessions are listed in the workspace sidebar,
@@ -815,7 +819,7 @@ fn host_item(host: PairedHost) -> SettingItem {
                     .flex_1()
                     .child(Label::new(host.name.clone()).text_sm())
                     .child(
-                        Label::new(format!("{status}    {}", host.lan_hints.join(", ")))
+                        Label::new(status)
                             .text_xs()
                             .text_color(cx.theme().muted_foreground),
                     ),

@@ -284,6 +284,7 @@ fn host_row(
         .pr(px(SIDEBAR_ROW_GUTTER))
         .py_0p5()
         .accessibility_label(name.clone())
+        .tooltip(host.link.clone())
         .selected(highlight)
         // Button resolves selected colors after element styles, so the
         // sidebar-accent pair must be the selected custom variant itself.
