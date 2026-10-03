@@ -13,8 +13,8 @@ use std::time::Duration;
 use std::{error, fmt};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use futures::StreamExt as _;
 use futures::stream::FuturesUnordered;
+use futures::{Sink, Stream, StreamExt as _};
 use nmt_remote_core::channel::{Channel, ClientHandshake};
 use nmt_remote_core::identity::DeviceKey;
 use nmt_remote_core::messages::{ClientHello, DeviceInfo, HostHello, PairAccepted, RelayAccess};
@@ -25,6 +25,7 @@ use parking_lot::Mutex;
 use tokio::select;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tracing::warn;
 
 use crate::discovery::{self, Target};
@@ -79,7 +80,8 @@ impl PathPolicy {
             (Self::Auto, _) | (Self::Relay, LinkPath::Relay) | (Self::Lan, LinkPath::Lan(_)) => {
                 true
             }
-            (Self::Relay, LinkPath::Lan(_)) | (Self::Lan, LinkPath::Relay) => false,
+            (Self::Relay, LinkPath::Lan(_) | LinkPath::Direct(_))
+            | (Self::Lan, LinkPath::Relay | LinkPath::Direct(_)) => false,
         }
     }
 }
@@ -90,6 +92,9 @@ pub enum LinkPath {
     /// Directly, at this LAN address.
     Lan(String),
     Relay,
+    /// Over the Internet without the relay, through a hole punched in both
+    /// NATs, to this public address.
+    Direct(String),
 }
 
 /// The host completed the preface but closed instead of answering the
@@ -275,8 +280,9 @@ pub(crate) async fn establish(
     host.last_hello_ms = clock.last();
 
     let (ws, channel, host_hello, address) = result?;
+    let path = address.map_or(LinkPath::Relay, LinkPath::Lan);
 
-    Ok(finish(host, ws, channel, host_hello, address))
+    Ok(finish(host, ws, channel, host_hello, path))
 }
 
 /// Open a channel over the LAN only, for a link that runs through the relay
@@ -293,8 +299,44 @@ pub(crate) async fn establish_lan(
     host.last_hello_ms = clock.last();
 
     let (ws, channel, host_hello, address) = result?;
+    let path = address.map_or(LinkPath::Relay, LinkPath::Lan);
 
-    Ok(finish(host, ws, channel, host_hello, address))
+    Ok(finish(host, ws, channel, host_hello, path))
+}
+
+/// Open a channel over a direct connection to the host at `address`.
+/// Updates `host` as [`establish`] does.
+pub(crate) async fn establish_direct<S>(
+    host: &mut PairedHost,
+    key: &DeviceKey,
+    app_version: &str,
+    ws: S,
+    address: SocketAddr,
+) -> Result<(S, Channel, LinkPath)>
+where
+    S: Stream<Item = Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
+{
+    let clock = HelloClock(Mutex::new(host.last_hello_ms));
+    let hello = hello(app_version, &clock);
+
+    let result = timeout(
+        CONNECT_TIMEOUT,
+        channel_handshake(ws, key, &host.public_key, &hello),
+    )
+    .await
+    .map_err(|_| anyhow!("the direct handshake timed out"));
+
+    host.last_hello_ms = clock.last();
+
+    let (ws, channel, host_hello) = result??;
+
+    Ok(finish(
+        host,
+        ws,
+        channel,
+        host_hello,
+        LinkPath::Direct(address.to_string()),
+    ))
 }
 
 /// Open a channel through the host's relay.
@@ -319,19 +361,22 @@ async fn relay_path(
 }
 
 /// Record what a handshake taught about the host, and say how it went.
-fn finish(
+fn finish<S>(
     host: &mut PairedHost,
-    ws: RelaySocket,
+    ws: S,
     channel: Channel,
     host_hello: HostHello,
-    address: Option<String>,
-) -> (RelaySocket, Channel, LinkPath) {
-    host.lan_hints = merge_lan_hints(&host_hello.lan_hints, address.as_deref(), &host.lan_hints);
+    path: LinkPath,
+) -> (S, Channel, LinkPath) {
+    let working = match &path {
+        LinkPath::Lan(address) => Some(address.as_str()),
+        LinkPath::Relay | LinkPath::Direct(_) => None,
+    };
+
+    host.lan_hints = merge_lan_hints(&host_hello.lan_hints, working, &host.lan_hints);
 
     host.name = host_hello.name;
     host.last_seen = now_ms();
-
-    let path = address.map_or(LinkPath::Relay, LinkPath::Lan);
 
     (ws, channel, path)
 }
@@ -506,12 +551,15 @@ fn hello(app_version: &str, clock: &HelloClock) -> ClientHello {
 }
 
 /// Run the channel handshake over an open socket.
-async fn channel_handshake(
-    mut ws: RelaySocket,
+async fn channel_handshake<S>(
+    mut ws: S,
     key: &DeviceKey,
     host_key: &[u8; 32],
     hello: &ClientHello,
-) -> Result<(RelaySocket, Channel, HostHello)> {
+) -> Result<(S, Channel, HostHello)>
+where
+    S: Stream<Item = Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
+{
     let (offer, answer) = negotiate(&mut ws, PrefaceKind::Channel).await?;
     let (handshake, msg1) = ClientHandshake::start(key, host_key, &offer, &answer, hello)?;
 
@@ -532,7 +580,10 @@ async fn connect_lan(address: &str) -> Result<RelaySocket> {
 }
 
 /// Agree on a protocol major with the host.
-async fn negotiate(ws: &mut RelaySocket, kind: PrefaceKind) -> Result<(Preface, Preface)> {
+async fn negotiate<S>(ws: &mut S, kind: PrefaceKind) -> Result<(Preface, Preface)>
+where
+    S: Stream<Item = Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
+{
     let offer = Preface::offer(kind);
 
     send_binary(ws, offer.encode().to_vec()).await?;

@@ -7,6 +7,7 @@
 //! link this crate.
 
 pub mod channel;
+pub mod direct;
 pub mod frame;
 pub mod identity;
 pub mod messages;
@@ -20,6 +21,8 @@ mod noise;
 
 #[cfg(test)]
 mod channel_tests;
+#[cfg(test)]
+mod direct_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]

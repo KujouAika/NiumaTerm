@@ -187,6 +187,7 @@ struct Host: Identifiable {
         switch link {
         case .lan: tr("LAN")
         case .relay: tr("Relay")
+        case .direct: tr("Direct")
         case nil: nil
         }
     }

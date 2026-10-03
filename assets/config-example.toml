@@ -100,3 +100,4 @@ device-name = ""
 relay-url = ""
 lan-announce = false
 lan-browse = false
+stun-servers = []

@@ -631,6 +631,7 @@ fn start_host(relay: Option<RelayAccess>, cx: &mut App) -> Result<HostService> {
             on_change: Arc::new(move || {
                 let _ = changed.send(());
             }),
+            stun_servers: config.remote.stun_servers.clone(),
         },
     )
 }
@@ -1375,6 +1376,14 @@ fn connection(id: &DeviceId, cx: &mut App) -> Result<Arc<RemoteHost>> {
         move |record| {
             let _ = updates.send(record);
         },
+    );
+
+    connection.set_stun_servers(
+        cx.global::<AppSettings>()
+            .config()
+            .remote
+            .stun_servers
+            .clone(),
     );
 
     // The settings page shows each host's link state and the sidebar its

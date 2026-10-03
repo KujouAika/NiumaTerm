@@ -21,7 +21,7 @@ operations.
 | Pairing | 8-character one-time code. SPAKE2 turns it into a strong key; `Noise_XXpsk3` exchanges static keys under that key. |
 | Channel | `Noise_IK_25519_ChaChaPoly_BLAKE2s` on every connection, LAN or relay. |
 | LAN | WebSocket over TCP, discovered through DNS-SD. |
-| Internet | User-deployed Cloudflare Worker + Durable Object relay that forwards opaque frames. |
+| Internet | User-deployed Cloudflare Worker + Durable Object relay that forwards opaque frames. A link on the relay then tries a direct QUIC path through UDP hole punching. |
 | Terminal | The host PTY and host VT engine stay authoritative. The client runs its own engine, fed a VT checkpoint followed by the live byte stream. |
 | Agent | The host owns the provider process and `SessionController`. Clients render a replicated view (snapshot + revisioned operations) and send typed commands. |
 | Mobile | A sans-IO protocol core crate that iOS and Android can link. Pairing link, device kinds, and feature negotiation are defined now. |
@@ -45,7 +45,8 @@ Non-goals for v1:
 - Linux. v1 hosts and clients are Windows and macOS; Linux later needs its own
   secret storage (Secret Service) and firewall notes.
 - A relay operated by the project. Users deploy their own (§8.2).
-- Direct Internet peer-to-peer (UDP hole punching). Non-LAN traffic uses the
+- Relaying UDP through a TURN server. A direct path (§8.4) is tried when a
+  link runs through the relay; when hole punching fails, traffic stays on the
   relay.
 - A headless host daemon. The host is a running NiumaTerm application.
 - Permission levels. Every paired device is a full operator. The pairing record
@@ -381,6 +382,84 @@ Operational notes:
   at once when the OS reports a network change or a remote tab gains focus.
 - One channel per host, shared by every remote tab for that host. It opens on
   demand and closes 60 s after the last remote tab for that host closes.
+- A channel through the relay tries a direct path (§8.4) 3 s after it opens,
+  again every 5 minutes while it stays on the relay, and at once after a
+  network change. It keeps trying the LAN on its own schedule; whichever path
+  answers first replaces the relay channel.
+
+### 8.4 Direct path
+
+A Worker cannot send or receive UDP, and it does not see the source port of
+a client, so it cannot act as a STUN server. It is not needed for one either:
+signaling runs as a request on the relay channel that is already open, end
+to end encrypted, so the relay never sees the candidate addresses.
+
+Field data from two Windows machines in mainland China, 2026-10-03, with one
+UDP socket querying five STUN servers:
+
+| Machine | Mapping | Observed |
+| --- | --- | --- |
+| Home broadband | Endpoint-independent (cone), port preserved | One address, `36.27.34.192:<local port>`, from every server |
+| Office network | Address-dependent (symmetric), random ports | A new port per server, and two egress addresses: one for servers in China, another for servers abroad |
+
+A test with the home machine waiting and the office machine sending connected
+once the home machine's Windows Firewall admitted the port: the home router
+admitted packets from a port the home machine had never sent to, so it does
+not filter by port. Without the firewall rule nothing arrived. The installed
+`NiumaTerm.exe` already has the inbound rule that Windows created when the
+LAN listener first started (TCP and UDP, any port), so the application needs
+no extra rule.
+
+Consequences for the design:
+
+- Candidates come from STUN servers in the same region as the peer. A
+  server abroad reports the office network's foreign egress address, which a
+  peer in China never sees. The built-in list puts servers in mainland China
+  first and falls back to `assets/stun.txt`; `remote.stun-servers` replaces
+  it.
+- A symmetric side's ports are useless to its peer, so the symmetric side
+  dials and the other side waits. Two symmetric sides give up at once.
+
+Gathering: a fresh UDP socket per attempt sends RFC 5389 binding requests to
+eight servers of the list at once, resending after 500 ms, and collects
+answers for 1.5 s. While fewer than two servers have answered it moves on to
+the next eight, until the list ends. Names that do not resolve within 2 s
+are skipped. Every distinct mapped address becomes a candidate. When all answers share one port the side is `cone`, otherwise
+`symmetric`; fewer than two answers ends the attempt.
+
+Signaling, as `direct.offer` on the relay channel:
+
+1. The client gathers and sends `{ nat, addrs }`.
+2. The host gathers and replies `{ nat, addrs }`. Both sides pick the dialer
+   with the same rule: the symmetric side; the client when both are cone;
+   nobody when both are symmetric. The host replies only after its socket is
+   ready, and if it is the waiting side it starts punching before replying.
+3. A client that shares a public address with the host stops here: both are
+   behind one NAT, which the LAN path covers, and hairpinning is unreliable.
+4. The waiting side sends a 4-byte zero datagram to every candidate of the
+   peer every 250 ms until a connection arrives or 10 s pass. For a cone peer
+   that is its exact mapping; for a symmetric peer only the address matters,
+   which opens address-restricted NATs. A zero first byte has the QUIC fixed
+   bit clear, so the peer's QUIC endpoint drops it without answering.
+5. The dialer starts a QUIC connection to every candidate of the waiting side
+   and keeps the first that completes. Its retransmitted Initial packets open
+   its own NAT for the answers.
+
+Transport: QUIC (`quinn`) on the punched socket, with one bidirectional
+stream opened by the client, which writes first. WebSocket framing runs on
+that stream without an HTTP upgrade, so the preface, the IK handshake, and
+the channel pump are the ones LAN and relay use. Each side generates a
+self-signed certificate per attempt and sends it in its offer; the dialer
+trusts only the waiting side's certificate. Noise IK still authenticates
+both ends and encrypts everything; pinning the certificate keeps a third
+party that sees the punched port from holding the QUIC connection. The
+waiting side also refuses connections from addresses outside the peer's
+candidates. QUIC keep-alives every 10 s hold the NAT mapping open, because
+consumer NATs drop idle UDP mappings after as little as 30 s.
+
+A direct link reports its path as `Direct(<peer address>)`. It moves to the
+LAN like a relay link does, and a dropped direct link reconnects through the
+usual race of LAN and relay, which tries the direct path again afterwards.
 
 ## 9. Session protocol
 
@@ -437,6 +516,7 @@ requests and host-to-client notifications. Error codes: `not_found`,
 | `stream.close` | Detach any stream. |
 | `fs.list`, `fs.complete` | Host directory listing and path completion for workspace pickers and `@` mentions. |
 | `blob.put`, `blob.get` | Chunked upload and download by SHA-256, for images. |
+| `direct.offer` | Exchange STUN candidates and NAT kinds to open a direct path (§8.4). |
 
 Notifications: `sessions.changed`, `host.goodbye { reason }`.
 
@@ -780,6 +860,7 @@ New `[remote]` keys, appended to the config:
 | `relay-url` | empty | The user's own relay; empty disables relay hosting |
 | `lan-port` | `47470` | LAN listener port |
 | `device-name` | computer name | Name shown to peers |
+| `stun-servers` | empty | `host:port` STUN servers for the direct path; empty uses the built-in list |
 
 The relay access key and the relay token are secrets and live in secret
 storage beside the device key, not in the TOML file.
@@ -872,8 +953,8 @@ reconnecting forever.
 
 | Path | Contents |
 | --- | --- |
-| `crates/remote_core` (`nmt_remote_core`) | Sans-IO: identity, pairing code and link, SPAKE2 + Noise pairing, Noise IK channel, frames, protocol types. |
-| `crates/remote` (`nmt_remote`) | tokio: LAN listener and dialer, DNS-SD, relay links, host service, connection manager, trust store, secret storage. |
+| `crates/remote_core` (`nmt_remote_core`) | Sans-IO: identity, pairing code and link, SPAKE2 + Noise pairing, Noise IK channel, frames, protocol types, STUN messages and the direct path's dialer rule. |
+| `crates/remote` (`nmt_remote`) | tokio: LAN listener and dialer, DNS-SD, relay links, direct path over QUIC, host service, connection manager, trust store, secret storage. |
 | `crates/terminal` | Subscriber list with atomic checkpoint, full-extras VT checkpoint, remote-session engine options. |
 | `crates/agent` | `AgentView`, `AgentCommand`, projection. |
 | `crates/app/src/remote/` | Settings page, pairing dialogs, sidebar hosts, `NetworkPty`, remote tabs, host-side session bridging. |
@@ -943,7 +1024,7 @@ Settled on 2026-09-26:
 
 ## 21. Implementation status
 
-Updated 2026-09-28.
+Updated 2026-10-03.
 
 | Milestone | State |
 | --- | --- |
@@ -1050,3 +1131,31 @@ Closed after M6: on Windows, clients hear about IP address changes. A
 waiting client retries at once, and a connected one probes its link with
 a single ping that closes it after 5 s without an answer, instead of
 waiting out the 30 s idle timer and two missed probes.
+
+Added 2026-10-03, the direct path of §8.4:
+
+- `direct.offer` on the relay channel, STUN gathering with the built-in
+  list or `remote.stun-servers`, the dialer rule, punching, and QUIC with
+  WebSocket framing on one stream. A relay link tries it 3 s after it
+  opens, every 5 minutes after a failure, and at once after a network
+  change; `LinkPath::Direct` reports the new path, and mobile clients show
+  it as "Direct".
+- Loopback tests run gathering against local STUN servers, one of which
+  reports skewed ports to stand in for a symmetric NAT, and connect both
+  ways: a client dialing a waiting host, and a symmetric host dialing a
+  waiting client.
+- Verified between the two machines of §8.4: the home client connected
+  through the relay, and 6 s later its link moved to
+  `Direct("115.236.119.139:45652")`, the office host's per-destination
+  port, so the symmetric host dialed and the cone client waited. The
+  direct link stayed up while the LAN attempt beside it timed out.
+
+Known gaps in the direct path:
+
+- A Windows client that never hosted has no firewall rule for inbound UDP.
+  When the host is the symmetric side, the client waits for the host's
+  packets and Windows Firewall drops them, so that pair stays on the relay.
+- STUN servers are asked over IPv4 only, so two machines that both have
+  public IPv6 addresses still go through NAT traversal.
+- A change to `remote.stun-servers` reaches the host service on its next
+  start and a client connection when it is created.

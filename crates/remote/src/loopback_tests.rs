@@ -88,6 +88,7 @@ fn start_host_with_relay(
             relay,
             announce: true,
             on_change: Arc::new(|| {}),
+            stun_servers: Vec::new(),
         },
     )
     .unwrap()

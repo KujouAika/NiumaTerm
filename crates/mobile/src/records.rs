@@ -51,6 +51,9 @@ pub enum HostLink {
     /// Directly, over the local network.
     Lan,
     Relay,
+    /// Over the Internet without the relay, through a hole punched in both
+    /// NATs.
+    Direct,
 }
 
 impl From<&LinkPath> for HostLink {
@@ -58,6 +61,7 @@ impl From<&LinkPath> for HostLink {
         match path {
             LinkPath::Lan(_) => Self::Lan,
             LinkPath::Relay => Self::Relay,
+            LinkPath::Direct(_) => Self::Direct,
         }
     }
 }

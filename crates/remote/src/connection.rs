@@ -11,7 +11,9 @@
 //!
 //! A link through the relay keeps trying the host's LAN addresses in the
 //! background, and moves to the LAN once one answers: a phone paired while
-//! away goes direct when it comes home, without waiting for a reconnect.
+//! away goes direct when it comes home, without waiting for a reconnect. It
+//! also tries a direct path through both NATs, signaled over the relay link
+//! itself, and moves to that when it opens.
 
 use std::collections::HashMap;
 use std::mem;
@@ -24,6 +26,7 @@ use futures::FutureExt as _;
 use getrandom::fill;
 use nmt_platform::runtime;
 use nmt_remote_core::channel::Channel;
+use nmt_remote_core::direct::{DirectOffer, Side};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::push::{PUSH_REGISTER, PUSH_UNREGISTER, PushRegistration};
@@ -43,12 +46,11 @@ use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 use tracing::{debug, info};
 
-use crate::client::{LinkPath, PathPolicy, Refused, establish, establish_lan};
-use crate::link::{Outbound, SendQueue, pump};
-use crate::netwatch;
+use crate::client::{LinkPath, PathPolicy, Refused, establish, establish_direct, establish_lan};
+use crate::link::{BoxSocket, Outbound, SendQueue, pump};
 use crate::network_pty::NetworkPty;
-use crate::relay::RelaySocket;
 use crate::store::PairedHost;
+use crate::{direct, netwatch};
 
 const MIN_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -73,6 +75,23 @@ const LAN_RETRY: Duration = Duration::from_secs(2 * 60);
 /// finish before replacing it. Moving would fail them, and the new channel
 /// cannot idle much longer before the host's liveness probes give up on it.
 const UPGRADE_WAIT: Duration = Duration::from_secs(10);
+
+/// A link that came up through the relay tries a direct path this soon.
+/// Gathering and punching take a few seconds and run beside the relay, so
+/// there is no reason to wait longer.
+const FIRST_DIRECT_ATTEMPT: Duration = Duration::from_secs(3);
+
+/// And again this often while it stays on the relay. NAT kinds rarely
+/// change on one network, so a failed attempt is unlikely to succeed sooner;
+/// a network change retries at once.
+const DIRECT_RETRY: Duration = Duration::from_secs(5 * 60);
+
+/// The most one direct attempt may take: gathering, the offer's round trip
+/// through the relay, the QUIC connection, and the channel handshake. On a
+/// network that blocks most STUN servers, gathering walks the whole list on
+/// both sides, a few seconds per batch; the relay link stays in use
+/// meanwhile, so a slow attempt costs nothing.
+const DIRECT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -198,12 +217,15 @@ pub struct RemoteHost {
     /// Which paths links may take. A link on a path the policy no longer
     /// allows closes, and the next one follows the new policy.
     policy: watch::Sender<PathPolicy>,
+
+    /// The STUN servers direct attempts ask; empty uses the built-in list.
+    stun_servers: Mutex<Vec<String>>,
 }
 
-/// A LAN channel opened while the link ran through the relay, with the host
-/// record its handshake updated.
+/// A LAN or direct channel opened while the link ran through the relay, with
+/// the host record its handshake updated.
 struct Upgrade {
-    ws: RelaySocket,
+    ws: BoxSocket,
     channel: Channel,
     path: LinkPath,
     record: PairedHost,
@@ -215,11 +237,11 @@ enum LinkEnd {
     Moved(Box<Upgrade>),
 }
 
-/// A LAN channel being opened in the background. Dropping it stops the
-/// attempt, as when the link it would replace closes first.
-struct LanAttempt(JoinHandle<Result<Upgrade>>);
+/// A LAN or direct channel being opened in the background. Dropping it stops
+/// the attempt, as when the link it would replace closes first.
+struct Attempt(JoinHandle<Result<Upgrade>>);
 
-impl Drop for LanAttempt {
+impl Drop for Attempt {
     fn drop(&mut self) {
         self.0.abort();
     }
@@ -294,6 +316,7 @@ impl RemoteHost {
             supervisor: Mutex::new(None),
             path: Mutex::new(None),
             policy: watch::channel(PathPolicy::Auto).0,
+            stun_servers: Mutex::new(Vec::new()),
         });
 
         let task = runtime().spawn(Arc::clone(&host).supervise());
@@ -330,6 +353,12 @@ impl RemoteHost {
         if *self.status.borrow() == Status::Unreachable {
             self.wake.notify_one();
         }
+    }
+
+    /// Set the STUN servers later direct attempts ask, as `host:port`;
+    /// empty uses the built-in list.
+    pub fn set_stun_servers(&self, servers: Vec<String>) {
+        *self.stun_servers.lock() = servers;
     }
 
     pub fn status(&self) -> watch::Receiver<Status> {
@@ -717,6 +746,19 @@ impl RemoteHost {
         params: &impl Serialize,
     ) -> Result<Result<Value, RpcError>> {
         let link = self.wait_for_link().await?;
+
+        self.call_on(&link, method, params).await
+    }
+
+    /// Send a request on `link` and wait for its answer. A request that
+    /// belongs to one channel, as signaling for a direct path does, fails
+    /// with it instead of moving to the next link.
+    async fn call_on(
+        &self,
+        link: &Link,
+        method: &str,
+        params: &impl Serialize,
+    ) -> Result<Result<Value, RpcError>> {
         let (reply, response) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
@@ -728,7 +770,7 @@ impl RemoteHost {
             },
         );
 
-        send_request(&link, id, method, params)?;
+        send_request(link, id, method, params)?;
 
         response.await.map_err(|_| anyhow!("the connection closed"))
     }
@@ -824,8 +866,8 @@ impl RemoteHost {
         let mut ever_connected = false;
         let mut network = netwatch::changes();
 
-        // A LAN channel the last link opened to move to, used instead of
-        // connecting anew.
+        // A LAN or direct channel the last link opened to move to, used
+        // instead of connecting anew.
         let mut moved: Option<Box<Upgrade>> = None;
 
         loop {
@@ -873,7 +915,7 @@ impl RemoteHost {
                     };
 
                     match result {
-                        Ok(established) => {
+                        Ok((ws, channel, path)) => {
                             *self.record.lock() = record.clone();
 
                             (self.on_record)(record);
@@ -882,7 +924,7 @@ impl RemoteHost {
                             failures = 0;
                             ever_connected = true;
 
-                            established
+                            (Box::new(ws) as BoxSocket, channel, path)
                         }
                         Err(error) if error.is::<Refused>() => {
                             self.status.send_replace(Status::Refused);
@@ -1016,7 +1058,7 @@ impl RemoteHost {
             match end {
                 LinkEnd::Closed => info!(host = %self.id, "the remote host link closed"),
                 LinkEnd::Moved(upgrade) => {
-                    info!(host = %self.id, "moving the remote host link to the LAN");
+                    info!(host = %self.id, path = ?upgrade.path, "moving the remote host link");
 
                     moved = Some(upgrade);
                 }
@@ -1028,13 +1070,14 @@ impl RemoteHost {
     /// network change probes the link, which closes it if it no longer
     /// reaches the host.
     ///
-    /// Under [`PathPolicy::Auto`], a link through the relay also tries the
-    /// LAN now and then, and a network change tries it at once; once a LAN
-    /// channel is up and no request is waiting on this link, it ends with
-    /// that channel to move to. A policy change that rules out the link's
-    /// path closes it.
+    /// Under [`PathPolicy::Auto`], a link that is not on the LAN also tries
+    /// the LAN now and then, a link through the relay tries a direct path,
+    /// and a network change tries both at once. Once a channel is up on
+    /// either and no request is waiting on this link, it ends with that
+    /// channel to move to. A policy change that rules out the link's path
+    /// closes it.
     async fn dispatch(
-        &self,
+        self: &Arc<Self>,
         link: &Link,
         mut inbound: UnboundedReceiver<FrameMessage>,
         network: &mut watch::Receiver<u64>,
@@ -1053,12 +1096,17 @@ impl RemoteHost {
             return LinkEnd::Closed;
         }
 
-        let mut upgrading = on_relay && current == PathPolicy::Auto;
+        let on_lan = matches!(path, LinkPath::Lan(_));
+
+        let mut upgrading = !on_lan && current == PathPolicy::Auto;
+        let mut going_direct = on_relay && current == PathPolicy::Auto;
 
         let mut idle_since: Option<Instant> = None;
 
         let mut next_attempt = Instant::now() + FIRST_LAN_ATTEMPT;
-        let mut attempt: Option<LanAttempt> = None;
+        let mut attempt: Option<Attempt> = None;
+        let mut next_direct = Instant::now() + FIRST_DIRECT_ATTEMPT;
+        let mut direct: Option<Attempt> = None;
         let mut ready: Option<(Box<Upgrade>, Instant)> = None;
 
         loop {
@@ -1072,10 +1120,12 @@ impl RemoteHost {
                 if since.elapsed() >= UPGRADE_WAIT {
                     ready = None;
                     next_attempt = Instant::now() + LAN_RETRY;
+                    next_direct = Instant::now() + DIRECT_RETRY;
                 }
             }
 
             let due = upgrading && attempt.is_none() && ready.is_none();
+            let direct_due = going_direct && direct.is_none() && ready.is_none();
 
             let message = select! {
                 message = inbound.recv() => message,
@@ -1090,10 +1140,12 @@ impl RemoteHost {
 
                     // Dropping a pending attempt stops it, and a channel
                     // already open closes unused.
-                    upgrading = on_relay && current == PathPolicy::Auto;
+                    upgrading = !on_lan && current == PathPolicy::Auto;
+                    going_direct = on_relay && current == PathPolicy::Auto;
 
                     if !upgrading {
                         attempt = None;
+                        direct = None;
                         ready = None;
                     }
 
@@ -1103,14 +1155,41 @@ impl RemoteHost {
                 Ok(()) = network.changed() => {
                     probe.notify_one();
 
-                    // The new network may be the host's.
+                    // The new network may be the host's, or its NAT may
+                    // admit a direct path.
                     next_attempt = Instant::now();
+                    next_direct = Instant::now();
 
                     continue;
                 }
 
                 () = sleep_until(next_attempt), if due => {
                     attempt = Some(self.try_lan());
+
+                    continue;
+                }
+
+                () = sleep_until(next_direct), if direct_due => {
+                    direct = Some(self.try_direct(link));
+
+                    continue;
+                }
+
+                result = async { (&mut direct.as_mut().expect("guarded").0).await }, if direct.is_some() => {
+                    direct = None;
+
+                    match result {
+                        Ok(Ok(upgrade)) if ready.is_none() => {
+                            ready = Some((Box::new(upgrade), Instant::now()));
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            debug!(host = %self.id, %error, "no direct path to the host");
+
+                            next_direct = Instant::now() + DIRECT_RETRY;
+                        }
+                        Err(_) => next_direct = Instant::now() + DIRECT_RETRY,
+                    }
 
                     continue;
                 }
@@ -1155,21 +1234,68 @@ impl RemoteHost {
 
     /// Open a LAN channel to the host in the background, from a copy of the
     /// host record that the handshake updates.
-    fn try_lan(&self) -> LanAttempt {
+    fn try_lan(&self) -> Attempt {
         let mut record = self.record.lock().clone();
 
         let key = Arc::clone(&self.key);
         let app_version = self.app_version.clone();
 
-        LanAttempt(runtime().spawn(async move {
+        Attempt(runtime().spawn(async move {
             let (ws, channel, path) = establish_lan(&mut record, &key, &app_version).await?;
 
             Ok(Upgrade {
-                ws,
+                ws: Box::new(ws),
                 channel,
                 path,
                 record,
             })
+        }))
+    }
+
+    /// Open a direct channel to the host in the background: gather STUN
+    /// candidates, trade them with the host over `link`, then connect and
+    /// run the channel handshake on the new path.
+    fn try_direct(self: &Arc<Self>, link: &Link) -> Attempt {
+        let host = Arc::clone(self);
+        let link = link.clone();
+        let servers = direct::stun_servers(&self.stun_servers.lock());
+
+        Attempt(runtime().spawn(async move {
+            let attempt = async {
+                let gathered = direct::gather(&servers).await?;
+
+                let answer = host
+                    .call_on(&link, rpc::DIRECT_OFFER, &gathered.offer())
+                    .await?
+                    .map_err(|error| anyhow!("{}: {}", rpc::DIRECT_OFFER, error.message))?;
+
+                let answer: DirectOffer = serde_json::from_value(answer)?;
+
+                if gathered.same_nat(&answer) {
+                    return Err(anyhow!("the host is behind the same NAT"));
+                }
+
+                let (ws, address) = direct::prepare(gathered, &answer, Side::Client)?
+                    .connect()
+                    .await?;
+
+                let mut record = host.record.lock().clone();
+
+                let (ws, channel, path) =
+                    establish_direct(&mut record, &host.key, &host.app_version, ws, address)
+                        .await?;
+
+                Ok(Upgrade {
+                    ws: Box::new(ws),
+                    channel,
+                    path,
+                    record,
+                })
+            };
+
+            timeout(DIRECT_TIMEOUT, attempt)
+                .await
+                .unwrap_or_else(|_| Err(anyhow!("the direct attempt timed out")))
         }))
     }
 

@@ -32,6 +32,8 @@ nmt_remote_core.workspace = true
 nmt_terminal = { workspace = true, optional = true }
 nmt_net.workspace = true
 parking_lot.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
 reqwest = { workspace = true, optional = true, features = [
     "rustls-tls-native-roots",
     "system-proxy",

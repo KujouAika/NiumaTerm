@@ -102,6 +102,21 @@ impl SendQueue {
     }
 }
 
+/// A WebSocket on any transport: TCP on the LAN, TLS to the relay, or a
+/// QUIC stream on the direct path. A client link switches between them, so
+/// it keeps the socket boxed.
+pub(crate) trait MessageSocket:
+    Stream<Item = Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin + Send
+{
+}
+
+impl<T> MessageSocket for T where
+    T: Stream<Item = Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin + Send
+{
+}
+
+pub(crate) type BoxSocket = Box<dyn MessageSocket>;
+
 pub(crate) async fn recv_binary<S>(ws: &mut S) -> Result<Vec<u8>>
 where
     S: Stream<Item = Result<Message, WsError>> + Unpin,

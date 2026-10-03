@@ -15,10 +15,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use futures::{Sink, Stream};
 use nmt_platform::runtime;
 use nmt_remote_core::channel::{Channel, HostHandshake};
+use nmt_remote_core::direct::{DirectOffer, Side};
 use nmt_remote_core::frame::{CONTROL_STREAM, Message as FrameMessage, kind};
 use nmt_remote_core::identity::{DeviceId, DeviceKey};
 use nmt_remote_core::messages::{
@@ -52,6 +53,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tracing::{debug, info, warn};
 
+use crate::direct;
 use crate::discovery::Advertiser;
 use crate::lan::lan_addresses;
 use crate::link::{Outbound, SendQueue, pump, recv_binary, send_binary};
@@ -107,6 +109,10 @@ pub struct HostConfig {
     /// Runs on a runtime thread after pairing records change and when a
     /// device's presence changes, so a view that lists them can refresh.
     pub on_change: Arc<dyn Fn() + Send + Sync>,
+
+    /// STUN servers for direct paths to devices on the relay, as
+    /// `host:port`; empty uses the built-in list.
+    pub stun_servers: Vec<String>,
 }
 
 /// A running host. Dropping it stops listening, closes every channel, and
@@ -621,6 +627,9 @@ impl Connection {
                 {
                     self.agent_request(id, &method, params);
                 }
+                Ok(Control::Request { id, method, params }) if method == rpc::DIRECT_OFFER => {
+                    self.direct_offer(id, params);
+                }
                 Ok(Control::Request { id, method, params }) => {
                     if method == rpc::TERMINAL_ATTACH
                         && let Ok(SessionRef { session }) = parse(params.clone())
@@ -709,6 +718,76 @@ impl Connection {
             };
 
             respond(&queue, id, outcome);
+        });
+    }
+
+    /// Answer a device's direct path offer with this host's candidates, then
+    /// connect and serve the new path as one more connection. The reply
+    /// waits until this side's endpoint is up, so a device that dials finds
+    /// this side punching already.
+    fn direct_offer(&self, id: u64, params: Value) {
+        let offer: DirectOffer = match parse(params) {
+            Ok(offer) => offer,
+            Err(error) => return respond(&self.queue, id, Err(error)),
+        };
+
+        // The direct connection counts against the same limit as LAN
+        // sockets until its handshake completes.
+        let Ok(permit) = Arc::clone(&self.shared.unauthenticated).try_acquire_owned() else {
+            return respond(
+                &self.queue,
+                id,
+                Err(RpcError::new(
+                    ErrorCode::Busy,
+                    "too many pending handshakes",
+                )),
+            );
+        };
+
+        let shared = Arc::clone(&self.shared);
+        let queue = self.queue.clone();
+
+        tokio::spawn(async move {
+            let servers = direct::stun_servers(&shared.config.stun_servers);
+
+            let gathered = match direct::gather(&servers).await {
+                Ok(gathered) => gathered,
+                Err(error) => {
+                    let error = RpcError::new(ErrorCode::Unsupported, error.to_string());
+
+                    return respond(&queue, id, Err(error));
+                }
+            };
+
+            let answer = gathered.offer();
+
+            // The device applies the same checks to the same two offers, so
+            // a pair that cannot meet stops on both sides here.
+            let prepared = if gathered.same_nat(&offer) {
+                Err(anyhow!("the device is behind the same NAT"))
+            } else {
+                direct::prepare(gathered, &offer, Side::Host)
+            };
+
+            respond(&queue, id, reply(&answer));
+
+            let connected = match prepared {
+                Ok(prepared) => prepared.connect().await,
+                Err(error) => Err(error),
+            };
+
+            let ws = match connected {
+                Ok((ws, _)) => ws,
+                Err(error) => {
+                    debug!(%error, "no direct path to the device");
+
+                    return;
+                }
+            };
+
+            if let Err(error) = serve_ws(shared, ws, permit).await {
+                debug!(%error, "direct connection ended");
+            }
         });
     }
 

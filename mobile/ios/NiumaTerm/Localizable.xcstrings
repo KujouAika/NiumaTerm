@@ -645,6 +645,16 @@
         }
       }
     },
+    "Direct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直连"
+          }
+        }
+      }
+    },
     "Done": {
       "localizations": {
         "zh-Hans": {

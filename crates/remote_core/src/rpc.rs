@@ -70,6 +70,11 @@ pub const HOST_RENAME: &str = "host.rename";
 /// read it from the next handshake's `HostHello` instead.
 pub const HOST_RENAMED: &str = "host.renamed";
 
+/// Exchange STUN candidates on a relay channel to open a direct path. The
+/// client sends a `DirectOffer` and the host answers with its own; hosts
+/// from before this method answer `unsupported`.
+pub const DIRECT_OFFER: &str = "direct.offer";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Request {

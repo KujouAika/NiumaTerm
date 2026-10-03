@@ -24,6 +24,11 @@ pub struct RemoteConfig {
 
     /// Browse the LAN for other hosts to list in settings.
     pub lan_browse: bool,
+
+    /// STUN servers, as `host:port`, that direct paths to hosts and devices
+    /// on the relay ask for public addresses. Empty uses the built-in list,
+    /// which asks servers in mainland China first.
+    pub stun_servers: Vec<String>,
 }
 
 impl Default for RemoteConfig {
@@ -35,6 +40,7 @@ impl Default for RemoteConfig {
             relay_url: String::new(),
             lan_announce: false,
             lan_browse: false,
+            stun_servers: Vec::new(),
         }
     }
 }

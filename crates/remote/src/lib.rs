@@ -21,6 +21,7 @@ pub mod presence;
 pub mod sessions;
 pub mod store;
 
+mod direct;
 mod link;
 mod netwatch;
 mod network_pty;
@@ -35,6 +36,8 @@ mod stream;
 
 #[cfg(test)]
 mod client_tests;
+#[cfg(test)]
+mod direct_tests;
 #[cfg(test)]
 #[cfg(feature = "lan")]
 mod lan_tests;
