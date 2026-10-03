@@ -12,6 +12,7 @@ pub mod compose;
 pub mod definition;
 pub mod graph;
 pub mod library;
+pub mod placement;
 pub mod run;
 pub mod schedule;
 pub mod store;

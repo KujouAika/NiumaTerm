@@ -6,6 +6,7 @@
 //! misspelled key would otherwise be ignored, and a credential or endpoint
 //! field would otherwise be accepted into a plain file.
 
+use std::collections::BTreeMap;
 use std::fmt::{self, Formatter};
 
 use serde::de::{MapAccess, Visitor};
@@ -35,6 +36,21 @@ pub struct Definition {
     pub slots: Vec<Slot>,
 
     pub nodes: Vec<Node>,
+
+    /// Canvas positions by node id. Kept apart from the nodes so a hand
+    /// written node needs no coordinates and moving a node never changes
+    /// the node's own lines. Validation, scheduling and prompts ignore it,
+    /// and an entry for an id that is not a node is ignored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layout: BTreeMap<String, Position>,
+}
+
+/// A node's place on the canvas, in logical pixels at 100% zoom.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Position {
+    pub x: f32,
+    pub y: f32,
 }
 
 /// One agent conversation that nodes are sent to, in file order.

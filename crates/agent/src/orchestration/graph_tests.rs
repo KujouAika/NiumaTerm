@@ -279,3 +279,31 @@ fn a_slot_needs_a_name() {
         [DefinitionError::EmptySlotName]
     );
 }
+
+#[test]
+fn layout_is_optional_and_ignored_by_validation() {
+    let source = json!({
+        "version": 1,
+        "slots": { "dev": slot() },
+        "nodes": [{ "id": "plan", "slot": "dev" }],
+        "layout": {
+            "plan": { "x": 40.0, "y": 80.0 },
+            "draft": { "x": 0.0, "y": 0.0 },
+        },
+    });
+
+    let definition: Definition = serde_json::from_value(source).unwrap();
+
+    assert_eq!(definition.layout.len(), 2);
+    assert!(Graph::new(definition).is_ok());
+
+    let without: Definition = serde_json::from_value(json!({
+        "version": 1,
+        "slots": { "dev": slot() },
+        "nodes": [{ "id": "plan", "slot": "dev" }],
+    }))
+    .unwrap();
+
+    assert!(without.layout.is_empty());
+    assert!(!serde_json::to_string(&without).unwrap().contains("layout"));
+}
