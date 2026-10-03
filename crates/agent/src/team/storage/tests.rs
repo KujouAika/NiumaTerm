@@ -1,5 +1,6 @@
 use std::fs;
 
+use serde_json::Value;
 use tempfile::tempdir;
 
 use crate::AgentWorkspace;
@@ -17,6 +18,11 @@ use crate::team::room::Room;
 use crate::team::session::dispatch::{DispatchError, dispatch, reserve_dispatches};
 use crate::team::storage::{RoomStore, StorageError};
 use crate::team::tests::config;
+
+/// A room snapshot as the storage format wrote it before member profile,
+/// roots, settings and role were grouped into a shared type. Rooms on disk
+/// in this form must keep decoding and keep their keys when saved again.
+const ROOM_V3: &str = include_str!("../../../tests/fixtures/team/room-v3.json");
 
 #[test]
 fn restart_retains_sources_scopes_controls_pending_work_and_budget() {
@@ -493,4 +499,28 @@ fn rooms_with_retired_records_still_load() {
     let loaded: Room = serde_json::from_value(stored).unwrap();
 
     assert_eq!(loaded, room);
+}
+
+#[test]
+fn saved_rooms_keep_their_member_keys() {
+    let directory = tempdir().unwrap();
+    let saved: Value = serde_json::from_str(ROOM_V3).unwrap();
+    let id: RoomId = saved["room"]["id"].as_str().unwrap().parse().unwrap();
+    let room_directory = directory.path().join("agent-teams").join(id.to_string());
+
+    fs::create_dir_all(&room_directory).unwrap();
+    fs::write(room_directory.join("room.json"), ROOM_V3).unwrap();
+
+    let store = RoomStore::open(directory.path(), id).unwrap();
+    let members = store.room().members();
+
+    assert_eq!(members[0].role(), "Reviews the frontend.");
+    assert_eq!(members[0].provider_id(), Some("thread-alice"));
+    assert_eq!(members[0].roots().primary(), Some("C:/frontend"));
+    assert_eq!(
+        members[0].settings().model.as_deref(),
+        Some("initial-model")
+    );
+    assert!(members[1].excluded());
+    assert_eq!(serde_json::to_value(store.room()).unwrap(), saved["room"]);
 }
