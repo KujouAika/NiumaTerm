@@ -39,6 +39,7 @@ mod hook_store;
 mod json;
 mod monitor;
 mod process;
+mod snapshot_store;
 mod subprocess;
 
 #[cfg(test)]

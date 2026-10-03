@@ -104,7 +104,7 @@ fn restart_retains_sources_scopes_controls_pending_work_and_budget() {
     assert_eq!(store.room(), &room);
     assert!(RoomStore::open(directory.path(), id).is_err());
 
-    let metadata = fs::read_to_string(store.directory.join("room.json")).unwrap();
+    let metadata = fs::read_to_string(store.snapshots.directory().join("room.json")).unwrap();
 
     for forbidden_field in ["api_key", "api_base_url", "executable", "env"] {
         assert!(!metadata.contains(&format!("\"{forbidden_field}\"")));
@@ -117,7 +117,7 @@ fn invalid_or_unsupported_snapshot_preserves_saved_bytes_and_other_rooms() {
     let room = Room::new(AgentWorkspace::default());
     let id = room.id();
     let store = RoomStore::create(directory.path(), room).unwrap();
-    let path = store.directory.join("room.json");
+    let path = store.snapshots.directory().join("room.json");
     let original = fs::read(&path).unwrap();
 
     drop(store);
@@ -203,9 +203,9 @@ fn storage_failures_preserve_input_and_reservations_without_backend_dispatch() {
         snapshot: PublicSnapshot::default(),
     };
 
-    let directory_before_failure = store.directory.clone();
+    let directory_before_failure = store.snapshots.directory().to_path_buf();
 
-    store.directory = store.directory.join("missing-directory");
+    *store.snapshots.directory_mut() = directory_before_failure.join("missing-directory");
 
     let mut sends = 0;
 
@@ -227,7 +227,7 @@ fn storage_failures_preserve_input_and_reservations_without_backend_dispatch() {
         Err(StorageError::ReopenRequired)
     ));
 
-    store.directory = directory_before_failure;
+    *store.snapshots.directory_mut() = directory_before_failure;
 
     drop(store);
 
@@ -235,9 +235,9 @@ fn storage_failures_preserve_input_and_reservations_without_backend_dispatch() {
 
     let ids = reserve_dispatches(&mut store, vec![intent.clone()]).unwrap();
 
-    let directory_before_failure = store.directory.clone();
+    let directory_before_failure = store.snapshots.directory().to_path_buf();
 
-    store.directory = store.directory.join("missing-directory");
+    *store.snapshots.directory_mut() = directory_before_failure.join("missing-directory");
 
     assert!(
         dispatch(&mut store, ids[0], |_| {
@@ -255,7 +255,7 @@ fn storage_failures_preserve_input_and_reservations_without_backend_dispatch() {
         Err(StorageError::ReopenRequired)
     ));
 
-    store.directory = directory_before_failure;
+    *store.snapshots.directory_mut() = directory_before_failure;
 
     drop(store);
 
@@ -263,7 +263,7 @@ fn storage_failures_preserve_input_and_reservations_without_backend_dispatch() {
 
     assert_eq!(
         store
-            .room
+            .room()
             .budget_attempts(BudgetScope::Direct(operation))
             .count(),
         1
@@ -286,7 +286,7 @@ fn storage_failures_preserve_input_and_reservations_without_backend_dispatch() {
     assert_eq!(sends, 1);
     assert_eq!(
         store
-            .room
+            .room()
             .budget_attempts(BudgetScope::Direct(operation))
             .count(),
         1

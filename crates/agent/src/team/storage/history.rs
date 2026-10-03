@@ -6,9 +6,11 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
+use crate::snapshot_store;
 use crate::team::model::{Author, RoomId};
+use crate::team::room::Room;
 use crate::team::storage::validation::validate;
-use crate::team::storage::{ROOMS_DIRECTORY, RoomStore, Snapshot, StorageError, VERSION};
+use crate::team::storage::{FORMAT, ROOMS_DIRECTORY, RoomStore, StorageError};
 
 #[derive(Clone, Debug)]
 pub struct RoomSummary {
@@ -27,7 +29,7 @@ pub fn recent_rooms(directory: &Path) -> Result<Vec<RoomSummary>, StorageError> 
         let path = directory
             .join(ROOMS_DIRECTORY)
             .join(id.to_string())
-            .join("room.json");
+            .join(FORMAT.file);
 
         match read_summary(&path, id) {
             Ok(Some(summary)) => summaries.push(summary),
@@ -47,21 +49,13 @@ pub fn recent_rooms(directory: &Path) -> Result<Vec<RoomSummary>, StorageError> 
 }
 
 fn read_summary(path: &Path, id: RoomId) -> Result<Option<RoomSummary>, StorageError> {
-    let snapshot: Snapshot = serde_json::from_slice(&fs::read(path)?)?;
+    let (_, room): (u64, Room) = snapshot_store::read(path, &FORMAT)?;
 
-    if snapshot.version != VERSION {
-        return Err(StorageError::UnsupportedVersion(u64::from(
-            snapshot.version,
-        )));
-    }
-
-    if snapshot.room.id() != id {
+    if room.id() != id {
         return Err(StorageError::Invalid("room identity changed"));
     }
 
-    validate(&snapshot.room)?;
-
-    let room = snapshot.room;
+    validate(&room)?;
 
     if room.members.is_empty() && room.messages.is_empty() {
         return Ok(None);
