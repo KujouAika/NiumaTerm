@@ -97,6 +97,44 @@ impl Template {
             _ => None,
         })
     }
+
+    /// Point every reference to `from`'s output at `to`'s instead. Returns
+    /// whether any reference changed.
+    pub fn rename_output(&mut self, from: &str, to: &str) -> bool {
+        let mut changed = false;
+
+        for segment in &mut self.segments {
+            if let Segment::Output(node) = segment
+                && node == from
+            {
+                *node = to.to_owned();
+                changed = true;
+            }
+        }
+
+        changed
+    }
+
+    /// Source text that parses back to these segments: references in their
+    /// plain form and every literal `{{` escaped.
+    pub fn to_source(&self) -> String {
+        let mut source = String::new();
+
+        for segment in &self.segments {
+            match segment {
+                Segment::Text(text) => source.push_str(&text.replace(OPEN, ESCAPED_OPEN)),
+                Segment::Input => source.push_str("{{input}}"),
+                Segment::Output(node) => {
+                    source.push_str(OPEN);
+                    source.push_str(node);
+                    source.push_str(OUTPUT_FIELD);
+                    source.push_str(CLOSE);
+                }
+            }
+        }
+
+        source
+    }
 }
 
 fn reference(inner: &str) -> Result<Segment, TemplateError> {

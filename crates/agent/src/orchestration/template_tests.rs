@@ -64,3 +64,21 @@ fn malformed_references_are_errors() {
         );
     }
 }
+
+#[test]
+fn renaming_a_reference_keeps_escaped_text() {
+    let source = r"Plan: {{plan.output}} \{{plan.output}} {{ input }}";
+
+    let mut template = Template::parse(source).unwrap();
+
+    assert!(template.rename_output("plan", "outline"));
+    assert!(!template.rename_output("missing", "other"));
+
+    let rewritten = template.to_source();
+
+    assert_eq!(
+        rewritten,
+        r"Plan: {{outline.output}} \{{plan.output}} {{input}}"
+    );
+    assert_eq!(Template::parse(&rewritten).unwrap(), template);
+}

@@ -8,8 +8,10 @@
 //! library. Nothing here depends on GPUI, and only the store and the library
 //! touch the file system, so every rule is unit-testable.
 
+pub mod canonical;
 pub mod compose;
 pub mod definition;
+pub mod edit;
 pub mod graph;
 pub mod library;
 pub mod placement;
