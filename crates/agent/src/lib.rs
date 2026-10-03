@@ -29,6 +29,7 @@ pub mod orchestration;
 pub mod profile;
 pub mod progress;
 pub mod session;
+pub mod snapshot_store;
 pub mod team;
 pub mod transcript;
 pub mod update;
@@ -41,7 +42,6 @@ mod hook_store;
 mod json;
 mod monitor;
 mod process;
-mod snapshot_store;
 mod subprocess;
 
 #[cfg(test)]

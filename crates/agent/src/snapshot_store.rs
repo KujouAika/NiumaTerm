@@ -45,7 +45,7 @@ pub(crate) struct SnapshotFormat {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum SnapshotError {
+pub enum SnapshotError {
     #[error("snapshot storage is unavailable: {0}")]
     Io(#[from] io::Error),
     #[error("snapshot cannot be decoded: {0}")]
@@ -56,6 +56,8 @@ pub(crate) enum SnapshotError {
     Invalid(&'static str),
     #[error("reopen to reconcile a failed storage operation")]
     ReopenRequired,
+    #[error("another NiumaTerm instance has it open")]
+    Locked,
 }
 
 /// One value owned by this process and saved under `directory`.
@@ -277,7 +279,8 @@ fn lock(directory: &Path) -> Result<File, SnapshotError> {
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 thread::sleep(LOCK_RETRY_INTERVAL);
             }
-            Err(error) => return Err(io::Error::other(error).into()),
+            Err(TryLockError::WouldBlock) => return Err(SnapshotError::Locked),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
         }
     }
 }

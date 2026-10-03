@@ -50,6 +50,10 @@ impl From<SnapshotError> for StorageError {
             SnapshotError::UnsupportedVersion(version) => Self::UnsupportedVersion(version),
             SnapshotError::Invalid(reason) => Self::Invalid(reason),
             SnapshotError::ReopenRequired => Self::ReopenRequired,
+            SnapshotError::Locked => Self::Io(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "the room is open in another NiumaTerm instance",
+            )),
         }
     }
 }
