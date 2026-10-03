@@ -29,7 +29,6 @@ use nmt_agent::team::session::TeamError;
 use rust_i18n::t;
 
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
-use crate::agent_tab::team::dispatch::work_status;
 use crate::agent_tab::team::view::history::TeamHistory;
 use crate::agent_tab::team::view::membership::MemberDraft;
 use crate::agent_tab::team::view::targeting::{DiscussionTargeting, MissingAuthor};
@@ -487,7 +486,7 @@ impl TeamPane {
                 runtime
                     .hosts
                     .get(&member.id())
-                    .is_some_and(|host| work_status(host.owner.session().read(cx)).interaction)
+                    .is_some_and(|host| host.owner.session().read(cx).work_status().interaction)
             })
             .map(|member| member.name().to_owned())
     }

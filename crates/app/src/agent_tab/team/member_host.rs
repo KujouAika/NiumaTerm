@@ -5,8 +5,7 @@ use nmt_agent::chat::{TeamDecisionRequest, ThreadSettings};
 use nmt_agent::session::RecoveryIdentity;
 use nmt_agent::team::model::AttemptId;
 
-use crate::agent_tab::execution::SessionOwner;
-use crate::agent_tab::team::dispatch::{WorkStatus, work_status};
+use crate::agent_tab::execution::{SessionOwner, WorkStatus};
 
 pub(super) struct MemberHost {
     pub(super) owner: SessionOwner,
@@ -33,7 +32,8 @@ impl MemberHost {
     /// Whether the member still has Team work in flight or its session is
     /// doing anything at all, either of which rules out sending it more.
     pub(super) fn is_busy(&self, cx: &App) -> bool {
-        self.active.is_some() || work_status(self.owner.session().read(cx)) != WorkStatus::default()
+        self.active.is_some()
+            || self.owner.session().read(cx).work_status() != WorkStatus::default()
     }
 
     /// Start the member's session, resuming `recovery` when it has one.

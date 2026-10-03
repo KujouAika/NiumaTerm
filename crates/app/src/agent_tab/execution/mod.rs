@@ -238,6 +238,15 @@ pub fn install_reported_controls(saved: Vec<AgentControlsState>, cx: &mut App) {
     });
 }
 
+/// What a session is doing besides waiting for a prompt. A session doing
+/// any of it cannot take a new prompt from a Team or an orchestration run.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct WorkStatus {
+    pub(super) foreground: bool,
+    pub(super) background: usize,
+    pub(super) interaction: bool,
+}
+
 #[derive(Clone)]
 pub(super) enum ExecutionSignal {
     Accepted {
@@ -383,6 +392,20 @@ impl Drop for SessionOwner {
 }
 
 impl AgentSession {
+    pub(super) fn work_status(&self) -> WorkStatus {
+        let state = self.controller.borrow();
+
+        WorkStatus {
+            foreground: matches!(state.runtime().status(), Status::Running | Status::Starting)
+                || state
+                    .runtime()
+                    .backend()
+                    .is_some_and(|backend| backend.has_active_operation()),
+            background: state.background_activity().1,
+            interaction: state.input().waiting(),
+        }
+    }
+
     pub(super) fn create_team(
         profile: AgentProfile,
         workspace: AgentWorkspace,

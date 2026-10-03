@@ -9,9 +9,9 @@ use nmt_agent::team::model::{AttemptId, MemberId, OperationId, StageId};
 use nmt_agent::team::session::{AttemptEventKey, TeamError, TeamSession};
 use serde::Deserialize;
 
-use crate::agent_tab::execution::ExecutionSignal;
+use crate::agent_tab::execution::{ExecutionSignal, WorkStatus};
 use crate::agent_tab::team::TeamCommand;
-use crate::agent_tab::team::dispatch::{CONTEXT_LIMITS, WorkStatus, work_status};
+use crate::agent_tab::team::dispatch::CONTEXT_LIMITS;
 use crate::agent_tab::team::member_host::MemberHost;
 
 pub(super) struct MemberSnapshot {
@@ -32,7 +32,7 @@ pub(super) struct MemberSnapshot {
 impl MemberSnapshot {
     pub(super) fn capture(id: MemberId, host: &MemberHost, cx: &App) -> Self {
         let session = host.owner.session().read(cx);
-        let work = work_status(session);
+        let work = session.work_status();
         let state = session.controller.borrow();
         let epoch = state.runtime().epoch();
         let backend = state.runtime().backend();
