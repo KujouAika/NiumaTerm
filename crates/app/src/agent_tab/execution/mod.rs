@@ -1767,6 +1767,7 @@ impl AgentSession {
                 let alive = this
                     .update(cx, |this, cx| {
                         let started = Instant::now();
+                        let work = this.work_status();
 
                         let mut events = EventBatch::default();
 
@@ -1806,6 +1807,15 @@ impl AgentSession {
                         }
 
                         events.flush(|event| this.on_event(epoch, event, cx));
+
+                        // A reply can end a request without producing any
+                        // event, such as a rejected context-usage query, and
+                        // still free the session. Whoever waits for it to be
+                        // free (a Team member or an orchestration slot) only
+                        // looks again when the session notifies.
+                        if this.work_status() != work {
+                            cx.notify();
+                        }
 
                         true
                     })
