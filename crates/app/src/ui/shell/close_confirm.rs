@@ -5,8 +5,9 @@ use std::borrow::Cow;
 use std::io;
 use std::rc::Rc;
 
+use app::agent_tab::orchestration::OrchestrationPane;
 use gpui::prelude::*;
-use gpui::{Context, Entity, SharedString, Window, div};
+use gpui::{App, Context, Entity, SharedString, Task, Window, div};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{
     DIALOG_BUTTON_MIN_WIDTH, Dialog, DialogButtonProps, DialogClose, DialogFooter,
@@ -19,6 +20,7 @@ use tracing::warn;
 use crate::ui;
 use crate::ui::settings::AppSettings;
 use crate::ui::shell::AppWindow;
+use crate::ui::shell::tab_surface::TabSurface;
 use crate::workspace::WorkspaceId;
 
 /// The description of a close confirmation: `with_processes` when `count`
@@ -221,4 +223,112 @@ pub(super) fn should_confirm_close(
             Ok(count) => warn.should_warn(*count),
             Err(_) => warn != WarnBeforeTerminatingShell::Disabled,
         }
+}
+
+/// The Orchestration panes among `surfaces` whose canvas holds edits its
+/// file does not.
+pub(super) fn unsaved_orchestrations<'a>(
+    surfaces: impl IntoIterator<Item = &'a TabSurface>,
+    cx: &App,
+) -> Vec<Entity<OrchestrationPane>> {
+    surfaces
+        .into_iter()
+        .filter_map(TabSurface::orchestration)
+        .filter(|pane| pane.read(cx).has_unsaved_edits(cx))
+        .cloned()
+        .collect()
+}
+
+/// Ask whether to save or discard the unsaved canvas edits of `panes`
+/// before a close goes on. `then` repeats the close once they are saved or
+/// discarded, so the close's own confirmations still follow; Cancel keeps
+/// everything open, and a failed save stops the close with its error shown
+/// in the pane.
+pub(super) fn ask_about_unsaved_orchestrations(
+    panes: Vec<Entity<OrchestrationPane>>,
+    then: impl Fn(&mut AppWindow, &mut Window, &mut Context<AppWindow>) + 'static,
+    window: &mut Window,
+    cx: &mut Context<AppWindow>,
+) {
+    let shell = cx.entity();
+    let then = Rc::new(then);
+    let panes = Rc::new(panes);
+
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (save_shell, discard_shell) = (shell.downgrade(), shell.clone());
+        let (save_then, discard_then) = (Rc::clone(&then), Rc::clone(&then));
+        let (save_panes, discard_panes) = (Rc::clone(&panes), Rc::clone(&panes));
+
+        dialog
+            .centered(true)
+            .title(t!("shell-close-unsaved-orchestration-title"))
+            .overlay_closable(false)
+            .content(|content, _, cx| {
+                content.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("shell-close-unsaved-orchestration-description").into_owned()),
+                )
+            })
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        Button::new("save-orchestrations")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .label(t!("orchestration-save"))
+                            .primary()
+                            .on_click(move |_, window, cx| {
+                                let saves: Vec<Task<bool>> = save_panes
+                                    .iter()
+                                    .map(|pane| pane.update(cx, |pane, cx| pane.save_unsaved(cx)))
+                                    .collect();
+
+                                let shell = save_shell.clone();
+                                let then = Rc::clone(&save_then);
+
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        let mut saved = true;
+
+                                        for save in saves {
+                                            saved &= save.await;
+                                        }
+
+                                        let _ = cx.update(|window, cx| {
+                                            window.close_dialog(cx);
+
+                                            if saved {
+                                                let _ = shell
+                                                    .update(cx, |this, cx| then(this, window, cx));
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                            }),
+                    )
+                    .child(
+                        Button::new("discard-orchestrations")
+                            .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                            .label(t!("orchestration-discard"))
+                            .danger()
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+
+                                for pane in discard_panes.iter() {
+                                    pane.update(cx, |pane, cx| pane.discard_unsaved(cx));
+                                }
+
+                                discard_shell.update(cx, |this, cx| discard_then(this, window, cx));
+                            }),
+                    )
+                    .child(
+                        DialogClose::new().child(
+                            Button::new("keep-orchestrations")
+                                .min_w(DIALOG_BUTTON_MIN_WIDTH)
+                                .label(t!("shell-close-cancel")),
+                        ),
+                    ),
+            )
+    });
 }

@@ -1,8 +1,8 @@
-//! The canvas transform and the pointer gestures that change it.
+//! The canvas transform between canvas positions and screen points.
 //!
 //! Canvas positions are logical pixels at 100% zoom; screen points are
 //! relative to the canvas element's origin. Both are plain values so the
-//! transform and the gesture transitions are unit-testable without a window.
+//! transform is unit-testable without a window.
 
 use gpui::{Pixels, Point, Size, point, px};
 use nmt_agent::orchestration::definition::Position;
@@ -94,45 +94,5 @@ impl Viewport {
         );
 
         Self { offset, zoom }
-    }
-}
-
-/// What the pointer is doing on the canvas.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) enum Gesture {
-    #[default]
-    Idle,
-    Panning {
-        last: Point<Pixels>,
-    },
-}
-
-impl Gesture {
-    /// The primary button went down on the empty background at `at`.
-    pub(super) fn press(at: Point<Pixels>) -> Self {
-        Self::Panning { last: at }
-    }
-
-    /// The pointer moved to `at` with the primary button `held` or not.
-    /// Returns how far to pan; a move without the button ends a pan whose
-    /// release happened outside the canvas.
-    pub(super) fn moved(&mut self, at: Point<Pixels>, held: bool) -> Option<Point<Pixels>> {
-        match *self {
-            Self::Panning { last } if held => {
-                *self = Self::Panning { last: at };
-
-                Some(at - last)
-            }
-            Self::Panning { .. } => {
-                *self = Self::Idle;
-
-                None
-            }
-            Self::Idle => None,
-        }
-    }
-
-    pub(super) fn release(&mut self) {
-        *self = Self::Idle;
     }
 }

@@ -19,11 +19,12 @@ use gpui::{
     Role, Subscription, Task, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Textarea, TextareaState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use nmt_agent::AgentWorkspace;
-use nmt_agent::orchestration::definition::Definition;
-use nmt_agent::orchestration::library::{DefinitionEntry, definitions_directory, load_definitions};
+use nmt_agent::orchestration::library::{
+    DefinitionEntry, create_definition, definitions_directory, load_definitions,
+};
 use nmt_agent::orchestration::placement::place;
 use nmt_agent::orchestration::run::{NodeRun, NodeState, RunId, RunState};
 use nmt_agent::orchestration::store::{RunSummary, recent_runs};
@@ -34,7 +35,10 @@ use notify::{
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
-use crate::agent_tab::orchestration::canvas::{CanvasEvent, CanvasNode, CardState, GraphCanvas};
+use crate::agent_tab::orchestration::canvas::{
+    CanvasEvent, CanvasNode, CardState, GraphCanvas, dependency_edges,
+};
+use crate::agent_tab::orchestration::editor::{DefinitionEditor, EditorEvent};
 use crate::agent_tab::orchestration::{OrchestrationRuntime, missing_profile};
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
 use crate::agent_tab::transcript::{TranscriptView, elapsed_label, relative_time};
@@ -79,6 +83,20 @@ pub struct OrchestrationPane {
     canvas: Entity<GraphCanvas>,
     main: MainView,
 
+    /// The selected definition on its editable canvas, while it decodes.
+    /// It stays while a run is shown, so its unsaved edits wait there.
+    editor: Option<(Entity<DefinitionEditor>, Subscription)>,
+
+    /// A definition chosen while the open one has unsaved edits, opened
+    /// once those are saved or discarded.
+    pending_selection: Option<String>,
+
+    /// The name field of a definition being created, and why the last name
+    /// was refused.
+    new_definition: Option<(Entity<InputState>, Subscription)>,
+
+    new_definition_error: Option<String>,
+
     /// One view per slot session, made when first needed and kept while
     /// that session is open: binding a second view to a session would retire
     /// the first one's pending answers.
@@ -113,13 +131,17 @@ impl OrchestrationPane {
         });
 
         let transcript = cx.new(|_| TranscriptView::new(AgentKind::Codex, None));
-        let canvas = cx.new(|_| GraphCanvas::new());
+        let canvas = cx.new(|cx| GraphCanvas::new(false, cx));
 
         let canvas_events = cx.subscribe(&canvas, |this, _, event, cx| match event {
             CanvasEvent::OpenDetails(node) if this.main == MainView::Run => {
                 this.open_detail(*node, cx)
             }
-            CanvasEvent::OpenDetails(_) => {}
+            CanvasEvent::OpenDetails(_)
+            | CanvasEvent::Selected
+            | CanvasEvent::Moved { .. }
+            | CanvasEvent::Connect { .. }
+            | CanvasEvent::Delete(_) => {}
         });
 
         let mut pane = Self {
@@ -136,6 +158,10 @@ impl OrchestrationPane {
             transcript,
             canvas,
             main: MainView::Definition,
+            editor: None,
+            pending_selection: None,
+            new_definition: None,
+            new_definition_error: None,
             slot_panes: BTreeMap::new(),
             confirm_resume: false,
             error: None,
@@ -199,6 +225,8 @@ impl OrchestrationPane {
                     Ok(definitions) => this.definitions = definitions,
                     Err(error) => this.error = Some(error.to_string()),
                 }
+
+                this.sync_editor(cx);
 
                 match runs {
                     Ok(runs) => this.runs = runs,
@@ -276,13 +304,264 @@ impl OrchestrationPane {
         }
     }
 
+    /// Whether the open definition has edits its file does not hold.
+    pub fn has_unsaved_edits(&self, cx: &App) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(|(editor, _)| editor.read(cx).is_dirty())
+    }
+
+    /// Save the open definition; completes with whether it was written, or
+    /// `true` when nothing was open.
+    pub fn save_unsaved(&mut self, cx: &mut Context<Self>) -> Task<bool> {
+        match &self.editor {
+            Some((editor, _)) => editor.update(cx, |editor, cx| editor.save(cx)),
+            None => Task::ready(true),
+        }
+    }
+
+    /// Drop the open definition's unsaved edits; the canvas opens the file
+    /// again on the next selection.
+    pub fn discard_unsaved(&mut self, cx: &mut Context<Self>) {
+        self.editor = None;
+
+        cx.notify();
+    }
+
     fn select_definition(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.selected.as_ref() != Some(&name) {
+            if self.has_unsaved_edits(cx) {
+                self.pending_selection = Some(name);
+
+                cx.notify();
+
+                return;
+            }
+
+            self.editor = None;
+        }
+
         self.selected = Some(name);
         self.main = MainView::Definition;
         self.detail = None;
         self.error = None;
 
+        self.sync_editor(cx);
+
         cx.notify();
+    }
+
+    /// Open the selected definition on an editor once it decodes, or have
+    /// the open editor compare its file with what it last read or wrote.
+    fn sync_editor(&mut self, cx: &mut Context<Self>) {
+        if let Some((editor, _)) = &self.editor {
+            editor.update(cx, |editor, cx| editor.check_file(cx));
+
+            return;
+        }
+
+        let Some(entry) = self
+            .definitions
+            .iter()
+            .find(|entry| Some(&entry.name) == self.selected.as_ref())
+        else {
+            return;
+        };
+
+        let Some(definition) = entry.definition.clone() else {
+            return;
+        };
+
+        let (name, path) = (entry.name.clone(), entry.path.clone());
+        let editor = cx.new(|cx| DefinitionEditor::new(name, path, definition, cx));
+
+        let events = cx.subscribe(&editor, |this, _, event, cx| match event {
+            EditorEvent::Saved => this.reload(cx),
+            EditorEvent::Undecodable => {
+                this.editor = None;
+
+                cx.notify();
+            }
+        });
+
+        self.editor = Some((editor, events));
+    }
+
+    /// Answer the unsaved-edits question asked by `select_definition`.
+    fn resolve_pending_selection(&mut self, save: bool, cx: &mut Context<Self>) {
+        let Some(name) = self.pending_selection.take() else {
+            return;
+        };
+
+        if !save {
+            self.editor = None;
+
+            self.select_definition(name, cx);
+
+            return;
+        }
+
+        let saved = self.save_unsaved(cx);
+
+        cx.spawn(async move |this, cx| {
+            if saved.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.editor = None;
+
+                    this.select_definition(name, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn render_pending_selection(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let name = self.pending_selection.as_ref()?;
+        let theme = cx.theme();
+
+        Some(
+            h_flex()
+                .gap_2()
+                .p_2()
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.warning.opacity(0.15))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .child(t!("orchestration-unsaved-switch", name = name).into_owned()),
+                )
+                .child(
+                    Button::new("orchestration-switch-cancel")
+                        .ghost()
+                        .small()
+                        .label(t!("orchestration-cancel"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pending_selection = None;
+
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("orchestration-switch-discard")
+                        .small()
+                        .label(t!("orchestration-discard"))
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_pending_selection(false, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("orchestration-switch-save")
+                        .primary()
+                        .small()
+                        .label(t!("orchestration-save"))
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_pending_selection(true, cx)),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn begin_new_definition(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("orchestration-new-name").into_owned())
+        });
+
+        let events = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.create_definition(cx);
+            }
+        });
+
+        input.update(cx, |input, cx| input.focus(window, cx));
+
+        self.new_definition = Some((input, events));
+        self.new_definition_error = None;
+
+        cx.notify();
+    }
+
+    fn cancel_new_definition(&mut self, cx: &mut Context<Self>) {
+        self.new_definition = None;
+        self.new_definition_error = None;
+
+        cx.notify();
+    }
+
+    fn create_definition(&mut self, cx: &mut Context<Self>) {
+        let Some((input, _)) = &self.new_definition else {
+            return;
+        };
+
+        let name = input.read(cx).text().to_string().trim().to_owned();
+        let directory = self.directory.clone();
+
+        let create = cx.background_executor().spawn({
+            let name = name.clone();
+
+            async move { create_definition(&directory, &name) }
+        });
+
+        cx.spawn(async move |this, cx| {
+            let result = create.await;
+
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(_) => {
+                        this.new_definition = None;
+                        this.new_definition_error = None;
+
+                        this.reload(cx);
+
+                        this.select_definition(name, cx);
+                    }
+                    Err(error) => this.new_definition_error = Some(error.to_string()),
+                }
+
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_new_definition(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (input, _) = self.new_definition.as_ref()?;
+        let theme = cx.theme();
+
+        Some(
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+                        .child(
+                            Button::new("orchestration-new-cancel")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("orchestration-cancel"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cancel_new_definition(cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("orchestration-new-create")
+                                .primary()
+                                .xsmall()
+                                .label(t!("orchestration-create"))
+                                .on_click(cx.listener(|this, _, _, cx| this.create_definition(cx))),
+                        ),
+                )
+                .children(
+                    self.new_definition_error
+                        .clone()
+                        .map(|error| div().text_xs().text_color(theme.danger).child(error)),
+                )
+                .into_any_element(),
+        )
     }
 
     fn start_run(&mut self, cx: &mut Context<Self>) {
@@ -513,6 +792,7 @@ impl OrchestrationPane {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let new_definition = self.render_new_definition(cx);
         let theme = cx.theme();
         let selected = self.selected.clone();
 
@@ -522,6 +802,7 @@ impl OrchestrationPane {
             .find(|entry| Some(&entry.name) == selected.as_ref());
 
         let can_start = selected_entry.is_some_and(|entry| entry.graph.is_ok());
+        let dirty = self.has_unsaved_edits(cx);
 
         let definitions: Vec<AnyElement> = if self.definitions.is_empty() {
             vec![
@@ -544,6 +825,8 @@ impl OrchestrationPane {
                 .map(|(index, entry)| {
                     let name = entry.name.clone();
                     let active = Some(&entry.name) == selected.as_ref();
+
+                    let unsaved = active && dirty;
 
                     let errors: Vec<String> = match &entry.graph {
                         Err(errors) if active => errors.clone(),
@@ -571,6 +854,12 @@ impl OrchestrationPane {
                                         .text_sm()
                                         .child(entry.name.clone()),
                                 )
+                                .children(unsaved.then(|| {
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("orchestration-unsaved").into_owned())
+                                }))
                                 .children(entry.graph.is_err().then(|| {
                                     div()
                                         .text_xs()
@@ -659,6 +948,16 @@ impl OrchestrationPane {
                             .child(t!("orchestration-definitions").into_owned()),
                     )
                     .child(
+                        Button::new("orchestration-new-definition")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Plus)
+                            .label(t!("orchestration-new-definition"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.begin_new_definition(window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("orchestration-open-folder")
                             .ghost()
                             .xsmall()
@@ -667,6 +966,7 @@ impl OrchestrationPane {
                             .on_click(cx.listener(|this, _, _, cx| this.open_folder(cx))),
                     ),
             )
+            .children(new_definition)
             .child(
                 v_flex()
                     .id("orchestration-definitions")
@@ -758,6 +1058,7 @@ impl OrchestrationPane {
                         color: node_state_color(state, cx),
                         needs_input: runtime_ref.needs_input(node, cx),
                     }),
+                    marked: false,
                 }
             })
             .collect();
@@ -856,9 +1157,13 @@ impl OrchestrationPane {
             .into_any_element()
     }
 
-    /// The selected definition on a read-only canvas, or its decoding error
-    /// with a way to open the file when it does not decode.
+    /// The selected definition on its editor, or its decoding error with a
+    /// way to open the file when it does not decode.
     fn render_definition(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some((editor, _)) = &self.editor {
+            return editor.clone().into_any_element();
+        }
+
         let Some(entry) = self
             .definitions
             .iter()
@@ -873,70 +1178,36 @@ impl OrchestrationPane {
 
         let name = entry.name.clone();
         let path = entry.path.clone();
-
-        let Some(definition) = entry.definition.clone() else {
-            let errors = entry.graph.as_ref().err().cloned().unwrap_or_default();
-            let theme = cx.theme();
-
-            return v_flex()
-                .size_full()
-                .p_3()
-                .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(name),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(t!("orchestration-undecodable").into_owned()),
-                )
-                .children(
-                    errors
-                        .into_iter()
-                        .map(|error| div().text_xs().text_color(theme.danger).child(error)),
-                )
-                .child(
-                    Button::new("orchestration-open-file")
-                        .small()
-                        .label(t!("orchestration-open-file"))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path))),
-                )
-                .into_any_element();
-        };
-
-        let edges = dependency_edges(&definition);
-
-        let nodes: Vec<CanvasNode> = place(&definition)
-            .into_iter()
-            .zip(&definition.nodes)
-            .map(|(position, node)| CanvasNode {
-                id: node.id.clone(),
-                position,
-                state: None,
-            })
-            .collect();
-
-        let key = format!("definition:{name}");
-
-        self.canvas
-            .update(cx, |canvas, cx| canvas.show(&key, nodes, edges, cx));
+        let errors = entry.graph.as_ref().err().cloned().unwrap_or_default();
+        let theme = cx.theme();
 
         v_flex()
             .size_full()
+            .p_3()
+            .gap_2()
             .child(
                 div()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(name),
             )
-            .child(div().flex_1().min_h_0().child(self.canvas.clone()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(t!("orchestration-undecodable").into_owned()),
+            )
+            .children(
+                errors
+                    .into_iter()
+                    .map(|error| div().text_xs().text_color(theme.danger).child(error)),
+            )
+            .child(
+                Button::new("orchestration-open-file")
+                    .small()
+                    .label(t!("orchestration-open-file"))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path))),
+            )
             .into_any_element()
     }
 
@@ -1062,6 +1333,7 @@ impl Render for OrchestrationPane {
         let background_opacity = settings.background_opacity;
         let error = self.error.clone();
         let theme_danger = cx.theme().danger;
+        let pending_selection = self.render_pending_selection(cx);
 
         h_flex()
             .id("orchestration-surface")
@@ -1089,36 +1361,10 @@ impl Render for OrchestrationPane {
                             .text_color(theme_danger)
                             .child(error)
                     }))
+                    .children(pending_selection)
                     .child(self.render_main(window, cx)),
             )
     }
-}
-
-/// Every dependency as (dependency, dependent) node indices, skipping ids
-/// that name no node so a definition that does not validate still draws.
-fn dependency_edges(definition: &Definition) -> Vec<(usize, usize)> {
-    let index: HashMap<&str, usize> = definition
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(position, node)| (node.id.as_str(), position))
-        .collect();
-
-    definition
-        .nodes
-        .iter()
-        .enumerate()
-        .flat_map(|(dependent, node)| {
-            node.needs
-                .iter()
-                .filter_map(|id| {
-                    index
-                        .get(id.as_str())
-                        .map(|&dependency| (dependency, dependent))
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }
 
 fn placeholder(title: String, detail: String, cx: &App) -> AnyElement {

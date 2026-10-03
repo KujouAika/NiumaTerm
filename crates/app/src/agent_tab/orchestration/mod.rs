@@ -8,6 +8,8 @@
 pub use crate::agent_tab::orchestration::view::OrchestrationPane;
 
 mod canvas;
+mod editor;
+mod properties;
 mod slot;
 mod turn;
 mod view;

@@ -92,8 +92,8 @@ use crate::ui::shell::agent_notifications::{
     AgentNotificationState, apply_monitor_display_change, remove_native_notifications,
 };
 use crate::ui::shell::close_confirm::{
-    close_description, close_last_workspace_dialog, open_close_confirm, open_save_failed_close,
-    should_confirm_close,
+    ask_about_unsaved_orchestrations, close_description, close_last_workspace_dialog,
+    open_close_confirm, open_save_failed_close, should_confirm_close, unsaved_orchestrations,
 };
 use crate::ui::shell::main_surface::{floating_surface_card, surface_border, tab_surface_view};
 use crate::ui::shell::panels::RightPanelController;
@@ -1287,6 +1287,19 @@ impl AppWindow {
         };
 
         let surface = tab.surface();
+        let unsaved = unsaved_orchestrations([surface], cx);
+
+        if !unsaved.is_empty() {
+            ask_about_unsaved_orchestrations(
+                unsaved,
+                move |this, window, cx| this.request_close_tab(id, window, cx),
+                window,
+                cx,
+            );
+
+            return;
+        }
+
         let is_settings = surface.is_settings();
 
         // Closing a tab that follows a paired host's agent ends only this
@@ -1550,6 +1563,26 @@ impl AppWindow {
             return;
         }
 
+        let unsaved = unsaved_orchestrations(
+            self.workspaces
+                .tabs_of(id)
+                .into_iter()
+                .flat_map(|tabs| tabs.list().items())
+                .map(|tab| tab.surface()),
+            cx,
+        );
+
+        if !unsaved.is_empty() {
+            ask_about_unsaved_orchestrations(
+                unsaved,
+                move |this, window, cx| this.request_close_workspace(id, window, cx),
+                window,
+                cx,
+            );
+
+            return;
+        }
+
         // Dismissing the settings entry ends nothing the user could lose, so
         // it closes on the first click whatever the confirmation settings say.
         if self.workspaces.kind_of(id) == Some(WorkspaceKind::Settings) {
@@ -1738,6 +1771,25 @@ impl AppWindow {
     /// waiting on its save is left to finish.
     pub(crate) fn request_window_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_close_pending {
+            return;
+        }
+
+        let unsaved = unsaved_orchestrations(
+            self.workspaces
+                .all_tabs()
+                .flat_map(|tabs| tabs.list().items())
+                .map(|tab| tab.surface()),
+            cx,
+        );
+
+        if !unsaved.is_empty() {
+            ask_about_unsaved_orchestrations(
+                unsaved,
+                |this, window, cx| this.request_window_close(window, cx),
+                window,
+                cx,
+            );
+
             return;
         }
 

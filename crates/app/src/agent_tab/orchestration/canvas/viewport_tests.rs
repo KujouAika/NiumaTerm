@@ -1,7 +1,7 @@
 use gpui::{point, px, size};
 use nmt_agent::orchestration::definition::Position;
 
-use crate::agent_tab::orchestration::canvas::viewport::{Gesture, MAX_ZOOM, MIN_ZOOM, Viewport};
+use crate::agent_tab::orchestration::canvas::viewport::{MAX_ZOOM, MIN_ZOOM, Viewport};
 
 fn at(x: f32, y: f32) -> Position {
     Position { x, y }
@@ -68,31 +68,4 @@ fn fitting_shows_every_card_without_zooming_past_full_size() {
     let small = Viewport::fit(&[at(0., 0.)], card, area);
 
     assert_eq!(small.zoom, 1.);
-}
-
-#[test]
-fn a_pan_follows_the_pointer_and_ends_on_release() {
-    let mut gesture = Gesture::press(point(px(10.), px(10.)));
-
-    assert_eq!(
-        gesture.moved(point(px(25.), px(5.)), true),
-        Some(point(px(15.), px(-5.)))
-    );
-    assert_eq!(
-        gesture.moved(point(px(30.), px(5.)), true),
-        Some(point(px(5.), px(0.)))
-    );
-
-    gesture.release();
-
-    assert_eq!(gesture, Gesture::Idle);
-    assert_eq!(gesture.moved(point(px(40.), px(5.)), true), None);
-}
-
-#[test]
-fn a_pan_released_outside_the_canvas_ends_on_the_next_move() {
-    let mut gesture = Gesture::press(point(px(10.), px(10.)));
-
-    assert_eq!(gesture.moved(point(px(20.), px(10.)), false), None);
-    assert_eq!(gesture, Gesture::Idle);
 }
