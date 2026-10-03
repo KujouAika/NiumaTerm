@@ -25,7 +25,7 @@ use gpui::{
 };
 use nmt_agent::background_task::BackgroundTaskKey;
 use nmt_agent::chat::{
-    AgentPreset, ApprovalPreset, Event, Item, ModelInfo, QuestionMode, SessionSummary,
+    AgentPreset, ApprovalPreset, Event, Item, ModelInfo, QuestionMode, SendOutcome, SessionSummary,
     SlashCommandOutcome, TeamDecisionRequest, ThreadSettings,
 };
 use nmt_agent::codex::app_server::SideStart;
@@ -34,12 +34,12 @@ use nmt_agent::session::branch::{BranchUpdate, CheckpointRead};
 use nmt_agent::session::capabilities::AgentCapabilities as _;
 use nmt_agent::session::controller::{ReadyDefaults, SessionController, SessionEffect};
 use nmt_agent::session::input::{QuestionAction, Submission};
-use nmt_agent::session::lifecycle::{RecoverySnapshot, StartOutcome};
+use nmt_agent::session::lifecycle::{RecoverySnapshot, StartOutcome, Status};
 use nmt_agent::session::restore::{ReplayLoaded, ReplayRead, ResumeStart, SettingsSeed};
 use nmt_agent::session::team_capabilities::TeamLaunch;
 use nmt_agent::session::update_readiness::Readiness;
 use nmt_agent::session::workflows::RefreshPlan;
-use nmt_agent::session::{Backend, RecoveryIdentity, TranscriptLoad};
+use nmt_agent::session::{Backend, PromptRequest, RecoveryIdentity, TranscriptLoad};
 use nmt_agent::update::InstallationKey;
 use nmt_agent::workflow::{WorkflowRefreshResult, WorkflowRun};
 use nmt_agent::{
@@ -273,6 +273,70 @@ impl SessionOwner {
                 session.start(recovery, preserve_settings, |_, _| {}, cx);
             }
         });
+    }
+
+    /// Send `text` as a new turn, naming the conversation after
+    /// `title_source`, the request as the user wrote it. A session that is
+    /// busy or suspended for an update is not ready for it.
+    pub(super) fn submit_prepared(
+        &self,
+        text: String,
+        title_source: &str,
+        settings: &ThreadSettings,
+        cx: &mut App,
+    ) -> SendOutcome {
+        self.session.update(cx, |session, cx| {
+            let mut state = session.controller.borrow_mut();
+
+            if state.runtime().status() != Status::Idle
+                || state.runtime().update_suspension().is_some()
+            {
+                return SendOutcome::NotReady;
+            }
+
+            // The conversation is named after the user's request, as a
+            // regular conversation is named after its first prompt. The text
+            // sent to the model opens with a role and step instructions, and
+            // a title taken from that would show that preamble wherever the
+            // provider lists the conversation.
+            let title = state.title_request(title_source, |_| None);
+
+            let result = state.submit(
+                text,
+                |backend, text| {
+                    backend.submit(&PromptRequest {
+                        text,
+                        settings,
+                        skill: None,
+                        images: &[],
+                        image_paths: &[],
+                        title: title.as_ref(),
+                    })
+                },
+                || None,
+            );
+
+            // Both providers generate the final title asynchronously; the
+            // first accepted request claims the name so a failed generation
+            // cannot let a later request name the conversation.
+            if matches!(session.kind, AgentKind::Codex | AgentKind::Claude)
+                && title.is_some()
+                && matches!(result, Ok(SendOutcome::StartedTurn | SendOutcome::Steered))
+            {
+                state.claim_title();
+            }
+
+            cx.notify();
+
+            match result {
+                Ok(outcome) => outcome,
+                Err(blocker) => {
+                    warn!(?blocker, "prepared submission was blocked before sending");
+
+                    SendOutcome::NotReady
+                }
+            }
+        })
     }
 
     pub(super) fn bind(&self) -> CommandBinding {

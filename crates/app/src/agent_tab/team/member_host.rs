@@ -1,10 +1,8 @@
 //! One Team member's live agent session and the Team work assigned to it.
 
 use gpui::{App, Subscription};
-use nmt_agent::chat::{SendOutcome, TeamDecisionRequest, ThreadSettings};
-use nmt_agent::session::lifecycle::Status;
-use nmt_agent::session::{AgentKind, PromptRequest, RecoveryIdentity};
-use nmt_agent::team::attempt::DispatchIntent;
+use nmt_agent::chat::{TeamDecisionRequest, ThreadSettings};
+use nmt_agent::session::RecoveryIdentity;
 use nmt_agent::team::model::AttemptId;
 
 use crate::agent_tab::execution::SessionOwner;
@@ -68,67 +66,6 @@ impl MemberHost {
 
             cx.notify();
         });
-    }
-
-    /// A session that is busy or suspended for an update is not ready for it.
-    pub(super) fn submit(
-        &self,
-        intent: &DispatchIntent,
-        settings: &ThreadSettings,
-        cx: &mut App,
-    ) -> SendOutcome {
-        self.owner.session().update(cx, |session, cx| {
-            let mut state = session.controller.borrow_mut();
-
-            if state.runtime().status() != Status::Idle
-                || state.runtime().update_suspension().is_some()
-            {
-                return SendOutcome::NotReady;
-            }
-
-            // The member's conversation is named after the user's request,
-            // as a regular conversation is named after its first prompt.
-            // The text sent to the model opens with the member's role and the
-            // stage instruction, and a title taken from that would show that
-            // preamble wherever the provider lists the conversation.
-            let title = state.title_request(&intent.input.text, |_| None);
-
-            let result = state.submit(
-                intent.prepared_text.clone(),
-                |backend, text| {
-                    backend.submit(&PromptRequest {
-                        text,
-                        settings,
-                        skill: None,
-                        images: &[],
-                        image_paths: &[],
-                        title: title.as_ref(),
-                    })
-                },
-                || None,
-            );
-
-            // Both providers generate the final title asynchronously; the
-            // first accepted request claims the name so a failed generation
-            // cannot let a later stage's request name the conversation.
-            if matches!(session.kind, AgentKind::Codex | AgentKind::Claude)
-                && title.is_some()
-                && matches!(result, Ok(SendOutcome::StartedTurn | SendOutcome::Steered))
-            {
-                state.claim_title();
-            }
-
-            cx.notify();
-
-            match result {
-                Ok(outcome) => outcome,
-                Err(blocker) => {
-                    tracing::warn!(?blocker, "team submission was blocked before sending");
-
-                    SendOutcome::NotReady
-                }
-            }
-        })
     }
 
     /// Tell the moderator whether the room saved the decision it requested.

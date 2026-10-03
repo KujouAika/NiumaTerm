@@ -637,7 +637,12 @@ impl TeamRuntime {
                                 (Some(host), Some(member)) => {
                                     host.active = Some(id);
 
-                                    host.submit(&intent, member.settings(), cx)
+                                    host.owner.submit_prepared(
+                                        intent.prepared_text.clone(),
+                                        &intent.input.text,
+                                        member.settings(),
+                                        cx,
+                                    )
                                 }
                                 _ => SendOutcome::NotReady,
                             }
