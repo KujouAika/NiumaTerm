@@ -315,9 +315,13 @@ fn index_slots<'a>(
     let mut slots = BTreeMap::new();
 
     for (index, slot) in definition.slots.iter().enumerate() {
+        // An empty name is still indexed, so nodes that use the slot are not
+        // also reported as naming an unknown slot.
         if slot.name.is_empty() {
             errors.push(DefinitionError::EmptySlotName);
-        } else if slots.insert(slot.name.as_str(), index).is_some() {
+        }
+
+        if slots.insert(slot.name.as_str(), index).is_some() {
             errors.push(DefinitionError::DuplicateSlot(slot.name.clone()));
         }
     }

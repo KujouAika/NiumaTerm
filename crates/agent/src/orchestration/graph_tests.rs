@@ -262,3 +262,11 @@ fn run_input_is_needed_only_when_some_prompt_contains_it() {
         .uses_input()
     );
 }
+
+#[test]
+fn a_slot_needs_a_name() {
+    assert_eq!(
+        errors(definition(&[""], json!([{ "id": "plan", "slot": "" }]))),
+        [DefinitionError::EmptySlotName]
+    );
+}
