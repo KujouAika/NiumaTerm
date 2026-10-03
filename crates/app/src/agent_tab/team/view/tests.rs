@@ -4,6 +4,7 @@ use std::path::Path;
 use gpui::{AppContext as _, TestAppContext, VisualTestContext, px};
 use gpui_component::Root;
 use nmt_agent::AgentWorkspace;
+use nmt_agent::agent_spec::{AgentSpec, ProfileReference};
 use nmt_agent::background_task::{
     BackgroundTaskKey, BackgroundTaskRegistry, BackgroundTaskState, BackgroundTaskUpdate,
 };
@@ -18,7 +19,7 @@ use nmt_agent::session::test_support::TestBackend;
 use nmt_agent::session::{AgentKind, Backend};
 use nmt_agent::team::attempt::AttemptState;
 use nmt_agent::team::discussion::DiscussionMode;
-use nmt_agent::team::member::{MemberConfig, ProfileReference};
+use nmt_agent::team::member::MemberConfig;
 use nmt_agent::team::model::UserInput;
 use nmt_agent::team::room::Room;
 use nmt_agent::team::session::{AttemptEventKey, TeamError, TeamSession};
@@ -75,13 +76,15 @@ async fn claude_member_startup_retains_native_permission_selection(cx: &mut Test
                 profile,
                 MemberConfig {
                     name: "Alice".into(),
-                    profile: ProfileReference {
-                        kind: AgentKind::Claude,
-                        name: "test-claude".into(),
+                    spec: AgentSpec {
+                        profile: ProfileReference {
+                            kind: AgentKind::Claude,
+                            name: "test-claude".into(),
+                        },
+                        roots: AgentWorkspace::default(),
+                        settings: settings.clone(),
+                        role: String::new(),
                     },
-                    roots: AgentWorkspace::default(),
-                    settings: settings.clone(),
-                    role: String::new(),
                 },
                 cx,
             )
@@ -142,13 +145,15 @@ async fn reopened_request(cx: &mut TestAppContext, completed: bool) {
     let member = saved
         .add_member(MemberConfig {
             name: "Alice".into(),
-            profile: ProfileReference {
-                kind: AgentKind::Codex,
-                name: "test".into(),
+            spec: AgentSpec {
+                profile: ProfileReference {
+                    kind: AgentKind::Codex,
+                    name: "test".into(),
+                },
+                roots: AgentWorkspace::default(),
+                settings: ThreadSettings::default(),
+                role: "Explain clearly".into(),
             },
-            roots: AgentWorkspace::default(),
-            settings: ThreadSettings::default(),
-            role: "Explain clearly".into(),
         })
         .unwrap();
 
@@ -371,13 +376,15 @@ async fn sent_team_request_displays_stream_before_completion(cx: &mut TestAppCon
         let member = session
             .add_member(MemberConfig {
                 name: "Alice".into(),
-                profile: ProfileReference {
-                    kind: AgentKind::Codex,
-                    name: "test".into(),
+                spec: AgentSpec {
+                    profile: ProfileReference {
+                        kind: AgentKind::Codex,
+                        name: "test".into(),
+                    },
+                    roots: AgentWorkspace::default(),
+                    settings: ThreadSettings::default(),
+                    role: "Explain clearly".into(),
                 },
-                roots: AgentWorkspace::default(),
-                settings: ThreadSettings::default(),
-                role: "Explain clearly".into(),
             })
             .unwrap();
 
@@ -637,13 +644,15 @@ async fn completed_reply_waits_for_background_work_before_advancing(cx: &mut Tes
         let member = room
             .add_member(MemberConfig {
                 name: "Alice".into(),
-                profile: ProfileReference {
-                    kind: AgentKind::Codex,
-                    name: "test".into(),
+                spec: AgentSpec {
+                    profile: ProfileReference {
+                        kind: AgentKind::Codex,
+                        name: "test".into(),
+                    },
+                    roots: AgentWorkspace::default(),
+                    settings: ThreadSettings::default(),
+                    role: String::new(),
                 },
-                roots: AgentWorkspace::default(),
-                settings: ThreadSettings::default(),
-                role: String::new(),
             })
             .unwrap();
 
@@ -792,13 +801,15 @@ async fn member_question_shows_in_team_composer_and_blocks_new_requests(cx: &mut
         let member = session
             .add_member(MemberConfig {
                 name: "Alice".into(),
-                profile: ProfileReference {
-                    kind: AgentKind::Codex,
-                    name: "test".into(),
+                spec: AgentSpec {
+                    profile: ProfileReference {
+                        kind: AgentKind::Codex,
+                        name: "test".into(),
+                    },
+                    roots: AgentWorkspace::default(),
+                    settings: ThreadSettings::default(),
+                    role: "Explain clearly".into(),
                 },
-                roots: AgentWorkspace::default(),
-                settings: ThreadSettings::default(),
-                role: "Explain clearly".into(),
             })
             .unwrap();
 
@@ -954,13 +965,15 @@ async fn member_conversation_is_named_after_the_request_once(cx: &mut TestAppCon
         let member = session
             .add_member(MemberConfig {
                 name: "Alice".into(),
-                profile: ProfileReference {
-                    kind: AgentKind::Codex,
-                    name: "test".into(),
+                spec: AgentSpec {
+                    profile: ProfileReference {
+                        kind: AgentKind::Codex,
+                        name: "test".into(),
+                    },
+                    roots: AgentWorkspace::default(),
+                    settings: ThreadSettings::default(),
+                    role: "Explain clearly".into(),
                 },
-                roots: AgentWorkspace::default(),
-                settings: ThreadSettings::default(),
-                role: "Explain clearly".into(),
             })
             .unwrap();
 
@@ -1091,13 +1104,15 @@ async fn a_message_written_in_the_member_view_is_a_team_request(cx: &mut TestApp
         let member = session
             .add_member(MemberConfig {
                 name: "Alice".into(),
-                profile: ProfileReference {
-                    kind: AgentKind::Codex,
-                    name: "test".into(),
+                spec: AgentSpec {
+                    profile: ProfileReference {
+                        kind: AgentKind::Codex,
+                        name: "test".into(),
+                    },
+                    roots: AgentWorkspace::default(),
+                    settings: ThreadSettings::default(),
+                    role: "Explain clearly".into(),
                 },
-                roots: AgentWorkspace::default(),
-                settings: ThreadSettings::default(),
-                role: "Explain clearly".into(),
             })
             .unwrap();
 

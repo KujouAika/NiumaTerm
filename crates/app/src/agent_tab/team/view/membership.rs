@@ -9,8 +9,9 @@ use gpui_component::{
     ActiveTheme as _, Disableable as _, IconNamed, Size, WindowExt as _, h_flex, v_flex,
 };
 use nmt_agent::AgentWorkspace;
+use nmt_agent::agent_spec::{AgentSpec, ProfileReference};
 use nmt_agent::chat::ThreadSettings;
-use nmt_agent::team::member::{MemberConfig, ProfileReference};
+use nmt_agent::team::member::MemberConfig;
 use nmt_config::profile::AgentProfile;
 use rand::seq::SliceRandom as _;
 use rust_i18n::t;
@@ -83,13 +84,15 @@ impl MemberDraft {
 
         let config = MemberConfig {
             name: self.member_name.read(cx).text().to_string(),
-            profile: ProfileReference {
-                kind,
-                name: profile.name.clone(),
+            spec: AgentSpec {
+                profile: ProfileReference {
+                    kind,
+                    name: profile.name.clone(),
+                },
+                roots,
+                settings,
+                role: self.member_role.read(cx).text().to_string(),
             },
-            roots,
-            settings,
-            role: self.member_role.read(cx).text().to_string(),
         };
 
         Some((profile, config))

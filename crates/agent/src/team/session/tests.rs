@@ -28,7 +28,7 @@ fn native_member_settings_allow_concurrent_work_without_room_permission_gates() 
     let [alice, bob, _] = ["Alice", "Bob", "Unstarted"].map(|name| {
         let mut member_config = config(name, "C:/workspace");
 
-        member_config.settings = settings.clone();
+        member_config.spec.settings = settings.clone();
 
         room.add_member(member_config).unwrap()
     });

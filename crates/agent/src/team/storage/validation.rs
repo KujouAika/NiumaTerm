@@ -26,7 +26,7 @@ pub(super) fn validate(room: &Room) -> Result<(), StorageError> {
             return Err(invalid("invalid or duplicate member name"));
         }
 
-        if member.roots.primary().is_none() && !member.roots.additional().is_empty() {
+        if member.spec.roots.primary().is_none() && !member.spec.roots.additional().is_empty() {
             return Err(invalid("member roots have no primary directory"));
         }
     }
@@ -247,7 +247,7 @@ pub(super) fn validate_update(previous: &Room, next: &Room) -> Result<(), Storag
             .member(member.id)
             .ok_or(StorageError::Invalid("member is missing"))?;
 
-        if member.roots != new.roots {
+        if member.spec.roots != new.spec.roots {
             return Err(StorageError::Invalid("existing conversation roots changed"));
         }
     }

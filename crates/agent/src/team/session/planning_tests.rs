@@ -130,7 +130,7 @@ fn oversized_context_pauses_without_reserving_unavailable_summary_work() {
     let (_directory, mut session, alice, bob) = ready_team();
     let mut room = session.store.room().clone();
 
-    room.members[0].role = "Private role instructions must not reach summaries".into();
+    room.members[0].spec.role = "Private role instructions must not reach summaries".into();
 
     session.store.commit(room).unwrap();
 

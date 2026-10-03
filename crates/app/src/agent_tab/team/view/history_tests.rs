@@ -3,9 +3,10 @@ use std::path::Path;
 use gpui::{AppContext as _, TestAppContext, VisualTestContext};
 use gpui_component::Root;
 use nmt_agent::AgentWorkspace;
+use nmt_agent::agent_spec::{AgentSpec, ProfileReference};
 use nmt_agent::chat::ThreadSettings;
 use nmt_agent::session::AgentKind;
-use nmt_agent::team::member::{MemberConfig, ProfileReference};
+use nmt_agent::team::member::MemberConfig;
 use nmt_agent::team::room::Room;
 use nmt_agent::team::storage::RoomStore;
 use tempfile::tempdir;
@@ -21,13 +22,15 @@ fn saved_room(directory: &Path, cwd: &str, name: &str) -> RoomStore {
 
     room.add_member(MemberConfig {
         name: name.into(),
-        profile: ProfileReference {
-            kind: AgentKind::Codex,
-            name: "unconfigured".into(),
+        spec: AgentSpec {
+            profile: ProfileReference {
+                kind: AgentKind::Codex,
+                name: "unconfigured".into(),
+            },
+            roots: workspace,
+            settings: ThreadSettings::default(),
+            role: String::new(),
         },
-        roots: workspace,
-        settings: ThreadSettings::default(),
-        role: String::new(),
     })
     .unwrap();
 

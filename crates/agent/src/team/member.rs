@@ -3,16 +3,9 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::AgentWorkspace;
+use crate::agent_spec::{AgentSpec, ProfileReference};
 use crate::chat::ThreadSettings;
-use crate::session::AgentKind;
 use crate::team::model::{MemberId, MessageId, SummaryId};
-
-/// A lookup into protected profile storage, without resolved launch credentials.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProfileReference {
-    pub kind: AgentKind,
-    pub name: String,
-}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptedCoverage {
@@ -24,10 +17,12 @@ pub struct AcceptedCoverage {
 pub struct Member {
     pub(super) id: MemberId,
     pub(super) name: String,
-    pub(super) profile: ProfileReference,
-    pub(super) roots: AgentWorkspace,
-    pub(super) settings: ThreadSettings,
-    pub(super) role: String,
+
+    /// Flattened so saved rooms keep the member keys they had before the
+    /// spec became a shared type.
+    #[serde(flatten)]
+    pub(super) spec: AgentSpec,
+
     pub(super) excluded: bool,
     #[serde(default)]
     pub(super) provider_id: Option<String>,
@@ -35,14 +30,9 @@ pub struct Member {
     pub(super) moderator_registered: bool,
 }
 
-/// New members receive their own copy of settings; profile defaults stay shared
-/// only in the profile store, never through mutable member state.
 pub struct MemberConfig {
     pub name: String,
-    pub profile: ProfileReference,
-    pub roots: AgentWorkspace,
-    pub settings: ThreadSettings,
-    pub role: String,
+    pub spec: AgentSpec,
 }
 
 impl Member {
@@ -63,19 +53,19 @@ impl Member {
     }
 
     pub fn profile(&self) -> &ProfileReference {
-        &self.profile
+        &self.spec.profile
     }
 
     pub fn roots(&self) -> &AgentWorkspace {
-        &self.roots
+        &self.spec.roots
     }
 
     pub fn settings(&self) -> &ThreadSettings {
-        &self.settings
+        &self.spec.settings
     }
 
     pub fn role(&self) -> &str {
-        &self.role
+        &self.spec.role
     }
 
     pub fn excluded(&self) -> bool {

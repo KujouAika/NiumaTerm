@@ -372,8 +372,8 @@ impl TeamRuntime {
         config: MemberConfig,
         cx: &mut Context<Self>,
     ) -> Task<Result<MemberId, TeamError>> {
-        let valid = config.profile.kind == profile.kind
-            && config.profile.name == profile.name
+        let valid = config.spec.profile.kind == profile.kind
+            && config.spec.profile.name == profile.name
             && !self.closed;
 
         self.run(

@@ -1,11 +1,12 @@
 use crate::AgentWorkspace;
+use crate::agent_spec::{AgentSpec, ProfileReference};
 use crate::chat::ThreadSettings;
 use crate::session::AgentKind;
 use crate::team::discussion::{
     Arrangement, ArrangementState, DiscussionError, DiscussionMode, DiscussionState, PauseReason,
     PublicSnapshot, Stage, StageKind,
 };
-use crate::team::member::{MemberConfig, ProfileReference};
+use crate::team::member::MemberConfig;
 use crate::team::model::{
     AttemptId, Author, ContextError, ContextLimits, MessageId, OperationId, PublicMessage,
     Publication, SourceFragment, StageId, Summary, SummaryId, UserInput,
@@ -15,17 +16,19 @@ use crate::team::room::{MemberError, Room};
 pub(super) fn config(name: &str, root: &str) -> MemberConfig {
     MemberConfig {
         name: name.into(),
-        profile: ProfileReference {
-            kind: AgentKind::Codex,
-            name: "Shared profile".into(),
+        spec: AgentSpec {
+            profile: ProfileReference {
+                kind: AgentKind::Codex,
+                name: "Shared profile".into(),
+            },
+            roots: AgentWorkspace::single(Some(root.into())),
+            settings: ThreadSettings {
+                model: Some("initial-model".into()),
+                sandbox: Some("read-only".into()),
+                ..ThreadSettings::default()
+            },
+            role: String::new(),
         },
-        roots: AgentWorkspace::single(Some(root.into())),
-        settings: ThreadSettings {
-            model: Some("initial-model".into()),
-            sandbox: Some("read-only".into()),
-            ..ThreadSettings::default()
-        },
-        role: String::new(),
     }
 }
 

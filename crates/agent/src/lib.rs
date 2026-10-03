@@ -14,6 +14,7 @@ pub use crate::process::{
 pub use crate::subprocess::OUTPUT_FAILURE_METHOD;
 pub use crate::workspace::{AgentWorkspace, MultiRootAccess};
 
+pub mod agent_spec;
 pub mod background_task;
 pub mod catalog;
 pub mod chat;

@@ -155,10 +155,7 @@ impl Room {
         self.members.push(Member {
             id,
             name,
-            profile: config.profile,
-            roots: config.roots,
-            settings: config.settings,
-            role: config.role,
+            spec: config.spec,
             excluded: false,
             provider_id: None,
             moderator_registered: false,
@@ -183,7 +180,7 @@ impl Room {
     ) -> Result<(), MemberError> {
         let member = self.member_mut(id)?;
 
-        member.settings = settings;
+        member.spec.settings = settings;
 
         Ok(())
     }
