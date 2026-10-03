@@ -4,22 +4,25 @@
 //!
 //! The record names the device and its id to the local network. Users on
 //! untrusted networks can keep LAN hosting off.
+//!
+//! Windows and macOS publish and browse through the system DNS-SD service,
+//! so this process opens no multicast socket there. A socket of our own on
+//! 5353 raises the Windows firewall prompt the first time discovery runs,
+//! even for a client that only looks for a paired host, and on macOS it
+//! competes with mDNSResponder for the port. Other platforms run the
+//! `mdns-sd` responder in process.
 
 #[cfg(feature = "lan")]
 use std::collections::BTreeMap;
+#[cfg(feature = "lan")]
+use std::net::Ipv4Addr;
 use std::time::Duration;
 
 #[cfg(feature = "lan")]
 use anyhow::Result;
-#[cfg(feature = "host")]
-use mdns_sd::ServiceInfo;
-#[cfg(feature = "lan")]
-use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
 #[cfg(feature = "lan")]
 use nmt_platform::runtime;
 use nmt_remote_core::identity::DeviceId;
-#[cfg(feature = "host")]
-use parking_lot::Mutex;
 #[cfg(feature = "lan")]
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 #[cfg(feature = "lan")]
@@ -27,8 +30,22 @@ use tokio::time::{Instant, timeout_at};
 #[cfg(feature = "host")]
 use tracing::warn;
 
+#[cfg(all(feature = "lan", target_os = "macos"))]
+use crate::discovery_macos::Browse;
+#[cfg(all(feature = "host", target_os = "macos"))]
+use crate::discovery_macos::Publisher;
+#[cfg(all(feature = "lan", not(any(windows, target_os = "macos"))))]
+use crate::discovery_mdns::Browse;
+#[cfg(all(feature = "host", not(any(windows, target_os = "macos"))))]
+use crate::discovery_mdns::Publisher;
+#[cfg(all(feature = "lan", windows))]
+use crate::discovery_windows::Browse;
+#[cfg(all(feature = "host", windows))]
+use crate::discovery_windows::Publisher;
+
+/// The DNS-SD service type, without a domain.
 #[cfg(feature = "lan")]
-const SERVICE_TYPE: &str = "_niumaterm._tcp.local.";
+pub(crate) const SERVICE_TYPE: &str = "_niumaterm._tcp";
 
 #[cfg(feature = "lan")]
 const RECORD_VERSION: &str = "1";
@@ -40,11 +57,10 @@ const MAX_LABEL_BYTES: usize = 63;
 /// A host's DNS-SD record, kept current while it lives.
 #[cfg(feature = "host")]
 pub(crate) struct Advertiser {
-    daemon: ServiceDaemon,
+    publisher: Publisher,
     name: String,
     id: DeviceId,
     port: u16,
-    fullname: Mutex<Option<String>>,
 }
 
 /// A host announcing itself on the LAN.
@@ -67,7 +83,7 @@ pub struct NearbyHost {
 /// A running LAN browse for hosts. Dropping it stops the browse.
 #[cfg(feature = "lan")]
 pub struct Browser {
-    daemon: ServiceDaemon,
+    _browse: Browse,
 }
 
 /// What a client looks for on the LAN.
@@ -78,13 +94,52 @@ pub enum Target<'a> {
     PairingSlot(&'a str),
 }
 
+/// A service record as a backend resolved it.
+#[cfg(feature = "lan")]
+pub(crate) struct Resolved {
+    /// The full instance name, which keys the record across updates.
+    pub(crate) fullname: String,
+
+    /// The instance label alone, without the service type and domain.
+    pub(crate) instance: String,
+
+    /// The TXT record as key and value pairs.
+    pub(crate) properties: Vec<(String, String)>,
+
+    pub(crate) ipv4: Vec<Ipv4Addr>,
+    pub(crate) port: u16,
+}
+
+/// A change a browse reports.
+#[cfg(feature = "lan")]
+pub(crate) enum BrowseEvent {
+    /// An instance appeared or its record changed.
+    Found(Resolved),
+    /// The instance with this full name left.
+    Lost(String),
+}
+
+/// A record to publish for this host.
+#[cfg(feature = "host")]
+pub(crate) struct Publication<'a> {
+    pub(crate) instance: &'a str,
+
+    /// The device id, which names the record's host where the backend
+    /// publishes its own address records instead of the system's.
+    #[cfg(not(any(windows, target_os = "macos")))]
+    pub(crate) id: &'a DeviceId,
+
+    pub(crate) port: u16,
+    pub(crate) properties: &'a [(&'a str, &'a str)],
+}
+
 #[cfg(feature = "host")]
 impl Advertiser {
     pub(crate) fn start(name: &str, id: DeviceId, port: u16) -> Result<Self> {
         let suffix = format!(" {}", &id.as_str()[..4]);
 
         let advertiser = Self {
-            daemon: ServiceDaemon::new()?,
+            publisher: Publisher::start()?,
             // Two installs can share a computer name; the id prefix keeps
             // their instance names apart. A DNS label holds 63 bytes, so a
             // long or non-ASCII name is cut on a character boundary to leave
@@ -95,7 +150,6 @@ impl Advertiser {
             ),
             id,
             port,
-            fullname: Mutex::new(None),
         };
 
         advertiser.publish(None)?;
@@ -117,30 +171,13 @@ impl Advertiser {
             properties.push(("pair", slot));
         }
 
-        let info = ServiceInfo::new(
-            SERVICE_TYPE,
-            &self.name,
-            &format!("{}.local.", self.id.as_str()),
-            "",
-            self.port,
-            &properties[..],
-        )?
-        .enable_addr_auto();
-
-        let mut fullname = self.fullname.lock();
-
-        // Re-registering the same name with a new TXT set announces the
-        // change; the previous record is withdrawn first so browsers never
-        // hold a stale slot.
-        if let Some(previous) = fullname.take() {
-            let _ = self.daemon.unregister(&previous);
-        }
-
-        *fullname = Some(info.get_fullname().to_owned());
-
-        self.daemon.register(info)?;
-
-        Ok(())
+        self.publisher.publish(&Publication {
+            instance: &self.name,
+            #[cfg(not(any(windows, target_os = "macos")))]
+            id: &self.id,
+            port: self.port,
+            properties: &properties,
+        })
     }
 }
 
@@ -158,14 +195,13 @@ fn truncate_bytes(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
-#[cfg(feature = "host")]
-impl Drop for Advertiser {
-    fn drop(&mut self) {
-        if let Some(fullname) = self.fullname.lock().take() {
-            let _ = self.daemon.unregister(&fullname);
-        }
-
-        let _ = self.daemon.shutdown();
+#[cfg(feature = "lan")]
+impl Resolved {
+    pub(crate) fn property(&self, key: &str) -> Option<&str> {
+        self.properties
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -174,24 +210,21 @@ impl Browser {
     /// Browse until dropped. The receiver gets the full host list, in name
     /// order, each time a host appears, changes its record, or leaves.
     pub fn start() -> Result<(Self, UnboundedReceiver<Vec<NearbyHost>>)> {
-        let daemon = ServiceDaemon::new()?;
-        let events = daemon.browse(SERVICE_TYPE)?;
+        let (browse, mut events) = Browse::start()?;
+
         let (sender, receiver) = mpsc::unbounded_channel();
 
         runtime().spawn(async move {
             let mut hosts = BTreeMap::new();
 
-            // The event channel closes when the daemon shuts down on drop.
-            while let Ok(event) = events.recv_async().await {
+            // The event channel closes when the browse stops on drop.
+            while let Some(event) = events.recv().await {
                 let changed = match event {
-                    ServiceEvent::ServiceResolved(service) => match nearby_host(&service) {
-                        Some(host) => {
-                            hosts.insert(service.fullname.clone(), host.clone()) != Some(host)
-                        }
+                    BrowseEvent::Found(service) => match nearby_host(&service) {
+                        Some(host) => hosts.insert(service.fullname, host.clone()) != Some(host),
                         None => hosts.remove(&service.fullname).is_some(),
                     },
-                    ServiceEvent::ServiceRemoved(_, fullname) => hosts.remove(&fullname).is_some(),
-                    _ => false,
+                    BrowseEvent::Lost(fullname) => hosts.remove(&fullname).is_some(),
                 };
 
                 if !changed {
@@ -213,56 +246,42 @@ impl Browser {
             }
         });
 
-        Ok((Self { daemon }, receiver))
-    }
-}
-
-#[cfg(feature = "lan")]
-impl Drop for Browser {
-    fn drop(&mut self) {
-        let _ = self.daemon.stop_browse(SERVICE_TYPE);
-        let _ = self.daemon.shutdown();
+        Ok((Self { _browse: browse }, receiver))
     }
 }
 
 /// A resolved record as a listed host, or `None` for a record this version
 /// cannot read or a host without an IPv4 address the listener accepts.
 #[cfg(feature = "lan")]
-fn nearby_host(service: &ResolvedService) -> Option<NearbyHost> {
-    if service.get_property_val_str("v") != Some(RECORD_VERSION) {
+fn nearby_host(service: &Resolved) -> Option<NearbyHost> {
+    if service.property("v") != Some(RECORD_VERSION) {
         return None;
     }
 
-    let id = service.get_property_val_str("id")?.to_owned();
+    let id = service.property("id")?.to_owned();
 
     // Answers heard on the loopback interface carry 127.0.0.1, which names
     // this computer, not the host.
     let ip = service
-        .get_addresses_v4()
-        .into_iter()
+        .ipv4
+        .iter()
         .filter(|ip| !ip.is_loopback() && !ip.is_link_local())
         .min()?;
-
-    let instance = service
-        .fullname
-        .strip_suffix(&service.ty_domain)
-        .and_then(|name| name.strip_suffix('.'))
-        .unwrap_or(&service.fullname);
 
     // The advertiser appends an id prefix to keep instance names of two
     // installs on one computer apart, and DNS-SD conflict resolution can add
     // a " (2)" after that; the list shows the address instead of either.
     let name = id
         .get(..4)
-        .and_then(|prefix| instance.rsplit_once(&format!(" {prefix}")))
-        .map_or(instance, |(name, _)| name)
+        .and_then(|prefix| service.instance.rsplit_once(&format!(" {prefix}")))
+        .map_or(service.instance.as_str(), |(name, _)| name)
         .to_owned();
 
     Some(NearbyHost {
         name,
         id,
-        address: format!("{ip}:{}", service.get_port()),
-        pairing: service.get_property_val_str("pair").is_some(),
+        address: format!("{ip}:{}", service.port),
+        pairing: service.property("pair").is_some(),
     })
 }
 
@@ -270,38 +289,33 @@ fn nearby_host(service: &ResolvedService) -> Option<NearbyHost> {
 /// address as `ip:port`.
 #[cfg(feature = "lan")]
 pub async fn find(target: Target<'_>, wait: Duration) -> Option<String> {
-    let daemon = ServiceDaemon::new().ok()?;
-    let events = daemon.browse(SERVICE_TYPE).ok()?;
+    let (_browse, mut events) = Browse::start().ok()?;
+
     let deadline = Instant::now() + wait;
 
-    let found = loop {
-        let Ok(Ok(event)) = timeout_at(deadline, events.recv_async()).await else {
-            break None;
+    loop {
+        let Ok(Some(event)) = timeout_at(deadline, events.recv()).await else {
+            return None;
         };
 
-        let ServiceEvent::ServiceResolved(service) = event else {
+        let BrowseEvent::Found(service) = event else {
             continue;
         };
 
         let matches = match &target {
-            Target::Device(id) => service.get_property_val_str("id") == Some(id.as_str()),
-            Target::PairingSlot(slot) => service.get_property_val_str("pair") == Some(*slot),
+            Target::Device(id) => service.property("id") == Some(id.as_str()),
+            Target::PairingSlot(slot) => service.property("pair") == Some(*slot),
         };
 
-        if !matches || service.get_property_val_str("v") != Some(RECORD_VERSION) {
+        if !matches || service.property("v") != Some(RECORD_VERSION) {
             continue;
         }
 
         // IPv4 matches the listener; the first address is as good as any.
-        if let Some(ip) = service.get_addresses_v4().into_iter().next() {
-            break Some(format!("{ip}:{}", service.get_port()));
+        if let Some(ip) = service.ipv4.first() {
+            return Some(format!("{ip}:{}", service.port));
         }
-    };
-
-    let _ = daemon.stop_browse(SERVICE_TYPE);
-    let _ = daemon.shutdown();
-
-    found
+    }
 }
 
 /// Without DNS-SD nothing on the LAN can be found, so a client falls back at

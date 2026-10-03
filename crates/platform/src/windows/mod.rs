@@ -10,6 +10,7 @@ pub(crate) use crate::windows::powershell::{
 };
 
 pub mod data_protection;
+pub mod dns_sd;
 pub mod environment;
 pub mod filesystem;
 pub mod firewall;

@@ -67,5 +67,12 @@
   <string>NiumaTerm needs access so commands you run can read and write files on removable volumes.</string>
   <key>NSNetworkVolumesUsageDescription</key>
   <string>NiumaTerm needs access so commands you run can read and write files on network volumes.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>NiumaTerm uses the local network to find and connect to your other computers for remote sessions.</string>
+
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_niumaterm._tcp</string>
+  </array>
 </dict>
 </plist>

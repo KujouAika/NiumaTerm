@@ -22,6 +22,12 @@ pub mod sessions;
 pub mod store;
 
 mod direct;
+#[cfg(all(feature = "lan", target_os = "macos"))]
+mod discovery_macos;
+#[cfg(all(feature = "lan", not(any(windows, target_os = "macos"))))]
+mod discovery_mdns;
+#[cfg(all(feature = "lan", windows))]
+mod discovery_windows;
 mod link;
 mod netwatch;
 mod network_pty;

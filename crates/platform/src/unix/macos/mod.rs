@@ -1,3 +1,5 @@
+pub mod dns_sd;
+
 pub(crate) mod login_shell;
 
 use std::io;

@@ -11,6 +11,8 @@ pub(crate) use crate::unix::shell::{default_shell, prompt_integration};
 pub mod environment;
 pub mod filesystem;
 pub mod ipc;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod process;
 pub mod shell;
 pub mod window;
@@ -20,8 +22,6 @@ pub(crate) mod clipboard;
 pub(crate) mod hook_command;
 pub(crate) mod library;
 
-#[cfg(target_os = "macos")]
-mod macos;
 mod notifier;
 mod shell_integration;
 
