@@ -25,6 +25,7 @@ pub mod git;
 pub mod images;
 pub mod input_history;
 pub mod launcher;
+pub mod orchestration;
 pub mod profile;
 pub mod progress;
 pub mod session;
