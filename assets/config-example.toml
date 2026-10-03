@@ -74,6 +74,7 @@ enable-agent-team = false
 token-speed-mode = "session"
 answer-questions-one-at-a-time = false
 unified-agent-tab = true
+enable-agent-orchestration = false
 
 [system]
 restore-last-session-when-opening = true

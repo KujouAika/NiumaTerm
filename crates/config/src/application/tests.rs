@@ -77,6 +77,7 @@ fn sample_agent() -> AgentConfig {
         token_speed_mode: agent::TokenSpeedMode::Session,
         answer_questions_one_at_a_time: true,
         unified_agent_tab: false,
+        enable_agent_orchestration: true,
     }
 }
 

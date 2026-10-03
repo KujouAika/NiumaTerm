@@ -10,6 +10,7 @@ fn agent_section_defaults_when_absent() {
     assert!(config.agent.enable_agent_hooks);
     assert!(config.agent.show_agent_usage);
     assert!(!config.agent.enable_agent_team);
+    assert!(!config.agent.enable_agent_orchestration);
 }
 
 #[test]
@@ -28,6 +29,32 @@ fn agent_team_requires_explicit_opt_in_in_existing_configs() {
         let restored: Config = from_str(&saved).unwrap();
 
         assert_eq!(restored.agent.enable_agent_team, enabled);
+    }
+}
+
+#[test]
+fn agent_orchestration_requires_opt_in_and_round_trips() {
+    let config: Config = from_str(
+        "[agent]
+enable-agent-team = true
+",
+    )
+    .unwrap();
+
+    assert!(!config.agent.enable_agent_orchestration);
+
+    for enabled in [true, false] {
+        let config: Config = from_str(&format!(
+            "[agent]
+enable-agent-orchestration = {enabled}
+"
+        ))
+        .unwrap();
+
+        let restored: Config = from_str(&toml::to_string(&config).unwrap()).unwrap();
+
+        assert_eq!(config.agent.enable_agent_orchestration, enabled);
+        assert_eq!(restored.agent.enable_agent_orchestration, enabled);
     }
 }
 

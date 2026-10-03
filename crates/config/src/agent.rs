@@ -54,6 +54,10 @@ pub struct AgentConfig {
     /// in the composer, instead of listing each profile in the new-tab menu.
     #[serde(default = "default_bool_true", rename = "unified-agent-tab")]
     pub unified_agent_tab: bool,
+
+    /// Offer Orchestration tabs, which run a declared graph of agent steps.
+    #[serde(default, rename = "enable-agent-orchestration")]
+    pub enable_agent_orchestration: bool,
 }
 
 impl Default for AgentConfig {
@@ -69,6 +73,7 @@ impl Default for AgentConfig {
             token_speed_mode: TokenSpeedMode::default(),
             answer_questions_one_at_a_time: false,
             unified_agent_tab: true,
+            enable_agent_orchestration: false,
         }
     }
 }
