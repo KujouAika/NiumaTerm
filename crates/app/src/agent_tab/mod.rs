@@ -16,6 +16,7 @@ pub use crate::agent_tab::session::{
 
 pub mod execution;
 pub mod input_history;
+pub mod orchestration;
 pub mod profile;
 pub mod remote;
 pub mod settings;
