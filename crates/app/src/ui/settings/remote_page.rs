@@ -14,6 +14,8 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 use gpui_component::{
     ActiveTheme as _, AxisExt as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
+#[cfg(windows)]
+use nmt_platform::firewall::FirewallStatus;
 use nmt_remote::discovery::NearbyHost;
 use nmt_remote::presence::Presence;
 use nmt_remote::store::{PairedDevice, PairedHost, now_ms};
@@ -22,6 +24,8 @@ use qrcode::{Color, QrCode};
 use rust_i18n::t;
 
 use crate::ui::AppSettings;
+#[cfg(windows)]
+use crate::ui::firewall::{self, Firewall};
 use crate::ui::remote::{self, Nearby, Remote};
 use crate::ui::remote_rename::{RenameTarget, open_rename_dialog};
 use crate::ui::settings::fields::settings_switch;
@@ -79,6 +83,11 @@ fn hosting_group(state: &Remote) -> SettingGroup {
         )
         .item(device_name_item());
 
+    #[cfg(windows)]
+    {
+        group = group.item(firewall_item());
+    }
+
     let Some(addresses) = state.hosting_addresses() else {
         return group;
     };
@@ -134,6 +143,82 @@ fn device_name_item() -> SettingItem {
         }),
     )
     .description(t!("settings-remote-device-name-description").into_owned())
+}
+
+/// Whether Windows Firewall admits inbound connections to this executable,
+/// which the LAN listener and the waiting side of a direct path need, with
+/// the elevated fix when it does not.
+#[cfg(windows)]
+fn firewall_item() -> SettingItem {
+    SettingItem::new(
+        t!("settings-remote-firewall"),
+        SettingField::render(|options, _, cx| {
+            let state = cx.global::<Firewall>();
+
+            let (status, color, fixable) = match state.status() {
+                None => (
+                    t!("settings-remote-firewall-checking"),
+                    cx.theme().muted_foreground,
+                    false,
+                ),
+                Some(FirewallStatus::Off) => (
+                    t!("settings-remote-firewall-off"),
+                    cx.theme().muted_foreground,
+                    false,
+                ),
+                Some(FirewallStatus::Allowed) => (
+                    t!("settings-remote-firewall-allowed"),
+                    cx.theme().success,
+                    false,
+                ),
+                Some(FirewallStatus::Missing) => (
+                    t!("settings-remote-firewall-missing"),
+                    cx.theme().warning,
+                    true,
+                ),
+                Some(FirewallStatus::Blocked) => (
+                    t!("settings-remote-firewall-blocked"),
+                    cx.theme().danger,
+                    true,
+                ),
+                Some(FirewallStatus::Managed) => (
+                    t!("settings-remote-firewall-managed"),
+                    cx.theme().warning,
+                    false,
+                ),
+            };
+
+            let error = state.error().cloned();
+            let busy = state.busy();
+
+            v_flex()
+                .items_end()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(Label::new(status).text_sm().text_color(color))
+                        .when(fixable, |row| {
+                            row.child(
+                                Button::new("remote-firewall-allow")
+                                    .outline()
+                                    .label(if busy {
+                                        t!("settings-remote-firewall-waiting")
+                                    } else {
+                                        t!("settings-remote-firewall-allow")
+                                    })
+                                    .disabled(busy || options.is_disabled())
+                                    .on_click(|_, _, cx: &mut App| firewall::allow(cx)),
+                            )
+                        }),
+                )
+                .children(
+                    error.map(|error| Label::new(error).text_xs().text_color(cx.theme().danger)),
+                )
+        }),
+    )
+    .description(t!("settings-remote-firewall-description").into_owned())
 }
 
 struct RelayKeyInput {

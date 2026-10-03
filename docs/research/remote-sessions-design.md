@@ -1155,6 +1155,11 @@ Known gaps in the direct path:
 - A Windows client that never hosted has no firewall rule for inbound UDP.
   When the host is the symmetric side, the client waits for the host's
   packets and Windows Firewall drops them, so that pair stays on the relay.
+  The Remote settings page shows whether the firewall admits NiumaTerm
+  (allowed, missing, blocked by a rule, managed by group policy, or off)
+  and offers a button that runs NiumaTerm elevated with
+  `--configure-firewall`; that copy disables block rules for its own path,
+  adds one allow rule for any protocol on every profile, and exits.
 - STUN servers are asked over IPv4 only, so two machines that both have
   public IPv6 addresses still go through NAT traversal.
 - A change to `remote.stun-servers` reaches the host service on its next

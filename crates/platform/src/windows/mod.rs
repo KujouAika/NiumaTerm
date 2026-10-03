@@ -12,6 +12,7 @@ pub(crate) use crate::windows::powershell::{
 pub mod data_protection;
 pub mod environment;
 pub mod filesystem;
+pub mod firewall;
 pub mod ipc;
 pub mod powershell;
 pub mod process;

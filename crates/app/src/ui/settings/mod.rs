@@ -61,6 +61,8 @@ use tracing::warn;
 
 use crate::agent_updates::AgentUpdates;
 use crate::ui::composition::sidebar_surface;
+#[cfg(windows)]
+use crate::ui::firewall::{self, Firewall};
 use crate::ui::remote::{self, Remote};
 use crate::ui::settings::about_page::about_page;
 use crate::ui::settings::agent_page::agent_page;
@@ -156,6 +158,16 @@ fn new_settings_view(
 
         cx.observe_global::<Remote>(|view, cx| view.refresh(cx))
             .detach();
+
+        // Rules change outside NiumaTerm too, so each settings view starts
+        // from a fresh check.
+        #[cfg(windows)]
+        {
+            cx.observe_global::<Firewall>(|view, cx| view.refresh(cx))
+                .detach();
+
+            firewall::refresh(cx);
+        }
 
         SettingsView::new(state, move |cx| settings_view(editing.clone(), cx), cx)
     })

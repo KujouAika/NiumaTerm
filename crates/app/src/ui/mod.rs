@@ -20,6 +20,8 @@ pub(crate) use crate::ui::shell::{
     TabSurface, ToggleSidebar, WindowRegistry, open_window, selected_window_appearance,
 };
 
+#[cfg(windows)]
+pub(crate) mod firewall;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos_menu;
 pub(crate) mod notification_card;

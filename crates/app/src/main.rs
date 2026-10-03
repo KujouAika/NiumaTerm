@@ -41,6 +41,8 @@ use nmt_agent::{AgentEvent, AgentRoute, agent_process};
 use nmt_config::local_state::{self, WindowLocalState};
 use nmt_config::{Config, config_dir_path, config_file_path, get, set_testing_mode};
 use nmt_net::set_proxy;
+#[cfg(windows)]
+use nmt_platform::firewall;
 use nmt_platform::ipc as platform_ipc;
 use nmt_platform::window::show_error_dialog;
 #[cfg(enable_profiling)]
@@ -72,6 +74,11 @@ struct StartupArgs {
     /// The instance an update replaced, which this one must outlive before it
     /// may claim the single-instance mutex that instance still holds.
     previous_instance_pid: Option<u32>,
+
+    /// Set in the elevated copy the remote settings start to admit this
+    /// executable through Windows Firewall.
+    #[cfg(windows)]
+    configure_firewall: bool,
 }
 
 /// The concrete Windows platform, kept as a gpui global so settings toggles
@@ -89,7 +96,20 @@ fn main() {
         testing,
         enable_profiling: profiling,
         previous_instance_pid: _previous_instance_pid,
+        #[cfg(windows)]
+        configure_firewall,
     } = parse_startup_args();
+
+    // The elevated copy does only this and exits before anything a second
+    // instance would touch: the single-instance mutex, the log, the window.
+    #[cfg(windows)]
+    if configure_firewall {
+        let result = env::current_exe()
+            .map_err(Into::into)
+            .and_then(|program| firewall::allow(&program));
+
+        process::exit(i32::from(result.is_err()));
+    }
 
     // Only a build that can replace itself has a predecessor to outlive.
     #[cfg(windows)]
@@ -226,7 +246,7 @@ fn main() {
 fn parse_startup_args() -> StartupArgs {
     let args = env::args_os();
 
-    let matches = ClapCommand::new("NiumaTerm")
+    let command = ClapCommand::new("NiumaTerm")
         .disable_help_flag(true)
         .arg(
             Arg::new("testing")
@@ -261,18 +281,28 @@ fn parse_startup_args() -> StartupArgs {
             Arg::new("url")
                 .index(1)
                 .conflicts_with_all(["new-tab", "new-window"]),
-        )
-        .try_get_matches_from(args)
-        .unwrap_or_else(|err| {
-            eprintln!("{err}");
+        );
 
-            process::exit(2);
-        });
+    #[cfg(windows)]
+    let command = command.arg(
+        Arg::new("configure-firewall")
+            .long(firewall::CONFIGURE_FIREWALL_FLAG.trim_start_matches('-'))
+            .action(ArgAction::SetTrue)
+            .hide(true),
+    );
+
+    let matches = command.try_get_matches_from(args).unwrap_or_else(|err| {
+        eprintln!("{err}");
+
+        process::exit(2);
+    });
 
     StartupArgs {
         testing: matches.get_flag("testing"),
         enable_profiling: matches.get_flag("enable-profiling"),
         previous_instance_pid: matches.get_one::<u32>("await-exit").copied(),
+        #[cfg(windows)]
+        configure_firewall: matches.get_flag("configure-firewall"),
         url: matches
             .get_one::<String>("url")
             .cloned()
@@ -348,6 +378,9 @@ fn on_finish_launching(
     update::initialize(is_testing, cx);
 
     ui::remote::initialize(cx);
+
+    #[cfg(windows)]
+    ui::firewall::initialize(cx);
 
     // The platform remembers the choice and applies it to the vsync
     // thread when that spawns (after this closure returns).
