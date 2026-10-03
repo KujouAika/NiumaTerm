@@ -42,7 +42,7 @@ fn every_definition_file_is_listed_with_its_errors() {
         ["broken", "cycle", "review"]
     );
     assert!(entries[0].graph.is_err());
-    assert!(entries[1].graph.as_ref().unwrap_err()[0].contains("cycle"));
+    assert!(entries[1].graph.as_ref().unwrap_err()[0].contains("depends on itself"));
     assert!(entries[2].graph.is_ok());
 }
 

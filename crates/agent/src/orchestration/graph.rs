@@ -48,7 +48,7 @@ pub enum DefinitionError {
     UnknownDependency { node: String, dependency: String },
     #[error("node `{node}` lists dependency `{dependency}` more than once")]
     RepeatedDependency { node: String, dependency: String },
-    #[error("nodes {} depend on each other in a cycle", quoted(.0))]
+    #[error("{}", cycle_message(.0))]
     Cycle(Vec<String>),
     #[error("node `{node}` has an empty prompt; remove `prompt` to send its inputs")]
     EmptyPrompt { node: String },
@@ -62,6 +62,15 @@ pub enum DefinitionError {
         first: String,
         second: String,
     },
+}
+
+/// A node that lists itself is one node depending on itself, which reads
+/// wrong as several nodes depending on each other.
+fn cycle_message(names: &[String]) -> String {
+    match names {
+        [name] => format!("node `{name}` depends on itself"),
+        _ => format!("nodes {} depend on each other in a cycle", quoted(names)),
+    }
 }
 
 fn quoted(names: &[String]) -> String {

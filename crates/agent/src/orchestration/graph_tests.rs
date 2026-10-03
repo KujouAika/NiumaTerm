@@ -77,6 +77,15 @@ fn cycles_are_rejected_naming_their_nodes() {
         )),
         [DefinitionError::Cycle(vec!["a".into()])]
     );
+
+    assert_eq!(
+        DefinitionError::Cycle(vec!["a".into()]).to_string(),
+        "node `a` depends on itself"
+    );
+    assert_eq!(
+        DefinitionError::Cycle(vec!["a".into(), "b".into()]).to_string(),
+        "nodes `a`, `b` depend on each other in a cycle"
+    );
 }
 
 #[test]
