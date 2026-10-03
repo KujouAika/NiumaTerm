@@ -16,6 +16,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use uuid::{Error as UuidError, Uuid};
 
+use crate::AgentWorkspace;
 use crate::orchestration::definition::Definition;
 use crate::orchestration::graph::Graph;
 
@@ -145,8 +146,9 @@ pub struct RunRecord {
 
     input: String,
 
-    /// The primary root of the workspace the run was started in.
-    workspace: Option<String>,
+    /// The workspace the run was started in, with all of its roots, so a
+    /// slot resumed later opens with the same directories.
+    workspace: AgentWorkspace,
 
     started_at: u64,
     ended_at: Option<u64>,
@@ -160,7 +162,7 @@ impl RunRecord {
         definition_name: String,
         graph: &Graph,
         input: String,
-        workspace: Option<String>,
+        workspace: AgentWorkspace,
         now: u64,
     ) -> Self {
         Self {
@@ -193,8 +195,8 @@ impl RunRecord {
         &self.input
     }
 
-    pub fn workspace(&self) -> Option<&str> {
-        self.workspace.as_deref()
+    pub fn workspace(&self) -> &AgentWorkspace {
+        &self.workspace
     }
 
     pub fn started_at(&self) -> u64 {

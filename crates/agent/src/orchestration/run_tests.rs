@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 
+use crate::AgentWorkspace;
 use crate::orchestration::definition::Definition;
 use crate::orchestration::graph::Graph;
 use crate::orchestration::run::{NodeState, RunRecord, RunState};
@@ -45,7 +46,13 @@ fn diamond() -> Graph {
 }
 
 fn run(graph: &Graph) -> RunRecord {
-    RunRecord::new("diamond".into(), graph, "Add search".into(), None, 0)
+    RunRecord::new(
+        "diamond".into(),
+        graph,
+        "Add search".into(),
+        AgentWorkspace::default(),
+        0,
+    )
 }
 
 fn all_ready(graph: &Graph) -> Vec<bool> {

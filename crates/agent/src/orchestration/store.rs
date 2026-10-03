@@ -191,12 +191,13 @@ impl RunStore {
     }
 }
 
-/// Summaries of the runs started in `workspace`, newest first, read without
+/// Summaries of the runs whose workspace has `primary` as its primary root,
+/// newest first, read without
 /// taking any run's lock. A damaged run is skipped so it cannot hide the
 /// others.
 pub fn recent_runs(
     data_directory: &Path,
-    workspace: Option<&str>,
+    primary: Option<&str>,
 ) -> Result<Vec<RunSummary>, RunStoreError> {
     let directory = runs_directory(data_directory);
 
@@ -221,7 +222,7 @@ pub fn recent_runs(
             Ok((_, run)) if run.id() != id => {
                 tracing::warn!(%id, "skipping an orchestration run saved under another id");
             }
-            Ok((_, run)) if run.workspace() == workspace => summaries.push(RunSummary {
+            Ok((_, run)) if run.workspace().primary() == primary => summaries.push(RunSummary {
                 id,
                 definition_name: run.definition_name().to_owned(),
                 state: run.state(),

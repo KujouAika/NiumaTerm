@@ -3,6 +3,7 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
+use crate::AgentWorkspace;
 use crate::chat::Item;
 use crate::orchestration::definition::Definition;
 use crate::orchestration::graph::Graph;
@@ -31,7 +32,7 @@ fn record(graph: &Graph, workspace: &str, started_at: u64) -> RunRecord {
         "review".into(),
         graph,
         "Add search".into(),
-        Some(workspace.into()),
+        AgentWorkspace::single(Some(workspace.into())),
         started_at,
     )
 }
