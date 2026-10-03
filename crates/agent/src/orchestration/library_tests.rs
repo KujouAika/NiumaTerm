@@ -42,6 +42,14 @@ fn every_definition_file_is_listed_with_its_errors() {
         ["broken", "cycle", "review"]
     );
     assert!(entries[0].graph.is_err());
+    assert!(
+        entries[0].definition.is_none(),
+        "a file that does not decode has no definition"
+    );
+    assert!(
+        entries[1].definition.is_some(),
+        "an invalid but decodable file keeps its definition"
+    );
     assert!(entries[1].graph.as_ref().unwrap_err()[0].contains("depends on itself"));
     assert!(entries[2].graph.is_ok());
 }

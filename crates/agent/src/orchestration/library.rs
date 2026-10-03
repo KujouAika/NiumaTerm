@@ -18,6 +18,14 @@ const DEFINITION_EXTENSION: &str = "json";
 pub struct DefinitionEntry {
     pub name: String,
     pub path: PathBuf,
+
+    /// The decoded definition, `None` when the file does not decode. A
+    /// definition that decodes but does not validate is still shown and
+    /// edited on the canvas.
+    pub definition: Option<Definition>,
+
+    /// The validated graph, or every error that kept the file from decoding
+    /// or validating.
     pub graph: Result<Graph, Vec<String>>,
 }
 
@@ -58,9 +66,14 @@ pub fn load_definitions(data_directory: &Path) -> io::Result<Vec<DefinitionEntry
             continue;
         };
 
-        let graph = read_definition(&path);
+        let (definition, graph) = read_definition(&path);
 
-        definitions.push(DefinitionEntry { name, path, graph });
+        definitions.push(DefinitionEntry {
+            name,
+            path,
+            definition,
+            graph,
+        });
     }
 
     definitions.sort_by(|left, right| left.name.cmp(&right.name));
@@ -68,11 +81,20 @@ pub fn load_definitions(data_directory: &Path) -> io::Result<Vec<DefinitionEntry
     Ok(definitions)
 }
 
-fn read_definition(path: &Path) -> Result<Graph, Vec<String>> {
-    let text = fs::read_to_string(path).map_err(|error| vec![error.to_string()])?;
+fn read_definition(path: &Path) -> (Option<Definition>, Result<Graph, Vec<String>>) {
+    let decoded = fs::read_to_string(path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| {
+            serde_json::from_str::<Definition>(&text).map_err(|error| error.to_string())
+        });
 
-    let definition: Definition =
-        serde_json::from_str(&text).map_err(|error| vec![error.to_string()])?;
+    match decoded {
+        Ok(definition) => {
+            let graph = Graph::new(definition.clone())
+                .map_err(|errors| errors.iter().map(ToString::to_string).collect());
 
-    Graph::new(definition).map_err(|errors| errors.iter().map(ToString::to_string).collect())
+            (Some(definition), graph)
+        }
+        Err(error) => (None, Err(vec![error])),
+    }
 }

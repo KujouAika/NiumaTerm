@@ -22,7 +22,9 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Textarea, TextareaState};
 use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use nmt_agent::AgentWorkspace;
+use nmt_agent::orchestration::definition::Definition;
 use nmt_agent::orchestration::library::{DefinitionEntry, definitions_directory, load_definitions};
+use nmt_agent::orchestration::placement::place;
 use nmt_agent::orchestration::run::{NodeRun, NodeState, RunId, RunState};
 use nmt_agent::orchestration::store::{RunSummary, recent_runs};
 use nmt_agent::session::AgentKind;
@@ -32,6 +34,7 @@ use notify::{
 use rust_i18n::t;
 
 use crate::agent_tab::AgentPane;
+use crate::agent_tab::orchestration::canvas::{CanvasEvent, CanvasNode, CardState, GraphCanvas};
 use crate::agent_tab::orchestration::{OrchestrationRuntime, missing_profile};
 use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
 use crate::agent_tab::transcript::{TranscriptView, elapsed_label, relative_time};
@@ -41,6 +44,13 @@ pub(super) const SIDEBAR_WIDTH: f32 = 280.;
 /// File events arrive in bursts while an editor saves; one reload after the
 /// burst is enough.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// What the area beside the definitions list shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MainView {
+    Definition,
+    Run,
+}
 
 /// The node whose turn the detail view shows.
 struct NodeDetail {
@@ -66,6 +76,8 @@ pub struct OrchestrationPane {
     runtime_observer: Option<Subscription>,
     detail: Option<NodeDetail>,
     transcript: Entity<TranscriptView>,
+    canvas: Entity<GraphCanvas>,
+    main: MainView,
 
     /// One view per slot session, made when first needed and kept while
     /// that session is open: binding a second view to a session would retire
@@ -76,6 +88,7 @@ pub struct OrchestrationPane {
     error: Option<String>,
     last_state: Option<RunState>,
     _watcher: Option<Task<()>>,
+    _canvas_events: Subscription,
 }
 
 impl OrchestrationPane {
@@ -100,6 +113,14 @@ impl OrchestrationPane {
         });
 
         let transcript = cx.new(|_| TranscriptView::new(AgentKind::Codex, None));
+        let canvas = cx.new(|_| GraphCanvas::new());
+
+        let canvas_events = cx.subscribe(&canvas, |this, _, event, cx| match event {
+            CanvasEvent::OpenDetails(node) if this.main == MainView::Run => {
+                this.open_detail(*node, cx)
+            }
+            CanvasEvent::OpenDetails(_) => {}
+        });
 
         let mut pane = Self {
             directory,
@@ -113,11 +134,14 @@ impl OrchestrationPane {
             runtime_observer: None,
             detail: None,
             transcript,
+            canvas,
+            main: MainView::Definition,
             slot_panes: BTreeMap::new(),
             confirm_resume: false,
             error: None,
             last_state: None,
             _watcher: None,
+            _canvas_events: canvas_events,
         };
 
         pane._watcher = pane.watch_definitions(cx);
@@ -254,6 +278,8 @@ impl OrchestrationPane {
 
     fn select_definition(&mut self, name: String, cx: &mut Context<Self>) {
         self.selected = Some(name);
+        self.main = MainView::Definition;
+        self.detail = None;
         self.error = None;
 
         cx.notify();
@@ -315,6 +341,10 @@ impl OrchestrationPane {
 
     fn open_run(&mut self, id: RunId, cx: &mut Context<Self>) {
         if self.run_id(cx) == Some(id) {
+            self.main = MainView::Run;
+
+            cx.notify();
+
             return;
         }
 
@@ -329,6 +359,7 @@ impl OrchestrationPane {
         self.detail = None;
         self.confirm_resume = false;
         self.last_state = None;
+        self.main = MainView::Run;
 
         self.runtime_observer = Some(cx.observe(&runtime, |this, runtime, cx| {
             let state = runtime.read(cx).run().map(|run| run.state());
@@ -672,6 +703,13 @@ impl OrchestrationPane {
             .into_any_element()
     }
 
+    fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        match self.main {
+            MainView::Run => self.render_run(window, cx),
+            MainView::Definition => self.render_definition(cx),
+        }
+    }
+
     fn render_run(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(runtime) = self.runtime.clone() else {
             return placeholder(
@@ -685,7 +723,6 @@ impl OrchestrationPane {
             return self.render_detail(&runtime, node, window, cx);
         }
 
-        let theme = cx.theme();
         let runtime_ref = runtime.read(cx);
 
         let (Some(run), Some(graph)) = (runtime_ref.run(), runtime_ref.graph()) else {
@@ -699,58 +736,36 @@ impl OrchestrationPane {
 
         let stoppable = runtime_ref.stoppable();
         let resumable = runtime_ref.resumable();
+        let key = format!("run:{}", run.id());
+        let name = run.definition_name().to_owned();
+        let input = run.input().lines().next().unwrap_or_default().to_owned();
+        let state = run_state_label(run.state());
+        let edges = dependency_edges(run.definition());
 
-        let mut columns: BTreeMap<usize, Vec<AnyElement>> = BTreeMap::new();
+        // The run's own copy of the definition holds the layout it started
+        // with, so later moves of the definition do not move this run.
+        let nodes: Vec<CanvasNode> = place(run.definition())
+            .into_iter()
+            .enumerate()
+            .map(|(node, position)| {
+                let state = &run.nodes()[node].state;
 
-        for &node in graph.order() {
-            let id = graph.definition().nodes[node].id.clone();
-            let needs_input = runtime_ref.needs_input(node, cx);
-            let state = &run.nodes()[node].state;
+                CanvasNode {
+                    id: graph.definition().nodes[node].id.clone(),
+                    position,
+                    state: Some(CardState {
+                        label: node_state_label(state),
+                        color: node_state_color(state, cx),
+                        needs_input: runtime_ref.needs_input(node, cx),
+                    }),
+                }
+            })
+            .collect();
 
-            let card = v_flex()
-                .w(px(180.))
-                .p_2()
-                .gap_1()
-                .rounded(UI_RADIUS)
-                .border_1()
-                .border_color(if needs_input {
-                    theme.warning
-                } else {
-                    theme.border
-                })
-                .bg(theme.background)
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .truncate()
-                        .child(id),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(node_state_color(state, cx))
-                        .child(node_state_label(state)),
-                )
-                .children(needs_input.then(|| {
-                    div()
-                        .text_xs()
-                        .text_color(theme.warning)
-                        .child(t!("orchestration-node-needs-input").into_owned())
-                }))
-                .child(
-                    Button::new(("orchestration-node-details", node))
-                        .ghost()
-                        .xsmall()
-                        .label(t!("orchestration-view-details"))
-                        .on_click(cx.listener(move |this, _, _, cx| this.open_detail(node, cx))),
-                );
+        self.canvas
+            .update(cx, |canvas, cx| canvas.show(&key, nodes, edges, cx));
 
-            columns
-                .entry(graph.depth(node))
-                .or_default()
-                .push(card.into_any_element());
-        }
+        let theme = cx.theme();
 
         let header = h_flex()
             .gap_2()
@@ -765,21 +780,21 @@ impl OrchestrationPane {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(run.definition_name().to_owned()),
+                            .child(name),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .truncate()
-                            .child(run.input().lines().next().unwrap_or_default().to_owned()),
+                            .child(input),
                     ),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(run_state_label(run.state())),
+                    .child(state),
             )
             .children(stoppable.then(|| {
                 Button::new("orchestration-stop")
@@ -837,21 +852,91 @@ impl OrchestrationPane {
             .size_full()
             .child(header)
             .children(confirmation)
+            .child(div().flex_1().min_h_0().child(self.canvas.clone()))
+            .into_any_element()
+    }
+
+    /// The selected definition on a read-only canvas, or its decoding error
+    /// with a way to open the file when it does not decode.
+    fn render_definition(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(entry) = self
+            .definitions
+            .iter()
+            .find(|entry| Some(&entry.name) == self.selected.as_ref())
+        else {
+            return placeholder(
+                t!("orchestration-empty-title").into_owned(),
+                t!("orchestration-empty-detail").into_owned(),
+                cx,
+            );
+        };
+
+        let name = entry.name.clone();
+        let path = entry.path.clone();
+
+        let Some(definition) = entry.definition.clone() else {
+            let errors = entry.graph.as_ref().err().cloned().unwrap_or_default();
+            let theme = cx.theme();
+
+            return v_flex()
+                .size_full()
+                .p_3()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(t!("orchestration-undecodable").into_owned()),
+                )
+                .children(
+                    errors
+                        .into_iter()
+                        .map(|error| div().text_xs().text_color(theme.danger).child(error)),
+                )
+                .child(
+                    Button::new("orchestration-open-file")
+                        .small()
+                        .label(t!("orchestration-open-file"))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path))),
+                )
+                .into_any_element();
+        };
+
+        let edges = dependency_edges(&definition);
+
+        let nodes: Vec<CanvasNode> = place(&definition)
+            .into_iter()
+            .zip(&definition.nodes)
+            .map(|(position, node)| CanvasNode {
+                id: node.id.clone(),
+                position,
+                state: None,
+            })
+            .collect();
+
+        let key = format!("definition:{name}");
+
+        self.canvas
+            .update(cx, |canvas, cx| canvas.show(&key, nodes, edges, cx));
+
+        v_flex()
+            .size_full()
             .child(
-                h_flex()
-                    .id("orchestration-graph")
-                    .flex_1()
-                    .min_h_0()
-                    .p_3()
-                    .gap_4()
-                    .items_start()
-                    .overflow_scroll()
-                    .children(
-                        columns
-                            .into_values()
-                            .map(|cards| v_flex().gap_2().children(cards)),
-                    ),
+                div()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name),
             )
+            .child(div().flex_1().min_h_0().child(self.canvas.clone()))
             .into_any_element()
     }
 
@@ -1004,9 +1089,36 @@ impl Render for OrchestrationPane {
                             .text_color(theme_danger)
                             .child(error)
                     }))
-                    .child(self.render_run(window, cx)),
+                    .child(self.render_main(window, cx)),
             )
     }
+}
+
+/// Every dependency as (dependency, dependent) node indices, skipping ids
+/// that name no node so a definition that does not validate still draws.
+fn dependency_edges(definition: &Definition) -> Vec<(usize, usize)> {
+    let index: HashMap<&str, usize> = definition
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(position, node)| (node.id.as_str(), position))
+        .collect();
+
+    definition
+        .nodes
+        .iter()
+        .enumerate()
+        .flat_map(|(dependent, node)| {
+            node.needs
+                .iter()
+                .filter_map(|id| {
+                    index
+                        .get(id.as_str())
+                        .map(|&dependency| (dependency, dependent))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn placeholder(title: String, detail: String, cx: &App) -> AnyElement {

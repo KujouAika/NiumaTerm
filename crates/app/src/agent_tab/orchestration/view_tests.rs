@@ -17,7 +17,7 @@ use serde_json::json;
 use tempfile::{TempDir, tempdir};
 
 use crate::agent_tab::execution::AgentSession;
-use crate::agent_tab::orchestration::view::SIDEBAR_WIDTH;
+use crate::agent_tab::orchestration::view::{MainView, SIDEBAR_WIDTH};
 use crate::agent_tab::orchestration::{OrchestrationPane, OrchestrationRuntime};
 use crate::agent_tab::settings::AgentSettings;
 
@@ -202,4 +202,108 @@ async fn an_approval_in_a_narrow_pane_keeps_every_button_inside_it(cx: &mut Test
         "the first approval button stays right of the definitions list: {cancel:?}"
     );
     assert!(cancel.right() <= surface.right());
+}
+
+#[gpui::test]
+async fn a_run_canvas_fits_every_node_inside_it(cx: &mut TestAppContext) {
+    let directory = tempdir().unwrap();
+
+    let definition: Definition = serde_json::from_value(json!({
+        "version": 1,
+        "slots": { "dev": { "profile": { "kind": "codex", "name": "test" } } },
+        "nodes": [
+            { "id": "plan", "slot": "dev" },
+            { "id": "frontend", "slot": "dev", "needs": ["plan"] },
+            { "id": "backend", "slot": "dev", "needs": ["frontend"] },
+            { "id": "review", "slot": "dev", "needs": ["backend"] },
+        ],
+        "layout": { "review": { "x": 2400.0, "y": 1600.0 } },
+    }))
+    .unwrap();
+
+    let (pane, window) = cx.update(|cx| {
+        gpui_component::init(cx);
+
+        cx.set_global(AgentSettings::default());
+
+        let runtime = OrchestrationRuntime::start(
+            directory.path(),
+            "chain".into(),
+            Graph::new(definition).unwrap(),
+            String::new(),
+            AgentWorkspace::default(),
+            cx,
+        );
+
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                point(px(0.), px(0.)),
+                size(px(1200.), px(800.)),
+            ))),
+            ..WindowOptions::default()
+        };
+
+        let mut pane = None;
+
+        let window = cx
+            .open_window(options, |window, cx| {
+                let view = cx.new(|cx| {
+                    OrchestrationPane::new(
+                        directory.path().to_owned(),
+                        AgentWorkspace::default(),
+                        None,
+                        window,
+                        cx,
+                    )
+                });
+
+                view.update(cx, |pane, cx| pane.show_runtime(runtime, cx));
+
+                pane = Some(view.clone());
+
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .unwrap();
+
+        (pane.unwrap(), window)
+    });
+
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+    cx.run_until_parked();
+
+    // The first frame lays the canvas out; fitting runs on the next one.
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        cx.run_until_parked();
+    }
+
+    let canvas = cx.debug_bounds("orchestration-canvas").unwrap();
+
+    for (node, selector) in [
+        "orchestration-node-0",
+        "orchestration-node-1",
+        "orchestration-node-2",
+        "orchestration-node-3",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let card = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("node {node} is drawn"));
+
+        assert!(
+            card.left() >= canvas.left()
+                && card.top() >= canvas.top()
+                && card.right() <= canvas.right()
+                && card.bottom() <= canvas.bottom(),
+            "node {node} at {card:?} lies inside the canvas {canvas:?}"
+        );
+    }
+
+    pane.read_with(&cx, |pane, _| assert_eq!(pane.main, MainView::Run));
 }
