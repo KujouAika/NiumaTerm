@@ -2542,6 +2542,93 @@ impl AgentPane {
         true
     }
 
+    /// Whether a selection in this pane can be taken to a Side Chat: the
+    /// harness answers side questions or forks side threads, and the pane is
+    /// not itself a side chat, which cannot have one of its own.
+    pub(crate) fn offers_side_chat(&self, cx: &App) -> bool {
+        if self.side_chat_member {
+            return false;
+        }
+
+        self.host.upgrade().is_some_and(|host| {
+            let caps = host.read(cx).kind.caps();
+
+            caps.side_questions || caps.side_threads
+        })
+    }
+
+    /// Put `text` where the next side question is typed, without sending it,
+    /// so the user can add the question before asking. A side thread has its
+    /// own composer, opened (forked first when there is none) to take the
+    /// text after any draft already there. Answers given in place are asked
+    /// with /side from this pane's composer, so the text goes there behind
+    /// that command, ahead of any draft so nothing typed is lost.
+    pub(crate) fn draft_side_question(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session_host) = self.host.upgrade() else {
+            return;
+        };
+
+        if !self.binding.is_current() {
+            return;
+        }
+
+        let caps = session_host.read(cx).kind.caps();
+
+        if caps.side_threads {
+            if !self.ask_side_thread("", window, cx) {
+                return;
+            }
+
+            let Some(thread) = &self.side_chat.thread else {
+                return;
+            };
+
+            thread.pane.update(cx, |pane, cx| {
+                let draft = pane.input.read(cx).text().to_string();
+
+                let separator = if draft.is_empty() { "" } else { "\n\n" };
+
+                replace_input_with_history(
+                    &pane.input,
+                    format!("{draft}{separator}{text}\n"),
+                    window,
+                    cx,
+                );
+            });
+        } else if caps.side_questions {
+            let draft = self.input.read(cx).text().to_string();
+
+            let quoted = format!("/side {text}\n");
+
+            let end = quoted.len();
+
+            let value = if draft.is_empty() {
+                quoted
+            } else {
+                format!("{quoted}\n{draft}")
+            };
+
+            self.input.update(cx, |input, cx| {
+                input.set_value(value, window, cx);
+
+                input.set_selected_range(end..end, cx);
+            });
+
+            self.focus(window, cx);
+        } else {
+            return;
+        }
+
+        TextSelection::clear(window, cx);
+
+        cx.notify();
+    }
+
     /// Send `text` in this side chat, or hold it until the side session is
     /// ready when its fork is still being prepared.
     fn send_side_prompt(&mut self, text: String, cx: &mut Context<Self>) {
