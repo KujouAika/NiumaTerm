@@ -14,6 +14,7 @@ fn undated(label: &str) -> Release {
     Release {
         label: label.to_owned(),
         page_url: String::new(),
+        notes: String::new(),
         assets: Vec::new(),
         published: None,
     }
@@ -150,6 +151,28 @@ fn the_latest_endpoint_answers_the_stable_channel() {
         select_latest(r#"{"message":"Not Found"}"#),
         Err(CheckError::Unreadable)
     );
+}
+
+#[test]
+fn the_changelog_is_read_from_the_release_body() {
+    let described = r#"{ "tag_name": "v1.3.0", "html_url": "https://example.invalid/r3",
+        "draft": false, "prerelease": false, "body": "- keep tabs\n- split panes" }"#;
+
+    assert_eq!(
+        select_latest(described).unwrap().unwrap().notes,
+        "- keep tabs\n- split panes"
+    );
+
+    // GitHub returns null for a release published without a body, and a
+    // manifest rendered before the changelog was added has no field at all.
+    let null_body = r#"{ "tag_name": "v1.3.0", "html_url": "https://example.invalid/r3",
+        "draft": false, "prerelease": false, "body": null }"#;
+
+    let no_body = r#"{ "tag_name": "v1.3.0", "html_url": "https://example.invalid/r3",
+        "draft": false, "prerelease": false }"#;
+
+    assert_eq!(select_latest(null_body).unwrap().unwrap().notes, "");
+    assert_eq!(select_latest(no_body).unwrap().unwrap().notes, "");
 }
 
 #[test]

@@ -68,6 +68,11 @@ pub enum CheckError {
 pub struct Release {
     pub label: String,
     pub page_url: String,
+
+    /// The changelog as Markdown. Empty for a nightly, and for a release
+    /// published without one.
+    pub notes: String,
+
     pub(super) assets: Vec<Asset>,
 
     /// When the channel published it, as `yyyymmdd`, which is the only thing a
@@ -102,6 +107,11 @@ struct ReleaseEntry {
     /// comparison, and absent from the recorded responses.
     #[serde(default)]
     published_at: Option<String>,
+
+    /// Null when GitHub holds no body for the release, and absent from a
+    /// manifest rendered before the changelog was published.
+    #[serde(default)]
+    body: Option<String>,
 }
 
 /// One check with the channel and running version captured before it starts.
@@ -220,6 +230,7 @@ fn newest_in_channel(entries: &[ReleaseEntry], channel: UpdateChannel) -> Option
         .map(|entry| Release {
             label: entry.tag_name.clone(),
             page_url: entry.html_url.clone(),
+            notes: entry.body.clone().unwrap_or_default(),
             assets: entry.assets.clone(),
             published: entry.published_at.as_deref().and_then(publish_date),
         })

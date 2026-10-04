@@ -11,6 +11,7 @@ fn release() -> Release {
     Release {
         label: "v2.0.0".into(),
         page_url: String::new(),
+        notes: String::new(),
         assets: Vec::new(),
         published: None,
     }

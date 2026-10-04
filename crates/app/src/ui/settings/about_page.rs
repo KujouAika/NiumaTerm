@@ -8,6 +8,8 @@ use gpui_component::button::ButtonVariants as _;
 use gpui_component::label::Label;
 use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 #[cfg(windows)]
+use gpui_component::text::TextView;
+#[cfg(windows)]
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 #[cfg(windows)]
 use nmt_updater::windows::{CheckError, Status};
@@ -146,11 +148,22 @@ fn update_check_item() -> SettingItem {
                 .on_click(|_, _, cx: &mut App| update::resume_install(cx))
         });
 
+        // The changelog is what the user weighs before pressing install, so it
+        // is shown only while that choice is open.
+        let notes = match &status {
+            Status::Available(release) if !release.notes.is_empty() => Some(
+                TextView::markdown("app-update-notes", release.notes.clone())
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            ),
+            _ => None,
+        };
+
         // The status line reports the result of a check the user just ran and
         // changes while it runs, so it sits under the label instead of behind
         // the hover hint the static row descriptions use: watching a check
         // progress should not require holding the pointer over an icon.
-        h_flex()
+        let row = h_flex()
             .w_full()
             .justify_between()
             .items_center()
@@ -172,7 +185,13 @@ fn update_check_item() -> SettingItem {
                     .children(install)
                     .children(restart)
                     .child(check),
-            )
+            );
+
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(row)
+            .children(notes)
             .into_any_element()
     })
 }

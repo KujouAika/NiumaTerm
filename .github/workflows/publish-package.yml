@@ -15,6 +15,10 @@ on:
         description: Create a nightly release at the triggering commit
         type: boolean
         default: false
+      notes:
+        description: Markdown body of a new stable release
+        type: string
+        default: ''
 
 jobs:
   publish:
@@ -37,6 +41,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           PRERELEASE: ${{ inputs.prerelease }}
+          NOTES: ${{ inputs.notes }}
         run: |
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             # Rebuilding one platform must retain the other platform's files.
@@ -51,9 +56,12 @@ jobs:
               --prerelease \
               --notes "Automated nightly build of $GITHUB_SHA."
           else
+            # Read from a file, because commit subjects may hold characters a
+            # command-line argument would have to quote.
+            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
             gh release create "$TAG" dist/* \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "$TAG" \
-              --generate-notes
+              --notes-file "$RUNNER_TEMP/notes.md"
           fi

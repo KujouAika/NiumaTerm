@@ -14,6 +14,34 @@ permissions:
   contents: read
 
 jobs:
+  # Rendered once from the tagged history, so every platform's release step and
+  # the appcast publish the same changelog.
+  notes:
+    runs-on: ubuntu-latest
+    outputs:
+      markdown: ${{ steps.notes.outputs.markdown }}
+      html: ${{ steps.notes.outputs.html }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          # The range starts at the previous release tag, which a shallow
+          # clone does not have.
+          fetch-depth: 0
+      - id: notes
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          delimiter="notes-$(openssl rand -hex 16)"
+          {
+            echo "markdown<<$delimiter"
+            python3 scripts/release-notes.py --tag "$TAG" --format markdown
+            echo "$delimiter"
+            echo "html<<$delimiter"
+            python3 scripts/release-notes.py --tag "$TAG" --format html
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
   package-windows:
     uses: ./.github/workflows/windows-package.yml
     with:
@@ -32,22 +60,24 @@ jobs:
     secrets: inherit
 
   release-windows:
-    needs: package-windows
+    needs: [notes, package-windows]
     uses: ./.github/workflows/publish-package.yml
     permissions:
       contents: write
     with:
       tag: ${{ inputs.tag || github.ref_name }}
       artifact: NiumaTerm-windows-x86_64-${{ inputs.tag || github.ref_name }}
+      notes: ${{ needs.notes.outputs.markdown }}
 
   release-macos:
-    needs: package-macos
+    needs: [notes, package-macos]
     uses: ./.github/workflows/publish-package.yml
     permissions:
       contents: write
     with:
       tag: ${{ inputs.tag || github.ref_name }}
       artifact: ${{ needs.package-macos.outputs.artifact }}
+      notes: ${{ needs.notes.outputs.markdown }}
 
   updates-windows:
     needs: release-windows
@@ -62,7 +92,7 @@ jobs:
   # downloadable by the time an updater reads it. A release carries no channel
   # name: the default channel is the one every installation sees.
   updates-macos:
-    needs: [package-macos, release-macos]
+    needs: [notes, package-macos, release-macos]
     uses: ./.github/workflows/updates.yml
     with:
       label: ${{ inputs.tag || github.ref_name }}
@@ -71,6 +101,7 @@ jobs:
       asset: ${{ needs.package-macos.outputs.asset }}
       length: ${{ needs.package-macos.outputs.length }}
       signature: ${{ needs.package-macos.outputs.ed-signature }}
+      notes: ${{ needs.notes.outputs.html }}
     # Named one by one rather than inherited, so the signing and notarization
     # credentials this workflow also holds stay out of the called workflow.
     secrets:

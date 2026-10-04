@@ -27,6 +27,10 @@ on:
         description: Its EdDSA signature
         type: string
         default: ''
+      notes:
+        description: HTML release notes for Sparkle's update dialog
+        type: string
+        default: ''
     secrets:
       cloudflare-api-token:
         description: Token with Workers Scripts edit rights on the account
@@ -86,6 +90,7 @@ jobs:
       - name: Render the appcast
         if: inputs.asset != ''
         run: |
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.html"
           python3 scripts/update-appcast.py \
             --appcast "$FEED_PATH" \
             --label "$LABEL" \
@@ -94,7 +99,8 @@ jobs:
             --url "$DOWNLOAD_BASE/$LABEL/$ASSET" \
             --page-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$LABEL" \
             --length "$LENGTH" \
-            --signature "$SIGNATURE"
+            --signature "$SIGNATURE" \
+            --notes-file "$RUNNER_TEMP/notes.html"
         env:
           LABEL: ${{ inputs.label }}
           BUNDLE_VERSION: ${{ inputs.bundle-version }}
@@ -102,12 +108,14 @@ jobs:
           ASSET: ${{ inputs.asset }}
           LENGTH: ${{ inputs.length }}
           SIGNATURE: ${{ inputs.signature }}
+          NOTES: ${{ inputs.notes }}
 
       # Projected from the API responses the Windows updater used to request
       # directly, keeping the field names its deserializer already reads. Only
-      # the fields it looks at survive, so a release note or an uploader's
-      # profile never ends up republished here. Drafts are dropped because the
-      # tag of an unannounced version has no business on a public address.
+      # the fields it looks at survive, so an uploader's profile never ends up
+      # republished here. A nightly body names only the built commit, so the
+      # changelog is kept for stable releases alone. Drafts are dropped because
+      # the tag of an unannounced version has no business on a public address.
       #
       # Asset URLs are rebuilt on the caching front, the digest along with the
       # archive it describes. Leaving the digest on GitHub would keep an update
@@ -124,6 +132,7 @@ jobs:
             | . as $release
             | {
                 tag_name, html_url, draft, prerelease, published_at,
+                body: (if .prerelease then "" else (.body // "") end),
                 assets: [
                   .assets[]
                   | { name, browser_download_url: "\($base)/\($release.tag_name)/\(.name)" }

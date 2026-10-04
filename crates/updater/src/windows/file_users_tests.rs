@@ -243,6 +243,7 @@ fn a_failed_file_replacement_still_restarts_closed_applications() {
         Release {
             label: "v2.0.0".into(),
             page_url: String::new(),
+            notes: String::new(),
             assets: Vec::new(),
             published: None,
         },

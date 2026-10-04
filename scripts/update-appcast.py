@@ -58,6 +58,13 @@ def build_item(args):
     ET.SubElement(item, "pubDate").text = email.utils.format_datetime(
         datetime.now(timezone.utc)
     )
+    # Sparkle renders the description as HTML in its update dialog. ElementTree
+    # escapes the markup, and the parsed text Sparkle reads is the HTML again.
+    if args.notes_file:
+        with open(args.notes_file, encoding="utf-8") as notes:
+            text = notes.read().strip()
+        if text:
+            ET.SubElement(item, "description").text = text
     # An item with no channel element is on the default channel, which every
     # updater can see whatever it asked for.
     if args.channel:
@@ -91,6 +98,7 @@ def parse_args():
     parser.add_argument("--length", required=True, help="archive size in bytes")
     parser.add_argument("--signature", required=True, help="EdDSA signature")
     parser.add_argument("--minimum-system", default="13.0")
+    parser.add_argument("--notes-file", default="", help="HTML release notes")
     return parser.parse_args()
 
 
