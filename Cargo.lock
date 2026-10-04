@@ -4175,6 +4175,8 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "tempfile",
+ "tree-sitter",
+ "tree-sitter-swift",
 ]
 
 [[package]]

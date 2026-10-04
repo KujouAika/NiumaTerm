@@ -1,4 +1,4 @@
-# Rust readability checks
+# Rust and Swift readability checks
 
 Run these commands from the repository root:
 
@@ -6,6 +6,7 @@ Run these commands from the repository root:
 cargo readability --check
 cargo readability --check crates/terminal/src
 cargo readability --fix crates/terminal/src/presentation/mod.rs
+cargo readability --check mobile/ios
 cargo readability --staged
 ```
 
@@ -15,7 +16,8 @@ and forbidden expression patterns.
 position, order, visibility, attribute, and expression issues remain errors until
 corrected manually.
 Explicit paths may name files or directories. Without paths, both modes inspect
-tracked and unignored Rust sources under `crates/`.
+tracked and unignored Rust sources under `crates/` and Swift sources under
+`mobile/ios/`. Swift rules are described in [Swift](#swift).
 
 The pre-commit hook runs `--staged`. It reads index blobs, so unstaged fixes cannot
 hide staged problems and unstaged mistakes cannot fail this check. Only boundaries
@@ -27,7 +29,7 @@ body do not expose an old declaration below that function.
 Expression issues are checked when the offending expression intersects a changed
 boundary, including edits inside an immediately called closure's body.
 Added files and renamed destinations are checked in full. Deleted files and
-sources outside `crates/` are excluded. The hook never rewrites or stages files.
+sources outside `crates/` and `mobile/ios/` are excluded. The hook never rewrites or stages files.
 The existing rustfmt and Clippy checks retain their working-tree behavior.
 
 Output includes the path, line, column, and rule:
@@ -380,6 +382,118 @@ from being written. Replacement uses a temporary file in the same directory.
 Exit status is `0` when clean or successfully fixed, `1` for remaining readability
 issues, and `2` for invalid arguments, syntax errors, or tool failures. The first invocation
 builds the `nmt-readability` workspace member; subsequent runs reuse it.
+
+## Swift
+
+Swift files are parsed with tree-sitter-swift, so the checks run on every
+platform without a Swift toolchain. Diagnostics, `--fix`, `--staged`, and
+`--enable` work as for Rust, and `--fix` compares the token list before and
+after the edit in the same way.
+
+### Statements
+
+Statements in function, accessor, closure, and case bodies follow the Rust
+statement rules under the same names:
+
+- `control-flow` separates `if`, `guard`, `switch`, `for`, `while`,
+  `repeat`, `do`, and `defer` statements, and bindings initialized by an `if`
+  or `switch` expression, from neighboring statements.
+- `assertions` groups `assert*`, `precondition*`, and `XCTAssert*` calls and
+  the `#expect` and `#require` macros, and separates them from other
+  statements.
+- `result` separates `return`, `break`, `continue`, and `throw` from the
+  statement before them.
+- `binding-mutability` separates adjacent `let` and `var` bindings, and
+  `multiline-binding`, `binding-and-action`, and `multiline-statement` apply
+  as for Rust.
+- `call-and-statement` treats a call on a member expression, such as
+  `self.update()` or `store.save()`, as a method call and any other call as a
+  function call. `try` and `await` keep the kind of the call they wrap.
+- `local-items` separates local functions and types.
+
+Swift has no implicit return for the last statement of a longer body, so a
+final expression gets no `result` boundary.
+
+### Declarations
+
+Adjacent declarations at file level (`spacing/items`) and in type, extension,
+and protocol bodies (`spacing/members`) need a blank line between them. Two
+single-line stored or protocol properties may stay together, unless either is
+preceded by a comment, which produces `spacing/documented-properties`:
+
+```swift
+struct Row {
+    let id: Int
+    var title = ""
+
+    /// Rows above this one.
+    var depth: Int
+
+    var body: some View {
+        Text(title)
+    }
+}
+```
+
+`switch` cases follow `spacing/match-arm-blank-lines` and enum cases follow
+`spacing/enum-variant-blank-lines`. Enabling `spacing/match-arms` or
+`spacing/enum-variants` selects the optional rules for both languages. For
+Swift, `spacing/enum-variants` separates enum cases that are preceded by a
+comment or span several lines.
+
+### Imports
+
+Imports must come before other file-level declarations (`declarations/header`)
+in two groups, separated by a blank line:
+
+1. Frameworks and packages, such as `Foundation`, `SwiftUI`, and `os`.
+2. Project modules, whose names start with `NiumaTerm`.
+
+An import names only a module, so Apple frameworks and third-party packages
+cannot be told apart and share the first group. Within a group, imports are
+sorted by module path in byte order, which places `os` after `UIKit` as
+swift-format's `OrderedImports` rule does. Attributes and declaration kinds,
+as in `@preconcurrency import struct Foundation.Date`, do not change the
+order. Each `#if` block is sorted on its own.
+
+The diagnostics are `declarations/header`, `declarations/import-order`,
+`declarations/import-alphabetical`, `spacing/import-groups`, and
+`spacing/import-blank-lines`. `--fix` corrects the blank lines only.
+
+### Visibility
+
+`declarations/visibility` rejects `fileprivate`, including
+`fileprivate(set)`, and `open`. A `private` member is visible to extensions of
+its type in the same file, and the app exposes no framework API for other
+modules to subclass. Use `private`, `public`, or no modifier.
+
+### Fixed optional returns
+
+With `--enable expressions/fixed-option-return`, a function returning an
+optional type is reported when its body ends in `return nil`, or is the
+single expression `nil`, and every `return` in its own scope returns `nil`.
+Closures, nested functions, and local types have their own scopes. Swift
+promotes non-optional values implicitly, so a function that always returns a
+value cannot be recognized without type information and is not reported.
+
+### Exemptions and limits
+
+A declaration preceded by `// swift-format-ignore` or
+`// swift-format-ignore: Rule` keeps its inner spacing, like
+`#[rustfmt::skip]` in Rust. Comments stay attached to the following
+declaration or statement. Entries on opposite sides of a `#if`, `#else`, or
+`#endif` directive are not compared, because they can belong to different
+builds.
+
+The grammar lags behind the compiler for some syntax, for example
+`if try await !value` and `x as? T ?? fallback`. Such a file is still
+checked, and the tool prints the first unrecognized position to stderr.
+Nodes the parser could not recognize, and boundaries next to them, are
+skipped, so valid code cannot fail the check. Syntax errors in Swift never
+produce exit status `2`.
+
+There is no Swift rule for immediately called closures, because
+`let value: T = { ... }()` is the usual way to initialize a stored property.
 
 ## Validation
 

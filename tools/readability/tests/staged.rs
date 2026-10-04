@@ -567,7 +567,7 @@ fn default_check_includes_untracked_sources_but_excludes_ignored_files() {
     let result = repo.tool(&["--check"]);
 
     assert_eq!(result.status.code(), Some(1), "{result:?}");
-    assert!(String::from_utf8_lossy(&result.stdout).contains("checked 2 Rust file(s)"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("checked 2 source file(s)"));
 }
 
 #[test]
@@ -1173,4 +1173,88 @@ fn staged_nested_import_order_checks_use_only_the_affected_entries() {
 
     assert_eq!(staged.status.code(), Some(0), "{staged:?}");
     assert_eq!(full.status.code(), Some(1), "{full:?}");
+}
+
+const SWIFT: &str = "mobile/ios/App/Model.swift";
+const SWIFT_CROWDED: &str = "func run() {\n    let value = 1\n    consume(value)\n}\n";
+
+#[test]
+fn staged_swift_check_reports_only_changed_boundaries() {
+    let repo = Repository::new();
+
+    repo.baseline(CLEAN);
+    repo.write(SWIFT, SWIFT_CROWDED);
+    repo.git(&["add", SWIFT]);
+    repo.git(&["commit", "-qm", "swift"]);
+
+    repo.write(
+        SWIFT,
+        &format!("{SWIFT_CROWDED}\nfunc other() {{\n    var count = 0\n    let limit = 2\n}}\n"),
+    );
+
+    repo.git(&["add", SWIFT]);
+
+    let result = repo.tool(&["--staged"]);
+    let output = String::from_utf8_lossy(&result.stdout).replace('\\', "/");
+
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    assert!(output.contains("mobile/ios/App/Model.swift:8:1: spacing/binding-mutability"));
+    assert!(!output.contains(":3:1:"), "{output}");
+
+    let fixed = repo.tool(&["--fix", SWIFT]);
+
+    assert_eq!(fixed.status.code(), Some(0), "{fixed:?}");
+    assert_eq!(
+        fs::read_to_string(repo.0.path().join(SWIFT)).unwrap(),
+        "func run() {\n    let value = 1\n\n    consume(value)\n}\n\nfunc other() {\n    var count = 0\n\n    let limit = 2\n}\n"
+    );
+
+    repo.git(&["add", SWIFT]);
+
+    let result = repo.tool(&["--staged"]);
+
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+}
+
+#[test]
+fn default_check_includes_ios_swift_sources_only() {
+    let repo = Repository::new();
+
+    repo.baseline(CLEAN);
+    repo.write(SWIFT, SWIFT_CROWDED);
+    repo.write("tools/demo/Script.swift", SWIFT_CROWDED);
+
+    let result = repo.tool(&["--check"]);
+    let output = String::from_utf8_lossy(&result.stdout).replace('\\', "/");
+
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    assert!(output.contains("checked 2 source file(s)"), "{output}");
+    assert!(
+        output.contains("mobile/ios/App/Model.swift:3:1"),
+        "{output}"
+    );
+    assert!(!output.contains("tools/demo"), "{output}");
+
+    repo.git(&["add", "."]);
+
+    let staged = repo.tool(&["--staged"]);
+    let output = String::from_utf8_lossy(&staged.stdout).replace('\\', "/");
+
+    assert_eq!(staged.status.code(), Some(1), "{staged:?}");
+    assert!(!output.contains("tools/demo"), "{output}");
+}
+
+#[test]
+fn unrecognized_swift_syntax_is_reported_without_failing() {
+    let repo = Repository::new();
+    let source = "func run() async {\n    if try await !handle.ok() {}\n}\n";
+
+    repo.baseline(CLEAN);
+    repo.write(SWIFT, source);
+    repo.git(&["add", SWIFT]);
+
+    let result = repo.tool(&["--staged"]);
+
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unrecognized Swift syntax"));
 }

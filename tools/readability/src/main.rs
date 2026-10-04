@@ -1,6 +1,8 @@
+mod blank_lines;
 mod declarations;
 mod expressions;
 mod spacing;
+mod swift;
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -10,33 +12,81 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::{env, fs};
 
+use proc_macro2::LineColumn;
 use tempfile::NamedTempFile;
 
-use crate::spacing::{Options, apply, inspect};
+use crate::blank_lines::Issues;
 
-const HELP: &str = "Rust readability checks
+const HELP: &str = "Rust and Swift readability checks
 
 Usage: cargo readability --check [--enable RULE ...] [PATH ...]
        cargo readability --fix [--enable RULE ...] [PATH ...]
        cargo readability --staged [--enable RULE ...]
 
-Without paths, --check and --fix scan tracked and unignored Rust files in crates/.
+Without paths, --check and --fix scan tracked and unignored Rust files in crates/
+and Swift files in mobile/ios/.
 Explicit paths are relative to the current directory and may name directories.
---staged checks changed boundaries and declarations in staged crates/ Rust files.
+--staged checks changed boundaries and declarations in the same staged files.
 --fix adds or removes blank lines in working files; it never stages changes.
 Declaration position, order, visibility, and attribute issues require manual edits.
-Immediately calling an anonymous closure is forbidden and requires a manual rewrite.
+Immediately calling an anonymous Rust closure is forbidden and requires a manual
+rewrite.
 --enable RULE opts into spacing/match-arms, spacing/enum-variants, or
 expressions/fixed-option-return; repeat to enable multiple rules.
 By default, blank lines between match arms and enum variants are forbidden.
+Swift switch cases and enum cases follow the match arm and enum variant rules.
 Blank lines within module declaration groups and import groups are also forbidden.
 Enabling either optional spacing rule replaces its corresponding default rule.
 Exit codes: 0 clean or fixed, 1 readability issues, 2 invalid input or tool failure.";
 
+#[derive(Clone, Copy)]
+enum Language {
+    Rust,
+    Swift,
+}
+
+#[derive(Default)]
+pub(crate) struct Options {
+    pub(crate) spacing: spacing::Options,
+    pub(crate) expressions: expressions::Options,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Category {
+    Declarations,
+    Expressions,
+}
+
+/// A declaration or expression diagnostic. `lines` holds the 1-based line
+/// ranges whose staged edits make the diagnostic relevant to a commit.
+pub(crate) struct Finding {
+    pub(crate) category: Category,
+    pub(crate) rule: &'static str,
+    pub(crate) message: &'static str,
+    pub(crate) start: LineColumn,
+    pub(crate) lines: Vec<(usize, usize)>,
+}
+
+pub(crate) struct Inspection {
+    pub(crate) spacing: Issues,
+    pub(crate) findings: Vec<Finding>,
+
+    /// The first position the Swift parser could not recognize. Checks skip
+    /// the affected nodes, so valid code the grammar does not support yet
+    /// cannot block a commit.
+    pub(crate) unrecognized: Option<LineColumn>,
+}
+
+#[derive(Default)]
+struct Totals {
+    spacing: usize,
+    declarations: usize,
+    expressions: usize,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(clean) => ExitCode::from(u8::from(!clean)),
-
         Err(error) => {
             eprintln!("readability: {error}");
 
@@ -47,6 +97,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<bool, Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
+
     let mode = arguments.next().unwrap_or_default();
 
     if mode == "--help" || mode == "-h" {
@@ -61,17 +112,16 @@ fn run() -> Result<bool, Box<dyn Error>> {
 
     let mut paths = Vec::new();
     let mut options = Options::default();
-    let mut expression_options = expressions::Options::default();
 
     while let Some(argument) = arguments.next() {
         if argument == "--enable" {
             let rule = arguments.next().ok_or("--enable requires a rule name")?;
 
             match rule.to_str() {
-                Some("spacing/match-arms") => options.match_arms = true,
-                Some("spacing/enum-variants") => options.enum_variants = true,
+                Some("spacing/match-arms") => options.spacing.match_arms = true,
+                Some("spacing/enum-variants") => options.spacing.enum_variants = true,
                 Some("expressions/fixed-option-return") => {
-                    expression_options.fixed_option_returns = true;
+                    options.expressions.fixed_option_returns = true;
                 }
                 _ => {
                     return Err(format!("unknown optional rule: {}", rule.to_string_lossy()).into());
@@ -94,6 +144,7 @@ fn run() -> Result<bool, Box<dyn Error>> {
     }
 
     let directory = env::current_dir()?;
+
     let mut files = BTreeSet::new();
     let mut staged = Vec::new();
 
@@ -115,10 +166,15 @@ fn run() -> Result<bool, Box<dyn Error>> {
                     "--diff-filter=ACM",
                     "--",
                     "crates/",
+                    "mobile/ios/",
                 ],
             )?;
 
-            for name in names.split('\0').filter(|name| name.ends_with(".rs")) {
+            for name in names.split('\0') {
+                let Some(language) = tracked_language(name) else {
+                    continue;
+                };
+
                 let source = git(&root, &["show", &format!(":{name}")])?;
 
                 let diff = git(
@@ -138,7 +194,12 @@ fn run() -> Result<bool, Box<dyn Error>> {
                     ],
                 )?;
 
-                staged.push((PathBuf::from(name), source, changed_boundaries(&diff)?));
+                staged.push((
+                    PathBuf::from(name),
+                    language,
+                    source,
+                    changed_boundaries(&diff)?,
+                ));
             }
         } else {
             let names = git(
@@ -151,13 +212,14 @@ fn run() -> Result<bool, Box<dyn Error>> {
                     "--exclude-standard",
                     "--",
                     "crates/",
+                    "mobile/ios/",
                 ],
             )?;
 
-            for name in names.split('\0').filter(|name| name.ends_with(".rs")) {
+            for name in names.split('\0') {
                 let path = PathBuf::from(name);
 
-                if path.try_exists()? {
+                if tracked_language(name).is_some() && path.try_exists()? {
                     collect_files(&path, &mut files)?;
                 }
             }
@@ -168,66 +230,30 @@ fn run() -> Result<bool, Box<dyn Error>> {
         }
     }
 
-    let mut count = 0;
-    let mut declaration_count = 0;
-    let mut expression_count = 0;
+    let mut totals = Totals::default();
+
     let checked = files.len() + staged.len();
 
-    for (path, source, ranges) in staged {
-        let parsed = parse(&path, &source)?;
-        let issues = inspect(&source, &parsed, &options);
+    for (path, language, source, ranges) in staged {
+        let inspection = inspect(language, &path, &source, &options)?;
 
-        for (line, issue) in issues {
-            if ranges
-                .iter()
-                .any(|range| *range.start() <= issue.through_line && *range.end() >= line)
-            {
-                println!(
-                    "{}:{}:1: spacing/{}: {}",
-                    path.display(),
-                    line + 1,
-                    issue.rule,
-                    issue.message()
-                );
-
-                count += 1;
-            }
-        }
-
-        for issue in declarations::inspect(&parsed.items) {
-            if [issue.span, issue.related].iter().any(|span| {
-                ranges.iter().any(|range| {
-                    *range.start() < span.end().line && *range.end() >= span.start().line - 1
-                })
-            }) {
-                report_declaration(&path, &issue);
-
-                declaration_count += 1;
-            }
-        }
-
-        for issue in expressions::inspect(&parsed, &expression_options) {
-            if ranges.iter().any(|range| {
-                *range.start() < issue.span.end().line
-                    && *range.end() >= issue.span.start().line - 1
-            }) {
-                report_expression(&path, &issue);
-
-                expression_count += 1;
-            }
-        }
+        report(&path, &inspection, Some(&ranges), &mut totals);
     }
 
     for path in files {
+        let Some(language) = language(&path) else {
+            continue;
+        };
+
         let source = fs::read_to_string(&path)?;
 
-        let mut parsed = parse(&path, &source)?;
-        let issues = inspect(&source, &parsed, &options);
+        let mut inspection = inspect(language, &path, &source, &options)?;
 
-        if mode == "--fix" && !issues.is_empty() {
-            let modified = apply(&source, &issues)?;
-
-            parsed = parse(&path, &modified)?;
+        if mode == "--fix" && !inspection.spacing.is_empty() {
+            let modified = match language {
+                Language::Rust => spacing::apply(&source, &inspection.spacing)?,
+                Language::Swift => swift::apply(&source, &inspection.spacing)?,
+            };
 
             let parent = path
                 .parent()
@@ -251,61 +277,174 @@ fn run() -> Result<bool, Box<dyn Error>> {
             }
 
             temporary.persist(&path)?;
+
             println!(
                 "{}: fixed {} spacing issue(s)",
                 path.display(),
-                issues.len()
+                inspection.spacing.len()
             );
-        } else {
-            for (line, issue) in &issues {
-                println!(
-                    "{}:{}:1: spacing/{}: {}",
-                    path.display(),
-                    line + 1,
-                    issue.rule,
-                    issue.message()
-                );
-            }
+
+            totals.spacing += inspection.spacing.len();
+
+            inspection = Inspection {
+                spacing: Issues::new(),
+                ..inspect(language, &path, &modified, &options)?
+            };
         }
 
-        count += issues.len();
-
-        for issue in declarations::inspect(&parsed.items) {
-            report_declaration(&path, &issue);
-
-            declaration_count += 1;
-        }
-
-        for issue in expressions::inspect(&parsed, &expression_options) {
-            report_expression(&path, &issue);
-
-            expression_count += 1;
-        }
+        report(&path, &inspection, None, &mut totals);
     }
 
     println!(
-        "readability: checked {checked} Rust file(s), {count} spacing issue(s){}, {declaration_count} declaration issue(s), {expression_count} expression issue(s)",
-        if mode == "--fix" { " fixed" } else { "" }
+        "readability: checked {checked} source file(s), {} spacing issue(s){}, {} declaration issue(s), {} expression issue(s)",
+        totals.spacing,
+        if mode == "--fix" { " fixed" } else { "" },
+        totals.declarations,
+        totals.expressions
     );
 
-    if (count > 0 || declaration_count > 0 || expression_count > 0) && mode == "--staged" {
+    if (totals.spacing > 0 || totals.declarations > 0 || totals.expressions > 0)
+        && mode == "--staged"
+    {
         eprintln!(
             "readability: run cargo readability --fix <path> for spacing, correct declaration and expression issues, review the diff, then stage the intended changes"
         );
     }
 
-    Ok((count == 0 || mode == "--fix") && declaration_count == 0 && expression_count == 0)
+    Ok((totals.spacing == 0 || mode == "--fix")
+        && totals.declarations == 0
+        && totals.expressions == 0)
 }
 
-fn report_expression(path: &Path, issue: &expressions::Issue) {
-    println!(
-        "{}:{}:{}: expressions/{}: {}",
-        path.display(),
-        issue.span.start().line,
-        issue.span.start().column + 1,
-        issue.rule,
-        issue.message
-    );
+fn inspect(
+    language: Language,
+    path: &Path,
+    source: &str,
+    options: &Options,
+) -> Result<Inspection, Box<dyn Error>> {
+    match language {
+        Language::Rust => {
+            let parsed = parse(path, source)?;
+
+            let declarations = declarations::inspect(&parsed.items)
+                .into_iter()
+                .map(|issue| Finding {
+                    category: Category::Declarations,
+                    rule: issue.rule,
+                    message: issue.message,
+                    start: issue.span.start(),
+                    lines: [issue.span, issue.related]
+                        .iter()
+                        .map(|span| (span.start().line, span.end().line))
+                        .collect(),
+                });
+
+            let expressions = expressions::inspect(&parsed, &options.expressions)
+                .into_iter()
+                .map(|issue| Finding {
+                    category: Category::Expressions,
+                    rule: issue.rule,
+                    message: issue.message,
+                    start: issue.span.start(),
+                    lines: vec![(issue.span.start().line, issue.span.end().line)],
+                });
+
+            Ok(Inspection {
+                spacing: spacing::inspect(source, &parsed, &options.spacing),
+                findings: declarations.chain(expressions).collect(),
+                unrecognized: None,
+            })
+        }
+        Language::Swift => swift::inspect(source, options),
+    }
+}
+
+/// Prints the diagnostics of one file. With `ranges`, only diagnostics next to
+/// a staged change are printed, so older issues elsewhere in the file are left
+/// for an explicit full check.
+fn report(
+    path: &Path,
+    inspection: &Inspection,
+    ranges: Option<&[RangeInclusive<usize>]>,
+    totals: &mut Totals,
+) {
+    if let Some(position) = inspection.unrecognized {
+        eprintln!(
+            "readability: {}:{}:{}: unrecognized Swift syntax; checks skip the affected code",
+            path.display(),
+            position.line,
+            position.column + 1
+        );
+    }
+
+    for (line, issue) in &inspection.spacing {
+        if ranges.is_none_or(|ranges| {
+            ranges
+                .iter()
+                .any(|range| *range.start() <= issue.through_line && *range.end() >= *line)
+        }) {
+            println!(
+                "{}:{}:1: spacing/{}: {}",
+                path.display(),
+                line + 1,
+                issue.rule,
+                issue.message()
+            );
+
+            totals.spacing += 1;
+        }
+    }
+
+    for finding in &inspection.findings {
+        if ranges.is_none_or(|ranges| {
+            finding.lines.iter().any(|(start, end)| {
+                ranges
+                    .iter()
+                    .any(|range| *range.start() < *end && *range.end() >= start - 1)
+            })
+        }) {
+            let category = match finding.category {
+                Category::Declarations => {
+                    totals.declarations += 1;
+
+                    "declarations"
+                }
+                Category::Expressions => {
+                    totals.expressions += 1;
+
+                    "expressions"
+                }
+            };
+
+            println!(
+                "{}:{}:{}: {category}/{}: {}",
+                path.display(),
+                finding.start.line,
+                finding.start.column + 1,
+                finding.rule,
+                finding.message
+            );
+        }
+    }
+}
+
+fn language(path: &Path) -> Option<Language> {
+    match path.extension()?.to_str()? {
+        "rs" => Some(Language::Rust),
+        "swift" => Some(Language::Swift),
+        _ => None,
+    }
+}
+
+/// Repository scans cover Rust sources under crates/ and the iOS app's Swift
+/// sources. Other directories hold vendored code and tools with their own
+/// conventions.
+fn tracked_language(name: &str) -> Option<Language> {
+    match language(Path::new(name))? {
+        Language::Rust if name.starts_with("crates/") => Some(Language::Rust),
+        Language::Swift if name.starts_with("mobile/ios/") => Some(Language::Swift),
+        _ => None,
+    }
 }
 
 fn parse(path: &Path, source: &str) -> Result<syn::File, Box<dyn Error>> {
@@ -318,17 +457,6 @@ fn parse(path: &Path, source: &str) -> Result<syn::File, Box<dyn Error>> {
         )
         .into()
     })
-}
-
-fn report_declaration(path: &Path, issue: &declarations::Issue) {
-    println!(
-        "{}:{}:{}: declarations/{}: {}",
-        path.display(),
-        issue.span.start().line,
-        issue.span.start().column + 1,
-        issue.rule,
-        issue.message
-    );
 }
 
 fn git(directory: &Path, arguments: &[&str]) -> Result<String, Box<dyn Error>> {
@@ -391,7 +519,7 @@ fn collect_files(path: &Path, files: &mut BTreeSet<PathBuf>) -> Result<(), Box<d
                 collect_files(&entry.path(), files)?;
             }
         }
-    } else if path.extension().is_some_and(|extension| extension == "rs") {
+    } else if language(path).is_some() {
         files.insert(path.to_path_buf());
     }
 

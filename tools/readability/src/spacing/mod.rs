@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::iter;
 
@@ -11,35 +10,13 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{AttrStyle, Attribute, Expr, Item, Pat, Stmt};
 
+use crate::blank_lines::{self, BlankLines, Issues};
 use crate::declarations::{group, imports};
-
-pub(crate) type Issues = BTreeMap<usize, Issue>;
-
-pub(crate) struct Issue {
-    pub(crate) rule: &'static str,
-    pub(crate) through_line: usize,
-    edit: BlankLineEdit,
-}
-
-#[derive(Clone, Copy)]
-enum BlankLineEdit {
-    Insert,
-    Remove,
-}
 
 #[derive(PartialEq, Eq)]
 enum CallKind {
     Function,
     Method,
-}
-
-impl Issue {
-    pub(crate) fn message(&self) -> &'static str {
-        match self.edit {
-            BlankLineEdit::Insert => "missing blank line",
-            BlankLineEdit::Remove => "unexpected blank line",
-        }
-    }
 }
 
 #[derive(Default)]
@@ -49,8 +26,7 @@ pub(crate) struct Options {
 }
 
 struct Spacing<'a> {
-    lines: Vec<&'a str>,
-    issues: Issues,
+    blank_lines: BlankLines<'a>,
     block_depth: usize,
     options: &'a Options,
 }
@@ -66,7 +42,7 @@ impl Spacing<'_> {
             let start = attribute.span().start();
 
             let line_doc = attribute.path().is_ident("doc")
-                && self.lines[start.line - 1]
+                && self.blank_lines.lines[start.line - 1]
                     .chars()
                     .skip(start.column)
                     .take(3)
@@ -85,87 +61,12 @@ impl Spacing<'_> {
     }
 
     fn separate(&mut self, previous: Span, next: Span, reason: &'static str) {
-        let end = previous.end().line;
-        let start = next.start().line;
-
-        if start <= end {
-            return;
-        }
-
-        // A trailing block comment can extend across the insertion position.
-        // Leave that boundary alone so its text remains unchanged.
-        if self.lines[end - 1]
-            .chars()
-            .skip(previous.end().column)
-            .collect::<String>()
-            .contains("/*")
-        {
-            return;
-        }
-
-        // Comments between adjacent statements explain the following step.
-        // Insert before the comment, leaving it attached to that statement.
-        let gap = &self.lines[end..start - 1];
-
-        if gap.iter().any(|line| line.trim().is_empty()) {
-            return;
-        }
-
-        self.issues.entry(end).or_insert(Issue {
-            rule: reason,
-            through_line: start - 1,
-            edit: BlankLineEdit::Insert,
-        });
+        self.blank_lines
+            .separate(previous.end(), next.start(), reason);
     }
 
     fn compact(&mut self, previous: Span, next: Span, rule: &'static str) {
-        let end = previous.end();
-        let start = next.start();
-        let mut comment_depth = 0;
-
-        // Only the gap is scanned, so literal contents inside either item stay
-        // untouched. Block comments can start on the previous item's last line
-        // and contain nested comments and blank lines that must be preserved.
-        for index in end.line - 1..start.line.saturating_sub(1) {
-            let line = self.lines[index];
-
-            if index >= end.line && comment_depth == 0 && line.trim().is_empty() {
-                self.issues.insert(
-                    index,
-                    Issue {
-                        rule,
-                        through_line: index + 1,
-                        edit: BlankLineEdit::Remove,
-                    },
-                );
-            }
-
-            let mut bytes = if index == end.line - 1 {
-                let offset = line
-                    .char_indices()
-                    .nth(end.column)
-                    .map_or(line.len(), |(offset, _)| offset);
-
-                &line.as_bytes()[offset..]
-            } else {
-                line.as_bytes()
-            };
-
-            while bytes.len() >= 2 {
-                match &bytes[..2] {
-                    b"//" if comment_depth == 0 => break,
-                    b"/*" => {
-                        comment_depth += 1;
-                        bytes = &bytes[2..];
-                    }
-                    b"*/" if comment_depth > 0 => {
-                        comment_depth -= 1;
-                        bytes = &bytes[2..];
-                    }
-                    _ => bytes = &bytes[1..],
-                }
-            }
-        }
+        self.blank_lines.compact(previous.end(), next.start(), rule);
     }
 
     fn items(&mut self, items: &[Item]) {
@@ -205,7 +106,7 @@ impl Spacing<'_> {
                 continue;
             }
 
-            let comment_between = self.lines
+            let comment_between = self.blank_lines.lines
                 [a.span().end().line..b.span().start().line.saturating_sub(1)]
                 .iter()
                 .any(|line| line.trim_start().starts_with("//"));
@@ -493,7 +394,8 @@ impl<'ast> Visit<'ast> for Spacing<'_> {
 
                             if let Some(previous) = previous {
                                 let has_comment = span.start().line > previous.end().line
-                                    && self.lines[previous.end().line..span.start().line - 1]
+                                    && self.blank_lines.lines
+                                        [previous.end().line..span.start().line - 1]
                                         .iter()
                                         .any(|line| line.trim_start().starts_with("//"));
 
@@ -638,37 +540,18 @@ fn skips_formatting(attrs: &[Attribute]) -> bool {
 
 pub(crate) fn inspect(source: &str, parsed: &syn::File, options: &Options) -> Issues {
     let mut spacing = Spacing {
-        lines: source.lines().collect(),
-        issues: BTreeMap::new(),
+        blank_lines: BlankLines::new(source),
         block_depth: 0,
         options,
     };
 
     spacing.visit_file(parsed);
 
-    spacing.issues
+    spacing.blank_lines.issues
 }
 
 pub(crate) fn apply(source: &str, issues: &Issues) -> Result<String, Box<dyn Error>> {
-    let mut modified = String::with_capacity(source.len() + issues.len() * 2);
-    let mut newline = "\n";
-
-    for (index, line) in source.split_inclusive('\n').enumerate() {
-        match issues.get(&index).map(|issue| issue.edit) {
-            Some(BlankLineEdit::Insert) => modified.push_str(newline),
-            Some(BlankLineEdit::Remove) => {
-                if !line.trim().is_empty() {
-                    return Err("cannot remove a nonblank line; file left untouched".into());
-                }
-
-                continue;
-            }
-            None => {}
-        }
-
-        modified.push_str(line);
-        newline = if line.ends_with("\r\n") { "\r\n" } else { "\n" };
-    }
+    let modified = blank_lines::edit(source, issues)?;
 
     let before = syn::parse_file(&source.replace("\r\n", "\n"))?;
     let after = syn::parse_file(&modified.replace("\r\n", "\n"))?;

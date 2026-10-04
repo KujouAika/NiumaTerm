@@ -249,7 +249,7 @@ EOF
 
 check_readability() {
     readability_files=$(git diff --cached --name-only --no-renames \
-        --diff-filter=ACM -- ':(glob)crates/**/*.rs')
+        --diff-filter=ACM -- ':(glob)crates/**/*.rs' ':(glob)mobile/ios/**/*.swift')
     if [ -z "$readability_files" ]; then
         return 0
     fi

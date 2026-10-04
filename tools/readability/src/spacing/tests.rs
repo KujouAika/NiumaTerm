@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::spacing::{self, BlankLineEdit, Issue, Issues, Options, apply};
+use crate::blank_lines::{BlankLineEdit, Issue, Issues};
+use crate::spacing::{self, Options, apply};
 
 fn inspect(source: &str) -> Result<Issues, syn::Error> {
     Ok(spacing::inspect(
