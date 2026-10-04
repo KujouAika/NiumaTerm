@@ -1,4 +1,5 @@
 import SwiftUI
+
 import NiumaTermCore
 
 /// Floating glass composer: queue, text field, pickers from the `settings` slot, Send/Interrupt.
@@ -14,11 +15,14 @@ struct ComposerView: View {
                     Text("QUEUED")
                         .font(Theme.mono(10.5, weight: .semibold))
                         .foregroundStyle(Theme.accent)
+
                     Text(message.text)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.ink2)
                         .lineLimit(1)
+
                     Spacer()
+
                     if message.id != nil {
                         Button { model.withdraw(message) } label: {
                             Image(systemName: "xmark")
@@ -39,6 +43,7 @@ struct ComposerView: View {
             }
 
             let suggestions = model.suggestions(skillsInSlash: codexSkillsInSlash)
+
             if !suggestions.isEmpty {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -65,6 +70,7 @@ struct ComposerView: View {
                     .font(.system(size: 15))
                     .focused(focused)
                     .disabled(model.ended != nil)
+
                 HStack(spacing: 6) {
                     // Starts a command only from an empty draft, so a tap
                     // never replaces what is already typed.
@@ -172,7 +178,9 @@ struct ComposerView: View {
 
             HStack {
                 Text(model.phaseLine).lineLimit(1)
+
                 Spacer()
+
                 if let context = model.contextLine { Text(context) }
             }
             .font(Theme.mono(10.5))
@@ -194,6 +202,7 @@ struct SuggestionRow: View {
             Text(suggestion.label)
                 .font(Theme.mono(13.5, weight: .semibold))
                 .foregroundStyle(Theme.ink)
+
             if !suggestion.detail.isEmpty {
                 Text(suggestion.detail)
                     .font(.system(size: 12.5))
@@ -211,9 +220,11 @@ struct SuggestionRow: View {
 
 struct ChipLabel: View {
     let text: String
+
     var body: some View {
         HStack(spacing: 4) {
             Text(text).lineLimit(1)
+
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.tertiary)

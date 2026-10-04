@@ -17,8 +17,11 @@ enum PushKeys {
         if let existing = read(host) {
             return existing.base64EncodedString()
         }
+
         var bytes = Data(count: 32)
+
         let status = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+
         guard status == errSecSuccess, let group else { return nil }
 
         let item: [String: Any] = [
@@ -31,24 +34,29 @@ enum PushKeys {
             // locked, which it can once the phone was unlocked after boot.
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
+
         guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { return nil }
+
         return bytes.base64EncodedString()
     }
 
     /// Forget the host's key; pushes it still sends show the placeholder.
     static func remove(for host: String) {
         guard let group else { return }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: host,
             kSecAttrAccessGroup as String: group,
         ]
+
         SecItemDelete(query as CFDictionary)
     }
 
     private static func read(_ host: String) -> Data? {
         guard let group else { return nil }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -57,10 +65,13 @@ enum PushKeys {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+
         var result: CFTypeRef?
+
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let key = result as? Data, key.count == 32
         else { return nil }
+
         return key
     }
 }

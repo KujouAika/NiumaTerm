@@ -34,7 +34,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .english: "en"
         case .simplifiedChinese: "zh-Hans"
         }
+
         guard let region = Locale.current.region?.identifier else { return Locale(identifier: language) }
+
         return Locale(identifier: "\(language)_\(region)")
     }
 }
@@ -66,7 +68,9 @@ final class Localization: @unchecked Sendable {
 /// environment the app root sets instead.
 func tr(_ resource: LocalizedStringResource) -> String {
     var resource = resource
+
     resource.locale = Localization.shared.locale
+
     return String(localized: resource)
 }
 

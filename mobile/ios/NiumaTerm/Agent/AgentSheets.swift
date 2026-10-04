@@ -1,4 +1,5 @@
 import SwiftUI
+
 import NiumaTermCore
 
 /// Approval bottom sheet driven by the `pending` slot.
@@ -12,6 +13,7 @@ struct ApprovalSheet: View {
                 Text(model.profile?.glyph ?? "✱")
                     .font(Theme.mono(16, weight: .semibold))
                     .foregroundStyle(Theme.accent)
+
                 Text("\(model.profile?.shortName ?? tr("Agent")) needs approval")
                     .font(.system(size: 19, weight: .semibold))
             }
@@ -42,6 +44,7 @@ struct ApprovalSheet: View {
             HStack(spacing: 10) {
                 Button("Deny") { model.deny() }
                     .buttonStyle(SecondaryButtonStyle())
+
                 Button("Approve") { model.approve() }
                     .buttonStyle(PrimaryButtonStyle())
             }
@@ -67,6 +70,7 @@ struct QuestionSheet: View {
     /// The one question on screen, or nil when the sheet lists them all.
     private var shown: Int? {
         guard oneAtATime, batch.questions.count > 1 else { return nil }
+
         return min(page, batch.questions.count - 1)
     }
 
@@ -76,6 +80,7 @@ struct QuestionSheet: View {
                 Text(model.profile?.glyph ?? "✱")
                     .font(Theme.mono(16, weight: .semibold))
                     .foregroundStyle(Theme.accent)
+
                 Text(batch.questions.count == 1 ? "\(model.agentName) asks" : "\(model.agentName) asks \(batch.questions.count) questions")
                     .font(.system(size: 19, weight: .semibold))
             }
@@ -115,12 +120,15 @@ struct QuestionSheet: View {
             HStack(spacing: 10) {
                 Button("Skip") { model.skipQuestions(batch) }
                     .buttonStyle(SecondaryButtonStyle())
+
                 if let shown, shown > 0 {
                     Button("Back") { page = shown - 1 }
                         .buttonStyle(SecondaryButtonStyle())
                 }
+
                 if let shown, shown + 1 < batch.questions.count {
                     let answered = model.isAnswered(batch, shown)
+
                     Button("Next") { page = shown + 1 }
                         .buttonStyle(PrimaryButtonStyle())
                         .disabled(!answered)
@@ -150,12 +158,14 @@ private struct QuestionCard: View {
 
     var body: some View {
         let answer = model.answer(batch, index)
+
         VStack(alignment: .leading, spacing: 10) {
             if let header = item.header, !header.isEmpty {
                 Text(header.uppercased())
                     .font(Theme.mono(10.5, weight: .semibold))
                     .foregroundStyle(Theme.accent)
             }
+
             Text(item.question)
                 .font(.system(size: 16, weight: .medium))
                 .fixedSize(horizontal: false, vertical: true)
@@ -163,6 +173,7 @@ private struct QuestionCard: View {
             VStack(spacing: 0) {
                 ForEach(Array(item.options.enumerated()), id: \.offset) { option, choice in
                     let picked = answer.text == nil && answer.selected.contains(UInt32(option))
+
                     Button { model.toggle(batch, question: index, option: option) } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: picked
@@ -170,16 +181,19 @@ private struct QuestionCard: View {
                                   : (item.multiSelect ? "square" : "circle"))
                                 .foregroundStyle(picked ? Theme.accent : Theme.tertiary)
                                 .font(.system(size: 17))
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(choice.label)
                                     .font(.system(size: 15))
                                     .foregroundStyle(Theme.ink)
+
                                 if let description = choice.description, !description.isEmpty {
                                     Text(description)
                                         .font(.system(size: 13))
                                         .foregroundStyle(Theme.secondary)
                                 }
                             }
+
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 14)
@@ -195,7 +209,9 @@ private struct QuestionCard: View {
                         get: { answer.text ?? "" },
                         set: { model.setText(batch, question: index, text: $0) }
                     )
+
                     let prompt: LocalizedStringKey = item.options.isEmpty ? "Your answer" : "Or type your own answer"
+
                     Group {
                         if item.input == .secret {
                             SecureField(prompt, text: text)
@@ -240,15 +256,18 @@ struct EndedSheet: View {
                 .frame(width: 56, height: 56)
                 .background(Theme.accent.opacity(0.12), in: .circle)
                 .padding(.bottom, 14)
+
             Text(headline)
                 .font(.system(size: 19, weight: .semibold))
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 6)
+
             Text(message)
                 .font(.system(size: 14.5))
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 22)
+
             VStack(spacing: 10) {
                 if end == .takenBack {
                     Button("Reconnect", action: onReconnect).buttonStyle(PrimaryButtonStyle())

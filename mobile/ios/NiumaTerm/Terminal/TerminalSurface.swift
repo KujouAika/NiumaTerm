@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+
 import NiumaTermCore
 
 /// Cell geometry for one font and size.
@@ -12,6 +13,7 @@ struct TerminalMetrics: Equatable {
     /// The font's advance, unrounded: runs of narrow cells are drawn as one
     /// string, which only lines up with the grid at the exact advance.
     let cellWidth: CGFloat
+
     let cellHeight: CGFloat
 
     /// From the top of a cell to the top of the text drawn in it.
@@ -56,11 +58,14 @@ struct TerminalMetrics: Equatable {
     static func estimatedGrid() -> (cols: Int, rows: Int) {
         let size = UserDefaults.standard.object(forKey: "terminalFontSize") as? Double ?? 11
         let name = UserDefaults.standard.string(forKey: "terminalFontName") ?? "JetBrains Mono"
+
         let screen = UIApplication.shared.connectedScenes
             .compactMap { ($0 as? UIWindowScene)?.screen }
             .first
+
         let bounds = screen?.bounds.size ?? CGSize(width: 390, height: 844)
         let metrics = TerminalMetrics(size: size, name: name, scale: screen?.scale ?? 3)
+
         // Leave room for the navigation bar and the accessory bar.
         return metrics.grid(for: CGSize(width: bounds.width, height: bounds.height - 200))
     }
@@ -75,6 +80,7 @@ final class TerminalSurface: UIView {
     var metrics: TerminalMetrics {
         didSet {
             guard metrics != oldValue else { return }
+
             setNeedsLayout()
             setNeedsDisplay()
         }
@@ -96,11 +102,13 @@ final class TerminalSurface: UIView {
 
     // Gesture state.
     private var scrollRemainder: CGFloat = 0
+
     private var pinchBase: Double?
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
 
     // Input method state, read by the `UITextInput` conformance.
     var markedText = ""
+
     var markedSelection = NSRange(location: 0, length: 0)
     weak var inputDelegate: UITextInputDelegate?
     lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
@@ -110,19 +118,25 @@ final class TerminalSurface: UIView {
     init(model: TerminalSessionModel, metrics: TerminalMetrics) {
         self.model = model
         self.metrics = metrics
+
         super.init(frame: .zero)
+
         isOpaque = true
         contentMode = .topLeft
         isMultipleTouchEnabled = true
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+
         pan.maximumNumberOfTouches = 1
+
         let press = UILongPressGestureRecognizer(target: self, action: #selector(pressed(_:)))
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
+
         for recognizer in [tap, pan, press, pinch] as [UIGestureRecognizer] {
             addGestureRecognizer(recognizer)
         }
+
         addInteraction(editMenu)
     }
 
@@ -141,22 +155,31 @@ final class TerminalSurface: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         displayLink?.invalidate()
+
         displayLink = nil
+
         guard window != nil else { return }
+
         let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.tick))
+
         link.add(to: .main, forMode: .common)
+
         displayLink = link
         link.isPaused = !needsFrame
+
         setNeedsLayout()
     }
 
-    fileprivate func tick() {
+    func tick() {
         guard needsFrame else {
             displayLink?.isPaused = true
+
             return
         }
+
         needsFrame = false
         displayLink?.isPaused = true
+
         if let frame = model.nextFrame() {
             apply(frame)
         }
@@ -165,43 +188,55 @@ final class TerminalSurface: UIView {
     private func apply(_ frame: TerminalFrame) {
         let rowCount = Int(frame.rows)
         let resized = rowCount != lines.count || Int(frame.cols) != gridCols
+
         var redrawAll = frame.full || resized
 
         if redrawAll {
             lines = Array(repeating: [], count: rowCount)
             gridCols = Int(frame.cols)
         }
+
         for line in frame.lines where Int(line.row) < rowCount {
             lines[Int(line.row)] = line.runs
+
             if !redrawAll { setNeedsDisplay(rowRect(Int(line.row))) }
         }
 
         let fg = color(frame.foreground)
         let bg = color(frame.background)
+
         if fg != foreground || bg != background {
             foreground = fg
             background = bg
             backgroundColor = bg
             redrawAll = true
         }
+
         if frame.selection != selection {
             selection = frame.selection
             redrawAll = true
         }
+
         if frame.cursor != cursor {
             if let old = cursor { setNeedsDisplay(rowRect(Int(old.row))) }
+
             cursor = frame.cursor
+
             if let new = cursor { setNeedsDisplay(rowRect(Int(new.row))) }
         }
+
         if redrawAll { setNeedsDisplay() }
     }
 
     func color(_ rgb: UInt32) -> UIColor {
         if let known = colors[rgb] { return known }
+
         let made = UIColor(red: CGFloat((rgb >> 16) & 0xFF) / 255,
                            green: CGFloat((rgb >> 8) & 0xFF) / 255,
                            blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+
         colors[rgb] = made
+
         return made
     }
 
@@ -209,13 +244,20 @@ final class TerminalSurface: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+
         guard window != nil, bounds.width > 0, bounds.height > 0 else { return }
+
         let grid = metrics.grid(for: bounds.size)
+
         guard claimed.map({ $0 != grid }) ?? true else { return }
+
         claimed = grid
+
         let scale = traitCollection.displayScale
+
         model.resize(cols: grid.cols, rows: grid.rows,
                      width: Int(bounds.width * scale), height: Int(bounds.height * scale))
+
         setNeedsDisplay()
     }
 
@@ -227,15 +269,19 @@ final class TerminalSurface: UIView {
     /// with no hairline gap between them.
     func cellRect(col: Int, cells: Int, row: Int) -> CGRect {
         let scale = traitCollection.displayScale
+
         func snap(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+
         let x0 = snap(TerminalMetrics.inset + CGFloat(col) * metrics.cellWidth)
         let x1 = snap(TerminalMetrics.inset + CGFloat(col + cells) * metrics.cellWidth)
+
         return CGRect(x: x0, y: CGFloat(row) * metrics.cellHeight, width: x1 - x0, height: metrics.cellHeight)
     }
 
     func cell(at point: CGPoint) -> (col: UInt16, row: UInt16) {
         let col = Int((point.x - TerminalMetrics.inset) / metrics.cellWidth)
         let row = Int(point.y / metrics.cellHeight)
+
         return (UInt16(clamping: min(max(col, 0), max(gridCols - 1, 0))),
                 UInt16(clamping: min(max(row, 0), max(lines.count - 1, 0))))
     }
@@ -244,23 +290,29 @@ final class TerminalSurface: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
+
         context.setFillColor(background.cgColor)
         context.fill(rect)
 
         let first = max(0, Int(rect.minY / metrics.cellHeight))
         let last = min(lines.count, Int((rect.maxY / metrics.cellHeight).rounded(.up)))
+
         guard first < last else { return }
 
         for row in first..<last {
             for run in lines[row] {
                 guard let bg = run.bg else { continue }
+
                 context.setFillColor(color(bg).cgColor)
                 context.fill(cellRect(col: Int(run.col), cells: Int(run.cells), row: row))
             }
+
             drawSelection(row: row, in: context)
+
             for run in lines[row] {
                 drawText(run, row: row, color: nil)
             }
+
             if let cursor, Int(cursor.row) == row {
                 drawCursor(cursor, in: context)
             }
@@ -272,6 +324,7 @@ final class TerminalSurface: UIView {
             .font: metrics.font(bold: run.bold, italic: run.italic),
             .foregroundColor: override ?? color(run.fg),
         ]
+
         switch run.underline {
         case .none: break
         case .double: attributes[.underlineStyle] = NSUnderlineStyle.double.rawValue
@@ -279,26 +332,33 @@ final class TerminalSurface: UIView {
         case .dashed: attributes[.underlineStyle] = NSUnderlineStyle([.single, .patternDash]).rawValue
         case .single, .curly: attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
         }
+
         if run.strikeout {
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
 
         let text = run.text as NSString
+
         var x = TerminalMetrics.inset + CGFloat(run.col) * metrics.cellWidth
+
         // A double-width glyph from a fallback font rarely matches two cells
         // exactly; centering keeps it inside them.
         if run.cells == 2 && run.text.count == 1 {
             let width = text.size(withAttributes: attributes).width
+
             x += (2 * metrics.cellWidth - width) / 2
         }
+
         text.draw(at: CGPoint(x: x, y: CGFloat(row) * metrics.cellHeight + metrics.textOffset),
                   withAttributes: attributes)
     }
 
     private func drawSelection(row: Int, in context: CGContext) {
         guard let selection, selection.startRow <= row, row <= selection.endRow else { return }
+
         let start: Int
         let end: Int
+
         if selection.block {
             start = Int(selection.startCol)
             end = Int(selection.endCol)
@@ -306,7 +366,9 @@ final class TerminalSurface: UIView {
             start = row == selection.startRow ? Int(selection.startCol) : 0
             end = row == selection.endRow ? Int(selection.endCol) : gridCols - 1
         }
+
         guard start <= end else { return }
+
         context.setFillColor(UIColor(Theme.accent).withAlphaComponent(0.3).cgColor)
         context.fill(cellRect(col: start, cells: end - start + 1, row: row))
     }
@@ -328,20 +390,25 @@ final class TerminalSurface: UIView {
                 .backgroundColor: background,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
             ]
+
             (markedText as NSString).draw(at: CGPoint(x: rect.minX, y: rect.minY + metrics.textOffset),
                                           withAttributes: attributes)
+
             return
         }
 
         context.setFillColor(foreground.cgColor)
+
         switch cursor.shape {
         case .block where isFirstResponder:
             context.fill(rect)
+
             if let under {
                 let glyph = TerminalRun(col: under.col, cells: wide ? 2 : 1,
                                         text: under.text, fg: under.run.fg, bg: nil,
                                         bold: under.run.bold, italic: under.run.italic,
                                         underline: .none, strikeout: false)
+
                 drawText(glyph, row: row, color: background)
             }
         case .block:
@@ -358,15 +425,20 @@ final class TerminalSurface: UIView {
     /// a narrow run takes one cell, so the text is found by position.
     private func run(at col: Int, row: Int) -> (run: TerminalRun, col: UInt16, text: String)? {
         guard row < lines.count else { return nil }
+
         for run in lines[row] where Int(run.col) <= col && col < Int(run.col + run.cells) {
             if run.cells == 2 && run.text.count == 1 {
                 return (run, run.col, run.text)
             }
+
             let characters = Array(run.text)
             let index = col - Int(run.col)
+
             guard index < characters.count else { return nil }
+
             return (run, UInt16(col), String(characters[index]))
         }
+
         return nil
     }
 
@@ -374,9 +446,13 @@ final class TerminalSurface: UIView {
 
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
         let cell = cell(at: recognizer.location(in: self))
+
         guard let handle = model.handle else { return }
+
         handle.clearSelection()
+
         if handle.click(col: cell.col, row: cell.row) { return }
+
         if !isFirstResponder { _ = becomeFirstResponder() }
     }
 
@@ -388,11 +464,17 @@ final class TerminalSurface: UIView {
             scrollRemainder = 0
         case .changed:
             scrollRemainder += recognizer.translation(in: self).y
+
             recognizer.setTranslation(.zero, in: self)
+
             let lines = Int(scrollRemainder / metrics.cellHeight)
+
             guard lines != 0, let handle = model.handle else { return }
+
             scrollRemainder -= CGFloat(lines) * metrics.cellHeight
+
             let cell = cell(at: recognizer.location(in: self))
+
             _ = handle.scroll(col: cell.col, row: cell.row, lines: Int32(lines))
         default:
             break
@@ -403,11 +485,14 @@ final class TerminalSurface: UIView {
     /// it, and lifting offers Copy.
     @objc private func pressed(_ recognizer: UILongPressGestureRecognizer) {
         guard let handle = model.handle else { return }
+
         let point = recognizer.location(in: self)
         let cell = cell(at: point)
+
         switch recognizer.state {
         case .began:
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
             _ = handle.selectStart(col: cell.col, row: cell.row, word: true)
         case .changed:
             _ = handle.selectExtend(col: cell.col, row: cell.row)
@@ -424,6 +509,7 @@ final class TerminalSurface: UIView {
             pinchBase = Double(metrics.regular.pointSize)
         case .changed:
             guard let base = pinchBase else { return }
+
             onFontSize?(min(18, max(8, (base * recognizer.scale).rounded())))
         default:
             pinchBase = nil
@@ -436,19 +522,25 @@ final class TerminalSurface: UIView {
 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
+
         if became {
             model.keyboardShown = true
+
             if let cursor { setNeedsDisplay(rowRect(Int(cursor.row))) }
         }
+
         return became
     }
 
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
+
         if resigned {
             model.keyboardShown = false
+
             if let cursor { setNeedsDisplay(rowRect(Int(cursor.row))) }
         }
+
         return resigned
     }
 
@@ -474,16 +566,19 @@ extension TerminalSurface: UIEditMenuInteractionDelegate {
                              menuFor configuration: UIEditMenuConfiguration,
                              suggestedActions: [UIMenuElement]) -> UIMenu? {
         var actions: [UIMenuElement] = []
+
         if selection != nil {
             actions.append(UIAction(title: tr("Copy"), image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
                 self?.model.copySelection()
             })
         }
+
         if UIPasteboard.general.hasStrings {
             actions.append(UIAction(title: tr("Paste"), image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
                 self?.model.paste()
             })
         }
+
         return UIMenu(children: actions)
     }
 }
@@ -511,14 +606,17 @@ struct TerminalSurfaceView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> TerminalSurface {
         let surface = TerminalSurface(model: model, metrics: metrics(context))
+
         surface.onFontSize = onFontSize
         model.surface = surface
+
         return surface
     }
 
     func updateUIView(_ surface: TerminalSurface, context: Context) {
         surface.onFontSize = onFontSize
         surface.metrics = metrics(context)
+
         if model.surface !== surface { model.surface = surface }
     }
 

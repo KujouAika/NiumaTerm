@@ -1,4 +1,5 @@
 import SwiftUI
+
 import NiumaTermCore
 
 struct TerminalSessionView: View {
@@ -9,6 +10,7 @@ struct TerminalSessionView: View {
     /// screen below overrides the scheme to match the terminal; sheets over
     /// it follow the app instead.
     @Environment(\.colorScheme) private var appScheme
+
     @Bindable var model: TerminalSessionModel
     let hostName: String
 
@@ -23,6 +25,7 @@ struct TerminalSessionView: View {
     private var scheme: ColorScheme {
         let rgb = model.background
         let luma = 0.299 * Double((rgb >> 16) & 0xFF) + 0.587 * Double((rgb >> 8) & 0xFF) + 0.114 * Double(rgb & 0xFF)
+
         return luma < 128 ? .dark : .light
     }
 
@@ -36,6 +39,7 @@ struct TerminalSessionView: View {
                             Text(notice).foregroundStyle(Theme.attention)
                         } else if hostStatus == .unreachable {
                             Text("Could not connect to \(hostName).").foregroundStyle(Theme.attention)
+
                             Button("Retry") { app.retry(model.route.hostID) }
                                 .buttonStyle(.bordered)
                         } else {
@@ -82,15 +86,18 @@ struct TerminalSessionView: View {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
                         Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+
                         Text([hostName, linkText, model.attached ? "\(model.cols)×\(model.rows)" : nil]
                                 .compactMap { $0 }.joined(separator: " · "))
                             .font(Theme.mono(11.5))
                             .foregroundStyle(.secondary)
                     }
                 }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Paste", systemImage: "doc.on.clipboard") { model.paste() }
+
                         Button("End session", systemImage: "xmark.circle", role: .destructive) {
                             model.terminate()
                         }
@@ -106,6 +113,7 @@ struct TerminalSessionView: View {
                            onClose: {
                                Task {
                                    try? await Task.sleep(for: .milliseconds(300))
+
                                    dismiss()
                                }
                            })
@@ -131,7 +139,9 @@ private struct ExitedBar: View {
             Text("The shell exited.")
                 .font(.system(size: 15))
                 .foregroundStyle(.secondary)
+
             Spacer()
+
             Button("Close", action: onClose)
                 .font(.system(size: 15, weight: .semibold))
                 .padding(.horizontal, 18)
@@ -152,6 +162,7 @@ struct AccessoryBar: View {
             HStack(spacing: 6) {
                 ForEach(AccessoryKey.defaultLayout) { key in
                     let on = (key.action == .ctrl && model.ctrl) || (key.action == .alt && model.alt)
+
                     Button { model.press(key) } label: {
                         // The other keys are named as printed on keyboards,
                         // which stay the same in every language.
@@ -165,6 +176,7 @@ struct AccessoryBar: View {
                     }
                     .buttonStyle(.plain)
                 }
+
                 Button { model.toggleKeyboard() } label: {
                     Image(systemName: model.keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
                         .font(.system(size: 15))

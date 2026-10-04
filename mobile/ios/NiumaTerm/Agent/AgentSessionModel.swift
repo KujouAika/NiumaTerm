@@ -1,5 +1,6 @@
-import SwiftUI
 import Observation
+import SwiftUI
+
 import NiumaTermCore
 
 /// One row of the transcript as the screen shows it. Consecutive work
@@ -18,6 +19,7 @@ struct TranscriptRowModel: Identifiable, Equatable {
     /// The transcript index of the row's first entry, which stays the same
     /// while entries after it stream in.
     let id: Int
+
     let kind: Kind
 }
 
@@ -42,18 +44,24 @@ enum TranscriptRows {
         func flushWork() {
             if !work.isEmpty {
                 rows.append(TranscriptRowModel(id: workStart, kind: .work(work)))
+
                 work = []
             }
         }
 
         for entry in entries {
             let index = Int(entry.index)
+
             if let item = workItem(entry.item, index: index) {
                 if work.isEmpty { workStart = index }
+
                 work.append(item)
+
                 continue
             }
+
             flushWork()
+
             switch entry.item {
             case .user(let text, let images):
                 rows.append(TranscriptRowModel(id: index, kind: .user(text, images: Int(images))))
@@ -71,7 +79,9 @@ enum TranscriptRows {
                 break
             }
         }
+
         flushWork()
+
         return rows
     }
 
@@ -79,11 +89,13 @@ enum TranscriptRows {
         switch item {
         case .command(let command, let purpose, let output, let status, let exitCode):
             let state: WorkItem.State
+
             if let exitCode {
                 state = exitCode == 0 ? .done : .failed
             } else {
                 state = workState(status)
             }
+
             return WorkItem(id: index, label: tr("Run"), detail: purpose ?? command, output: output, state: state)
         case .fileChange(let paths, let diff, let status):
             return WorkItem(id: index, label: tr("Edit"), detail: paths, output: diff, state: workState(status))
@@ -98,12 +110,15 @@ enum TranscriptRows {
     /// finished nor failed is still running.
     private static func workState(_ status: String?) -> WorkItem.State {
         guard let status = status?.lowercased() else { return .running }
+
         if status.contains("fail") || status.contains("error") || status.contains("declin") || status.contains("reject") {
             return .failed
         }
+
         if status.contains("complet") || status.contains("done") || status.contains("success") || status == "ok" {
             return .done
         }
+
         return .running
     }
 }
@@ -156,6 +171,7 @@ extension SkillRecord {
     /// The scope and description, so skills that share a name read apart.
     var detail: String {
         let named = title == name ? description : "\(title) · \(description)"
+
         return "\(source) · \(named)"
     }
 }
@@ -210,7 +226,9 @@ final class AgentSessionModel {
         self.profile = profile
 
         let events = AgentEvents(model: self)
+
         self.events = events
+
         do {
             handle = try core.attachAgent(host: route.hostID, session: route.sessionID, observer: events)
         } catch {
@@ -243,27 +261,34 @@ final class AgentSessionModel {
     func suggestions(skillsInSlash: Bool) -> [ComposerSuggestion] {
         guard let sigil = draft.first, sigil == "/" || sigil == "$",
               !draft.contains(where: \.isWhitespace) else { return [] }
+
         let query = draft.dropFirst().lowercased()
+
         var candidates = skills
             .filter { $0.token.first == sigil || (sigil == "/" && skillsInSlash) }
             .map(ComposerSuggestion.skill)
+
         if sigil == "/" {
             candidates = commands.map(ComposerSuggestion.command) + candidates
         }
+
         let matching = candidates.filter { query.isEmpty || $0.label.dropFirst().lowercased().contains(query) }
         let leading = matching.filter { $0.label.dropFirst().lowercased().hasPrefix(query) }
         let inner = matching.filter { !$0.label.dropFirst().lowercased().hasPrefix(query) }
+
         return leading + inner
     }
 
     func applySuggestion(_ suggestion: ComposerSuggestion) {
         draft = suggestion.label + " "
+
         if case .skill(let skill) = suggestion { pickedSkill = skill.path }
     }
 
     /// Put a skill's token in front of what is already typed.
     func insertSkill(_ skill: SkillRecord) {
         let rest = trimmedDraft
+
         draft = rest.isEmpty ? skill.token + " " : "\(skill.token) \(rest)"
         pickedSkill = skill.path
     }
@@ -275,6 +300,7 @@ final class AgentSessionModel {
 
     var modelLabel: String {
         guard let model else { return tr("Default model") }
+
         return models.first { $0.model == model }?.display ?? model
     }
 
@@ -284,13 +310,17 @@ final class AgentSessionModel {
 
     var contextLine: String? {
         guard let used = state?.contextUsed else { return nil }
+
         guard let window = state?.contextWindow, window > 0 else { return tr("\(Self.compact(used)) context") }
+
         let left = max(0, 100 - Int(Double(used) / Double(window) * 100))
+
         return tr("\(Self.compact(used)) used · \(left)% left")
     }
 
     var phaseLine: String {
         if let failure = state?.startFailure { return failure }
+
         switch state?.phase {
         case .starting, nil: return attached ? tr("Starting…") : tr("Connecting…")
         case .running: return state?.detail ?? (isWorking ? tr("Working") : tr("Ready"))
@@ -303,15 +333,20 @@ final class AgentSessionModel {
 
     func viewChanged(transcriptFrom: UInt32?) {
         guard let handle else { return }
+
         if let from = transcriptFrom {
             let kept = min(Int(from), entries.count)
+
             entries = Array(entries.prefix(kept)) + handle.entries(from: UInt32(kept))
             rows = TranscriptRows.build(entries)
         }
 
         let state = handle.state()
+
         self.state = state
+
         if let name = state.title, !name.isEmpty { title = name }
+
         workStarted = state.workingMs.map { Date().addingTimeInterval(-Double($0) / 1000) }
 
         // A new approval request opens the sheet once; dismissing it keeps
@@ -331,11 +366,14 @@ final class AgentSessionModel {
         // A new question batch opens its sheet once, unless an approval
         // already holds the screen; the transcript keeps a row to open it.
         answers = answers.filter { id, _ in state.questions.contains { $0.id == id } }
+
         if let batch = state.questions.first {
             if answers[batch.id] == nil {
                 answers[batch.id] = batch.questions.map(\.answer)
             }
+
             questionSkipsAt = batch.skipsInMs.map { Date().addingTimeInterval(Double($0) / 1000) }
+
             if shownQuestion != batch.id {
                 shownQuestion = batch.id
                 questionNotice = nil
@@ -353,8 +391,10 @@ final class AgentSessionModel {
     /// Send, queue behind the running turn, or interrupt.
     func primaryAction() {
         let text = trimmedDraft
+
         if !text.isEmpty {
             draft = ""
+
             send(text)
         } else if isWorking {
             interrupt()
@@ -363,24 +403,32 @@ final class AgentSessionModel {
 
     private func send(_ text: String) {
         guard let handle else { return }
+
         notice = nil
+
         let skill = pickedSkill
+
         pickedSkill = nil
+
         Task {
             do {
                 let result = try await handle.submit(text: text, skillPath: skill)
+
                 switch result {
                 case .accepted, .commandStarted:
                     return
                 case .commandFinished(let message):
                     notice = message
+
                     return
                 case .commandQueued(let count):
                     notice = count == 1 ? tr("The command runs when the turn ends.")
                                         : tr("\(count) commands run when the turn ends.")
+
                     return
                 case .conversationReplaced:
                     conversationReplaced()
+
                     return
                 case .notReady:
                     notice = tr("\(agentName) is still starting.")
@@ -396,6 +444,7 @@ final class AgentSessionModel {
             } catch {
                 notice = error.displayText
             }
+
             // The message did not go out; give it back.
             if draft.isEmpty { draft = text }
         }
@@ -405,10 +454,13 @@ final class AgentSessionModel {
     /// turn is running.
     func newConversation() {
         guard let handle else { return }
+
         notice = nil
+
         Task {
             do {
                 try await handle.newConversation()
+
                 conversationReplaced()
             } catch {
                 notice = error.displayText
@@ -423,9 +475,11 @@ final class AgentSessionModel {
 
     func interrupt() {
         guard let handle else { return }
+
         Task {
             do {
                 let result = try await handle.interrupt()
+
                 if let restored = result.restoredText, draft.isEmpty {
                     draft = restored
                 }
@@ -458,10 +512,13 @@ final class AgentSessionModel {
 
     private func respond(_ decision: ApprovalDecision) {
         guard let handle else { return }
+
         showApproval = false
+
         Task {
             do {
                 let result = try await handle.respondApproval(decision: decision)
+
                 if result == .rejected {
                     notice = tr("\(agentName) did not accept the answer.")
                 }
@@ -481,8 +538,11 @@ final class AgentSessionModel {
     /// computer.
     func toggle(_ batch: QuestionBatch, question: Int, option: Int) {
         guard let item = batch.questions[safe: question] else { return }
+
         var current = answer(batch, question)
+
         let pick = UInt32(option)
+
         if !item.multiSelect {
             current.selected = [pick]
         } else if let index = current.selected.firstIndex(of: pick) {
@@ -490,20 +550,26 @@ final class AgentSessionModel {
         } else {
             current.selected.append(pick)
         }
+
         current.text = nil
+
         store(batch, question, current)
     }
 
     /// Type an answer in place of the options; clearing it brings them back.
     func setText(_ batch: QuestionBatch, question: Int, text: String) {
         var current = answer(batch, question)
+
         current.text = text.isEmpty ? nil : text
+
         store(batch, question, current)
     }
 
     func isAnswered(_ batch: QuestionBatch, _ question: Int) -> Bool {
         let current = answer(batch, question)
+
         if let text = current.text { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
         return !current.selected.isEmpty
     }
 
@@ -525,7 +591,9 @@ final class AgentSessionModel {
 
     private func store(_ batch: QuestionBatch, _ question: Int, _ answer: QuestionAnswer) {
         var current = answers[batch.id] ?? batch.questions.map(\.answer)
+
         guard current.indices.contains(question) else { return }
+
         current[question] = answer
         answers[batch.id] = current
         questionNotice = nil
@@ -557,16 +625,19 @@ final class AgentSessionModel {
     func selectModel(_ model: String) {
         let efforts = models.first { $0.model == model }?.efforts ?? []
         let effort = effort.flatMap { efforts.contains($0) ? $0 : nil } ?? efforts.first
+
         apply(model: model, effort: effort)
     }
 
     func selectEffort(_ effort: String) {
         guard let model else { return }
+
         apply(model: model, effort: effort)
     }
 
     private func apply(model: String, effort: String?) {
         guard let handle else { return }
+
         Task {
             do {
                 try await handle.selectModel(model: model, effort: effort)
@@ -578,8 +649,11 @@ final class AgentSessionModel {
 
     func rename(_ newTitle: String) {
         guard let handle else { return }
+
         let previous = title
+
         title = newTitle
+
         Task {
             do {
                 try await handle.rename(title: newTitle)

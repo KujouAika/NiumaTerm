@@ -1,4 +1,5 @@
 import SwiftUI
+
 import NiumaTermCore
 
 /// An agent as a host names it in `host.info` and on its sessions.
@@ -40,6 +41,7 @@ struct Session: Identifiable, Hashable {
     var kind: SessionType
     var profile: AgentProfile?
     var workspace: SessionWorkspace?
+
     /// A host tab still asleep; opening it starts its shell or agent.
     var pending: Bool
 
@@ -49,9 +51,11 @@ struct Session: Identifiable, Hashable {
         title = record.title
         kind = record.kind
         profile = record.harness.map(AgentProfile.init(harness:))
+
         workspace = record.workspace.map {
             SessionWorkspace(id: $0.id, name: $0.name, position: Int($0.position))
         }
+
         pending = record.pending
     }
 
@@ -69,6 +73,7 @@ struct Session: Identifiable, Hashable {
         case .agent: profile?.displayName ?? tr("Agent")
         case .other: tr("Session")
         }
+
         return pending ? tr("\(kindName) · Asleep") : kindName
     }
 }
@@ -165,9 +170,12 @@ struct Host: Identifiable {
     let id: String
     var name: String
     var status: HostStatus
+
     /// How the host is reached, while it is connected.
     var link: HostLink?
+
     var sessions: [Session] = []
+
     /// The agents and workspaces the host offers, from the same moment as
     /// `sessions`; nil when the host did not say.
     var offer: HostOffer?
@@ -225,17 +233,22 @@ struct Host: Identifiable {
         // and their sessions fall back to the workspace's name.
         func holds(_ workspace: WorkspaceRecord, _ session: Session) -> Bool {
             guard let held = session.workspace else { return false }
+
             if let id = workspace.id { return held.id == id }
+
             return held.name == workspace.name
         }
 
         let loose = ordered.filter { session in !workspaces.contains { holds($0, session) } }
+
         var groups = loose.isEmpty ? [] : [SessionGroup(id: "", workspace: nil, sessions: loose)]
+
         for (index, workspace) in workspaces.enumerated() {
             groups.append(SessionGroup(id: workspace.id ?? "\(index):\(workspace.name)",
                                        workspace: workspace,
                                        sessions: ordered.filter { holds(workspace, $0) }))
         }
+
         return groups
     }
 }
@@ -246,6 +259,7 @@ extension Error {
         if let core = self as? CoreError, case .Failed(let message) = core {
             return message
         }
+
         return localizedDescription
     }
 }

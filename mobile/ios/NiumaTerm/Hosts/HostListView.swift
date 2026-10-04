@@ -1,4 +1,5 @@
 import SwiftUI
+
 import NiumaTermCore
 
 /// Root: paired hosts, each a section listing its sessions (design doc §8.1).
@@ -19,6 +20,7 @@ struct HostListView: View {
 
     var body: some View {
         @Bindable var app = app
+
         NavigationStack(path: $app.path) {
             List {
                 if let error = app.startupError {
@@ -28,15 +30,18 @@ struct HostListView: View {
                         Text("NiumaTerm could not start")
                     }
                 }
+
                 ForEach(app.hosts) { host in
                     let groups = host.sessionGroups
                     let hostFold = folds[host.id] ?? .all
+
                     let header = HostHeader(host: host,
                                             fold: groups.isEmpty ? nil : hostFold,
                                             onFold: { fold(host.id, over: host.sessions) },
                                             onNew: host.isOnline ? { newSessionHost = host } : nil,
                                             onRetry: host.status == .unreachable ? { app.retry(host.id) } : nil)
                         .textCase(nil)
+
                     if groups.isEmpty || hostFold == .collapsed {
                         Section {
                             if groups.isEmpty && host.isOnline {
@@ -55,6 +60,7 @@ struct HostListView: View {
                         ForEach(groups) { group in
                             let key = "\(host.id)/\(group.id)"
                             let groupFold: SessionFold = group.workspace == nil ? .all : folds[key] ?? .all
+
                             Section {
                                 ForEach(group.sessions.filter { hostFold.shows($0) && groupFold.shows($0) }) { session in
                                     sessionRow(session, on: host)
@@ -64,6 +70,7 @@ struct HostListView: View {
                                     if group.id == groups.first?.id {
                                         header
                                     }
+
                                     if let workspace = group.workspace {
                                         WorkspaceHeader(workspace: workspace,
                                                         fold: groupFold,
@@ -118,6 +125,7 @@ struct HostListView: View {
             ) { route in
                 TextField("Title", text: $renameTitle)
                 Button("Cancel", role: .cancel) {}
+
                 Button("Save") { rename(route) }
                     .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -153,6 +161,7 @@ struct HostListView: View {
             // app, which pairs as if it had scanned the code itself.
             .onOpenURL { url in
                 guard url.scheme == "niumaterm", url.host() == "pair" else { return }
+
                 pairing = PairingRequest(link: url.absoluteString)
             }
         }
@@ -160,6 +169,7 @@ struct HostListView: View {
 
     private func sessionRow(_ session: Session, on host: Host) -> some View {
         let route = SessionRoute(hostID: host.id, sessionID: session.id, kind: session.kind)
+
         return NavigationLink(value: route) {
             SessionRow(session: session)
         }
@@ -172,6 +182,7 @@ struct HostListView: View {
                     closing = SessionClose(route: route, title: session.title, hostName: host.name)
                 }
                 .tint(.red)
+
                 Button("Rename", systemImage: "pencil") {
                     renameTitle = session.title
                     renaming = route
@@ -185,6 +196,7 @@ struct HostListView: View {
     /// slide rather than vanish.
     private func fold(_ key: String, over sessions: [Session]) {
         let next = (folds[key] ?? .all).next(anyAsleep: sessions.contains { $0.pending })
+
         withAnimation(.snappy) { folds[key] = next }
     }
 
@@ -200,6 +212,7 @@ struct HostListView: View {
 
     private func rename(_ route: SessionRoute) {
         let title = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+
         Task {
             do {
                 try await app.renameSession(route, title: title)
@@ -223,8 +236,10 @@ struct HostListView: View {
     /// answers with it.
     private func start(_ open: @escaping () async throws -> SessionRoute) {
         starting = true
+
         Task {
             defer { starting = false }
+
             do {
                 app.path.append(try await open())
             } catch {
@@ -257,8 +272,10 @@ struct PairingRequest: Identifiable {
 
 struct HostHeader: View {
     let host: Host
+
     /// Nil while the host lists nothing to fold.
     var fold: SessionFold?
+
     var onFold: () -> Void
     var onNew: (() -> Void)?
     var onRetry: (() -> Void)?
@@ -268,21 +285,27 @@ struct HostHeader: View {
             if let fold {
                 FoldMark(fold: fold)
             }
+
             Image(systemName: host.icon)
                 .font(.system(size: 18))
                 .foregroundStyle(Theme.ink)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.name)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.ink)
+
                 HStack(spacing: 5) {
                     Circle().fill(host.statusColor).frame(width: 7, height: 7)
+
                     Text(host.statusText)
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.secondary)
                 }
             }
+
             Spacer()
+
             if let onRetry {
                 Button("Retry", action: onRetry)
                     .font(.system(size: 14, weight: .semibold))
@@ -290,6 +313,7 @@ struct HostHeader: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Retry connecting to \(host.name)")
             }
+
             if let onNew {
                 Button(action: onNew) {
                     Image(systemName: "plus")
@@ -323,6 +347,7 @@ struct FoldMark: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.tertiary)
                 .rotationEffect(.degrees(fold == .collapsed ? 0 : 90))
+
             if fold == .awake {
                 Image(systemName: "moon.zzz")
                     .font(.system(size: 10))
@@ -348,27 +373,34 @@ struct WorkspaceHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             FoldMark(fold: fold)
+
             Image(systemName: "folder")
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.secondary)
+
             Text(workspace.name)
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(Theme.secondary)
                 .lineLimit(1)
                 .layoutPriority(1)
+
             Text(workspace.path)
                 .font(Theme.mono(10.5))
                 .foregroundStyle(Theme.tertiary)
                 .lineLimit(1)
                 .truncationMode(.head)
+
             Spacer(minLength: 4)
+
             Menu {
                 Button(action: onTerminal) {
                     Text(verbatim: ">_  ") + Text("New terminal")
                 }
+
                 if !agents.isEmpty {
                     Divider()
                 }
+
                 ForEach(agents, id: \.name) { agent in
                     Button { onAgent(agent) } label: {
                         Text(verbatim: "\(AgentProfile(harness: agent.harness).glyph)  \(agent.name)")
@@ -393,6 +425,7 @@ struct WorkspaceHeader: View {
 
 struct SessionRow: View {
     let session: Session
+
     var body: some View {
         HStack(spacing: 12) {
             Group {
@@ -406,15 +439,18 @@ struct SessionRow: View {
             }
             .foregroundStyle(Theme.ink2)
             .frame(width: 22)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.title)
                     .font(.system(size: 16))
                     .foregroundStyle(Theme.ink)
                     .lineLimit(1)
+
                 Text(session.subtitle)
                     .font(.system(size: 12.5))
                     .foregroundStyle(Theme.secondary)
             }
+
             Spacer(minLength: 4)
         }
         .padding(.vertical, 3)
@@ -431,6 +467,7 @@ struct SessionScreen: View {
     var body: some View {
         let session = app.session(route)
         let hostName = app.host(route.hostID)?.name ?? tr("Computer")
+
         switch route.kind {
         case .agent:
             if let model = app.agentModel(for: route, session: session) {

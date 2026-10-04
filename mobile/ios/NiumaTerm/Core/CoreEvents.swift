@@ -1,4 +1,5 @@
 import Foundation
+
 import NiumaTermCore
 
 /// Receives core callbacks on the core's threads and hands them to the main

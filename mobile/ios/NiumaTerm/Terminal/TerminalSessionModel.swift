@@ -1,6 +1,7 @@
-import SwiftUI
 import Observation
+import SwiftUI
 import UIKit
+
 import NiumaTermCore
 
 /// One terminal session on a host, over `TerminalHandle` (design doc §8.2).
@@ -20,6 +21,7 @@ final class TerminalSessionModel {
 
     /// Sticky modifiers from the accessory bar; the next key takes them.
     var ctrl = false
+
     var alt = false
 
     var notice: String?
@@ -29,6 +31,7 @@ final class TerminalSessionModel {
 
     @ObservationIgnored private(set) var handle: TerminalHandle?
     @ObservationIgnored private let events: TerminalEvents
+
     @ObservationIgnored weak var surface: TerminalSurface? {
         didSet { surface?.setNeedsFrame() }
     }
@@ -42,7 +45,9 @@ final class TerminalSessionModel {
         self.title = title
         events = TerminalEvents()
         events.model = self
+
         let grid = TerminalMetrics.estimatedGrid()
+
         do {
             handle = try core.attachTerminal(host: route.hostID, session: route.sessionID,
                                              cols: UInt16(grid.cols), rows: UInt16(grid.rows),
@@ -73,24 +78,33 @@ final class TerminalSessionModel {
     /// surface calls this once per display refresh while changes are due.
     func nextFrame() -> TerminalFrame? {
         guard let handle else { return nil }
+
         let frame = handle.frame()
 
         if cols != Int(frame.cols) { cols = Int(frame.cols) }
+
         if rows != Int(frame.rows) { rows = Int(frame.rows) }
+
         if background != frame.background { background = frame.background }
+
         if !frame.title.isEmpty && frame.title != title { title = frame.title }
+
         if ended != frame.ended { ended = frame.ended }
+
         if exited != frame.exited { exited = frame.exited }
+
         scrolledBack = frame.scrollOffset + UInt64(frame.rows) < frame.scrollTotal
 
         if frame.bell {
             UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
         }
+
         // A program on the host sets this phone's clipboard, as it would
         // over SSH.
         if let text = frame.clipboard {
             UIPasteboard.general.string = text
         }
+
         return frame
     }
 
@@ -101,10 +115,13 @@ final class TerminalSessionModel {
     /// becomes the same bytes as from a hardware keyboard.
     func sendText(_ text: String) {
         guard let handle else { return }
+
         if (ctrl || alt), text.count == 1 {
             _ = sendKey(text.lowercased(), text: text)
+
             return
         }
+
         switch text {
         case "\n", "\r":
             _ = sendKey("enter")
@@ -119,11 +136,15 @@ final class TerminalSessionModel {
     func sendKey(_ key: String, text: String? = nil, shift: Bool = false, control: Bool = false,
                  alt useAlt: Bool = false, command: Bool = false) -> KeyResult {
         guard let handle else { return .ignored }
+
         let input = TerminalKeyInput(key: key, text: text, shift: shift,
                                      control: control || ctrl, alt: useAlt || alt, command: command)
+
         ctrl = false
         alt = false
+
         let result = handle.sendKey(key: input)
+
         switch result {
         case .sent:
             followInput()
@@ -134,19 +155,23 @@ final class TerminalSessionModel {
         case .ignored:
             break
         }
+
         return result
     }
 
     func paste() {
         guard let handle, let text = UIPasteboard.general.string, !text.isEmpty else { return }
+
         if handle.paste(text: text) { followInput() }
     }
 
     func copySelection() {
         guard let handle else { return }
+
         Task {
             if let text = await handle.selectedText() {
                 UIPasteboard.general.string = text
+
                 handle.clearSelection()
             }
         }
@@ -162,6 +187,7 @@ final class TerminalSessionModel {
         case .text(let text): sendText(text)
         case .paste: paste()
         }
+
         if key.action != .ctrl && key.action != .alt {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
@@ -178,6 +204,7 @@ final class TerminalSessionModel {
 
     func toggleKeyboard() {
         guard let surface else { return }
+
         _ = keyboardShown ? surface.resignFirstResponder() : surface.becomeFirstResponder()
     }
 
@@ -212,6 +239,7 @@ struct AccessoryKey: Identifiable {
         case nav(String)
         case text(String)
     }
+
     let label: String
     let action: Action
     var id: String { label }

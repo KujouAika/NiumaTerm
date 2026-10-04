@@ -1,4 +1,5 @@
 import UIKit
+
 import NiumaTermCore
 
 /// A position in the text an input method is composing. The terminal keeps
@@ -6,6 +7,7 @@ import NiumaTermCore
 /// only text input methods see is what they are still composing.
 final class ComposingPosition: UITextPosition {
     let offset: Int
+
     init(_ offset: Int) { self.offset = offset }
 }
 
@@ -29,6 +31,7 @@ extension TerminalSurface: UITextInput {
     // Terminals take text literally: no corrections, capitals, or smart
     // punctuation, which would rewrite commands as they are typed.
     var autocorrectionType: UITextAutocorrectionType { get { .no } set {} }
+
     var autocapitalizationType: UITextAutocapitalizationType { get { .none } set {} }
     var spellCheckingType: UITextSpellCheckingType { get { .no } set {} }
     var smartQuotesType: UITextSmartQuotesType { get { .no } set {} }
@@ -41,6 +44,7 @@ extension TerminalSurface: UITextInput {
 
     func insertText(_ text: String) {
         if !markedText.isEmpty { clearMarkedText() }
+
         model.sendText(text)
     }
 
@@ -50,9 +54,11 @@ extension TerminalSurface: UITextInput {
 
     func text(in range: UITextRange) -> String? {
         guard let range = range as? ComposingRange else { return nil }
+
         let characters = Array(markedText)
         let lower = min(range.lower, characters.count)
         let upper = min(range.upper, characters.count)
+
         return String(characters[lower..<upper])
     }
 
@@ -63,10 +69,12 @@ extension TerminalSurface: UITextInput {
     var selectedTextRange: UITextRange? {
         get {
             let lower = markedSelection.location
+
             return ComposingRange(lower, lower + markedSelection.length)
         }
         set {
             guard let range = newValue as? ComposingRange else { return }
+
             markedSelection = NSRange(location: range.lower, length: range.upper - range.lower)
         }
     }
@@ -78,19 +86,23 @@ extension TerminalSurface: UITextInput {
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         self.markedText = markedText ?? ""
         markedSelection = selectedRange
+
         redrawCursorRow()
     }
 
     /// The input method committed what it was composing.
     func unmarkText() {
         let text = markedText
+
         clearMarkedText()
+
         if !text.isEmpty { model.sendText(text) }
     }
 
     private func clearMarkedText() {
         markedText = ""
         markedSelection = NSRange(location: 0, length: 0)
+
         redrawCursorRow()
     }
 
@@ -105,12 +117,15 @@ extension TerminalSurface: UITextInput {
         guard let from = fromPosition as? ComposingPosition, let to = toPosition as? ComposingPosition else {
             return nil
         }
+
         return ComposingRange(from.offset, to.offset)
     }
 
     func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
         guard let position = position as? ComposingPosition else { return nil }
+
         let moved = position.offset + offset
+
         return (0...markedText.count).contains(moved) ? ComposingPosition(moved) : nil
     }
 
@@ -125,6 +140,7 @@ extension TerminalSurface: UITextInput {
     func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
         let a = (position as? ComposingPosition)?.offset ?? 0
         let b = (other as? ComposingPosition)?.offset ?? 0
+
         return a < b ? .orderedAscending : a > b ? .orderedDescending : .orderedSame
     }
 
@@ -158,6 +174,7 @@ extension TerminalSurface: UITextInput {
 
     func caretRect(for position: UITextPosition) -> CGRect {
         guard let cursor else { return .zero }
+
         return cellRect(col: Int(cursor.col), cells: 1, row: Int(cursor.row))
     }
 
@@ -183,7 +200,9 @@ extension TerminalSurface {
         guard markedText.isEmpty else { return nil }
 
         let flags = key.modifierFlags
+
         guard !flags.contains(.command) else { return nil }
+
         let shift = flags.contains(.shift)
         let control = flags.contains(.control)
         let alt = flags.contains(.alternate)
@@ -192,13 +211,18 @@ extension TerminalSurface {
             // Unmodified Return, Tab, and Backspace arrive as text and
             // `deleteBackward`, which repeat while held.
             let plain = ["enter", "tab", "backspace"].contains(name)
+
             if plain && !(shift || control || alt) { return nil }
+
             return TerminalKeyInput(key: name, text: nil, shift: shift, control: control, alt: alt, command: false)
         }
 
         guard control || alt else { return nil }
+
         let text = key.charactersIgnoringModifiers
+
         guard !text.isEmpty else { return nil }
+
         return TerminalKeyInput(key: text.lowercased(), text: text, shift: shift, control: control,
                                 alt: alt, command: false)
     }
@@ -230,31 +254,40 @@ extension TerminalSurface {
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var unhandled = Set<UIPress>()
+
         for press in presses {
             guard let key = press.key, let input = terminalKey(key) else {
                 unhandled.insert(press)
+
                 continue
             }
+
             model.sendKey(input.key, text: input.text, shift: input.shift, control: input.control,
                           alt: input.alt)
+
             startRepeat(input)
         }
+
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         stopRepeat()
+
         super.pressesEnded(presses, with: event)
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         stopRepeat()
+
         super.pressesCancelled(presses, with: event)
     }
 
     private func startRepeat(_ input: TerminalKeyInput) {
         stopRepeat()
+
         guard Self.repeating.contains(input.key) else { return }
+
         repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
@@ -269,6 +302,7 @@ extension TerminalSurface {
 
     private func stopRepeat() {
         repeatTimer?.invalidate()
+
         repeatTimer = nil
     }
 }

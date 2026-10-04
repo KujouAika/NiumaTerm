@@ -32,19 +32,25 @@ struct SettingsView: View {
                     ForEach(app.hosts) { host in
                         HStack(spacing: 12) {
                             Image(systemName: host.icon).foregroundStyle(Theme.ink2).frame(width: 24)
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(host.name)
+
                                 Text(host.statusText).font(.caption).foregroundStyle(Theme.secondary)
                             }
+
                             Spacer()
+
                             Button("Forget", role: .destructive) { forgetting = host }
                                 .buttonStyle(.borderless)
                         }
                     }
+
                     Button(action: onAddTarget) {
                         Label("Add target", systemImage: "qrcode.viewfinder")
                     }
                 }
+
                 Section {
                     Toggle("Turn finished", isOn: $notifyTurnFinished)
                     Toggle("Approval needed", isOn: $notifyApproval)
@@ -55,15 +61,18 @@ struct SettingsView: View {
                 } footer: {
                     Text("A computer sends these once this phone has been away from it for five minutes, and stops when you are back at the computer.")
                 }
+
                 Section("Terminal") {
                     Picker("Font", selection: $fontName) {
                         Text("JetBrains Mono").tag("JetBrains Mono")
                         Text("SF Mono").tag("SF Mono")
                     }
+
                     Stepper(value: $fontSize, in: 8...18, step: 1) {
                         LabeledContent("Size", value: "\(Int(fontSize)) pt")
                     }
                 }
+
                 Section {
                     Toggle("Monospaced transcript", isOn: $transcriptMono)
                     Toggle("Codex skills in / list", isOn: $codexSkillsInSlash)
@@ -73,9 +82,11 @@ struct SettingsView: View {
                 } footer: {
                     Text("List Codex skills among the / commands; picking one writes its $name form. With this off, / lists commands only and $ lists skills. When an agent asks several questions together, answering one at a time shows them one by one.")
                 }
+
                 Section("Security") {
                     Toggle("Require Face ID", isOn: $faceIDLock)
                 }
+
                 Section("Appearance") {
                     Picker("Theme", selection: $appearance) {
                         ForEach(AppAppearance.allCases) { option in
@@ -83,6 +94,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+
                 Section {
                     Picker("Connection", selection: $networkPreference) {
                         ForEach(NetworkPreference.allCases) { option in
@@ -94,6 +106,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Automatic uses the local network when it reaches the computer, and the relay otherwise. Always Relay or Always LAN keeps every connection on that path; a computer paired without a relay cannot be reached with Always Relay.")
                 }
+
                 Section {
                     Picker("Language", selection: $localization.language) {
                         ForEach(AppLanguage.allCases) { option in
@@ -101,6 +114,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+
                 Section {
                     LabeledContent("Version", value: AppModel.appVersion)
                 }

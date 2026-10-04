@@ -1,9 +1,10 @@
-import SwiftUI
+import Network
 import Observation
+import SwiftUI
 import UIKit
 import UserNotifications
-import Network
 import os
+
 import NiumaTermCore
 
 /// App-wide state over `MobileCore` (design doc §4.2): paired hosts, their
@@ -28,6 +29,7 @@ final class AppModel {
 
     /// The APNs device token, once iOS issued one.
     @ObservationIgnored private var pushToken: String?
+
     @ObservationIgnored private let pushLog = Logger(subsystem: "io.f32.NiumaTermMobile", category: "push")
 
     init() {
@@ -35,20 +37,26 @@ final class AppModel {
             let core = try MobileCore(stateDir: Self.stateDirectory().path,
                                       deviceName: UIDevice.current.name,
                                       appVersion: Self.appVersion)
+
             self.core = core
+
             // Before anything connects, so no link starts on a path the
             // user ruled out.
             core.setNetworkMode(mode: NetworkPreference.stored.mode)
+
             hosts = core.hosts().map(Host.init(record:))
 
             let events = CoreEvents(app: self)
+
             self.events = events
+
             core.observe(observer: events)
 
             // Joining another Wi-Fi network may put the phone on a host's
             // LAN: links through a relay then try going direct at once, and
             // every link checks it still reaches its host.
             pathMonitor.pathUpdateHandler = { _ in core.networkChanged() }
+
             pathMonitor.start(queue: DispatchQueue(label: "io.f32.NiumaTermMobile.network"))
         } catch {
             startupError = error.displayText
@@ -64,8 +72,11 @@ final class AppModel {
     private static func stateDirectory() throws -> URL {
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
+
         let dir = base.appendingPathComponent("remote", isDirectory: true)
+
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
         return dir
     }
 
@@ -79,10 +90,12 @@ final class AppModel {
 
     func hostChanged(_ record: HostRecord) {
         let wasConnected = host(record.id)?.isOnline ?? false
+
         if let index = hosts.firstIndex(where: { $0.id == record.id }) {
             hosts[index].name = record.name
             hosts[index].status = record.status
             hosts[index].link = record.link
+
             // A list from a dropped link may no longer be true, and its rows
             // could not be opened anyway; the host lists its sessions again
             // once the link is back.
@@ -96,6 +109,7 @@ final class AppModel {
             // the core still pairs with may be added back.
             hosts.append(Host(record: record))
         }
+
         // A host keeps the registration, but one paired before pushes
         // existed, or that dropped a token APNs refused, needs it again.
         if record.status == .connected && !wasConnected {
@@ -105,6 +119,7 @@ final class AppModel {
 
     func sessionsChanged(host: String, sessions: [SessionRecord], offer: HostOffer?) {
         guard let index = hosts.firstIndex(where: { $0.id == host }) else { return }
+
         hosts[index].sessions = sessions.map { Session(record: $0, hostID: host) }
         hosts[index].offer = offer
     }
@@ -129,9 +144,12 @@ final class AppModel {
 
     func pair(_ input: String, relayURL: String? = nil, accessKey: String? = nil) async throws -> HostRecord {
         guard let core else { throw CoreError.Failed(message: startupError ?? tr("The app could not start its core.")) }
+
         let record = try await core.pair(input: input, relayUrl: relayURL, accessKey: accessKey)
+
         hostChanged(record)
         Task { await startPush() }
+
         return record
     }
 
@@ -142,9 +160,11 @@ final class AppModel {
         core?.forget(host: hostID)
         PushKeys.remove(for: hostID)
         hosts.removeAll { $0.id == hostID }
+
         for key in agentModels.keys where key.hasPrefix(hostID + "/") {
             agentModels[key] = nil
         }
+
         for key in terminalModels.keys where key.hasPrefix(hostID + "/") {
             terminalModels[key] = nil
         }
@@ -157,13 +177,16 @@ final class AppModel {
 
     func hostOffer(_ hostID: String) async throws -> HostOffer {
         guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
+
         return try await core.hostInfo(host: hostID)
     }
 
     /// `agent.open`; returns the route of the new session.
     func openAgent(hostID: String, profile: String, workspace: String) async throws -> SessionRoute {
         guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
+
         let session = try await core.openAgent(host: hostID, profile: profile, workspace: workspace)
+
         return SessionRoute(hostID: hostID, sessionID: session, kind: .agent)
     }
 
@@ -172,18 +195,24 @@ final class AppModel {
     /// navigation redraws; `closeAgent` detaches.
     func agentModel(for route: SessionRoute, session: Session?) -> AgentSessionModel? {
         let key = "\(route.hostID)/\(route.sessionID)"
+
         if let model = agentModels[key] { return model }
+
         guard let core else { return nil }
+
         let model = AgentSessionModel(core: core, route: route,
                                       title: session?.title ?? tr("Agent"),
                                       profile: session?.profile)
+
         agentModels[key] = model
+
         return model
     }
 
     /// Drop the view of a session, which detaches from it on the host.
     func closeAgent(_ route: SessionRoute) {
         agentModels["\(route.hostID)/\(route.sessionID)"]?.detach()
+
         agentModels["\(route.hostID)/\(route.sessionID)"] = nil
     }
 
@@ -191,13 +220,18 @@ final class AppModel {
     /// view is already attached.
     func openTerminal(hostID: String) async throws -> SessionRoute {
         guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
+
         let grid = TerminalMetrics.estimatedGrid()
         let events = TerminalEvents()
+
         let handle = try await core.openTerminal(host: hostID, cols: UInt16(grid.cols), rows: UInt16(grid.rows),
                                                  observer: events)
+
         let route = SessionRoute(hostID: hostID, sessionID: handle.session(), kind: .terminal)
+
         terminalModels["\(route.hostID)/\(route.sessionID)"] = TerminalSessionModel(handle: handle, events: events,
                                                                                      route: route)
+
         return route
     }
 
@@ -205,10 +239,15 @@ final class AppModel {
     /// for agents; `closeTerminal` detaches.
     func terminalModel(for route: SessionRoute, session: Session?) -> TerminalSessionModel? {
         let key = "\(route.hostID)/\(route.sessionID)"
+
         if let model = terminalModels[key] { return model }
+
         guard let core else { return nil }
+
         let model = TerminalSessionModel(core: core, route: route, title: session?.title ?? tr("Terminal"))
+
         terminalModels[key] = model
+
         return model
     }
 
@@ -216,6 +255,7 @@ final class AppModel {
     /// shell keeps running there.
     func closeTerminal(_ route: SessionRoute) {
         terminalModels["\(route.hostID)/\(route.sessionID)"]?.detach()
+
         terminalModels["\(route.hostID)/\(route.sessionID)"] = nil
     }
 
@@ -224,6 +264,7 @@ final class AppModel {
     /// throws the host's reason.
     func closeSession(_ route: SessionRoute) async throws {
         guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
+
         try await core.closeSession(host: route.hostID, session: route.sessionID)
     }
 
@@ -232,6 +273,7 @@ final class AppModel {
     /// throws the host's reason.
     func renameSession(_ route: SessionRoute, title: String) async throws {
         guard let core else { throw CoreError.Failed(message: tr("The app could not start its core.")) }
+
         try await core.renameSession(host: route.hostID, session: route.sessionID, title: title)
     }
 
@@ -240,6 +282,7 @@ final class AppModel {
     /// Where hosts send this build's pushes; nil when the build has none.
     static var pushEndpoint: String? {
         let endpoint = Bundle.main.object(forInfoDictionaryKey: "NMTPushEndpoint") as? String
+
         return endpoint.flatMap { $0.hasPrefix("https://") ? $0 : nil }
     }
 
@@ -257,18 +300,22 @@ final class AppModel {
     /// from. iOS asks the person only the first time.
     func startPush() async {
         guard Self.pushEndpoint != nil, !hosts.isEmpty else { return }
+
         do {
             guard try await UNUserNotificationCenter.current()
                 .requestAuthorization(options: [.alert, .sound, .badge]) else { return }
         } catch {
             pushLog.error("notification authorization failed: \(error.localizedDescription, privacy: .public)")
+
             return
         }
+
         UIApplication.shared.registerForRemoteNotifications()
     }
 
     func pushTokenReceived(_ token: String) {
         pushToken = token
+
         for host in hosts where host.isOnline {
             registerPush(host.id)
         }
@@ -291,7 +338,9 @@ final class AppModel {
     private func registerPush(_ hostID: String) {
         guard let core, let token = pushToken, let endpoint = Self.pushEndpoint,
               let key = PushKeys.key(for: hostID) else { return }
+
         let kinds = Self.enabledNotificationKinds()
+
         Task {
             do {
                 if kinds.isEmpty {
@@ -301,6 +350,7 @@ final class AppModel {
                         endpoint: endpoint, token: token, production: Self.pushIsProduction,
                         key: key, kinds: kinds))
                 }
+
                 pushLog.info("push registration sent to a host")
             } catch {
                 pushLog.error("push registration failed: \(error.displayText, privacy: .public)")
@@ -323,7 +373,9 @@ final class AppModel {
     /// Open the agent session a tapped notification is about.
     func openFromNotification(host: String, session: String) {
         guard self.host(host) != nil else { return }
+
         path = NavigationPath()
+
         path.append(SessionRoute(hostID: host, sessionID: session, kind: .agent))
     }
 }

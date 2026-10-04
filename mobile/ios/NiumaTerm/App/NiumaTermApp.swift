@@ -1,5 +1,5 @@
-import SwiftUI
 import CoreText
+import SwiftUI
 
 @main
 struct NiumaTermApp: App {
@@ -23,6 +23,7 @@ struct NiumaTermApp: App {
                 }
                 .task {
                     delegate.app = app
+
                     await app.startPush()
                 }
         }
@@ -41,6 +42,7 @@ enum FontRegistrar {
     static func registerBundledFonts() {
         let urls = (Bundle.main.urls(forResourcesWithExtension: "ttf", subdirectory: nil) ?? [])
             + (Bundle.main.urls(forResourcesWithExtension: "otf", subdirectory: nil) ?? [])
+
         for url in urls {
             _ = CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }

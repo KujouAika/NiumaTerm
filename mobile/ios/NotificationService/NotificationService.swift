@@ -19,6 +19,7 @@ final class NotificationService: UNNotificationServiceExtension {
                              withContentHandler handler: @escaping (UNNotificationContent) -> Void) {
         let content = (request.content.mutableCopy() as? UNMutableNotificationContent)
             ?? UNMutableNotificationContent()
+
         self.handler = handler
         self.content = content
 
@@ -64,6 +65,7 @@ struct SealedPush: Decodable {
               let message = try? JSONDecoder().decode(SealedPush.self, from: plaintext),
               message.host == host
         else { return nil }
+
         return message
     }
 }
@@ -75,6 +77,7 @@ enum PushKeyReader {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "NMTPushKeyGroup") as? String else {
             return nil
         }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "push",
@@ -83,10 +86,13 @@ enum PushKeyReader {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+
         var result: CFTypeRef?
+
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let key = result as? Data, key.count == 32
         else { return nil }
+
         return key
     }
 }

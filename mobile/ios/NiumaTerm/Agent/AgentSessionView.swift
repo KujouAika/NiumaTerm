@@ -1,4 +1,5 @@
 import SwiftUI
+
 import NiumaTermCore
 
 struct AgentSessionView: View {
@@ -21,6 +22,7 @@ struct AgentSessionView: View {
                     if !model.attached && app.host(model.route.hostID)?.status == .unreachable {
                         VStack(spacing: 10) {
                             Text("Could not connect to \(hostName).").foregroundStyle(Theme.attention)
+
                             Button("Retry") { app.retry(model.route.hostID) }
                                 .buttonStyle(.bordered)
                         }
@@ -43,9 +45,11 @@ struct AgentSessionView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 120)
                     }
+
                     ForEach(model.rows) { row in
                         TranscriptRow(row: row)
                     }
+
                     if model.approval.map({ !$0.submitted }) == true && !model.showApproval {
                         Button { model.showApproval = true } label: {
                             Label("Review approval request", systemImage: "hand.raised")
@@ -57,6 +61,7 @@ struct AgentSessionView: View {
                         }
                         .buttonStyle(.plain)
                     }
+
                     if model.question != nil && !model.showQuestions {
                         Button { model.showQuestions = true } label: {
                             Label("Answer \(model.agentName)'s question", systemImage: "questionmark.bubble")
@@ -68,14 +73,17 @@ struct AgentSessionView: View {
                         }
                         .buttonStyle(.plain)
                     }
+
                     if model.isWorking, let started = model.workStarted {
                         WorkingRow(started: started, tokens: model.tokensText)
                     }
+
                     if let notice = model.notice {
                         Text(notice)
                             .font(Theme.mono(12.5))
                             .foregroundStyle(Theme.attention)
                     }
+
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(.horizontal, 18)
@@ -96,18 +104,21 @@ struct AgentSessionView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
                     Text(model.title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+
                     Text([model.profile?.displayName ?? tr("Agent"), hostName, linkText]
                             .compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Theme.secondary)
                 }
             }
+
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("New conversation", systemImage: "square.and.pencil") {
                         confirmingNew = true
                     }
                     .disabled(model.isWorking || model.ended != nil)
+
                     Button("Rename", systemImage: "pencil") {
                         newTitle = model.title
                         renaming = true
@@ -146,6 +157,7 @@ struct AgentSessionView: View {
                        onClose: {
                            Task {
                                try? await Task.sleep(for: .milliseconds(300))
+
                                dismiss()
                            }
                        })
@@ -170,6 +182,7 @@ struct TranscriptRow: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.secondary)
                 }
+
                 if !text.isEmpty {
                     Text(text)
                         .font(.system(size: 15))
@@ -226,6 +239,7 @@ struct TranscriptRow: View {
 
     private func workLabel(_ items: [WorkItem]) -> String {
         if items.count == 1, let item = items.first { return "\(item.label) · \(item.detail)" }
+
         return tr("Show work (\(items.count))")
     }
 
@@ -248,11 +262,14 @@ struct WorkItemRow: View {
                     Text(item.label)
                         .foregroundStyle(Theme.accent)
                         .frame(minWidth: 40, alignment: .leading)
+
                     Text(item.detail)
                         .foregroundStyle(Theme.ink2)
                         .lineLimit(1)
                         .truncationMode(.middle)
+
                     Spacer(minLength: 4)
+
                     stateIcon
                 }
                 .font(Theme.mono(12))
@@ -260,6 +277,7 @@ struct WorkItemRow: View {
             }
             .buttonStyle(.plain)
             .disabled(item.output?.isEmpty ?? true)
+
             if open, let output = item.output {
                 ScrollView(.horizontal) {
                     Text(output)
@@ -304,7 +322,9 @@ struct DisclosureRowView<Content: View>: View {
             } label: {
                 HStack(spacing: 6) {
                     if let icon { Image(systemName: icon).font(.system(size: 12)) }
+
                     Text(label).lineLimit(1).truncationMode(.middle)
+
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .rotationEffect(.degrees(open ? 90 : 0))
@@ -315,6 +335,7 @@ struct DisclosureRowView<Content: View>: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
+
             if open { content() }
         }
         .padding(.leading, 12)
@@ -329,10 +350,13 @@ struct WorkingRow: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let seconds = max(0, Int(context.date.timeIntervalSince(started)))
+
             HStack(spacing: 8) {
                 PulsingDots()
+
                 Text("Working for \(seconds / 60)m \(seconds % 60)s")
                     .foregroundStyle(Theme.secondary)
+
                 if let tokens {
                     Text("· \(tokens) tokens")
                         .fontWeight(.semibold)
@@ -348,6 +372,7 @@ struct PulsingDots: View {
     var body: some View {
         TimelineView(.animation) { context in
             let t = context.date.timeIntervalSinceReferenceDate
+
             HStack(spacing: 3) {
                 ForEach(0..<3, id: \.self) { i in
                     Circle()

@@ -37,6 +37,7 @@ enum Theme {
     // Code blocks are dark in both appearances; in dark mode they sit a
     // step below the transcript background.
     static let codeBackground = Color(light: 0x1F1B19, dark: 0x0C0B0A)
+
     static let codeText = Color(hex: 0xEFE9E5)
     static let codePrompt = Color(hex: 0xC9A89C)
 
@@ -48,6 +49,7 @@ enum Theme {
         if hasJetBrains {
             return .custom(jetBrainsName, fixedSize: size).weight(weight)
         }
+
         return .system(size: size, weight: weight, design: .monospaced)
     }
 
@@ -86,6 +88,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         case .light: .light
         case .dark: .dark
         }
+
         for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
             for window in scene.windows {
                 window.overrideUserInterfaceStyle = style

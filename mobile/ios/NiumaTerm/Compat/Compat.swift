@@ -38,6 +38,7 @@ struct PrimaryButtonStyle: ButtonStyle {
 
 struct SecondaryButtonStyle: ButtonStyle {
     var dark = false
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 17, weight: .semibold))
@@ -51,7 +52,9 @@ struct SecondaryButtonStyle: ButtonStyle {
 
 struct SectionLabel: View {
     let text: LocalizedStringKey
+
     init(_ text: LocalizedStringKey) { self.text = text }
+
     var body: some View {
         Text(text)
             .font(.system(size: 12, weight: .semibold))

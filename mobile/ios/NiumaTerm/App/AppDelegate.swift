@@ -13,13 +13,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+
         return true
     }
 
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+
         log.info("APNs token received")
+
         Task { @MainActor in self.app?.pushTokenReceived(token) }
     }
 
@@ -34,10 +37,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         let info = notification.request.content.userInfo
+
         guard let host = info["host"] as? String, let session = info["session"] as? String else {
             return [.banner, .list, .sound]
         }
+
         let showing = await MainActor.run { app?.isShowingAgent(host: host, session: session) ?? false }
+
         return showing ? [] : [.banner, .list, .sound]
     }
 
@@ -45,7 +51,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
+
         guard let host = info["host"] as? String, let session = info["session"] as? String else { return }
+
         await MainActor.run { app?.openFromNotification(host: host, session: session) }
     }
 }
