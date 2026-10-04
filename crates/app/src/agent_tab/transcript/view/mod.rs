@@ -787,6 +787,26 @@ impl TranscriptView {
         self.row_cache.specs = specs;
     }
 
+    /// User prompt text is replaced as a whole, so retaining its expanded
+    /// state for an exit would delay the visible response to a click.
+    pub(super) fn toggle_user_prompt(&mut self, index: usize, cx: &mut Context<Self>) {
+        let key = RevealKey::Row(index);
+
+        if !self.transcript_list.is_following_tail() {
+            self.transcript_list.freeze_scroll_position();
+        }
+
+        match self.disclosures.row_expanded(index) {
+            true => self.take_down_disclosure(key),
+            false => {
+                self.invalidate_disclosure_rows(key);
+                self.disclosures.open(key, Instant::now(), false);
+            }
+        }
+
+        cx.notify();
+    }
+
     /// Flip one disclosure open or shut, holding the reader's place while its
     /// content changes and setting that content moving either way.
     ///

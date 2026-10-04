@@ -61,29 +61,23 @@ pub(crate) fn user_prompt_row(
     // the fold exists to skip.
     let fills_column = head_len.is_some();
 
-    let toggle =
-        head_len.is_some().then(|| {
-            div()
-                .mt_1()
-                .text_xs()
-                .text_color(cx.theme().primary)
-                .cursor_pointer()
-                .child(if expanded {
-                    t!("agent-transcript-show-less").to_string()
-                } else {
-                    t!("agent-transcript-show-full-message").to_string()
-                })
-                .id(("user-expand", index))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_disclosure(RevealKey::Row(index), cx)
-                }))
-        });
+    let toggle = head_len.is_some().then(|| {
+        div()
+            .mt_1()
+            .text_xs()
+            .text_color(cx.theme().primary)
+            .cursor_pointer()
+            .child(if expanded {
+                t!("agent-transcript-show-less").to_string()
+            } else {
+                t!("agent-transcript-show-full-message").to_string()
+            })
+            .id(("user-expand", index))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_user_prompt(index, cx)))
+    });
 
-    // The prompt fold above swaps the text inside one bubble instead of
-    // opening a block below it, so it takes no entrance of its own: fading
-    // it in would fade the half of the prompt that was already on screen.
-    // Its toggle still pins the reading position, and a paste long enough
-    // to fold needs that.
+    // Switch the prompt text in one step. Animating the shared bubble would
+    // also animate the prefix that remains visible in both states.
     let annotations_reveal = disclosures.progress(RevealKey::Annotation(index), Instant::now());
 
     // The quotations open a rounded bubble, and a clip box is a rectangle,
