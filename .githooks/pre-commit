@@ -401,7 +401,7 @@ run_clippy() {
 }
 
 branch=$(git symbolic-ref --quiet --short HEAD || true)
-protected_paths='^([.]agents|[.]claude|[.]codex|[.]scratch|openspec|spec|docs/adr|docs/agents|docs/superpowers)(/|$)'
+protected_paths='^([.]agents|[.]claude|[.]codex|openspec|spec|docs/adr|docs/agents|docs/superpowers)(/|$)'
 # Vendored upstream headers and bindgen output carry whatever prose their source
 # wrote, and editing those words out would make the checked-in copy disagree with
 # the library it was generated from. The marker and comment-rationale checks read
