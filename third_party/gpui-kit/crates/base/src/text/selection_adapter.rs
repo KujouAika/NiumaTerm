@@ -73,6 +73,7 @@ impl VirtualBlockSelection {
 pub(super) struct TextViewSelectionAdapter {
     selection: TextSelectionHandle,
     text_bounds: Vec<Bounds<Pixels>>,
+    multi_click_bounds: Vec<Bounds<Pixels>>,
     layout_revision: Option<usize>,
 }
 
@@ -147,11 +148,13 @@ impl TextViewSelectionAdapter {
         selection.selected_bounds_with(
             move |lines, cx| {
                 let view = view_for_bounds.upgrade()?;
-                if let Some(selection) = view.read(cx).multi_click_selection() {
-                    lines
+                let view = view.read(cx);
+                if view.multi_click_selection().is_some() {
+                    view.selection_adapter
+                        .multi_click_bounds
                         .iter()
-                        .find(|line| line.contains(&selection.pos))
                         .copied()
+                        .reduce(|a, b| a.union(&b))
                 } else {
                     lines.iter().copied().reduce(|a, b| a.union(&b))
                 }
@@ -183,6 +186,7 @@ impl TextViewSelectionAdapter {
         Self {
             selection,
             text_bounds: Vec::new(),
+            multi_click_bounds: Vec::new(),
             layout_revision: None,
         }
     }
@@ -199,10 +203,15 @@ impl TextViewSelectionAdapter {
 
     pub(super) fn begin_frame(&mut self) {
         self.text_bounds.clear();
+        self.multi_click_bounds.clear();
     }
 
     pub(super) fn register_inline(&mut self, bounds: Vec<Bounds<Pixels>>) {
         self.text_bounds.extend(bounds);
+    }
+
+    pub(super) fn register_multi_click(&mut self, bounds: Vec<Bounds<Pixels>>) {
+        self.multi_click_bounds.extend(bounds);
     }
 
     pub(super) fn register(

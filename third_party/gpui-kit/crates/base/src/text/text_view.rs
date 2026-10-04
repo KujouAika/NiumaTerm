@@ -906,6 +906,21 @@ mod tests {
         }
     }
 
+    /// A TextView under the window selection layer, so window-level queries
+    /// such as `TextSelection::selected_text_bounds` see its participant.
+    struct LayeredTextViewTestRoot {
+        text_view: Entity<TextViewState>,
+    }
+
+    impl Render for LayeredTextViewTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(160.))
+                .child(crate::TextSelectionLayer)
+                .child(TextView::new(&self.text_view).selectable(true))
+        }
+    }
+
     struct TableSelectionTestRoot {
         text_view: Entity<TextViewState>,
     }
@@ -1804,6 +1819,53 @@ mod tests {
 
         let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
         assert_eq!(selected_text.trim(), "quick");
+    }
+
+    #[gpui::test]
+    fn double_click_bounds_cover_the_word_not_its_row(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| LayeredTextViewTestRoot {
+            text_view: cx.new(|cx| TextViewState::markdown("quick select value", cx)),
+        });
+
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let row = view.read_with(cx, |root, cx| {
+            root.text_view.read(cx).selection_adapter.text_bounds()[0]
+        });
+        // Aim past the first word so the clicked word starts away from the
+        // row's left edge.
+        let position = point(row.left() + row.size.width * 0.85, row.center().y);
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let selected_text = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert!(matches!(selected_text.trim(), "select" | "value"));
+        let bounds = cx
+            .update(|window, cx| crate::TextSelection::selected_text_bounds(window, cx))
+            .expect("a double-clicked word has bounds");
+        assert!(
+            bounds.left() > row.left() + px(20.),
+            "bounds {bounds:?} start at the row edge {row:?} instead of the word"
+        );
+        assert!(bounds.right() <= row.right());
     }
 
     #[gpui::test]

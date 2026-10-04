@@ -284,18 +284,20 @@ impl Inline {
         (true, true, selection)
     }
 
+    /// One box per painted row covering the characters of `range`.
     fn text_line_bounds(
         &self,
         text_layout: &TextLayout,
         line_height: Pixels,
         mask_bounds: Bounds<Pixels>,
+        range: Range<usize>,
     ) -> Vec<Bounds<Pixels>> {
         let mut line_bounds = Vec::new();
         let mut current_line_y = None;
         let mut current_bounds: Option<Bounds<Pixels>> = None;
-        let mut offset = 0;
+        let mut offset = range.start;
 
-        for c in self.text.chars() {
+        for c in self.text.get(range).unwrap_or_default().chars() {
             let next_offset = offset + c.len_utf8();
             let Some((pos, char_width)) = char_cell(text_layout, offset, c, line_height) else {
                 offset = next_offset;
@@ -582,13 +584,34 @@ impl Element for Inline {
 
         if is_selectable {
             if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+                let line_height = text_layout.line_height();
+                let mask_bounds = window.content_mask().bounds;
                 let text_bounds = self.text_line_bounds(
                     &text_layout,
-                    text_layout.line_height(),
-                    window.content_mask().bounds,
+                    line_height,
+                    mask_bounds,
+                    0..self.text.len(),
                 );
+                // A word or paragraph picked by multi-click usually covers
+                // only part of a wrapped row. Anchoring UI on the whole row
+                // would place it at the row's left edge, far from a word near
+                // the right, so the selected characters get their own boxes.
+                let multi_click_bounds = selection
+                    .filter(|_| text_view_state.read(cx).multi_click_selection().is_some())
+                    .map(|selection| {
+                        self.text_line_bounds(
+                            &text_layout,
+                            line_height,
+                            mask_bounds,
+                            selection.start..selection.end,
+                        )
+                    })
+                    .unwrap_or_default();
                 text_view_state.update(cx, |state, _| {
                     state.selection_adapter.register_inline(text_bounds);
+                    state
+                        .selection_adapter
+                        .register_multi_click(multi_click_bounds);
                 });
             }
 
