@@ -2,9 +2,9 @@
 //!
 //! A device that opened a channel is connected. Once its last channel closes
 //! it is disconnected: the person has most likely put the phone away while
-//! the session runs on, the one case where a push notification helps.
-//! A device that never connected, or whose person came back to this
-//! computer, is merely paired, and hears nothing.
+//! the session runs on. A device that never connected, or whose person came
+//! back to this computer, is merely paired. The paired-devices list shows
+//! this state; pushes do not depend on it.
 //!
 //! Only the host process knows this, so it lives in memory and every device
 //! starts paired after a restart.

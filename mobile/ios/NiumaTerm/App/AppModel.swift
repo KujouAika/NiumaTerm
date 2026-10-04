@@ -119,6 +119,12 @@ final class AppModel {
         host(route.hostID)?.sessions.first { $0.id == route.sessionID }
     }
 
+    /// Whether the agent screen for `session` is open. Its model exists
+    /// exactly while the screen is shown, since leaving the screen closes it.
+    func isShowingAgent(host: String, session: String) -> Bool {
+        agentModels["\(host)/\(session)"] != nil
+    }
+
     // MARK: Commands
 
     func pair(_ input: String, relayURL: String? = nil, accessKey: String? = nil) async throws -> HostRecord {

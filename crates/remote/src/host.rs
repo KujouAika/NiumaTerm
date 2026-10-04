@@ -492,13 +492,14 @@ impl HostService {
             })
     }
 
-    /// Tell every device that asked for `kind` and is away from this host
-    /// about something that happened in `session`. Devices connected now see
-    /// it on screen; paired ones are not following the host.
+    /// Tell every device that asked for `kind` about something that happened
+    /// in `session`, whatever its presence. A LAN or direct channel of a
+    /// suspended phone stays open until the liveness probes give up on it,
+    /// so presence cannot tell whether the person is looking; the phone
+    /// drops a push about the session it shows on screen instead.
     pub fn push(&self, session: &str, kind: PushKind, title: &str, body: &str) {
         let host = self.shared.key.id().as_str().to_owned();
         let message = PushMessage::new(&host, session, kind, title, body, now_ms());
-        let now = Instant::now();
 
         let targets: Vec<([u8; 32], PushRegistration)> = {
             let state = self.shared.state.lock();
@@ -506,9 +507,6 @@ impl HostService {
             state
                 .devices
                 .iter()
-                .filter(|device| {
-                    state.presences.presence(&device.public_key, now) == Presence::Disconnected
-                })
                 .filter_map(|device| {
                     let registration = device.push.as_ref()?;
 
@@ -520,14 +518,10 @@ impl HostService {
                 .collect()
         };
 
-        // Who got a push, and who not, is otherwise invisible: a device
-        // counts as away only after the grace period, which is easy to
-        // mistake for a failure while trying pushes out.
-        info!(
-            ?kind,
-            devices = targets.len(),
-            "pushing to paired devices away from the host"
-        );
+        // Who got a push, and who not, is otherwise invisible: a device that
+        // never registered, or did not ask for this kind, is easy to mistake
+        // for a failed delivery while trying pushes out.
+        info!(?kind, devices = targets.len(), "pushing to paired devices");
 
         for (device, registration) in targets {
             let sealed = match seal(&registration.key, &message) {

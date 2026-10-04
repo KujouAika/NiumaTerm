@@ -394,21 +394,22 @@ These are the effects `publish_activity` already turns into desktop
 notifications, so the host hooks push in at the same place and reuses the
 same texts. Terminal sessions do not push in v1 (§12).
 
-Whether a phone hears about them depends on its presence, which the host
-keeps per paired device, in memory only:
+Every phone that registered for a kind hears about it, whatever its
+presence. Presence once gated pushes (only a phone with no channel for five
+minutes got them), but a suspended phone's LAN or direct channel stays open
+until the liveness probes give up, so pushes started about six minutes after
+the phone was put away, and events inside that window were never sent. The
+phone decides instead: a push that arrives while the app shows that agent
+session is not presented.
 
-| Presence | Entered when | Pushes |
-| --- | --- | --- |
-| Paired | Just paired; the host started; the person used the host (took a session back, or brought a NiumaTerm window to the front); disconnected for 12 hours | No |
-| Connected | A channel is open, or closed less than 5 minutes ago | No: the phone shows it on screen |
-| Disconnected | Connected before, and no channel for 5 minutes | Yes |
+The host still keeps presence per paired device, in memory only, for the
+Settings › Remote page:
 
-The grace keeps a quick switch to another app from collecting pushes; the
-12 hours end pushes for a session left running and forgotten. A suspended
-phone stops answering the channel's liveness probes, so its channel closes
-about 50 seconds after iOS suspends the app, and pushes start about six
-minutes after the phone was put away. The Settings › Remote page lists each
-device's presence.
+| Presence | Entered when |
+| --- | --- |
+| Paired | Just paired; the host started; the person used the host (took a session back, or brought a NiumaTerm window to the front); disconnected for 12 hours |
+| Connected | A channel is open, or closed less than 5 minutes ago |
+| Disconnected | Connected before, and no channel for 5 minutes |
 
 ### 9.2 Keys and registration
 

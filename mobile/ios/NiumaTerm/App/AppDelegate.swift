@@ -28,11 +28,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         log.error("APNs registration failed: \(error.localizedDescription, privacy: .public)")
     }
 
-    /// Pushes arrive only while this phone is away from the host, so one that
-    /// lands while the app is open is still news: show it.
+    /// Hosts push on every event, whatever the link, so a push about the
+    /// agent session on screen repeats what the transcript already shows and
+    /// is dropped. One about any other session is still news: show it.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        let info = notification.request.content.userInfo
+        guard let host = info["host"] as? String, let session = info["session"] as? String else {
+            return [.banner, .list, .sound]
+        }
+        let showing = await MainActor.run { app?.isShowingAgent(host: host, session: session) ?? false }
+        return showing ? [] : [.banner, .list, .sound]
     }
 
     /// A tap opens the session the push is about.

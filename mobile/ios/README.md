@@ -67,9 +67,9 @@ goes through the relay (design doc §7.1).
 
 ## Push notifications
 
-A host pushes to this phone once it has been away from the host for five
-minutes: when an agent finishes, fails, needs approval, or asks a question,
-for the kinds left on in Settings. The host seals the text; the extension in
+A host pushes to this phone when an agent finishes, fails, needs approval, or
+asks a question, for the kinds left on in Settings, however the phone is
+connected. The app hides a push about the agent session it shows on screen. The host seals the text; the extension in
 `NotificationService/` opens it, and falls back to a generic "Agent update"
 when it cannot.
 
