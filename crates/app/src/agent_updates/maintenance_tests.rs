@@ -10,7 +10,8 @@ use nmt_agent::update::{
 };
 
 use crate::agent_updates::maintenance::{
-    PreflightFailure, UpdateEnvironment, UpdateMode, run_transaction,
+    PreflightFailure, RecoveryEnvironment, UpdateEnvironment, UpdateMode, run_restart,
+    run_transaction,
 };
 
 struct MemoryEnvironment {
@@ -55,7 +56,7 @@ impl MemoryEnvironment {
     }
 }
 
-impl UpdateEnvironment for MemoryEnvironment {
+impl RecoveryEnvironment for MemoryEnvironment {
     fn identity_failure(&mut self) -> Option<String> {
         self.missing_identity.clone()
     }
@@ -94,31 +95,6 @@ impl UpdateEnvironment for MemoryEnvironment {
         self.suspensions.clone()
     }
 
-    async fn update(&mut self) -> Result<(), UpdateError> {
-        self.operations.push("update");
-
-        self.update_error.clone().map_or(Ok(()), Err)
-    }
-
-    async fn verify(&mut self) -> Result<VersionStatus, UpdateError> {
-        self.operations.push("verify");
-
-        if let Some(error) = &self.verify_error {
-            return Err(error.clone());
-        }
-
-        Ok(VersionStatus {
-            provider: ProviderKind::Claude,
-            current: Some("2.0.0".parse().unwrap()),
-            available: Some("2.0.0".parse().unwrap()),
-            install_method: None,
-            channel: None,
-            can_update: true,
-            support: DiscoverySupport::Supported,
-            remediation: None,
-        })
-    }
-
     fn restore(&mut self, snapshots: &[RecoverySnapshot], suspended: &[usize]) {
         self.operations.push("restore");
 
@@ -150,6 +126,33 @@ impl UpdateEnvironment for MemoryEnvironment {
 
     async fn wait(&mut self, duration: Duration) {
         self.now += duration;
+    }
+}
+
+impl UpdateEnvironment for MemoryEnvironment {
+    async fn update(&mut self) -> Result<(), UpdateError> {
+        self.operations.push("update");
+
+        self.update_error.clone().map_or(Ok(()), Err)
+    }
+
+    async fn verify(&mut self) -> Result<VersionStatus, UpdateError> {
+        self.operations.push("verify");
+
+        if let Some(error) = &self.verify_error {
+            return Err(error.clone());
+        }
+
+        Ok(VersionStatus {
+            provider: ProviderKind::Claude,
+            current: Some("2.0.0".parse().unwrap()),
+            available: Some("2.0.0".parse().unwrap()),
+            install_method: None,
+            channel: None,
+            can_update: true,
+            support: DiscoverySupport::Supported,
+            remediation: None,
+        })
     }
 }
 
@@ -293,4 +296,48 @@ fn an_installation_without_open_sessions_still_updates_and_verifies() {
     assert_eq!(outcome.restore_failures, 0);
     assert!(environment.restored.is_empty());
     assert_eq!(environment.now, Duration::ZERO);
+}
+
+#[test]
+fn restart_waits_for_idle_and_restores_each_identity_without_running_an_update() {
+    let mut environment = MemoryEnvironment::new(2);
+
+    environment.idle_after = Duration::from_secs(1);
+
+    let outcome = block_on(run_restart(&mut environment, UpdateMode::WhenIdle)).unwrap();
+
+    assert_eq!(environment.operations, ["wait", "suspend", "restore"]);
+    assert_eq!(
+        environment.restored,
+        vec![
+            (0, environment.snapshots[0].clone()),
+            (1, environment.snapshots[1].clone())
+        ]
+    );
+    assert_eq!(outcome.restarted, 2);
+    assert!(outcome.suspend_error.is_none());
+    assert_eq!(outcome.restore_failures, 0);
+}
+
+#[test]
+fn restart_restores_the_stopped_sessions_after_one_fails_to_stop() {
+    let mut environment = MemoryEnvironment::new(3);
+
+    environment.suspensions[1] = Err("shutdown failed".into());
+    environment.restoration[2] = RestorationReadiness::Failed("restart failed".into());
+
+    let outcome = block_on(run_restart(&mut environment, UpdateMode::StopNow)).unwrap();
+
+    assert_eq!(environment.operations, ["interrupt", "suspend", "restore"]);
+    assert_eq!(
+        environment
+            .restored
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(outcome.suspend_error.as_deref(), Some("shutdown failed"));
+    assert_eq!(outcome.restore_failures, 1);
+    assert_eq!(outcome.restarted, 1);
 }

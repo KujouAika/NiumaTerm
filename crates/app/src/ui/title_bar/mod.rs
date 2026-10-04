@@ -10,6 +10,7 @@ use gpui_component::{Disableable as _, Icon, IconName, IconNamed, TitleBar, h_fl
 use nmt_config::appearance::TabShape;
 use rust_i18n::t;
 
+use crate::agent_updates::request_restart;
 use crate::ui::composition::{toolbar_button, toolbar_toggle};
 use crate::ui::git_status::{GitStatusModel, GitStatusView};
 use crate::ui::platform_style::{Host, PlatformStyle as _};
@@ -364,7 +365,7 @@ impl IconNamed for SideBarIcon {
     }
 }
 
-/// The application menu: opening things, then the two application-wide
+/// The application menu: opening things, then the application-wide
 /// commands. Every entry here is reachable by keyboard as well, so the menu is
 /// a place to find them, not the only way to reach them.
 fn app_menu(menu: ModernMenu, shell: &Entity<AppWindow>, _cx: &mut App) -> ModernMenu {
@@ -391,7 +392,9 @@ fn app_menu(menu: ModernMenu, shell: &Entity<AppWindow>, _cx: &mut App) -> Moder
                 this.on_show_settings(&ShowSettings, window, cx);
             });
         })
-        .icon(Icon::new(IconName::Settings));
+        .icon(Icon::new(IconName::Settings))
+        .item(t!("shell-menu-restart-harnesses"), request_restart)
+        .icon(Icon::new(IconName::Redo));
 
     // Only a build that can replace itself offers to check.
     #[cfg(windows)]

@@ -1283,6 +1283,16 @@ impl AgentSession {
         self.present_readiness(self.controller.borrow().recovery_identity())
     }
 
+    /// Whether an update or restart cycle currently owns this session's
+    /// backend, including a failed recovery that waits for the user.
+    pub fn in_suspension_cycle(&self) -> bool {
+        self.controller
+            .borrow()
+            .runtime()
+            .update_suspension()
+            .is_some()
+    }
+
     fn present_readiness(&self, readiness: Readiness) -> RecoveryReadiness {
         match readiness {
             Readiness::Ready(identity) => RecoveryReadiness::Ready(RecoverySnapshot {

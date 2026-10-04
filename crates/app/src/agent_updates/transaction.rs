@@ -19,7 +19,7 @@ use rust_i18n::t;
 
 use crate::agent_updates::AgentUpdates;
 use crate::agent_updates::maintenance::{
-    PreflightFailure, UpdateEnvironment, UpdateMode, run_transaction,
+    PreflightFailure, RecoveryEnvironment, UpdateEnvironment, UpdateMode, run_transaction,
 };
 use crate::utils::on_runtime;
 
@@ -162,7 +162,16 @@ fn start_transaction(
     sessions: Vec<Entity<AgentSession>>,
     cx: &mut App,
 ) {
-    let coordinator = cx.global::<AgentUpdates>().coordinator.clone();
+    let updates = cx.global::<AgentUpdates>();
+
+    // A restart of every harness owns the suspension state of the sessions
+    // this update would also stop; running both would let one overwrite the
+    // other's suspension state on a shared session.
+    if updates.restarting {
+        return;
+    }
+
+    let coordinator = updates.coordinator.clone();
 
     if coordinator.begin_update(&key).is_err() {
         return;
@@ -181,10 +190,12 @@ async fn drive_transaction(
     coordinator: UpdateCoordinator,
     cx: &mut AsyncApp,
 ) {
-    let mut environment = SessionUpdateEnvironment {
+    let mut environment = SessionEnvironment {
         sessions,
-        coordinator: coordinator.clone(),
-        key: key.clone(),
+        target: InstallationTarget {
+            coordinator: coordinator.clone(),
+            key: key.clone(),
+        },
         started: Instant::now(),
         cx,
     };
@@ -214,15 +225,42 @@ async fn drive_transaction(
     environment.cx.update(AgentUpdates::notify_changed);
 }
 
-struct SessionUpdateEnvironment<'a> {
-    sessions: Vec<Entity<AgentSession>>,
-    coordinator: UpdateCoordinator,
-    key: InstallationKey,
-    started: Instant,
-    cx: &'a mut AsyncApp,
+/// The live sessions one cycle stops and restores, and the record `target`
+/// that receives its progress.
+pub(super) struct SessionEnvironment<'a, T> {
+    pub(super) sessions: Vec<Entity<AgentSession>>,
+    pub(super) target: T,
+    pub(super) started: Instant,
+    pub(super) cx: &'a mut AsyncApp,
 }
 
-impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
+/// Receives the progress of a session cycle.
+pub(super) trait PhaseTarget {
+    fn publish(&self, phase: UpdatePhase, progress: Option<UpdateProgress>, cx: &mut AsyncApp);
+}
+
+/// An update reports its progress on the installation's coordinator record,
+/// which the update notification and the settings rows read.
+pub(super) struct InstallationTarget {
+    coordinator: UpdateCoordinator,
+    key: InstallationKey,
+}
+
+impl PhaseTarget for InstallationTarget {
+    fn publish(&self, phase: UpdatePhase, progress: Option<UpdateProgress>, cx: &mut AsyncApp) {
+        self.coordinator.transition(&self.key, phase, progress);
+
+        cx.update(AgentUpdates::notify_changed);
+    }
+}
+
+/// A restart of every harness spans installations and harnesses with none,
+/// so it has no record to report to; each tab shows its own state.
+impl PhaseTarget for () {
+    fn publish(&self, _: UpdatePhase, _: Option<UpdateProgress>, _: &mut AsyncApp) {}
+}
+
+impl<T: PhaseTarget> RecoveryEnvironment for SessionEnvironment<'_, T> {
     fn identity_failure(&mut self) -> Option<String> {
         self.cx.update(|cx| {
             self.sessions.iter().find_map(|session| {
@@ -277,26 +315,6 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
         join_all(tasks).await
     }
 
-    async fn update(&mut self) -> Result<(), UpdateError> {
-        self.cx.update(|cx| {
-            for session in &self.sessions {
-                session.update(cx, |session, cx| session.mark_provider_updating(cx));
-            }
-        });
-
-        let coordinator = self.coordinator.clone();
-        let key = self.key.clone();
-
-        on_runtime(async move { coordinator.run_vendor_update(&key).await.map(|_| ()) }).await
-    }
-
-    async fn verify(&mut self) -> Result<VersionStatus, UpdateError> {
-        let coordinator = self.coordinator.clone();
-        let key = self.key.clone();
-
-        on_runtime(async move { coordinator.verify(&key).await }).await
-    }
-
     fn restore(&mut self, snapshots: &[RecoverySnapshot], suspended: &[usize]) {
         self.cx.update(|cx| {
             for &index in suspended {
@@ -328,9 +346,7 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
     }
 
     fn publish(&mut self, phase: UpdatePhase, progress: Option<UpdateProgress>) {
-        self.coordinator.transition(&self.key, phase, progress);
-
-        self.cx.update(AgentUpdates::notify_changed);
+        self.target.publish(phase, progress, self.cx);
     }
 
     fn now(&self) -> Duration {
@@ -339,6 +355,28 @@ impl UpdateEnvironment for SessionUpdateEnvironment<'_> {
 
     async fn wait(&mut self, duration: Duration) {
         self.cx.background_executor().timer(duration).await;
+    }
+}
+
+impl UpdateEnvironment for SessionEnvironment<'_, InstallationTarget> {
+    async fn update(&mut self) -> Result<(), UpdateError> {
+        self.cx.update(|cx| {
+            for session in &self.sessions {
+                session.update(cx, |session, cx| session.mark_provider_updating(cx));
+            }
+        });
+
+        let coordinator = self.target.coordinator.clone();
+        let key = self.target.key.clone();
+
+        on_runtime(async move { coordinator.run_vendor_update(&key).await.map(|_| ()) }).await
+    }
+
+    async fn verify(&mut self) -> Result<VersionStatus, UpdateError> {
+        let coordinator = self.target.coordinator.clone();
+        let key = self.target.key.clone();
+
+        on_runtime(async move { coordinator.verify(&key).await }).await
     }
 }
 

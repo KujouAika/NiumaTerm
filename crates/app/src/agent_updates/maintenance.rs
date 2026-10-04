@@ -22,7 +22,7 @@ impl UpdateMode {
 
 /// Execution operations for one fixed group of sessions. Indices keep their
 /// meaning until recovery finishes, including when a view closes meanwhile.
-pub(super) trait UpdateEnvironment {
+pub(super) trait RecoveryEnvironment {
     fn identity_failure(&mut self) -> Option<String>;
 
     fn prepare(&mut self, mode: UpdateMode);
@@ -32,10 +32,6 @@ pub(super) trait UpdateEnvironment {
     fn cancel_wait(&mut self);
 
     async fn suspend(&mut self, mode: UpdateMode) -> Vec<Result<(), String>>;
-
-    async fn update(&mut self) -> Result<(), UpdateError>;
-
-    async fn verify(&mut self) -> Result<VersionStatus, UpdateError>;
 
     fn restore(&mut self, snapshots: &[RecoverySnapshot], suspended: &[usize]);
 
@@ -48,6 +44,13 @@ pub(super) trait UpdateEnvironment {
     fn now(&self) -> Duration;
 
     async fn wait(&mut self, duration: Duration);
+}
+
+/// The vendor update that runs between suspending and restoring sessions.
+pub(super) trait UpdateEnvironment: RecoveryEnvironment {
+    async fn update(&mut self) -> Result<(), UpdateError>;
+
+    async fn verify(&mut self) -> Result<VersionStatus, UpdateError>;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -89,19 +92,18 @@ pub(super) fn resolve_preflight(
     }
 }
 
-#[derive(Default)]
-pub(super) struct TransactionOutcome {
-    pub(super) verified: Option<VersionStatus>,
-    pub(super) operation_error: Option<UpdateError>,
-    pub(super) restore_failures: usize,
+/// The sessions one cycle stopped. `error` keeps the first suspension failure;
+/// the sessions that did stop are still listed so they come back.
+struct Suspension {
+    snapshots: Vec<RecoverySnapshot>,
+    suspended: Vec<usize>,
+    error: Option<String>,
 }
 
-/// Every successfully suspended session is restored even when suspension of
-/// another session, the update, or verification fails.
-pub(super) async fn run_transaction(
-    environment: &mut impl UpdateEnvironment,
+async fn suspend_sessions(
+    environment: &mut impl RecoveryEnvironment,
     mode: UpdateMode,
-) -> Result<TransactionOutcome, PreflightFailure> {
+) -> Result<Suspension, PreflightFailure> {
     if mode.interrupts_active_work()
         && let Some(message) = environment.identity_failure()
     {
@@ -141,18 +143,45 @@ pub(super) async fn run_transaction(
     let results = environment.suspend(mode).await;
 
     let mut suspended = Vec::new();
-    let mut outcome = TransactionOutcome::default();
+    let mut error = None;
 
     for (index, result) in results.into_iter().enumerate() {
         match result {
             Ok(()) => suspended.push(index),
             Err(message) => {
-                outcome
-                    .operation_error
-                    .get_or_insert_with(|| UpdateError::new(UpdateErrorKind::Recovery, message));
+                error.get_or_insert(message);
             }
         }
     }
+
+    Ok(Suspension {
+        snapshots,
+        suspended,
+        error,
+    })
+}
+
+#[derive(Default)]
+pub(super) struct TransactionOutcome {
+    pub(super) verified: Option<VersionStatus>,
+    pub(super) operation_error: Option<UpdateError>,
+    pub(super) restore_failures: usize,
+}
+
+/// Every successfully suspended session is restored even when suspension of
+/// another session, the update, or verification fails.
+pub(super) async fn run_transaction(
+    environment: &mut impl UpdateEnvironment,
+    mode: UpdateMode,
+) -> Result<TransactionOutcome, PreflightFailure> {
+    let suspension = suspend_sessions(environment, mode).await?;
+
+    let mut outcome = TransactionOutcome {
+        operation_error: suspension
+            .error
+            .map(|message| UpdateError::new(UpdateErrorKind::Recovery, message)),
+        ..TransactionOutcome::default()
+    };
 
     if outcome.operation_error.is_none() {
         environment.publish(UpdatePhase::Updating, None);
@@ -170,13 +199,39 @@ pub(super) async fn run_transaction(
         }
     }
 
-    outcome.restore_failures = restore_sessions(environment, &snapshots, &suspended).await;
+    outcome.restore_failures =
+        restore_sessions(environment, &suspension.snapshots, &suspension.suspended).await;
 
     Ok(outcome)
 }
 
+pub(super) struct RestartOutcome {
+    pub(super) restarted: usize,
+    pub(super) suspend_error: Option<String>,
+    pub(super) restore_failures: usize,
+}
+
+/// Stops every session and brings each one back on its saved conversation,
+/// with no provider work in between. A session that failed to stop keeps its
+/// backend, so only the stopped ones are restored.
+pub(super) async fn run_restart(
+    environment: &mut impl RecoveryEnvironment,
+    mode: UpdateMode,
+) -> Result<RestartOutcome, PreflightFailure> {
+    let suspension = suspend_sessions(environment, mode).await?;
+
+    let restore_failures =
+        restore_sessions(environment, &suspension.snapshots, &suspension.suspended).await;
+
+    Ok(RestartOutcome {
+        restarted: suspension.suspended.len() - restore_failures.min(suspension.suspended.len()),
+        suspend_error: suspension.error,
+        restore_failures,
+    })
+}
+
 async fn restore_sessions(
-    environment: &mut impl UpdateEnvironment,
+    environment: &mut impl RecoveryEnvironment,
     snapshots: &[RecoverySnapshot],
     suspended: &[usize],
 ) -> usize {

@@ -3,11 +3,13 @@
 pub(crate) use crate::agent_updates::notification::{
     FocusedVisibleLifetime, NotificationPrimaryAction, UpdateNotificationView, notification_view,
 };
+pub(crate) use crate::agent_updates::restart::request_restart;
 pub(crate) use crate::agent_updates::transaction::{provider_for_profile, request_update};
 
 mod doubles;
 mod maintenance;
 mod notification;
+mod restart;
 mod transaction;
 
 #[cfg(test)]
@@ -44,6 +46,10 @@ pub(crate) struct AgentUpdates {
     claude: Arc<dyn ProviderMaintenance>,
     codex: Arc<dyn ProviderMaintenance>,
     registrations: Vec<RegisteredLauncher>,
+
+    /// Set while a restart of every harness runs, so a second restart or a
+    /// provider update cannot take over the same sessions midway.
+    restarting: bool,
 }
 
 struct RegisteredLauncher {
@@ -153,6 +159,7 @@ pub(crate) fn initialize(testing: bool, profiles: &[AgentProfile], cx: &mut App)
         claude,
         codex,
         registrations: Vec::new(),
+        restarting: false,
     };
 
     for profile in profiles {
