@@ -140,7 +140,7 @@ fn build_vendored(link_mode: LinkMode) {
     let host = env::var("HOST").expect("HOST must be set");
 
     // Locate ghostty source: env override > fetch into OUT_DIR.
-    let ghostty_dir = match env::var("GHOSTTY_SOURCE_DIR") {
+    let (ghostty_dir, is_fetched_clone) = match env::var("GHOSTTY_SOURCE_DIR") {
         Ok(dir) => {
             let p = PathBuf::from(dir);
             assert!(
@@ -148,9 +148,9 @@ fn build_vendored(link_mode: LinkMode) {
                 "GHOSTTY_SOURCE_DIR does not contain build.zig: {}",
                 p.display()
             );
-            p
+            (p, false)
         }
-        Err(_) => fetch_ghostty(&out_dir),
+        Err(_) => (fetch_ghostty(&out_dir), true),
     };
 
     // Build libghostty-vt via zig.
@@ -208,6 +208,10 @@ fn build_vendored(link_mode: LinkMode) {
     configure_zig_target(&mut build, &target, &host);
 
     run(build, "zig build");
+
+    if cfg!(windows) && is_fetched_clone {
+        remove_trailing_dot_package_entries(&ghostty_dir);
+    }
 
     let lib_dir = install_prefix.join("lib");
     let include_dir = install_prefix.join("include");
@@ -608,6 +612,50 @@ fn patch_ghostty_source(src_dir: &Path) {
             .arg(patch)
             .current_dir(src_dir);
         run(apply, &format!("git apply {}", patch.display()));
+    }
+}
+
+/// Zig extracts package tarballs into `zig-pkg/` byte for byte, and several of
+/// Ghostty's dependency tarballs include a macOS AppleDouble entry named `._.`.
+/// Win32 path normalization strips a trailing dot or space from a name, so
+/// `cargo clean` cannot stat or delete such an entry and aborts with
+/// "failed to load metadata". The entries hold Finder metadata that the build
+/// never reads, so removing them after `zig build` keeps OUT_DIR deletable.
+fn remove_trailing_dot_package_entries(ghostty_dir: &Path) {
+    let package_dir = ghostty_dir.join("zig-pkg");
+    if !package_dir.exists() {
+        return;
+    }
+
+    // A `\\?\` verbatim path bypasses Win32 normalization, so child paths
+    // built from it still name the trailing-dot entries.
+    let package_dir = std::fs::canonicalize(&package_dir)
+        .unwrap_or_else(|e| panic!("failed to resolve {}: {e}", package_dir.display()));
+    remove_trailing_dot_entries(&package_dir);
+}
+
+fn remove_trailing_dot_entries(dir: &Path) {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()));
+
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()));
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .unwrap_or_else(|e| panic!("failed to stat {}: {e}", path.display()));
+        let has_trailing_dot = entry.file_name().to_string_lossy().ends_with(['.', ' ']);
+
+        if has_trailing_dot {
+            let removed = if file_type.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            removed.unwrap_or_else(|e| panic!("failed to remove {}: {e}", path.display()));
+        } else if file_type.is_dir() {
+            remove_trailing_dot_entries(&path);
+        }
     }
 }
 
