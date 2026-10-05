@@ -109,6 +109,7 @@ fn sample_agent_profiles() -> Vec<profile::AgentProfile> {
         vision_model: false,
         approval: "acceptEdits".to_string(),
         sandbox: String::new(),
+        dsh_version: profile::DshVersion::V0_2_0,
     }]
 }
 
@@ -429,6 +430,44 @@ launcher = "pnpm-dlx"
     let restored: Config = parse_toml(&doc.to_string()).unwrap();
 
     assert_eq!(restored.agent_profiles.list, config.agent_profiles.list);
+}
+
+#[test]
+fn a_profile_saved_before_releases_were_selectable_moves_to_the_newest_one() {
+    let source = r#"
+[[agent-profiles.list]]
+name = "DeepSeek Harness"
+kind = "deepseek"
+launcher = "npx"
+"#;
+
+    let config: Config = parse_toml(source).unwrap();
+
+    assert_eq!(
+        config.agent_profiles.list[0].dsh_version,
+        profile::DshVersion::V0_2_0
+    );
+
+    let mut older = config.agent_profiles.list.clone();
+
+    older[0].dsh_version = profile::DshVersion::V0_1_5;
+
+    let mut doc = DocumentMut::new();
+
+    profile::patch_agent_table(
+        ensure_explicit_table(&mut doc, "agent-profiles"),
+        &older,
+        "DeepSeek Harness",
+    )
+    .unwrap();
+
+    let saved = doc.to_string();
+
+    assert!(saved.contains("dsh-version = \"0.1.5-rc.1\""));
+
+    let restored: Config = parse_toml(&saved).unwrap();
+
+    assert_eq!(restored.agent_profiles.list, older);
 }
 
 const LEGACY_PROFILE_TOML: &str = r#"

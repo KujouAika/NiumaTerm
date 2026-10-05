@@ -4,13 +4,15 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::background_task::BackgroundTaskLoadState;
+use crate::background_task::{BackgroundTaskLoadState, BackgroundTaskState};
 use crate::chat::{Event, Item};
 use crate::dsh::api::ApiClient;
+use crate::dsh::catalogs;
+use crate::dsh::events::RemoteRevision;
 use crate::dsh::models::ModelDirectory;
 use crate::dsh::session::loads::{
     failed_read_events, load_agent_presets, load_commands, load_models, load_sessions, load_skills,
-    load_subagent_transcript, load_subagents, load_workflow_transcript,
+    load_subagent_transcript, load_subagents, load_workflow_transcript, subagent_catalog,
 };
 use crate::dsh::session::{
     COMMANDS_FRAME, HISTORY_FRAME, MODELS_FRAME, PRESETS_FRAME, SKILLS_FRAME,
@@ -55,7 +57,7 @@ fn failed_background_reads_deliver_results_and_end_pending_discovery() {
             SKILLS_FRAME => load_skills(api, session, send),
             PRESETS_FRAME => load_agent_presets(api, session, None, None, send),
             HISTORY_FRAME => load_sessions(api, None, send),
-            SUBAGENTS_FRAME => load_subagents(api, session, 4, send),
+            SUBAGENTS_FRAME => load_subagents(api, RemoteRevision::V0_2, session, 4, send),
             SUBAGENT_TRANSCRIPT_FRAME => {
                 load_subagent_transcript(api, session, "child".into(), true, send)
             }
@@ -120,4 +122,47 @@ fn failed_background_reads_deliver_results_and_end_pending_discovery() {
             );
         }
     }
+}
+
+#[test]
+fn a_0_2_catalog_projection_reads_as_the_children_and_their_running_state() {
+    let children = json!([
+        { "id": "child-a", "createdAt": 1, "mode": "continuable", "label": "Researcher" },
+        { "id": "child-b", "createdAt": 2, "mode": "one-shot" },
+    ]);
+
+    let sessions = json!([
+        { "sessionId": "child-a", "running": true },
+        { "sessionId": "child-b", "running": false },
+        { "sessionId": "parent", "running": true },
+    ]);
+
+    let catalog = subagent_catalog(&children, &sessions);
+    let snapshot = catalogs::subagent_snapshot(&catalog, "parent", 1);
+
+    let rows: Vec<_> = snapshot
+        .tasks
+        .iter()
+        .map(|task| {
+            (
+                task.key.id.as_str(),
+                task.display_name.as_deref(),
+                task.state,
+                task.can_stop,
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "child-a",
+                Some("Researcher"),
+                BackgroundTaskState::Working,
+                true
+            ),
+            ("child-b", None, BackgroundTaskState::Done, false),
+        ]
+    );
 }

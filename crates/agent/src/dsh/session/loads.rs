@@ -13,12 +13,13 @@ use crate::background_task::{
 };
 use crate::chat::{Event, Item, QueuedPrompt};
 use crate::dsh::api::{ApiClient, CallError};
-use crate::dsh::events::session_address;
+use crate::dsh::events::{RemoteRevision, session_address};
 use crate::dsh::models::ModelDirectory;
 use crate::dsh::session::{
     COMMANDS_FRAME, FORK_CHECKPOINT_MESSAGES, FORK_CHECKPOINTS_FRAME, HISTORY_FRAME, MODELS_FRAME,
-    OpenedConversation, PRESETS_FRAME, REPLAY_MESSAGES, SEARCH_FRAME, SESSION_STATUS, SKILLS_FRAME,
-    SUBAGENT_TRANSCRIPT_FRAME, SUBAGENTS_FRAME, WORKFLOW_TRANSCRIPT_FRAME,
+    OpenedConversation, PERMISSION_CATALOG_FRAME, PRESETS_FRAME, REPLAY_MESSAGES, SEARCH_FRAME,
+    SESSION_STATUS, SKILLS_FRAME, SUBAGENT_TRANSCRIPT_FRAME, SUBAGENTS_FRAME,
+    WORKFLOW_TRANSCRIPT_FRAME,
 };
 use crate::dsh::{catalogs, events, frames, history};
 
@@ -56,7 +57,11 @@ pub(super) fn failed_read_events(payload: &Value, session_id: &str) -> Option<Ve
                 message: message.to_string(),
             }),
         }],
-        HISTORY_FRAME | PRESETS_FRAME | SUBAGENTS_FRAME | WORKFLOW_TRANSCRIPT_FRAME => Vec::new(),
+        HISTORY_FRAME
+        | PERMISSION_CATALOG_FRAME
+        | PRESETS_FRAME
+        | SUBAGENTS_FRAME
+        | WORKFLOW_TRANSCRIPT_FRAME => Vec::new(),
         _ => return None,
     };
 
@@ -120,6 +125,30 @@ pub(super) fn load_conversation(
         preset_refusal,
         Arc::clone(deliver),
     );
+}
+
+/// Read the permission presets a 0.2 host serves outside the session's
+/// projection. A 0.1 host sends the table inside the projection and has no
+/// such call. The table belongs to the host process, so the session id only
+/// marks which conversation asked.
+pub(super) fn load_permission_catalog(
+    client: ApiClient,
+    revision: RemoteRevision,
+    session_id: String,
+    deliver: Arc<dyn Fn(Value) + Send + Sync>,
+) {
+    if revision == RemoteRevision::V0_1 {
+        return;
+    }
+
+    nmt_platform::runtime().spawn(async move {
+        deliver_read(
+            json!({ "type": PERMISSION_CATALOG_FRAME, "sessionId": session_id }),
+            "catalog",
+            client.call("permissionPresets/catalog", json!({})).await,
+            deliver.as_ref(),
+        );
+    });
 }
 
 /// Read the conversations this tab's directory can continue.
@@ -387,20 +416,80 @@ pub(super) fn load_agent_presets(
 /// Read the direct children this conversation spawned.
 pub(super) fn load_subagents(
     client: ApiClient,
+    revision: RemoteRevision,
     session_id: String,
     activity: u64,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
 ) {
     nmt_platform::runtime().spawn(async move {
-        let payload = json!({ "parentSessionId": session_id });
+        let catalog = match revision {
+            RemoteRevision::V0_1 => {
+                let payload = json!({ "parentSessionId": session_id });
+
+                client.call("subagents/list", payload).await
+            }
+            RemoteRevision::V0_2 => projected_subagents(&client, &session_id).await,
+        };
 
         deliver_read(
             json!({ "type": SUBAGENTS_FRAME, "sessionId": session_id, "activity": activity }),
             "catalog",
-            client.call("subagents/list", payload).await,
+            catalog,
             deliver.as_ref(),
         );
     });
+}
+
+/// A 0.2 host keeps the child catalog as a projection of the parent and no
+/// longer samples whether each child is running, so the catalog the 0.1
+/// `subagents/list` call returned is rebuilt from that projection and the
+/// running flags of the session list, which lists child sessions too. The
+/// projection read does not resume the parent's agent.
+async fn projected_subagents(client: &ApiClient, session_id: &str) -> Result<Value, CallError> {
+    let projections = client
+        .request("session/projections", json!({ "sessionId": session_id }))
+        .await?;
+
+    let listed = client
+        .call("session/list", json!({ "_request": {} }))
+        .await?;
+
+    Ok(subagent_catalog(
+        &projections["values"]["subagentCatalog"],
+        &listed["items"],
+    ))
+}
+
+/// Shape a 0.2 catalog projection and session list as the 0.1 catalog.
+fn subagent_catalog(children: &Value, sessions: &Value) -> Value {
+    let running = |id: &Value| {
+        sessions
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|session| session["sessionId"] == *id && session["running"] == true)
+    };
+
+    let entries: Vec<Value> = children
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|child| {
+            let mut entry = child.clone();
+
+            entry["kind"] = json!("child");
+
+            entry["activity"] = json!(if running(&child["id"]) {
+                "running"
+            } else {
+                "inactive"
+            });
+
+            entry
+        })
+        .collect();
+
+    json!({ "entries": entries })
 }
 
 /// Read one child's own conversation.

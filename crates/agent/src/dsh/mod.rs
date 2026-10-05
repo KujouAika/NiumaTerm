@@ -14,7 +14,7 @@ pub use crate::dsh::host::{DEFAULT_EXECUTABLE, Host, HostError};
 pub use crate::dsh::session::Session;
 
 pub(crate) use crate::dsh::host::{
-    NPX_ARGUMENTS, NPX_EXECUTABLE, PNPM_DLX_ARGUMENTS, PNPM_DLX_EXECUTABLE,
+    NPX_EXECUTABLE, PNPM_DLX_EXECUTABLE, npx_arguments, pnpm_dlx_arguments,
 };
 pub(crate) use crate::dsh::listing::list_sessions;
 

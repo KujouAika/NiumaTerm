@@ -72,6 +72,24 @@ pub enum AgentProfileLauncher {
     PnpmDlx,
 }
 
+/// The DeepSeek Harness release a package launcher runs, persisted as the
+/// exact npm version it pins. Releases from 0.2 serve a revised Remote API;
+/// the adapter supports both revisions, and a profile written before this
+/// field existed starts on the newer release.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DshVersion {
+    #[serde(rename = "0.1.5-rc.1")]
+    V0_1_5,
+    #[default]
+    #[serde(rename = "0.2.0-rc.2")]
+    V0_2_0,
+}
+
+impl DshVersion {
+    /// Newest first, the order the settings editor offers them in.
+    pub const ALL: [Self; 2] = [Self::V0_2_0, Self::V0_1_5];
+}
+
 /// One environment variable applied to the agent process on launch.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct EnvVar {
@@ -161,6 +179,11 @@ pub struct AgentProfile {
     /// tab's remembered pick.
     #[serde(default)]
     pub sandbox: String,
+
+    /// Package release the DeepSeek Harness package launchers run. A custom
+    /// executable runs whatever release is installed and ignores this.
+    #[serde(default, rename = "dsh-version")]
+    pub dsh_version: DshVersion,
 }
 
 /// On-disk shape of one `[[agent-profiles.list]]` entry. Credentials arrive
@@ -206,6 +229,8 @@ struct PersistedAgentProfile {
     approval: String,
     #[serde(default)]
     sandbox: String,
+    #[serde(default, rename = "dsh-version")]
+    dsh_version: DshVersion,
 }
 
 impl TryFrom<PersistedAgentProfile> for AgentProfile {
@@ -251,6 +276,7 @@ impl TryFrom<PersistedAgentProfile> for AgentProfile {
             vision_model: persisted.vision_model,
             approval: persisted.approval,
             sandbox: persisted.sandbox,
+            dsh_version: persisted.dsh_version,
         })
     }
 }
@@ -336,6 +362,7 @@ pub fn patch_agent_table(
         table["vision-model"] = value(profile.vision_model);
         table["approval"] = value(&profile.approval);
         table["sandbox"] = value(&profile.sandbox);
+        table["dsh-version"] = value::<&str>(profile.dsh_version.into());
 
         tables.push(table);
     }
@@ -383,6 +410,15 @@ impl From<AgentProfileLauncher> for &'static str {
             AgentProfileLauncher::Custom => "custom",
             AgentProfileLauncher::Npx => "npx",
             AgentProfileLauncher::PnpmDlx => "pnpm-dlx",
+        }
+    }
+}
+
+impl From<DshVersion> for &'static str {
+    fn from(value: DshVersion) -> Self {
+        match value {
+            DshVersion::V0_1_5 => "0.1.5-rc.1",
+            DshVersion::V0_2_0 => "0.2.0-rc.2",
         }
     }
 }

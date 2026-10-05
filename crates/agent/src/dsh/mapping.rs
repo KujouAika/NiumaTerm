@@ -352,18 +352,30 @@ fn command_exit_code(output: &str) -> Option<i64> {
 /// The text the model itself received. It is what a reader wants when no card
 /// was produced, and it is the only thing a failed call leaves behind.
 fn result_text(message: &Value) -> Option<String> {
-    // The blocks are wrapped in one `tool-result` block; the useful text is one
-    // level in, which is also where a presenter expects to be handed them.
-    let text = message["content"]
-        .as_array()?
-        .iter()
-        .filter_map(|block| block["content"].as_array())
-        .flatten()
+    let text = result_blocks(message)
+        .into_iter()
         .filter_map(|block| block["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n");
 
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// The content blocks a tool returned. A 0.1 host wraps them in one
+/// `tool-result` block of a user message, so the useful text is one level in;
+/// a 0.2 host sends a tool-role message whose content is the blocks
+/// themselves.
+fn result_blocks(message: &Value) -> Vec<&Value> {
+    let content = message["content"].as_array().into_iter().flatten();
+
+    if message["role"] == "tool" {
+        content.collect()
+    } else {
+        content
+            .filter_map(|block| block["content"].as_array())
+            .flatten()
+            .collect()
+    }
 }
 
 fn diff_paths(diffs: &Value) -> String {
@@ -429,6 +441,7 @@ fn map_tool_result(data: &Value, view: &Value, tools: &mut EventTracker) -> Vec<
 
     let call_id = message["source"]["callId"]
         .as_str()
+        .or_else(|| message["toolCallId"].as_str())
         .or_else(|| message["content"][0]["toolCallId"].as_str());
 
     let Some(call_id) = call_id else {
@@ -441,7 +454,10 @@ fn map_tool_result(data: &Value, view: &Value, tools: &mut EventTracker) -> Vec<
         return Vec::new();
     };
 
-    let failed = message["content"][0]["isError"] == Value::Bool(true);
+    // A 0.2 host marks the failure on the tool-role message, a 0.1 host on
+    // the `tool-result` block it wraps the output in.
+    let failed = message["isError"] == Value::Bool(true)
+        || message["content"][0]["isError"] == Value::Bool(true);
 
     let view = if view.is_null() { &data["meta"] } else { view };
 

@@ -108,7 +108,10 @@ fn the_announcement_precedes_everything_the_new_streams_reported() {
                 "events",
                 json!({ "type": "ready", "clientId": "generation" }),
             ),
-            item("control", json!({ "type": "baseline", "value": {} })),
+            item(
+                "control",
+                json!({ "type": "baseline", "value": { "queues": {} } }),
+            ),
             item("follow", json!({ "type": "snapshot", "records": [] })),
         ] {
             socket

@@ -8,6 +8,63 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// Releases before 0.2 request OpenAI chat completions from the DeepSeek
+// endpoint; 0.2 releases request Anthropic Messages. Both writers expose the
+// same three operations so each scenario below is written once.
+function chatCompletionsStream(response, model) {
+  const emit = (delta, finish_reason = null) => response.write(`data: ${JSON.stringify({ id: 'probe', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+
+  emit({ role: 'assistant', content: '' });
+
+  return {
+    text: content => emit({ content }),
+    tool: (id, name, args) => emit({ tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }),
+    end: reason => {
+      emit({}, reason);
+      response.end('data: [DONE]\n\n');
+    },
+  };
+}
+
+function messagesStream(response, model) {
+  const send = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+  let index = -1;
+  let open = null;
+
+  const close = () => {
+    if (open !== null) send('content_block_stop', { index });
+    open = null;
+  };
+
+  send('message_start', { message: { id: 'probe', type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } });
+
+  return {
+    text: text => {
+      if (open !== 'text') {
+        close();
+        index += 1;
+        open = 'text';
+        send('content_block_start', { index, content_block: { type: 'text', text: '' } });
+      }
+
+      send('content_block_delta', { index, delta: { type: 'text_delta', text } });
+    },
+    tool: (id, name, args) => {
+      close();
+      index += 1;
+      open = 'tool';
+      send('content_block_start', { index, content_block: { type: 'tool_use', id, name, input: {} } });
+      send('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(args) } });
+    },
+    end: reason => {
+      close();
+      send('message_delta', { delta: { stop_reason: reason === 'tool_calls' ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } });
+      send('message_stop', {});
+      response.end();
+    },
+  };
+}
+
 const server = createServer(async (request, response) => {
   let body = '';
 
@@ -17,47 +74,43 @@ const server = createServer(async (request, response) => {
 
   if (request.url.endsWith('/models')) {
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ object: 'list', data: [{ id: 'deepseek-chat', object: 'model' }] }));
+    response.end(JSON.stringify({ object: 'list', data: [{ id: 'deepseek-chat', object: 'model', type: 'model' }], has_more: false }));
 
     return;
   }
 
   const messages = input.messages || [];
   const prompt = messages.filter(message => message.role === 'user').map(message => typeof message.content === 'string' ? message.content : message.content?.map(part => part.text || '').join('')).join('\n');
-  const completed = messages.filter(message => message.role === 'tool');
+  // Chat completions return a tool result as its own message; Messages return it as a block of a user message.
+  const completed = messages.flatMap(message => message.role === 'tool' ? [message] : Array.isArray(message.content) ? message.content.filter(part => part.type === 'tool_result') : []);
 
   console.log('MODEL', request.url, 'tool results', completed.length);
 
   response.setHeader('content-type', 'text/event-stream');
 
-  const emit = (delta, finish_reason = null) => response.write(`data: ${JSON.stringify({ id: 'probe', object: 'chat.completion.chunk', model: input.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
-
-  emit({ role: 'assistant', content: '' });
+  const stream = request.url.endsWith('/messages') ? messagesStream(response, input.model) : chatCompletionsStream(response, input.model);
 
   if (prompt.includes('queue-probe first')) {
     if (prompt.includes('queue-probe second')) {
-      emit({ content: 'queue-probe consumed' });
+      stream.text('queue-probe consumed');
     } else {
-      emit({ content: 'queue-probe waiting' });
+      stream.text('queue-probe waiting');
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    emit({}, 'stop');
-    response.end('data: [DONE]\n\n');
+    stream.end('stop');
   } else if (input.tools && prompt.includes('protocol-probe question') && completed.length === 0) {
     const args = { questions: [{ id: 'probe-choice', question: 'Continue this test?', options: [{ label: 'Yes' }, { label: 'No' }] }] };
 
-    emit({ tool_calls: [{ index: 0, id: 'probe-question', type: 'function', function: { name: 'ask_user_question', arguments: JSON.stringify(args) } }] });
-    emit({}, 'tool_calls');
-    response.end('data: [DONE]\n\n');
+    stream.tool('probe-question', 'ask_user_question', args);
+    stream.end('tool_calls');
   } else if (input.tools && prompt.includes('approval-probe-ok') && completed.length < 2) {
     const path = prompt.match(/approval-probe-ok to (.+?) using/)?.[1];
     const args = { command: `Set-Content -LiteralPath '${path}' -Value 'approval-probe-ok'`, description: 'Write the isolated approval marker' };
 
     if (completed.length) Object.assign(args, { sandbox_permissions: 'danger-full-access', justification: 'Allow writing the isolated approval marker outside the test workspace.' });
 
-    emit({ tool_calls: [{ index: 0, id: `approval-${completed.length}`, type: 'function', function: { name: 'pwsh', arguments: JSON.stringify(args) } }] });
-    emit({}, 'tool_calls');
-    response.end('data: [DONE]\n\n');
+    stream.tool(`approval-${completed.length}`, 'pwsh', args);
+    stream.end('tool_calls');
   } else if (input.tools && prompt.includes('Do exactly two things') && completed.length < 3) {
     const path = prompt.match(/Second, edit (.+?) replacing/)?.[1];
     const calls = [
@@ -68,18 +121,16 @@ const server = createServer(async (request, response) => {
 
     const [name, args] = calls[completed.length];
 
-    emit({ tool_calls: [{ index: 0, id: `probe-${completed.length}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
-    emit({}, 'tool_calls');
-    response.end('data: [DONE]\n\n');
+    stream.tool(`probe-${completed.length}`, name, args);
+    stream.end('tool_calls');
   } else if (input.tools && prompt.includes('Count from') && !prompt.includes('Abandon the counting')) {
     let count = 0;
-    const timer = setInterval(() => emit({ content: `${++count}: local streamed output\n` }), 100);
+    const timer = setInterval(() => stream.text(`${++count}: local streamed output\n`), 100);
 
     response.on('close', () => clearInterval(timer));
   } else {
-    emit({ content: 'ok' });
-    emit({}, 'stop');
-    response.end('data: [DONE]\n\n');
+    stream.text('ok');
+    stream.end('stop');
   }
 });
 

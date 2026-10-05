@@ -1,4 +1,4 @@
-use nmt_config::profile::{AgentKind, AgentProfile, AgentProfileLauncher, EnvVar};
+use nmt_config::profile::{AgentKind, AgentProfile, AgentProfileLauncher, DshVersion, EnvVar};
 
 use crate::agent_tab::profile::{
     ANTHROPIC_MODEL_ENV, ANTHROPIC_SUB_MODEL_ENVS, CODEX_CREDENTIAL_ENV_PREFIX,
@@ -250,36 +250,34 @@ fn a_deepseek_profile_without_the_switch_exports_no_endpoint() {
 }
 
 #[test]
-fn deepseek_package_launchers_pin_the_supported_release() {
-    let cases = [
-        (
-            AgentProfileLauncher::Npx,
-            "npx",
-            vec!["-y", "@deepseek-ai/dsh@0.1.5-rc.1"],
-        ),
-        (
-            AgentProfileLauncher::PnpmDlx,
-            "pnpm",
-            vec![
-                "dlx",
-                "--config.dlx-cache-max-age=Infinity",
-                "@deepseek-ai/dsh@0.1.5-rc.1",
-            ],
-        ),
-    ];
+fn deepseek_package_launchers_pin_the_selected_release() {
+    for (version, package) in [
+        (DshVersion::V0_2_0, "@deepseek-ai/dsh@0.2.0-rc.2"),
+        (DshVersion::V0_1_5, "@deepseek-ai/dsh@0.1.5-rc.1"),
+    ] {
+        let cases = [
+            (AgentProfileLauncher::Npx, "npx", vec!["-y", package]),
+            (
+                AgentProfileLauncher::PnpmDlx,
+                "pnpm",
+                vec!["dlx", "--config.dlx-cache-max-age=Infinity", package],
+            ),
+        ];
 
-    for (launcher, expected_executable, expected_args) in cases {
-        let profile = AgentProfile {
-            kind: AgentKind::DeepSeek,
-            executable: "ignored-dsh".into(),
-            launcher,
-            ..AgentProfile::default()
-        };
+        for (launcher, expected_executable, expected_args) in cases {
+            let profile = AgentProfile {
+                kind: AgentKind::DeepSeek,
+                executable: "ignored-dsh".into(),
+                launcher,
+                dsh_version: version,
+                ..AgentProfile::default()
+            };
 
-        let launch = agent_launch(&profile);
+            let launch = agent_launch(&profile);
 
-        assert_eq!(launch.executable, expected_executable);
-        assert_eq!(launch.executable_args, expected_args);
+            assert_eq!(launch.executable, expected_executable);
+            assert_eq!(launch.executable_args, expected_args);
+        }
     }
 }
 

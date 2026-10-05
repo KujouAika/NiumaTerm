@@ -174,11 +174,11 @@ pub fn agent_launch(profile: &AgentProfile) -> LaunchConfig {
     let (executable, executable_args) = match (profile.kind, profile.launcher) {
         (AgentKind::DeepSeek, AgentProfileLauncher::Npx) => (
             dsh::NPX_EXECUTABLE.to_string(),
-            dsh::NPX_ARGUMENTS.map(str::to_string).to_vec(),
+            dsh::npx_arguments(profile.dsh_version.into()),
         ),
         (AgentKind::DeepSeek, AgentProfileLauncher::PnpmDlx) => (
             dsh::PNPM_DLX_EXECUTABLE.to_string(),
-            dsh::PNPM_DLX_ARGUMENTS.map(str::to_string).to_vec(),
+            dsh::pnpm_dlx_arguments(profile.dsh_version.into()),
         ),
         _ => (profile.executable.trim().to_string(), Vec::new()),
     };

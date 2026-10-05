@@ -48,8 +48,8 @@ use crate::dsh::session::controls::{COMPLETED_FRAME, Controls, Operation, questi
 use crate::dsh::session::lane::CommandLane;
 use crate::dsh::session::loads::{
     ModelProfile, check_running, failed_read_events, load_agent_presets, load_commands,
-    load_conversation, load_fork_checkpoints, load_search, load_sessions, load_skills,
-    load_subagent_transcript, load_subagents, load_workflow_transcript,
+    load_conversation, load_fork_checkpoints, load_permission_catalog, load_search, load_sessions,
+    load_skills, load_subagent_transcript, load_subagents, load_workflow_transcript,
 };
 use crate::dsh::session::switch::{Switch, SwitchSlot, Switching, Target, switch_conversation};
 use crate::dsh::workflows::WorkflowTracker;
@@ -173,6 +173,7 @@ const SUBAGENTS_FRAME: &str = "nmt/subagents";
 const SUBAGENT_TRANSCRIPT_FRAME: &str = "nmt/subagent-transcript";
 const SKILLS_FRAME: &str = "nmt/skills";
 const PRESETS_FRAME: &str = "nmt/agent-presets";
+const PERMISSION_CATALOG_FRAME: &str = "nmt/permission-catalog";
 const WORKFLOW_TRANSCRIPT_FRAME: &str = "nmt/workflow-transcript";
 const FORK_CHECKPOINTS_FRAME: &str = "nmt/fork-checkpoints";
 const SETTLED_FRAME: &str = "nmt/command-settled";
@@ -425,6 +426,13 @@ impl Session {
             &deliver,
         );
 
+        load_permission_catalog(
+            client.clone(),
+            downlinks.revision(),
+            session_id.clone(),
+            Arc::clone(&deliver),
+        );
+
         Ok(Self {
             controls: Controls::new(client.clone(), Arc::clone(&deliver)),
             client,
@@ -529,6 +537,13 @@ impl Session {
             &self.profile,
             &self.deliver,
         );
+
+        load_permission_catalog(
+            self.client.clone(),
+            self.downlinks.revision(),
+            self.session_id.clone(),
+            Arc::clone(&self.deliver),
+        );
     }
 
     /// Map one delivered frame into transcript events. Frames for other
@@ -596,7 +611,7 @@ impl Session {
                 return self.on_connection_reset();
             }
             Some("nmt/host-exited") if self.is_current_session(payload) => {
-                return self.on_host_exited();
+                return self.on_host_exited(payload["message"].as_str());
             }
             Some(SUBAGENTS_FRAME) => return self.on_subagents(payload),
             Some(JOBS_FRAME) => return self.on_jobs(payload),
@@ -606,6 +621,9 @@ impl Session {
             }
             Some(SKILLS_FRAME) => return self.on_skills(payload),
             Some(PRESETS_FRAME) => return self.on_presets(payload),
+            Some(PERMISSION_CATALOG_FRAME) if self.is_current_session(payload) => {
+                return self.usage.apply_permission_catalog(&payload["catalog"]);
+            }
             Some(COMMANDS_FRAME) => return self.on_commands(payload),
             Some(HISTORY_FRAME) => return history_events(payload),
             Some(SEARCH_FRAME) => return search_events(payload),
@@ -627,12 +645,13 @@ impl Session {
         // A child announces itself in the parent's own log, and the catalog is
         // a call the pane would otherwise have no reason to make: the panel
         // that would ask for one is hidden until a child is known to exist.
-        // A finished turn re-reads it because a child's activity is sampled
-        // when asked, not pushed.
+        // A 0.1 host records the announcement as `subagent/descriptor` and a
+        // 0.2 host as `subagent/catalog`. A finished turn re-reads it because
+        // a child's activity is sampled when asked, not pushed.
         let event_type = payload["event"]["type"].as_str();
 
         if self.is_current_session(payload)
-            && (event_type == Some("subagent/descriptor")
+            && (matches!(event_type, Some("subagent/descriptor" | "subagent/catalog"))
                 || (event_type == Some("turn/end") && !self.subagent_modes.is_empty()))
         {
             self.refresh_background_tasks();
@@ -752,13 +771,15 @@ impl Session {
 
     /// The host took this conversation with it, so no turn is running and the
     /// tab is told to replace the host instead of sending into a closed port.
-    fn on_host_exited(&mut self) -> Vec<Event> {
+    fn on_host_exited(&mut self, message: Option<&str>) -> Vec<Event> {
         self.running = false;
 
         let mut events = self.on_connection_reset();
 
         events.push(Event::HostExited {
-            message: "DeepSeek Harness host stopped unexpectedly".to_string(),
+            message: message
+                .unwrap_or("DeepSeek Harness host stopped unexpectedly")
+                .to_string(),
         });
 
         events
@@ -1313,6 +1334,7 @@ impl Session {
 
         load_subagents(
             self.client.clone(),
+            self.downlinks.revision(),
             self.session_id.clone(),
             self.subagent_activity,
             Arc::clone(&self.deliver),

@@ -10,7 +10,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{Message, accept};
 
 use crate::dsh::api::ApiClient;
-use crate::dsh::events::{Downlinks, PassedEvent, Streams};
+use crate::dsh::events::{Disconnect, Downlinks, PassedEvent, RemoteRevision, Streams};
 use crate::dsh::mapping::{approval_request, question_request};
 
 fn item(stream: &str, value: Value) -> Value {
@@ -50,7 +50,10 @@ fn closing_downlinks_interrupts_handshakes_and_idle_reads_and_joins_delivery() {
                         "events",
                         json!({ "type": "ready", "clientId": "generation" }),
                     ),
-                    item("control", json!({ "type": "baseline", "value": {} })),
+                    item(
+                        "control",
+                        json!({ "type": "baseline", "value": { "queues": {} } }),
+                    ),
                     item("follow", json!({ "type": "snapshot", "records": [] })),
                 ] {
                     socket
@@ -130,7 +133,10 @@ fn a_lost_stream_without_a_serving_host_reports_the_host_exit() {
                 "events",
                 json!({ "type": "ready", "clientId": "generation" }),
             ),
-            item("control", json!({ "type": "baseline", "value": {} })),
+            item(
+                "control",
+                json!({ "type": "baseline", "value": { "queues": {} } }),
+            ),
             item("follow", json!({ "type": "snapshot", "records": [] })),
         ] {
             socket
@@ -202,7 +208,7 @@ fn readiness_waits_for_all_subscriptions_and_delivers_the_opening_history() {
         )
         .unwrap();
 
-    assert!(streams.ready_snapshot().is_none());
+    assert!(streams.ready().is_none());
 
     let snapshot = json!({ "type": "snapshot", "cursor": 4, "records": [], "projections": { "asOfSeq": 4, "values": {} } });
 
@@ -210,7 +216,10 @@ fn readiness_waits_for_all_subscriptions_and_delivers_the_opening_history() {
         .process(item("follow", snapshot.clone()), &deliver)
         .unwrap();
 
-    assert_eq!(streams.ready_snapshot(), Some(&snapshot));
+    assert_eq!(
+        streams.ready(),
+        Some((snapshot.clone(), RemoteRevision::V0_1))
+    );
     assert_eq!(frames.borrow().last().unwrap()["payload"]["page"], snapshot);
 }
 
@@ -378,7 +387,31 @@ fn a_failed_subscription_is_a_startup_failure() {
         )
         .unwrap_err();
 
-    assert!(error.contains("session not found"));
+    assert_eq!(
+        error,
+        Disconnect::Lost("follow: session not found".to_string())
+    );
+}
+
+#[test]
+fn a_host_without_its_session_service_is_told_apart_from_a_lost_stream() {
+    let error = Streams::new("session-1")
+        .process(
+            json!({
+                "type": "error", "streamId": "control",
+                "error": {
+                    "code": "gateway/service-unavailable",
+                    "message": "typert gateway: session/control: active Service \"sessionController\" is unavailable",
+                    "details": {},
+                },
+            }),
+            &|_| {},
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(error, Disconnect::ServiceGone(message) if message.contains("sessionController"))
+    );
 }
 
 #[test]
@@ -455,7 +488,10 @@ fn a_stalled_pass_reply_does_not_stop_heartbeat_answers() {
                 "events",
                 json!({ "type": "ready", "clientId": "generation" }),
             ),
-            item("control", json!({ "type": "baseline", "value": {} })),
+            item(
+                "control",
+                json!({ "type": "baseline", "value": { "queues": {} } }),
+            ),
             item("follow", json!({ "type": "snapshot", "records": [] })),
             item(
                 "events",
@@ -639,6 +675,118 @@ fn a_reconnect_baseline_replays_the_live_attempt_prefix_then_follows_it() {
                 "turn": 2, "step": 1,
                 "chunk": { "type": "text-delta", "index": 0, "text": " world" },
             } }),
+        ]
+    );
+}
+
+#[test]
+fn a_0_2_host_publishes_its_pending_inbox_as_queue_rows() {
+    let frames = RefCell::new(Vec::new());
+    let deliver = |frame| frames.borrow_mut().push(frame);
+
+    let mut streams = Streams::new("session-1");
+
+    let text = |text: &str| json!([{ "type": "text", "text": text }]);
+
+    let inbox = json!({
+        "next-turn": [{ "id": "m1", "content": text("later"), "source": { "kind": "user" } }],
+        "next-step": [
+            { "id": "m2", "content": text("now"), "source": { "kind": "user" } },
+            { "id": "m3", "content": text("notice"), "source": { "kind": "job" } },
+        ],
+    });
+
+    streams
+        .process(
+            item(
+                "events",
+                json!({ "type": "ready", "clientId": "generation-1" }),
+            ),
+            &deliver,
+        )
+        .unwrap();
+
+    streams
+        .process(
+            item(
+                "control",
+                json!({ "type": "baseline", "value": { "projections": { "session-1": {
+                    "asOfSeq": 3, "values": { "inbox": inbox, "title": "Title" },
+                } } } }),
+            ),
+            &deliver,
+        )
+        .unwrap();
+
+    // An emptied inbox arrives as a live projection and must clear the queue.
+    streams
+        .process(
+            item(
+                "control",
+                json!({ "type": "projection", "sessionId": "session-1", "key": "inbox", "seq": 4,
+                    "value": { "next-turn": [], "next-step": [] } }),
+            ),
+            &deliver,
+        )
+        .unwrap();
+
+    let payloads: Vec<Value> = frames
+        .borrow()
+        .iter()
+        .map(|frame| frame["payload"].clone())
+        .collect();
+
+    assert_eq!(
+        payloads,
+        vec![
+            json!({ "type": "session/queue", "sessionId": "session-1", "items": [
+                { "id": "m1", "placement": "queued", "message": { "id": "m1", "content": text("later") } },
+                { "id": "m2", "placement": "steering", "message": { "id": "m2", "content": text("now") } },
+                { "id": "m3", "placement": "context", "message": { "id": "m3", "content": text("notice") } },
+            ] }),
+            json!({ "type": "session/projection", "sessionId": "session-1", "key": "title", "value": "Title", "seq": 3 }),
+            json!({ "type": "session/queue", "sessionId": "session-1", "items": [] }),
+        ]
+    );
+
+    let snapshot = json!({ "type": "snapshot", "records": [] });
+
+    streams
+        .process(item("follow", snapshot.clone()), &deliver)
+        .unwrap();
+
+    assert_eq!(streams.ready(), Some((snapshot, RemoteRevision::V0_2)));
+}
+
+#[test]
+fn a_0_2_job_stream_replaces_the_conversation_job_rows() {
+    let frames = RefCell::new(Vec::new());
+    let deliver = |frame| frames.borrow_mut().push(frame);
+
+    let mut streams = Streams::new("session-1");
+
+    let job = json!({ "id": "bash-1", "kind": "bash", "label": "sleep 60", "status": "running", "startedAt": 1 });
+
+    for jobs in [json!([job.clone()]), json!([])] {
+        streams
+            .process(
+                item("jobs", json!({ "type": "rows", "jobs": jobs })),
+                &deliver,
+            )
+            .unwrap();
+    }
+
+    let payloads: Vec<Value> = frames
+        .borrow()
+        .iter()
+        .map(|frame| frame["payload"].clone())
+        .collect();
+
+    assert_eq!(
+        payloads,
+        vec![
+            json!({ "type": "session/jobs", "sessionId": "session-1", "jobs": [job] }),
+            json!({ "type": "session/jobs", "sessionId": "session-1", "jobs": [] }),
         ]
     );
 }

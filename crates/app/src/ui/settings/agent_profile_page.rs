@@ -33,7 +33,7 @@ use rust_i18n::t;
 
 use crate::ui::settings::card::{card_row, card_text_input, description_hint};
 use crate::ui::settings::state::{
-    AgentProfile, AgentProfileLauncher, AppSettings, EnvVar, agent_kind_display_label,
+    AgentProfile, AgentProfileLauncher, AppSettings, DshVersion, EnvVar, agent_kind_display_label,
     builtin_agent_profile,
 };
 use crate::ui::settings::table::{
@@ -952,6 +952,28 @@ fn agent_profile_dialog_content(
         cx,
     );
 
+    // A package launcher fetches an exact release; a custom executable runs
+    // whatever release is installed, so only the package launchers offer one.
+    let dsh_version = profile.dsh_version;
+
+    let dsh_version_label = |version: DshVersion| -> SharedString {
+        let release: &str = version.into();
+
+        format!("v{release}").into()
+    };
+
+    let dsh_version_control = draft_choice(
+        "agent-profile-dialog-dsh-version",
+        dsh_version_label(dsh_version),
+        DshVersion::ALL
+            .into_iter()
+            .map(|version| (version, dsh_version_label(version)))
+            .collect(),
+        move |option| option == dsh_version,
+        |draft, option| draft.profile.dsh_version = option,
+        cx,
+    );
+
     let sub_models_switch = Switch::new("agent-profile-dialog-sub-models")
         .checked(profile.replace_sub_models)
         .on_click(cx.listener(|draft, checked: &bool, _, cx| {
@@ -1010,8 +1032,16 @@ fn agent_profile_dialog_content(
                         launcher_control,
                         cx,
                     ))
-                    .when(launcher == AgentProfileLauncher::Custom, |this| {
-                        this.child(executable)
+                    .map(|this| match launcher {
+                        AgentProfileLauncher::Custom => this.child(executable),
+                        AgentProfileLauncher::Npx | AgentProfileLauncher::PnpmDlx => {
+                            this.child(card_row(
+                                t!("settings-agent-profile-dsh-version"),
+                                t!("settings-agent-profile-dsh-version-description"),
+                                dsh_version_control,
+                                cx,
+                            ))
+                        }
                     }),
             }
         })

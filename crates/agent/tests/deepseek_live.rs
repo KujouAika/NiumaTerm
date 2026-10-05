@@ -3,11 +3,17 @@
 //! Ignored by default: it starts `dsh`, spends a model call, and therefore
 //! needs both a resolvable installation and a working credential. Run it with
 //! `cargo test -p nmt_agent --test deepseek_live -- --ignored --nocapture`.
-//! Set `NMT_DSH_TEST_LAUNCHER` to `pnpm-dlx` or `npx` for package launchers.
+//! Set `NMT_DSH_TEST_LAUNCHER` to `pnpm-dlx` or `npx` for package launchers,
+//! and `NMT_DSH_TEST_VERSION` to the release those launchers run.
+//!
+//! Every host runs on a fresh harness home unless `DSH_HOME` is already set,
+//! so the user's `~/.dsh` is never touched and the credential comes from
+//! `DEEPSEEK_API_KEY`.
 
 #![cfg(target_os = "windows")]
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 use std::{env, fs};
@@ -16,7 +22,7 @@ use nmt_agent::chat::{Event, Item, SendOutcome, SlashCommandOutcome};
 use nmt_agent::dsh::{Host, Session};
 use nmt_agent::profile::agent_launch;
 use nmt_agent::{AgentWorkspace, LaunchConfig};
-use nmt_profile::{AgentKind, AgentProfile, AgentProfileLauncher};
+use nmt_profile::{AgentKind, AgentProfile, AgentProfileLauncher, DshVersion};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -49,12 +55,40 @@ fn launch() -> LaunchConfig {
         other => panic!("unsupported test launcher: {other}"),
     };
 
-    agent_launch(&AgentProfile {
+    let dsh_version = match env::var("NMT_DSH_TEST_VERSION") {
+        Ok(release) => DshVersion::ALL
+            .into_iter()
+            .find(|version| <&str>::from(*version) == release)
+            .unwrap_or_else(|| panic!("unsupported test release: {release}")),
+        Err(_) => DshVersion::default(),
+    };
+
+    let mut launch = agent_launch(&AgentProfile {
         kind: AgentKind::DeepSeek,
         executable: "dsh".to_string(),
         launcher,
+        dsh_version,
         ..AgentProfile::default()
-    })
+    });
+
+    // A harness home is shared state: a host booting on it can rewrite the
+    // profile patch, and every other host on that home reloads the result.
+    // A 0.2 host imports `settings.yaml` into the patch with plugin names a
+    // running 0.1.5 host cannot load, which leaves the user's own tabs without
+    // a session service. A runner that already chose a home keeps it.
+    // One home serves the whole test process, because the home is part of the
+    // launch and tabs share a host only when their launches match.
+    if env::var_os("DSH_HOME").is_none() {
+        static HOME: OnceLock<PathBuf> = OnceLock::new();
+
+        let home = HOME.get_or_init(|| TempDir::with_prefix("nmt-dsh-live-").unwrap().keep());
+
+        launch
+            .env
+            .push(("DSH_HOME".into(), home.display().to_string()));
+    }
+
+    launch
 }
 
 /// Drain events until `stop` accepts one, or the deadline passes. Returns every
@@ -144,17 +178,17 @@ fn a_steered_message_is_consumed_without_another_submission() {
         SendOutcome::Steered
     );
 
-    let (after, ended) = collect_until(&mut session, &frames, Duration::from_secs(30), |event| {
-        matches!(event, Event::TurnCompleted { .. })
-    });
+    // The harness may answer the steer inside the running turn or close that
+    // turn first and open another for it, so the wait ends on the answer,
+    // not on whichever turn completes first.
+    let (after, consumed) =
+        collect_until(&mut session, &frames, Duration::from_secs(30), |event| {
+            matches!(event,
+                Event::ItemCompleted(Item::AgentMessage { text: Some(text), .. })
+                    if text.contains("queue-probe consumed"))
+        });
 
-    assert!(ended, "the steered turn did not complete: {after:?}");
-    assert!(
-        after.iter().any(|event| matches!(event,
-            Event::ItemCompleted(Item::AgentMessage { text: Some(text), .. })
-                if text.contains("queue-probe consumed"))),
-        "steering was not consumed: {after:?}"
-    );
+    assert!(consumed, "steering was not consumed: {after:?}");
     assert!(
         after
             .iter()
@@ -407,16 +441,25 @@ fn a_turn_streams_and_survives_being_stopped() {
         // the prompt starts its own turn instead of steering the old one.
         .assert_started_a_turn();
 
+    // The host sends the idle edge on the event stream and the reply on the
+    // log, and the two streams keep no order between them, so a turn can read
+    // as complete before its last message does. Both have to arrive.
+    let mut turn_completed = false;
+    let mut message_completed = false;
+
     let (second, restarted) = collect_until(&mut session, &frames, Duration::from_secs(180), |e| {
-        matches!(e, Event::TurnCompleted { .. })
+        match e {
+            Event::TurnCompleted { .. } => turn_completed = true,
+            Event::ItemCompleted(Item::AgentMessage { .. }) => message_completed = true,
+            _ => {}
+        }
+
+        turn_completed && message_completed
     });
 
-    assert!(restarted, "the second turn never completed; saw {second:?}");
     assert!(
-        second
-            .iter()
-            .any(|e| matches!(e, Event::ItemCompleted(Item::AgentMessage { .. }))),
-        "a completed turn should produce a completed assistant message"
+        restarted,
+        "the second turn did not complete with an assistant message: {second:?}"
     );
 }
 
@@ -1119,4 +1162,75 @@ fn a_conversation_change_is_requested_without_waiting() {
     });
 
     assert!(answered, "the command was not answered: {seen:?}");
+}
+
+/// A 0.2 host booting on the home of a running 0.1.5 host moves
+/// `settings.yaml` into the profile patch, and the 0.1.5 host reloads into a
+/// composition without its session service while its port stays open. That
+/// once left a tab retrying forever with Stop refused. The tab has to be told
+/// the host is gone, and the next conversation has to start on a fresh host.
+#[test]
+#[ignore = "starts two isolated harness hosts of different releases"]
+fn a_host_that_loses_its_session_service_is_replaced() {
+    let isolated = TempDir::new().unwrap();
+
+    fs::write(
+        isolated.path().join("settings.yaml"),
+        "agent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-flash\n",
+    )
+    .unwrap();
+
+    let release = |dsh_version| {
+        let mut launch = agent_launch(&AgentProfile {
+            kind: AgentKind::DeepSeek,
+            launcher: AgentProfileLauncher::PnpmDlx,
+            dsh_version,
+            ..AgentProfile::default()
+        });
+
+        launch.env = vec![
+            ("DSH_HOME".into(), isolated.path().display().to_string()),
+            ("DEEPSEEK_API_KEY".into(), "local-probe".into()),
+        ];
+
+        launch
+    };
+
+    let older = release(DshVersion::V0_1_5);
+
+    let (tx, frames) = channel();
+
+    let mut session = nmt_platform::runtime()
+        .block_on(Session::create(
+            &older,
+            &AgentWorkspace::default(),
+            move |frame| {
+                let _ = tx.send(frame);
+            },
+        ))
+        .expect("the 0.1.5 harness should open a conversation");
+
+    let _newer = nmt_platform::runtime()
+        .block_on(Host::start(&release(DshVersion::V0_2_0)))
+        .expect("the 0.2 harness should start on the same home");
+
+    let (seen, exited) = collect_until(&mut session, &frames, Duration::from_secs(30), |event| {
+        matches!(event, Event::HostExited { .. })
+    });
+
+    assert!(exited, "the broken host was never reported: {seen:?}");
+
+    drop(session);
+
+    let replacement = nmt_platform::runtime().block_on(Session::create(
+        &older,
+        &AgentWorkspace::default(),
+        |_| {},
+    ));
+
+    assert!(
+        replacement.is_ok(),
+        "a new conversation should start on a fresh host: {:?}",
+        replacement.err()
+    );
 }

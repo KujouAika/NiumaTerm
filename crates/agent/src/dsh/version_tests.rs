@@ -3,14 +3,17 @@
 #[cfg(windows)]
 use std::time::Duration;
 
-use semver::{Version, VersionReq};
+use nmt_profile::DshVersion;
+use semver::Version;
 
 #[cfg(windows)]
 use crate::launcher::{AgentCli, ProcessLimits, run_bounded};
 
-/// The exact release used by the package launchers. The Remote API can change
-/// between pre-releases, so other releases retain a compatibility notice.
-const SUPPORTED_VERSIONS: &str = "=0.1.5-rc.1";
+/// The exact releases a profile's package launchers can pin. The Remote API can
+/// change between pre-releases, so other releases retain a compatibility notice.
+fn supported_versions() -> Vec<&'static str> {
+    DshVersion::ALL.into_iter().map(Into::into).collect()
+}
 
 /// `dsh --version` only has to start Node and print, but a first run on a cold
 /// machine still pays for module resolution.
@@ -67,17 +70,19 @@ fn describe_version(cli: &AgentCli) -> VersionSupport {
 /// Compare a known version against the supported range. Separate from the
 /// process run so the decision can be exercised without launching anything.
 fn classify(installed: &Version) -> VersionSupport {
-    let requirement = VersionReq::parse(SUPPORTED_VERSIONS)
-        .expect("the supported range is a literal in this file");
+    // Exact equality includes the pre-release identifier so a later release
+    // candidate or stable release still receives a compatibility notice.
+    let supported = supported_versions();
 
-    // The exact requirement includes the pre-release identifier so a later
-    // release candidate or stable release still receives a compatibility notice.
-    if requirement.matches(installed) {
+    if supported
+        .iter()
+        .any(|release| Version::parse(release).is_ok_and(|release| &release == installed))
+    {
         VersionSupport::Supported
     } else {
         VersionSupport::Unsupported {
             installed: installed.to_string(),
-            supported: SUPPORTED_VERSIONS.to_string(),
+            supported: supported.join(", "),
         }
     }
 }
@@ -94,11 +99,14 @@ fn parse_version(output: &str) -> Option<Version> {
 }
 
 #[test]
-fn only_the_pinned_release_is_reported_as_supported() {
-    assert_eq!(
-        classify(&Version::parse("0.1.5-rc.1").unwrap()),
-        VersionSupport::Supported,
-    );
+fn only_the_pinned_releases_are_reported_as_supported() {
+    for pinned in ["0.1.5-rc.1", "0.2.0-rc.2"] {
+        assert_eq!(
+            classify(&Version::parse(pinned).unwrap()),
+            VersionSupport::Supported,
+            "{pinned}"
+        );
+    }
 
     for outside in [
         "0.1.0-rc.6",
@@ -110,7 +118,9 @@ fn only_the_pinned_release_is_reported_as_supported() {
         "0.1.5-rc.0",
         "0.1.5-rc.2",
         "0.1.5",
+        "0.2.0-rc.1",
         "0.2.0",
+        "0.2.1-alpha.1",
         "1.0.0",
     ] {
         assert!(
@@ -132,6 +142,7 @@ fn the_installed_release_is_one_this_build_supports() {
     assert_eq!(
         describe_version(&cli),
         VersionSupport::Supported,
-        "the installed harness is outside {SUPPORTED_VERSIONS}"
+        "the installed harness is outside {:?}",
+        supported_versions()
     );
 }

@@ -1040,6 +1040,57 @@ fn the_permission_presets_come_from_the_deployment_rather_than_from_here() {
 }
 
 #[test]
+fn a_0_2_permission_picker_combines_the_catalog_with_the_current_value() {
+    use crate::dsh::projections::ProjectionTracker;
+
+    let mut projections = ProjectionTracker::default();
+
+    // The current value alone has no table to show it in.
+    let events = projections
+        .apply(
+            &projection_frame("permissions", json!({ "currentValue": "workspace-write" })),
+            SESSION,
+        )
+        .unwrap();
+
+    assert!(events.is_empty());
+    assert_eq!(projections.permission(), Some("workspace-write"));
+
+    let events = projections.apply_permission_catalog(&json!({
+        "options": [
+            { "value": "workspace-write", "name": "Workspace Write" },
+            { "value": "danger-full-access", "name": "Full Access" },
+        ],
+        "defaultOptions": [],
+        "defaultPreset": "workspace-write",
+    }));
+
+    let [Event::ApprovalPresets { presets, current }] = events.as_slice() else {
+        panic!("expected one preset snapshot, got {events:?}");
+    };
+
+    assert_eq!(presets.len(), 2);
+    assert_eq!(current.as_deref(), Some("workspace-write"));
+
+    // A later switch keeps the table the catalog supplied.
+    let events = projections
+        .apply(
+            &projection_frame(
+                "permissions",
+                json!({ "currentValue": "danger-full-access" }),
+            ),
+            SESSION,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [Event::ApprovalPresets { presets, current }]
+            if presets.len() == 2 && current.as_deref() == Some("danger-full-access")
+    ));
+}
+
+#[test]
 fn the_history_page_baseline_seeds_what_a_live_push_would_not() {
     use crate::dsh::projections::ProjectionTracker;
 
@@ -1252,6 +1303,55 @@ fn a_shell_command_becomes_a_command_row_with_its_output_and_exit_code() {
             exit_code: Some(0),
         })]
     );
+}
+
+#[test]
+fn a_0_2_tool_role_result_completes_its_row_with_the_tool_output() {
+    let mut tools = EventTracker::default();
+
+    for call in ["call_ok", "call_failed"] {
+        map_frame(
+            &tool_frame(
+                json!({
+                    "type": "tool/call",
+                    "data": { "turn": 1, "step": 1, "callId": call, "name": "pwsh" },
+                }),
+                json!({ "for": "call", "view": { "card": "terminal", "title": "probe" }}),
+            ),
+            SESSION,
+            &mut tools,
+        );
+    }
+
+    let mut result = |call: &str, text: &str, failed: bool| {
+        map_frame(
+            &tool_frame(
+                json!({
+                    "type": "tool/result",
+                    "data": { "message": {
+                        "role": "tool", "toolCallId": call, "isError": failed,
+                        "source": { "kind": "tool", "callId": call },
+                        "content": [{ "type": "text", "text": text }],
+                    }},
+                }),
+                Value::Null,
+            ),
+            SESSION,
+            &mut tools,
+        )
+    };
+
+    assert!(matches!(
+        result("call_ok", "tool-probe-ok", false).as_slice(),
+        [Event::ItemCompleted(Item::CommandExecution { aggregated_output: Some(output), status: Some(status), .. })]
+            if output == "tool-probe-ok" && status == "completed"
+    ));
+
+    assert!(matches!(
+        result("call_failed", "denied", true).as_slice(),
+        [Event::ItemCompleted(Item::CommandExecution { status: Some(status), .. })]
+            if status == "failed"
+    ));
 }
 
 #[test]

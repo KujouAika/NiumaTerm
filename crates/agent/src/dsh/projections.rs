@@ -32,6 +32,12 @@ pub(crate) struct ProjectionTracker {
     /// Execution-permission preset reported for this exact session.
     permission: Option<String>,
 
+    /// The deployment's selectable presets. A 0.1 host sends them inside
+    /// every permissions value; a 0.2 host keeps them in a process catalog
+    /// read once per conversation, and its projection names only the current
+    /// preset.
+    permission_options: Value,
+
     /// The preset table that report came with, kept so a refused switch can
     /// put a picker back on what the session still runs under.
     presets: Option<Event>,
@@ -122,16 +128,13 @@ impl ProjectionTracker {
                 .into_iter()
                 .collect(),
             "permissions" => {
-                let event = permission_presets(value);
+                if let Some(options) = value.get("options") {
+                    self.permission_options = options.clone();
+                }
 
-                self.presets = event.clone();
+                self.permission = value["currentValue"].as_str().map(str::to_string);
 
-                self.permission = match &event {
-                    Some(Event::ApprovalPresets { current, .. }) => current.clone(),
-                    _ => None,
-                };
-
-                event.into_iter().collect()
+                self.permission_event()
             }
             // A cleared goal is reported as a null value instead of by the
             // key disappearing, so the absent case is a value to publish and
@@ -215,6 +218,21 @@ impl ProjectionTracker {
         }))
     }
 
+    /// Fold the preset table a 0.2 host serves outside the projection. It may
+    /// arrive before or after the current value, and the picker appears once
+    /// both are known.
+    pub(crate) fn apply_permission_catalog(&mut self, catalog: &Value) -> Vec<Event> {
+        self.permission_options = catalog["options"].clone();
+
+        self.permission_event()
+    }
+
+    fn permission_event(&mut self) -> Vec<Event> {
+        self.presets = permission_presets(&self.permission_options, self.permission.as_deref());
+
+        self.presets.clone().into_iter().collect()
+    }
+
     pub(crate) fn permission(&self) -> Option<&str> {
         self.permission.as_deref()
     }
@@ -235,8 +253,8 @@ impl ProjectionTracker {
 /// offer values a deployment does not serve and hide the ones it does. The
 /// derived `custom` entry appears only while the settings match no preset, which
 /// is why it can be the current value without being switchable to.
-fn permission_presets(value: &Value) -> Option<Event> {
-    let presets: Vec<ApprovalPreset> = value["options"]
+fn permission_presets(options: &Value, current: Option<&str>) -> Option<Event> {
+    let presets: Vec<ApprovalPreset> = options
         .as_array()
         .into_iter()
         .flatten()
@@ -251,7 +269,7 @@ fn permission_presets(value: &Value) -> Option<Event> {
 
     (!presets.is_empty()).then(|| Event::ApprovalPresets {
         presets,
-        current: value["currentValue"].as_str().map(str::to_string),
+        current: current.map(str::to_string),
     })
 }
 

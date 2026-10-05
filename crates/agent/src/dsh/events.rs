@@ -31,9 +31,46 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 type Delivery = Arc<dyn Fn(Value) + Send + Sync>;
 
+/// The Remote API revision a host serves. From 0.2 the host stopped
+/// publishing the pending inbox and background jobs on the control stream:
+/// the inbox became a session projection, jobs moved to their own `job/list`
+/// stream, and the subagent catalog call became a projection too. The control
+/// baseline is the first message where the two revisions differ, and every
+/// session on one host sees the same answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoteRevision {
+    V0_1,
+    V0_2,
+}
+
+/// The projection a 0.2 host publishes the pending inbox as.
+const INBOX_PROJECTION: &str = "inbox";
+
+/// The error a host's gateway answers with once the service behind an
+/// endpoint is gone from its composition.
+const SERVICE_UNAVAILABLE: &str = "gateway/service-unavailable";
+
+/// Why a downlink connection ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Disconnect {
+    /// The connection or one stream failed; another connection can recover.
+    Lost(String),
+    /// The host refused a stream because its session service is gone. A host
+    /// reload into a composition it cannot load leaves it this way for good,
+    /// so another connection would only repeat the refusal.
+    ServiceGone(String),
+}
+
+impl From<String> for Disconnect {
+    fn from(message: String) -> Self {
+        Self::Lost(message)
+    }
+}
+
 pub(crate) struct Downlinks {
     reader: AbortHandle,
     gate: DeliveryGate,
+    revision: RemoteRevision,
 }
 
 /// The reader's only path to the tab. A delivery runs under the gate's lock,
@@ -65,10 +102,14 @@ impl Downlinks {
         session_id: String,
         deliver: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> Result<(Self, Value), String> {
-        let (downlinks, connected) = Self::spawn(client, host, session_id, deliver);
+        let (mut downlinks, connected) = Self::spawn(client, host, session_id, deliver);
 
         match timeout(CONNECT_TIMEOUT, connected).await {
-            Ok(Ok(Ok(snapshot))) => Ok((downlinks, snapshot)),
+            Ok(Ok(Ok((snapshot, revision)))) => {
+                downlinks.revision = revision;
+
+                Ok((downlinks, snapshot))
+            }
             Ok(Ok(Err(message))) => Err(message),
             // The reader ending without an answer is the same outcome as one
             // that never gave it.
@@ -78,12 +119,16 @@ impl Downlinks {
         }
     }
 
+    pub(crate) fn revision(&self) -> RemoteRevision {
+        self.revision
+    }
+
     fn spawn(
         client: ApiClient,
         host: Weak<Host>,
         session_id: String,
         deliver: Arc<dyn Fn(Value) + Send + Sync>,
-    ) -> (Self, oneshot::Receiver<Result<Value, String>>) {
+    ) -> (Self, oneshot::Receiver<Ready>) {
         let (connected_tx, connected) = oneshot::channel();
         let gate = DeliveryGate(Arc::new(Mutex::new(Some(deliver))));
 
@@ -105,32 +150,52 @@ impl Downlinks {
             Self {
                 reader: reader.abort_handle(),
                 gate,
+                // Replaced by the revision the baseline shows before `open`
+                // hands the downlinks out.
+                revision: RemoteRevision::V0_2,
             },
             connected,
         )
     }
 }
 
+/// The log snapshot and host revision once every stream is ready, or why the
+/// streams never became ready.
+type Ready = Result<(Value, RemoteRevision), String>;
+
 async fn run_downlink(
     client: ApiClient,
     host: Weak<Host>,
     session_id: String,
     deliver: Arc<dyn Fn(Value) + Send + Sync>,
-    connected_tx: oneshot::Sender<Result<Value, String>>,
+    connected_tx: oneshot::Sender<Ready>,
 ) {
     let mut connected_tx = Some(connected_tx);
 
     loop {
         let result = read_downlink(&client, &session_id, deliver.as_ref(), &mut connected_tx).await;
 
-        if let Err(message) = result {
-            if let Some(sender) = connected_tx.take() {
-                let _ = sender.send(Err(message));
+        match result {
+            Err(Disconnect::Lost(message) | Disconnect::ServiceGone(message))
+                if connected_tx.is_some() =>
+            {
+                if let Some(sender) = connected_tx.take() {
+                    let _ = sender.send(Err(message));
+                }
 
                 return;
             }
+            Err(Disconnect::Lost(message)) => warn!("deepseek stream disconnected: {message}"),
+            // Every session on the host is refused alike, so the host itself
+            // is retired and the tab replaces it like one that exited.
+            Err(Disconnect::ServiceGone(message)) => {
+                warn!("deepseek harness host stopped serving sessions: {message}");
 
-            warn!("deepseek stream disconnected: {message}");
+                if let Some(host) = host.upgrade() {
+                    host.retire();
+                }
+            }
+            Ok(()) => {}
         }
 
         // Every later call on this session targets a port nobody serves, so
@@ -144,8 +209,16 @@ async fn run_downlink(
 
             warn!(?status, "deepseek harness host exited");
 
+            // A retired host is still running, so its status stays empty.
+            let message = match status {
+                Some(_) => "DeepSeek Harness host stopped unexpectedly",
+                None => {
+                    "DeepSeek Harness host stopped serving sessions after its configuration reloaded"
+                }
+            };
+
             deliver(json!({ "payload": {
-                "type": "nmt/host-exited", "sessionId": session_id,
+                "type": "nmt/host-exited", "sessionId": session_id, "message": message,
             } }));
 
             return;
@@ -183,8 +256,8 @@ async fn read_downlink(
     client: &ApiClient,
     session_id: &str,
     deliver: &(dyn Fn(Value) + Send + Sync),
-    connected: &mut Option<oneshot::Sender<Result<Value, String>>>,
-) -> Result<(), String> {
+    connected: &mut Option<oneshot::Sender<Ready>>,
+) -> Result<(), Disconnect> {
     let mut socket = connect_downlink(client).await?;
 
     for (id, endpoint, args) in [
@@ -201,12 +274,17 @@ async fn read_downlink(
 
     let mut streams = Streams::new(session_id);
 
+    // A 0.1 host has no `job/list` endpoint and fails the whole socket on an
+    // unknown stream, so the job stream opens only once the baseline has
+    // shown which revision answers.
+    let mut jobs_open = false;
+
     let (failed_tx, mut failed) = unbounded_channel();
 
     loop {
         let message = tokio::select! {
             message = socket.next() => message,
-            Some(message) = failed.recv() => return Err(message),
+            Some(message) = failed.recv() => return Err(Disconnect::Lost(message)),
         };
 
         let Some(frame) = read_message(&mut socket, message).await? else {
@@ -217,10 +295,22 @@ async fn read_downlink(
             pass_event(client.clone(), pass, failed_tx.clone());
         }
 
-        if let Some(snapshot) = streams.ready_snapshot()
+        if !jobs_open && streams.revision == Some(RemoteRevision::V0_2) {
+            open_stream(
+                &mut socket,
+                "jobs",
+                "job/list",
+                json!({ "request": { "sessionId": session_id } }),
+            )
+            .await?;
+
+            jobs_open = true;
+        }
+
+        if let Some(ready) = streams.ready()
             && let Some(sender) = connected.take()
         {
-            let _ = sender.send(Ok(snapshot.clone()));
+            let _ = sender.send(Ok(ready));
         }
     }
 }
@@ -244,6 +334,38 @@ fn pass_event(client: ApiClient, pass: PassedEvent, failed: UnboundedSender<Stri
 
 pub(crate) fn session_address(session_id: &str) -> Value {
     json!({ "kind": "session", "sessionId": session_id })
+}
+
+/// Rebuild the queue rows a 0.1 host published from the inbox projection a 0.2
+/// host publishes instead, by the rule the 0.1 host itself applied to the same
+/// inbox: a next-turn message is a queued prompt, and a next-step message
+/// steers the running turn when the user wrote it and is context the harness
+/// inserted otherwise. A missing inbox is an empty one.
+fn inbox_queue_items(inbox: &Value) -> Value {
+    let messages = |target: &str| inbox[target].as_array().cloned().unwrap_or_default();
+
+    let row = |message: Value, placement: &str| {
+        json!({
+            "id": message["id"], "placement": placement,
+            "message": { "id": message["id"], "content": message["content"] },
+        })
+    };
+
+    let queued = messages("next-turn")
+        .into_iter()
+        .map(|message| row(message, "queued"));
+
+    let steering = messages("next-step").into_iter().map(|message| {
+        let placement = if message["source"]["kind"] == "user" {
+            "steering"
+        } else {
+            "context"
+        };
+
+        row(message, placement)
+    });
+
+    queued.chain(steering).collect()
 }
 
 /// Live tokens travel only on the opted-in assistant stream: the durable log
@@ -353,7 +475,11 @@ struct PassedEvent {
 struct Streams {
     session_id: String,
     client_id: Option<String>,
-    control_ready: bool,
+
+    /// Set by the control baseline, which is also what makes the control
+    /// stream ready.
+    revision: Option<RemoteRevision>,
+
     snapshot: Option<Value>,
     pending: HashMap<String, &'static str>,
     attempt: Option<LiveAttempt>,
@@ -410,19 +536,17 @@ impl Streams {
         Self {
             session_id: session_id.to_string(),
             client_id: None,
-            control_ready: false,
+            revision: None,
             snapshot: None,
             pending: HashMap::new(),
             attempt: None,
         }
     }
 
-    fn ready_snapshot(&self) -> Option<&Value> {
-        if self.client_id.is_some() && self.control_ready {
-            self.snapshot.as_ref()
-        } else {
-            None
-        }
+    fn ready(&self) -> Option<(Value, RemoteRevision)> {
+        self.client_id.as_ref()?;
+
+        Some((self.snapshot.clone()?, self.revision?))
     }
 
     /// Deliver what one stream message means to the tab, and name the
@@ -431,29 +555,42 @@ impl Streams {
         &mut self,
         frame: Value,
         deliver: &dyn Fn(Value),
-    ) -> Result<Option<PassedEvent>, String> {
+    ) -> Result<Option<PassedEvent>, Disconnect> {
         let id = frame["streamId"].as_str().unwrap_or_default();
 
         match frame["type"].as_str() {
             Some("error") => {
-                return Err(format!(
+                let message = format!(
                     "{id}: {}",
                     frame["error"]["message"]
                         .as_str()
                         .unwrap_or("stream failed")
-                ));
+                );
+
+                return Err(if frame["error"]["code"] == SERVICE_UNAVAILABLE {
+                    Disconnect::ServiceGone(message)
+                } else {
+                    Disconnect::Lost(message)
+                });
             }
-            Some("end") => return Err(format!("the harness ended the {id} stream")),
+            Some("end") => return Err(format!("the harness ended the {id} stream").into()),
             Some("item") => {}
-            _ => return Err("the harness sent an invalid stream message".to_string()),
+            _ => {
+                return Err("the harness sent an invalid stream message"
+                    .to_string()
+                    .into());
+            }
         }
 
         let value = &frame["value"];
 
         match id {
-            "events" => return self.on_event(value, deliver),
+            "events" => return self.on_event(value, deliver).map_err(Disconnect::from),
             "control" => self.on_control(value, deliver),
             "follow" => self.on_follow(value, deliver),
+            // Each frame is the whole set the session can see, so it replaces
+            // the rows the same way a 0.1 host's jobs frame did.
+            "jobs" if value["type"] == "rows" => self.jobs(&value["jobs"], deliver),
             _ => {}
         }
 
@@ -517,13 +654,33 @@ impl Streams {
         match value["type"].as_str() {
             Some("baseline") => {
                 let baseline = &value["value"];
-
-                self.queue(&baseline["queues"][&self.session_id], deliver);
-
                 let projections = &baseline["projections"][&self.session_id];
 
+                // A 0.1 baseline always holds the queue map, even when no
+                // session has anything pending.
+                let revision = if baseline.get("queues").is_some() {
+                    RemoteRevision::V0_1
+                } else {
+                    RemoteRevision::V0_2
+                };
+
+                // A baseline replaces the queue the tab holds, so a session
+                // with nothing pending is sent an empty queue; sending none
+                // would leave a stale queue after a reconnect.
+                match revision {
+                    RemoteRevision::V0_1 => {
+                        self.queue(&baseline["queues"][&self.session_id], deliver)
+                    }
+                    RemoteRevision::V0_2 => self.queue(
+                        &inbox_queue_items(&projections["values"][INBOX_PROJECTION]),
+                        deliver,
+                    ),
+                }
+
                 for (key, value) in projections["values"].as_object().into_iter().flatten() {
-                    self.projection(key, value, &projections["asOfSeq"], deliver);
+                    if key != INBOX_PROJECTION {
+                        self.projection(key, value, &projections["asOfSeq"], deliver);
+                    }
                 }
 
                 // A host that keeps no job registry sends no jobs map, and an
@@ -533,7 +690,7 @@ impl Streams {
                     self.jobs(&baseline["jobs"][&self.session_id], deliver);
                 }
 
-                self.control_ready = true;
+                self.revision = Some(revision);
             }
             Some("queue") if value["sessionId"] == self.session_id => {
                 self.queue(&value["items"], deliver)
@@ -542,8 +699,12 @@ impl Streams {
                 self.jobs(&value["jobs"], deliver)
             }
             Some("projection") if value["sessionId"] == self.session_id => {
-                if let Some(key) = value["key"].as_str() {
-                    self.projection(key, &value["value"], &value["seq"], deliver);
+                match value["key"].as_str() {
+                    Some(INBOX_PROJECTION) => {
+                        self.queue(&inbox_queue_items(&value["value"]), deliver)
+                    }
+                    Some(key) => self.projection(key, &value["value"], &value["seq"], deliver),
+                    None => {}
                 }
             }
             _ => {}

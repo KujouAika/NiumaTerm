@@ -7,6 +7,7 @@
 mod host_tests;
 
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -81,6 +82,9 @@ pub struct Host {
     _job: KillOnCloseJob,
 
     child: Mutex<Child>,
+
+    /// Set once the process stopped serving sessions while it kept running.
+    retired: AtomicBool,
 }
 
 /// What a running host was started from. A host answers for its own launch
@@ -271,6 +275,7 @@ impl Host {
             client,
             _job: job,
             child: Mutex::new(child),
+            retired: AtomicBool::new(false),
         })
     }
 
@@ -282,7 +287,17 @@ impl Host {
     /// tab's session with it, so tabs ask this instead of discovering it on
     /// their next call.
     pub fn is_running(&self) -> bool {
-        matches!(self.child.lock().try_wait(), Ok(None))
+        !self.retired.load(Ordering::Acquire) && matches!(self.child.lock().try_wait(), Ok(None))
+    }
+
+    /// Stop handing this host to new tabs although its process still runs.
+    ///
+    /// A host whose plugin composition reloaded into a state it cannot load
+    /// keeps answering HTTP while every session call is refused, and nothing
+    /// brings the service back. The process ends when the last tab holding it
+    /// lets go, and the next tab starts a fresh one.
+    pub(crate) fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
     }
 
     /// How the host ended, once it has. The code tells an external kill apart
@@ -306,7 +321,7 @@ pub const DEFAULT_EXECUTABLE: &str = "dsh";
 /// globally installed release when resolving the command.
 pub(crate) const NPX_EXECUTABLE: &str = "npx";
 
-pub(crate) const NPX_ARGUMENTS: [&str; 2] = ["-y", "@deepseek-ai/dsh@0.1.5-rc.1"];
+const NPX_OPTIONS: [&str; 1] = ["-y"];
 
 /// pnpm's one-shot package launcher. Unlike npm's dependency resolver, pnpm
 /// can resolve the harness's mutually referring peer dependencies without
@@ -315,22 +330,39 @@ pub(crate) const NPX_ARGUMENTS: [&str; 2] = ["-y", "@deepseek-ai/dsh@0.1.5-rc.1"
 /// Keep an installed release cached beyond pnpm's default one-day lifetime:
 /// rebuilding the same dependency tree delays the first tab in another process
 /// by tens of seconds. The exact package release keeps later launches on the
-/// same Remote API until the adapter changes its supported release.
+/// same Remote API until the profile selects another supported release.
 pub(crate) const PNPM_DLX_EXECUTABLE: &str = "pnpm";
 
-pub(crate) const PNPM_DLX_ARGUMENTS: [&str; 3] = [
-    "dlx",
-    "--config.dlx-cache-max-age=Infinity",
-    "@deepseek-ai/dsh@0.1.5-rc.1",
-];
+const PNPM_DLX_OPTIONS: [&str; 2] = ["dlx", "--config.dlx-cache-max-age=Infinity"];
+
+/// The published package name followed by the separator that starts its
+/// exact release.
+const PACKAGE_PREFIX: &str = "@deepseek-ai/dsh@";
+
+pub(crate) fn npx_arguments(release: &str) -> Vec<String> {
+    package_arguments(&NPX_OPTIONS, release)
+}
+
+pub(crate) fn pnpm_dlx_arguments(release: &str) -> Vec<String> {
+    package_arguments(&PNPM_DLX_OPTIONS, release)
+}
+
+fn package_arguments(options: &[&str], release: &str) -> Vec<String> {
+    options
+        .iter()
+        .map(|option| option.to_string())
+        .chain([format!("{PACKAGE_PREFIX}{release}")])
+        .collect()
+}
 
 fn start_timeout(launch: &crate::LaunchConfig) -> Duration {
     let uses_pnpm_dlx = launch.executable.trim() == PNPM_DLX_EXECUTABLE
         && launch
             .executable_args
-            .iter()
-            .map(String::as_str)
-            .eq(PNPM_DLX_ARGUMENTS);
+            .split_last()
+            .is_some_and(|(package, options)| {
+                options == PNPM_DLX_OPTIONS && package.starts_with(PACKAGE_PREFIX)
+            });
 
     if uses_pnpm_dlx {
         PNPM_DLX_START_TIMEOUT
