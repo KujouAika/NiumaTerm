@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use nmt_remote_core::direct::{NatKind, Side};
 use tokio::net::UdpSocket;
 
-use crate::direct::{DirectSocket, gather, prepare};
+use crate::direct::{DirectSocket, gather, prepare, prepare_local};
 use crate::link::{recv_binary, send_binary};
 
 /// A STUN server on the loopback that reports each request's source port
@@ -117,6 +117,64 @@ async fn a_client_dials_a_waiting_cone_host() {
     let (client, host) = connect(&servers, &servers).await;
 
     exchange(client, host).await;
+}
+
+/// Both sides gather from loopback servers, so they share one public
+/// address and offer 127.0.0.1 as their private one, as two devices on one
+/// office network do.
+#[tokio::test]
+async fn a_host_dials_a_client_behind_the_same_nat_over_private_addresses() {
+    let servers = vec![stun_server(0).await, stun_server(0).await];
+
+    let client = gather(&servers).await.unwrap();
+    let host = gather(&servers).await.unwrap();
+
+    let client_offer = client.offer();
+    let host_offer = host.offer();
+
+    assert!(client.same_nat(&host_offer));
+    // The route toward the loopback server comes first; a host build
+    // appends its LAN addresses after it.
+    assert!(client_offer.local[0].starts_with("127.0.0.1:"));
+
+    let client_local = client_offer.local.clone();
+
+    let host_side = tokio::spawn(async move {
+        prepare_local(host, &client_offer, Side::Host)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap()
+    });
+
+    let (mut client_ws, _) = prepare_local(client, &host_offer, Side::Client)
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    send_binary(&mut client_ws, b"ping".to_vec()).await.unwrap();
+
+    let (host_ws, from) = host_side.await.unwrap();
+
+    // The host dials every private candidate at once and keeps the first
+    // that completes, so any of them may have answered.
+    assert!(client_local.contains(&from.to_string()));
+
+    exchange(client_ws, host_ws).await;
+}
+
+#[tokio::test]
+async fn a_peer_without_private_addresses_cannot_meet_behind_one_nat() {
+    let servers = vec![stun_server(0).await, stun_server(0).await];
+
+    let client = gather(&servers).await.unwrap();
+
+    let mut host_offer = gather(&servers).await.unwrap().offer();
+
+    host_offer.local.clear();
+
+    assert!(prepare_local(client, &host_offer, Side::Client).is_err());
 }
 
 #[tokio::test]

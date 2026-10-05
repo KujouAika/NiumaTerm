@@ -1271,13 +1271,13 @@ impl RemoteHost {
 
                 let answer: DirectOffer = serde_json::from_value(answer)?;
 
-                if gathered.same_nat(&answer) {
-                    return Err(anyhow!("the host is behind the same NAT"));
-                }
+                let prepared = if gathered.same_nat(&answer) {
+                    direct::prepare_local(gathered, &answer, Side::Client)?
+                } else {
+                    direct::prepare(gathered, &answer, Side::Client)?
+                };
 
-                let (ws, address) = direct::prepare(gathered, &answer, Side::Client)?
-                    .connect()
-                    .await?;
+                let (ws, address) = prepared.connect().await?;
 
                 let mut record = host.record.lock().clone();
 

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use futures::{Sink, Stream};
 use nmt_platform::runtime;
 use nmt_remote_core::channel::{Channel, HostHandshake};
@@ -756,9 +756,10 @@ impl Connection {
             let answer = gathered.offer();
 
             // The device applies the same checks to the same two offers, so
-            // a pair that cannot meet stops on both sides here.
+            // both pick one route and a pair that cannot meet stops on both
+            // sides here.
             let prepared = if gathered.same_nat(&offer) {
-                Err(anyhow!("the device is behind the same NAT"))
+                direct::prepare_local(gathered, &offer, Side::Host)
             } else {
                 direct::prepare(gathered, &offer, Side::Host)
             };

@@ -38,6 +38,15 @@ pub struct DirectOffer {
     /// sender will use.
     pub addrs: Vec<String>,
 
+    /// The same socket's `ip:port` on the sender's own network. Two peers
+    /// behind one public address cannot reach each other through it (few
+    /// NATs hairpin), but they may reach each other's private address when
+    /// a network splits them into subnets, as office networks do with
+    /// wired and wireless clients. A peer too old to send any leaves the
+    /// list empty.
+    #[serde(default)]
+    pub local: Vec<String>,
+
     /// The sender's QUIC certificate, DER in base64. The dialer trusts only
     /// the waiting side's certificate, which arrived over the authenticated
     /// channel, so no third party can stand in for the waiting side.

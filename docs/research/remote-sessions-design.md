@@ -429,13 +429,24 @@ are skipped. Every distinct mapped address becomes a candidate. When all answers
 
 Signaling, as `direct.offer` on the relay channel:
 
-1. The client gathers and sends `{ nat, addrs }`.
-2. The host gathers and replies `{ nat, addrs }`. Both sides pick the dialer
-   with the same rule: the symmetric side; the client when both are cone;
-   nobody when both are symmetric. The host replies only after its socket is
-   ready, and if it is the waiting side it starts punching before replying.
-3. A client that shares a public address with the host stops here: both are
-   behind one NAT, which the LAN path covers, and hairpinning is unreliable.
+1. The client gathers and sends `{ nat, addrs, local }`, where `local` is
+   the same socket's address on the client's own network: the source
+   address of the route toward the STUN server, plus every LAN address on a
+   host build.
+2. The host gathers and replies `{ nat, addrs, local }`. Both sides pick the
+   dialer with the same rule: the symmetric side; the client when both are
+   cone; nobody when both are symmetric. The host replies only after its
+   socket is ready, and if it is the waiting side it starts punching before
+   replying.
+3. A client that shares a public address with the host is behind one NAT
+   with it, and hairpinning is unreliable. Both sides then use the peer's
+   `local` candidates instead of `addrs`, and the host dials. The LAN
+   listener already fails in this case for a reason: an office network that
+   splits wired and wireless clients into subnets drops connections the
+   phone opens toward the computer, while routing those the computer opens
+   toward the phone (measured with a UDP and a TCP listener on the phone: the
+   computer reached both, the phone reached neither direction's listener on
+   the computer). A peer too old to send `local` ends the attempt here.
 4. The waiting side sends a 4-byte zero datagram to every candidate of the
    peer every 250 ms until a connection arrives or 10 s pass. For a cone peer
    that is its exact mapping; for a symmetric peer only the address matters,

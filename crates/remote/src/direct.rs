@@ -2,10 +2,15 @@
 //! socket, hole punching, and a QUIC connection on that socket. One QUIC
 //! stream runs WebSocket framing, so the preface, the channel handshake, and
 //! the pump work on it as on the LAN and the relay.
+//!
+//! Two peers behind one public address take the same QUIC path over their
+//! private addresses instead: an office network that splits wired and
+//! wireless clients into subnets blocks the LAN listener from the phone's
+//! side while still routing from the computer's side.
 
 use std::collections::HashSet;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -33,6 +38,9 @@ use tokio::time::{Instant, sleep, sleep_until, timeout};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tracing::debug;
+
+#[cfg(feature = "lan")]
+use crate::lan::lan_addresses;
 
 /// Servers in mainland China come first: a network with one egress per
 /// region shows servers abroad an address that peers in China never see.
@@ -101,12 +109,14 @@ pub(crate) fn stun_servers(configured: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// A UDP socket with the public mappings STUN servers reported for it, and
-/// the certificate this side presents if it ends up waiting.
+/// A UDP socket with the public mappings STUN servers reported for it, its
+/// addresses on this side's own network, and the certificate this side
+/// presents if it ends up waiting.
 pub(crate) struct Gathered {
     socket: StdUdpSocket,
     nat: NatKind,
     addrs: Vec<SocketAddr>,
+    local: Vec<SocketAddr>,
     cert: CertifiedKey,
 }
 
@@ -115,13 +125,15 @@ impl Gathered {
         DirectOffer {
             nat: self.nat,
             addrs: self.addrs.iter().map(SocketAddr::to_string).collect(),
+            local: self.local.iter().map(SocketAddr::to_string).collect(),
             cert: STANDARD.encode(self.cert.cert.der()),
         }
     }
 
     /// Whether the peer shares a public address with this side, which puts
-    /// both behind one NAT. The LAN path reaches such a peer, and a NAT that
-    /// does not hairpin drops the direct attempt.
+    /// both behind one NAT. A NAT that does not hairpin drops a connection
+    /// to the public address, so such peers meet over their private
+    /// addresses with [`prepare_local`].
     pub(crate) fn same_nat(&self, peer: &DirectOffer) -> bool {
         peer.addrs
             .iter()
@@ -137,6 +149,7 @@ pub(crate) async fn gather(servers: &[String]) -> Result<Gathered> {
 
     let mut asked = HashSet::new();
     let mut mapped = Vec::new();
+    let mut route_target = None;
 
     for batch in servers.chunks(STUN_BATCH) {
         let resolved = resolve(batch).await;
@@ -147,6 +160,10 @@ pub(crate) async fn gather(servers: &[String]) -> Result<Gathered> {
             .into_iter()
             .filter(|server| asked.insert(*server))
             .collect();
+
+        if route_target.is_none() {
+            route_target = fresh.first().copied();
+        }
 
         mapped.extend(query(&socket, &fresh).await?);
 
@@ -165,14 +182,48 @@ pub(crate) async fn gather(servers: &[String]) -> Result<Gathered> {
         }
     }
 
+    let local = local_addresses(socket.local_addr()?.port(), route_target);
+
     let cert = rcgen::generate_simple_self_signed(vec![SERVER_NAME.to_owned()])?;
 
     Ok(Gathered {
         socket: socket.into_std()?,
         nat,
         addrs,
+        local,
         cert,
     })
+}
+
+/// The addresses a peer on this side's own network may reach `port` at.
+/// The source address of the route toward a STUN server comes first: it is
+/// the interface that faces the shared egress, and a client build without
+/// interface enumeration has nothing else. Connecting a UDP socket sends
+/// nothing; it only selects the route. The host adds every LAN address it
+/// has, since a VPN that owns the default route hides the LAN interface
+/// from the route lookup.
+fn local_addresses(port: u16, route_target: Option<SocketAddr>) -> Vec<SocketAddr> {
+    let mut ips: Vec<Ipv4Addr> = Vec::new();
+
+    if let Some(target) = route_target
+        && let Ok(probe) = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        && probe.connect(target).is_ok()
+        && let Ok(SocketAddr::V4(source)) = probe.local_addr()
+        && !source.ip().is_unspecified()
+    {
+        ips.push(*source.ip());
+    }
+
+    #[cfg(feature = "lan")]
+    for ip in lan_addresses() {
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+
+    ips.into_iter()
+        .map(|ip| SocketAddr::new(IpAddr::V4(ip), port))
+        .collect()
 }
 
 /// The IPv4 addresses of `batch`, skipping names that do not resolve in
@@ -271,16 +322,11 @@ impl Drop for Prepared {
     }
 }
 
-/// Set up this side's QUIC endpoint for a direct path to `peer`. The waiting
-/// side starts punching here, so a host replies to the offer only once its
-/// NAT admits the peer.
+/// Set up this side's QUIC endpoint for a direct path to `peer` through
+/// its public addresses. The waiting side starts punching here, so a host
+/// replies to the offer only once its NAT admits the peer.
 pub(crate) fn prepare(gathered: Gathered, peer: &DirectOffer, me: Side) -> Result<Prepared> {
-    let peers: Vec<SocketAddr> = peer
-        .addrs
-        .iter()
-        .filter_map(|addr| addr.parse().ok())
-        .filter(SocketAddr::is_ipv4)
-        .collect();
+    let peers = candidates(&peer.addrs);
 
     if peers.is_empty() {
         bail!("the peer has no public address");
@@ -295,13 +341,50 @@ pub(crate) fn prepare(gathered: Gathered, peer: &DirectOffer, me: Side) -> Resul
         bail!("both sides are behind symmetric NATs");
     };
 
+    setup(gathered, &peer.cert, peers, me, dialer)
+}
+
+/// Set up this side's QUIC endpoint for a direct path to `peer` through
+/// its private addresses, for two sides behind one public address. The host
+/// dials: office networks that split clients into subnets admit
+/// connections from the wired side and drop those from the wireless side,
+/// the same split that blocks the phone from the LAN listener.
+/// No NAT stands between the two, so the NAT kinds do not matter.
+pub(crate) fn prepare_local(gathered: Gathered, peer: &DirectOffer, me: Side) -> Result<Prepared> {
+    let peers = candidates(&peer.local);
+
+    if peers.is_empty() {
+        bail!("the peer is behind the same NAT and offered no private address");
+    }
+
+    setup(gathered, &peer.cert, peers, me, Side::Host)
+}
+
+fn candidates(addrs: &[String]) -> Vec<SocketAddr> {
+    addrs
+        .iter()
+        .filter_map(|addr| addr.parse().ok())
+        .filter(SocketAddr::is_ipv4)
+        .collect()
+}
+
+/// Build the endpoint toward `peers`: a client configuration trusting
+/// `peer_cert` when this side dials, otherwise a server on this side's own
+/// certificate plus punching toward every peer address.
+fn setup(
+    gathered: Gathered,
+    peer_cert: &str,
+    peers: Vec<SocketAddr>,
+    me: Side,
+    dialer: Side,
+) -> Result<Prepared> {
     let Gathered { socket, cert, .. } = gathered;
 
     let transport = Arc::new(transport_config()?);
     let runtime = Arc::new(TokioRuntime);
 
     if dialer == me {
-        let peer_cert = CertificateDer::from(STANDARD.decode(&peer.cert)?);
+        let peer_cert = CertificateDer::from(STANDARD.decode(peer_cert)?);
 
         let mut roots = RootCertStore::empty();
 
