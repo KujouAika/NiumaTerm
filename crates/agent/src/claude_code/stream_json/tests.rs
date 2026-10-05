@@ -1167,9 +1167,10 @@ fn resumed_session_id_is_available_before_the_first_init_event() {
         thread::sleep(Duration::from_millis(20));
     }
 
-    if log.exists() {
-        fs::remove_file(log).unwrap();
-    }
+    // Cleanup only: on Windows the fake process can still hold the log open
+    // when a loaded machine runs the test, and a refused delete is unrelated
+    // to the session id under test.
+    let _ = fs::remove_file(log);
 
     assert_eq!(published_id, Some(resume_id));
 }
