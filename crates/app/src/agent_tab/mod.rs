@@ -128,7 +128,7 @@ use crate::agent_tab::questions::panel::QuestionPanel;
 use crate::agent_tab::remote::RemoteAgent;
 use crate::agent_tab::session::errors::operation_error;
 use crate::agent_tab::session::{Backend, Status, directories_match};
-use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
+use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::thread_controls::{
     launch_model, profile_picker, remember_defaults, render_row,
 };
@@ -5182,10 +5182,9 @@ impl Render for AgentPane {
             .role(Role::Pane)
             .size_full()
             .relative()
-            // The outer frame matches the window chrome. The Agent surface owns
-            // its fill so an opaque main view does not color the rounded frame.
+            // The Agent surface owns its fill so an opaque main view does not
+            // color the pane.
             .bg(background.alpha(cx.global::<AgentSettings>().background_opacity))
-            .rounded(UI_RADIUS - px(1.))
             .overflow_hidden()
             .track_focus(&self.focus)
             .on_prepaint(self.side_chat.track_pane())
