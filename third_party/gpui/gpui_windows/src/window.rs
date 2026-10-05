@@ -989,14 +989,8 @@ impl PlatformWindow for WindowsWindow {
             .detach();
     }
 
-    fn show_flyout(&self, bounds: Bounds<Pixels>) {
+    fn show_flyout(&self, bounds: Bounds<DevicePixels>) {
         let hwnd = self.0.hwnd;
-        // The flyout's own scale factor, which is the monitor it was created on.
-        // A flyout placed onto a monitor scaled differently from that one lands
-        // in the wrong pixels; resolving the target monitor from `bounds` first
-        // is what that would take.
-        let scale = self.scale_factor();
-        let bounds = bounds.to_device_pixels(scale);
 
         // Deferred like `resize`: `SetWindowPos` dispatches this window's
         // messages synchronously, and a caller inside an event handler still has
@@ -1005,6 +999,24 @@ impl PlatformWindow for WindowsWindow {
             .executor
             .spawn(async move {
                 unsafe {
+                    // Moved before it is sized. Crossing onto a monitor with a
+                    // different DPI makes `SetWindowPos` send `WM_DPICHANGED`
+                    // partway through, and the handler applies the suggested
+                    // rect, which is this window's size scaled again by the DPI
+                    // ratio. With no size in the first call there is nothing
+                    // for that to rescale; the second call runs at the target
+                    // DPI and so is applied as given.
+                    SetWindowPos(
+                        hwnd,
+                        Some(HWND_TOP),
+                        bounds.origin.x.0,
+                        bounds.origin.y.0,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOACTIVATE,
+                    )
+                    .context("unable to move the flyout")
+                    .log_err();
                     SetWindowPos(
                         hwnd,
                         Some(HWND_TOP),

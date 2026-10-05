@@ -207,25 +207,20 @@ impl WindowsWindowInner {
             self.state.scale_factor.get(),
         );
         self.state.origin.set(origin);
-        let size = self.state.logical_size.get();
-        let center_x = origin.x.as_f32() + size.width.as_f32() / 2.;
-        let center_y = origin.y.as_f32() + size.height.as_f32() / 2.;
-        let monitor_bounds = self.state.display.get().bounds();
-        if center_x < monitor_bounds.left().as_f32()
-            || center_x > monitor_bounds.right().as_f32()
-            || center_y < monitor_bounds.top().as_f32()
-            || center_y > monitor_bounds.bottom().as_f32()
-        {
-            // center of the window may have moved to another monitor
-            let monitor = unsafe { MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) };
-            // minimize the window can trigger this event too, in this case,
-            // monitor is invalid, we do nothing.
-            if !monitor.is_invalid() && self.state.display.get().handle != monitor {
-                // we will get the same monitor if we only have one
-                self.state.display.set(WindowsDisplay::new(
-                    WindowsDisplay::display_id_for_monitor(monitor),
-                )?);
-            }
+        // Asked of the system on every move. Comparing the window's centre
+        // against the display's bounds does not work: the centre is logical in
+        // this window's scale factor and the bounds are logical in the
+        // display's, and after a DPI change the two differ, so a window that
+        // has crossed onto a differently scaled monitor can look as if it has
+        // not. The display then stays stale, and anything placed within its
+        // work area, such as a flyout menu, is clamped onto the old monitor.
+        let monitor = unsafe { MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) };
+        // Minimizing the window can trigger this event too; in this case the
+        // monitor is invalid, and the display is left as it was.
+        if !monitor.is_invalid() && self.state.display.get().handle != monitor {
+            self.state.display.set(WindowsDisplay::new(
+                WindowsDisplay::display_id_for_monitor(monitor),
+            )?);
         }
         if let Some(mut callback) = self.state.callbacks.moved.take() {
             callback();

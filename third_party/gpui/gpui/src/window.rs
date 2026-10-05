@@ -2527,8 +2527,10 @@ impl Window {
         self.platform_window.hide();
     }
 
-    /// Place this flyout at `bounds` and show it without giving it focus.
-    pub fn show_flyout(&self, bounds: Bounds<Pixels>) {
+    /// Place this flyout at `bounds`, in physical pixels, and show it without
+    /// giving it focus. Physical because the caller's logical space is scaled
+    /// by its own monitor, which need not be the one this window was last on.
+    pub fn show_flyout(&self, bounds: Bounds<DevicePixels>) {
         self.platform_window.show_flyout(bounds);
     }
 

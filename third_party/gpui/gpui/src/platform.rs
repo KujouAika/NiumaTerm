@@ -858,10 +858,15 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn hide(&self) {}
     /// Place a flyout at `bounds` and show it without giving it focus.
     ///
+    /// `bounds` is in physical pixels. The flyout window is reused across
+    /// monitors, so its own scale factor is whatever monitor it was last on,
+    /// and logical pixels converted with that factor land in the wrong place
+    /// when the caller's window is on a monitor scaled differently.
+    ///
     /// Windows created as [`WindowKind::PopUp`] are configured not to activate.
     /// This path also keeps placement and visibility ordered with
     /// [`Self::hide_flyout`].
-    fn show_flyout(&self, _bounds: Bounds<Pixels>) {}
+    fn show_flyout(&self, _bounds: Bounds<DevicePixels>) {}
     /// Take a flyout back off the screen, in order with [`Self::show_flyout`].
     ///
     /// Separate from [`Self::hide`] because the two have to be sequenced against
