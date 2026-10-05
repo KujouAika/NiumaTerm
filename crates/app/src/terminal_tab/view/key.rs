@@ -12,6 +12,13 @@ pub(super) fn terminal_key(key: &Keystroke) -> TerminalKey<'_> {
     }
 }
 
+/// Alt-F4 (close) and Alt-Space (system menu) only work when the key message
+/// reaches `DefWindowProc`. GPUI skips native dispatch for any key the view
+/// handles, so encoding these to the PTY would remove the window shortcuts.
+pub(super) fn is_window_system_key(key: &Keystroke) -> bool {
+    cfg!(windows) && key.modifiers == Modifiers::alt() && matches!(key.key.as_str(), "f4" | "space")
+}
+
 pub(super) fn modifiers_state(modifiers: Modifiers) -> ModifiersState {
     let mut state = ModifiersState::empty();
 

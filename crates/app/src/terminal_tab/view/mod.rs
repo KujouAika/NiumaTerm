@@ -48,7 +48,7 @@ use crate::terminal_tab::scrollbar::geometry::SCROLLBAR_AUTO_HIDE_DELAY;
 use crate::terminal_tab::scrollbar::scrollbar_element;
 use crate::terminal_tab::settings::{TerminalSettings, duration_labels};
 use crate::terminal_tab::terminal_view::{BlockListItem, BlockListView, TerminalView};
-use crate::terminal_tab::view::key::{modifiers_state, terminal_key};
+use crate::terminal_tab::view::key::{is_window_system_key, modifiers_state, terminal_key};
 use crate::terminal_tab::view::list_state::{BlockListState, block_list_alignment};
 use crate::terminal_tab::{metrics, wake};
 
@@ -866,7 +866,10 @@ impl TerminalPane {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.prefer_character_input || self.sheet_shown {
+        if event.prefer_character_input
+            || self.sheet_shown
+            || is_window_system_key(&event.keystroke)
+        {
             return;
         }
 
@@ -895,7 +898,7 @@ impl TerminalPane {
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.sheet_shown {
+        if self.sheet_shown || is_window_system_key(&event.keystroke) {
             return;
         }
 
