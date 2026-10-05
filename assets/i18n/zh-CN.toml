@@ -393,7 +393,7 @@
 
 # Tab bar and sidebars
 "app-window-title" = "NiumaTerm"
-"app-drop-paste-path" = "将路径粘贴到终端"
+"app-drop-insert" = "插入到此处"
 "startup-terminal-spawn-error" = "NiumaTerm 无法启动终端会话：\n\n%{error}"
 "tabbar-menu-agent-profile" = "智能体配置 %{index}"
 "tabbar-menu-rename" = "重命名"

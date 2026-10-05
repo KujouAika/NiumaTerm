@@ -54,6 +54,24 @@ pub(crate) fn spaced_placeholder(preceding: Option<char>, placeholder: &str) -> 
     }
 }
 
+/// Dropped paths as composer text, separated by spaces. A path holding a
+/// space is quoted so the agent reads it as one path.
+pub(crate) fn dropped_path_text(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| {
+            let path = path.to_string_lossy();
+
+            if path.contains(' ') {
+                format!("\"{path}\"")
+            } else {
+                path.into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Everything the pending message holds besides its text: the images
 /// anchored in it by placeholder, and the earlier response text quoted into
 /// it. Both are cleared by the same send and drawn on the same strip above
@@ -459,7 +477,7 @@ pub(crate) fn has_image(entries: &[ClipboardEntry]) -> bool {
     })
 }
 
-fn image_file(path: &Path) -> bool {
+pub(crate) fn image_file(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
         .is_some_and(|value| {

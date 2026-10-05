@@ -47,9 +47,9 @@ use std::{env, mem};
 use futures::channel::oneshot;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Image, IntoElement,
-    MouseButton, MouseUpEvent, Pixels, Render, Role, SharedString, WeakEntity, Window, div, px,
-    relative, size,
+    AnyElement, App, Bounds, ClickEvent, ClipboardEntry, Context, Entity, ExternalPaths,
+    FocusHandle, Image, IntoElement, MouseButton, MouseUpEvent, Pixels, Render, Role, SharedString,
+    WeakEntity, Window, div, px, relative, size,
 };
 use gpui_base::TextSelection;
 use gpui_component::input::{
@@ -108,7 +108,8 @@ use crate::agent_tab::commands::{
     validate_skill_binding,
 };
 use crate::agent_tab::composer::attachments::{
-    ComposerAttachments, MAX_ATTACHMENTS, THUMBNAIL, has_image, prepare_paste, scratch_dir,
+    ComposerAttachments, MAX_ATTACHMENTS, THUMBNAIL, dropped_path_text, has_image, image_file,
+    prepare_paste, scratch_dir, spaced_placeholder,
 };
 use crate::agent_tab::composer::{
     BranchFlow, CachedCatalog, CommandFeedbackKind, PaletteAction, PaletteModel, PaletteRow,
@@ -758,10 +759,6 @@ impl AgentPane {
     /// composer's own text handling, the right handler for a clipboard
     /// holding text.
     pub(crate) fn paste_image(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(host) = self.host.upgrade() else {
-            return false;
-        };
-
         // An image reaches the clipboard two ways: as pixels, from a capture
         // tool or a browser, and as a file, from a file manager. Both are the
         // same gesture to the person doing it.
@@ -774,6 +771,71 @@ impl AgentPane {
         if !has_image(&entries) {
             return false;
         }
+
+        self.attach_image(entries, window, cx)
+    }
+
+    /// Dropped image files become attachments and every other path is typed
+    /// into the composer at the caret. A Team member sends only the text of
+    /// its composer, so it takes every path as text.
+    fn on_file_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet_shown || self.composer_locked() {
+            return;
+        }
+
+        self.focus(window, cx);
+
+        let (images, others): (Vec<_>, Vec<_>) = paths
+            .paths()
+            .iter()
+            .cloned()
+            .partition(|path| !self.team_member && image_file(path));
+
+        // Each image is prepared as its own paste, so the attachment limit
+        // and the in-order placeholder insertion apply to it one by one.
+        for image in images {
+            let entry = ClipboardEntry::ExternalPaths(ExternalPaths([image].into_iter().collect()));
+
+            self.attach_image(vec![entry], window, cx);
+        }
+
+        if !others.is_empty() {
+            let text = dropped_path_text(&others);
+
+            self.input.update(cx, |input, cx| {
+                let preceding = input.text().chars_at(input.cursor()).prev();
+
+                input.insert(spaced_placeholder(preceding, &text), window, cx);
+            });
+        }
+    }
+
+    /// Whether the composer refuses edits: a branch is being created, a
+    /// session is loading, an update holds the harness, or a held message is
+    /// waiting for the launch.
+    fn composer_locked(&self) -> bool {
+        self.branch_flow_is_working()
+            || self.history_ui.mode == RecentSessionsMode::Loading
+            || self
+                .session
+                .borrow()
+                .runtime()
+                .update_suspension()
+                .is_some()
+            || self.send_on_ready
+    }
+
+    /// Prepare `entries` in the background and attach the image they hold,
+    /// reporting whether the request was consumed.
+    fn attach_image(
+        &mut self,
+        entries: Vec<ClipboardEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(host) = self.host.upgrade() else {
+            return false;
+        };
 
         if self.attachments.images().iter().count() + self.attachments.preparing >= MAX_ATTACHMENTS
         {
@@ -4965,6 +5027,7 @@ impl Render for AgentPane {
                 .size_full()
                 .min_h_0()
                 .track_focus(&self.focus)
+                .on_drop(cx.listener(Self::on_file_drop))
                 .child(div().flex_1().min_h_0().child(self.transcript.clone()))
                 .child(
                     transcript_column(
@@ -5099,7 +5162,6 @@ impl Render for AgentPane {
         self.send_held_input(window, cx);
 
         let branch_flow_active = self.branch_flow_holds_composer();
-        let branch_flow_working = self.branch_flow_is_working();
         let session_loading = self.history_ui.mode == RecentSessionsMode::Loading;
 
         // Input held for a launch is what the harness answers first, so the
@@ -5188,6 +5250,7 @@ impl Render for AgentPane {
             .overflow_hidden()
             .track_focus(&self.focus)
             .on_prepaint(self.side_chat.track_pane())
+            .on_drop(cx.listener(Self::on_file_drop))
             // Escape force-stops the agent whenever the pane or composer has
             // focus. The input propagates Escape here when the editor did not
             // consume it (inline completion, IME), and transcript clicks focus
@@ -5355,12 +5418,7 @@ impl Render for AgentPane {
                                                     div().flex_1().min_w_0().child(
                                                         Textarea::new(&self.input)
                                                             .appearance(false)
-                                                            .disabled(
-                                                                branch_flow_working
-                                                                    || session_loading
-                                                                    || update_suspended
-                                                                    || input_held,
-                                                            ),
+                                                            .disabled(self.composer_locked()),
                                                     ),
                                                 ),
                                         )

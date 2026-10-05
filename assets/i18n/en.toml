@@ -394,7 +394,7 @@
 
 # Tab bar and sidebars
 "app-window-title" = "NiumaTerm"
-"app-drop-paste-path" = "Paste path to terminal"
+"app-drop-insert" = "Insert here"
 "startup-terminal-spawn-error" = "NiumaTerm could not start a terminal session:\n\n%{error}"
 "tabbar-menu-agent-profile" = "Agent Profile %{index}"
 "tabbar-menu-rename" = "Rename"

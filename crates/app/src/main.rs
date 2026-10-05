@@ -221,7 +221,7 @@ fn main() {
     // one names the effect shown by the Explorer drag cursor, the other raises
     // the render and vsync threads against the Windows scheduler.
     #[cfg(windows)]
-    platform.set_file_drop_description(t!("app-drop-paste-path"));
+    platform.set_file_drop_description(t!("app-drop-insert"));
 
     #[cfg(windows)]
     let platform_handle = platform.clone();

@@ -1,12 +1,13 @@
 use std::fs;
 use std::io::Cursor;
+use std::path::PathBuf;
 
 use gpui::{ClipboardEntry, Image, ImageFormat, TestAppContext};
 use tempfile::tempdir;
 
 use crate::agent_tab::composer::attachments::{
-    AttachError, MAX_ATTACHMENTS, MAX_IMAGE_EDGE, PendingAttachments, attach_png, placeholder_text,
-    prepare_paste,
+    AttachError, MAX_ATTACHMENTS, MAX_IMAGE_EDGE, PendingAttachments, attach_png,
+    dropped_path_text, placeholder_text, prepare_paste,
 };
 
 #[gpui::test]
@@ -253,4 +254,17 @@ fn bytes_that_are_not_an_image_do_not_attach() {
         Err(AttachError::Undecodable)
     ));
     assert!(pending.is_empty());
+}
+
+#[test]
+fn dropped_paths_quote_only_the_ones_holding_a_space() {
+    let paths = [
+        PathBuf::from(r"C:\work\main.rs"),
+        PathBuf::from(r"C:\my docs\plan.md"),
+    ];
+
+    assert_eq!(
+        dropped_path_text(&paths),
+        r#"C:\work\main.rs "C:\my docs\plan.md""#
+    );
 }
