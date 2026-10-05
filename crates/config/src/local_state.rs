@@ -126,6 +126,14 @@ pub struct WindowState {
     pub height: f32,
     #[serde(default)]
     pub maximized: bool,
+
+    /// Stable identifier of the display the geometry was taken on. The
+    /// logical pixels above are scaled by that display's DPI, so restoring
+    /// them on a display scaled differently would place the window off its
+    /// saved spot. Absent in state written before this field existed, and
+    /// ignored when no connected display matches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

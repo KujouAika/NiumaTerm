@@ -24,6 +24,7 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                     width: 960.0,
                     height: 620.0,
                     maximized: true,
+                    display: Some("3f2504e0-4f89-11d3-9a0c-0305e82c3301".into()),
                 }),
                 session: Some(SessionState {
                     active_workspace: 5,
@@ -97,6 +98,7 @@ fn save_load_roundtrip_and_legacy_file_defaults() {
                     width: 800.0,
                     height: 500.0,
                     maximized: false,
+                    display: None,
                 }),
                 session: None,
                 sidebar_width: None,

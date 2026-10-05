@@ -176,6 +176,7 @@ fn window_state() -> WindowState {
         width: 800.0,
         height: 600.0,
         maximized: false,
+        display: None,
     }
 }
 

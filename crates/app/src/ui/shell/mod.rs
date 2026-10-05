@@ -43,8 +43,8 @@ use dirs::home_dir;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, AnyView, AnyWindowHandle, App, AppContext, Axis, Bounds, Context, Div, Entity,
-    EntityId, FocusHandle, Focusable, Global, KeyDownEvent, ObjectFit, Pixels, Render,
-    SharedString, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds,
+    EntityId, FocusHandle, Focusable, Global, KeyDownEvent, ObjectFit, Pixels, PlatformDisplay,
+    Render, SharedString, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds,
     WindowDecorations, WindowHandle, WindowId, WindowOptions, div, img, point, px, size,
     transparent_black,
 };
@@ -270,6 +270,13 @@ pub(super) const MIN_WINDOW_WIDTH: f32 =
 
 const MIN_WINDOW_HEIGHT: f32 = 400.0;
 
+/// The identifier a display is saved under. The uuid is derived from the
+/// device name, so it survives a restart; the platform display id is a
+/// monitor handle that does not.
+fn display_key(display: &dyn PlatformDisplay) -> Option<String> {
+    display.uuid().ok().map(|uuid| uuid.to_string())
+}
+
 /// Open a terminal window using the saved geometry and session. Register its
 /// state before constructing the view so workspace updates during restoration
 /// can publish the resulting session.
@@ -278,6 +285,21 @@ pub(crate) fn open_window(
     initial: WindowLocalState,
     initial_cwd: Option<String>,
 ) -> WindowHandle<Root> {
+    // The saved display, when it is still connected. Without it gpui places
+    // the window on the primary display and converts the saved logical pixels
+    // with that display's scale factor, which is wrong for geometry saved on
+    // a display scaled differently.
+    let display_id = initial
+        .window
+        .as_ref()
+        .and_then(|w| w.display.as_deref())
+        .and_then(|saved| {
+            cx.displays()
+                .into_iter()
+                .find(|display| display_key(display.as_ref()).as_deref() == Some(saved))
+        })
+        .map(|display| display.id());
+
     let window_bounds = match &initial.window {
         Some(w) => {
             // WM_GETMINMAXINFO bounds interactive resize only, so geometry
@@ -316,6 +338,7 @@ pub(crate) fn open_window(
     cx.open_window(
         WindowOptions {
             window_bounds: Some(window_bounds),
+            display_id,
             // Borderless: the app draws its own titlebar (gpui-component
             // `TitleBar`); the Windows backend routes controls/drag/resize.
             window_decorations: Some(WindowDecorations::Client),
@@ -652,6 +675,10 @@ impl AppWindow {
         let window_bounds = window.window_bounds();
         let bounds = window_bounds.get_bounds();
 
+        let display = window
+            .display(cx)
+            .and_then(|display| display_key(display.as_ref()));
+
         if let Some(entry) = cx.global_mut::<WindowRegistry>().get_mut(id) {
             entry.window = Some(WindowState {
                 x: bounds.origin.x.as_f32(),
@@ -659,6 +686,7 @@ impl AppWindow {
                 width: bounds.size.width.as_f32(),
                 height: bounds.size.height.as_f32(),
                 maximized: matches!(window_bounds, WindowBounds::Maximized(_)),
+                display,
             });
         }
     }
@@ -2215,6 +2243,10 @@ impl AppWindow {
     ) {
         let bounds = window.window_bounds().get_bounds();
 
+        let display = window
+            .display(cx)
+            .and_then(|display| display_key(display.as_ref()));
+
         open_window(
             cx,
             WindowLocalState {
@@ -2224,6 +2256,7 @@ impl AppWindow {
                     width: bounds.size.width.as_f32(),
                     height: bounds.size.height.as_f32(),
                     maximized: false,
+                    display,
                 }),
                 session: None,
                 // New windows inherit this window's sidebar width.
