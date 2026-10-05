@@ -4695,7 +4695,7 @@ impl Render for AppWindow {
                             .relative()
                             .overflow_hidden()
                             .child(
-                                floating_surface_card(cx)
+                                floating_surface_card(self.workspaces.active_tabs().active(), cx)
                                     .id("main-floating-surface")
                                     .min_w_0()
                                     .relative()

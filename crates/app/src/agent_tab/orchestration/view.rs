@@ -1342,7 +1342,6 @@ impl Render for OrchestrationPane {
             .size_full()
             .min_h_0()
             .bg(background.alpha(background_opacity))
-            .rounded(UI_RADIUS - px(1.))
             .overflow_hidden()
             .font(font)
             .text_size(px(font_size))

@@ -164,9 +164,26 @@ fn pane_style() -> StyleRefinement {
     StyleRefinement::default().size_full()
 }
 
-/// Clip terminal and agent content within the sidebar-colored backing surface.
-pub(super) fn floating_surface_card(cx: &App) -> Div {
-    div().size_full().overflow_hidden().bg(cx.theme().sidebar)
+/// Clip the active tab's content within the sidebar-colored backing surface.
+///
+/// Terminal, Agent, Team and Orchestration panes cover the whole card with
+/// their own translucent fill, so the card leaves those surfaces unfilled. Two
+/// stacked translucent layers would hide most of the window background image
+/// behind the content area while the chrome shows it at the configured
+/// strength.
+pub(super) fn floating_surface_card(surface: &TabSurface, cx: &App) -> Div {
+    let pane_fills_card = matches!(
+        surface,
+        TabSurface::Live(_)
+            | TabSurface::Agent(_)
+            | TabSurface::Team(_)
+            | TabSurface::Orchestration(_)
+    );
+
+    div()
+        .size_full()
+        .overflow_hidden()
+        .when(!pane_fills_card, |card| card.bg(cx.theme().sidebar))
 }
 
 /// Borders overlay content so attached tab and navigation bounds share one origin.

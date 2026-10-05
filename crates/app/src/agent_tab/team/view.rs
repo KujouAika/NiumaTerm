@@ -28,7 +28,7 @@ use nmt_agent::team::model::{MemberId, RoomId, UserInput};
 use nmt_agent::team::session::TeamError;
 use rust_i18n::t;
 
-use crate::agent_tab::settings::{AgentSettings, UI_RADIUS};
+use crate::agent_tab::settings::AgentSettings;
 use crate::agent_tab::team::view::history::TeamHistory;
 use crate::agent_tab::team::view::membership::MemberDraft;
 use crate::agent_tab::team::view::targeting::{DiscussionTargeting, MissingAuthor};
@@ -1029,7 +1029,6 @@ impl Render for TeamPane {
             .relative()
             .min_h_0()
             .bg(background.alpha(background_opacity))
-            .rounded(UI_RADIUS - px(1.))
             .overflow_hidden()
             .font(font)
             .text_size(px(font_size))
