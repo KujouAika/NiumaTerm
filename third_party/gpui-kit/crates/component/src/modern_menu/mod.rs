@@ -410,6 +410,7 @@ impl ModernMenu {
                 input: self.input,
                 font: menu_font,
                 work_area,
+                scale_factor: window.scale_factor(),
                 owner: window.window_handle(),
                 select_first: false,
             },
@@ -442,6 +443,11 @@ struct Presentation {
     input: ModernMenuInput,
     font: Font,
     work_area: Bounds<Pixels>,
+    /// The owner's scale factor, which every logical coordinate here is in:
+    /// the anchor, the work area and the bounds derived from them. The menu
+    /// window has a scale factor of its own, that of whatever monitor it was
+    /// last on, so converting to physical pixels goes through this one.
+    scale_factor: f32,
     owner: AnyWindowHandle,
     /// Start on the first item, for a menu opened from the keyboard. A menu the
     /// pointer opened starts with nothing selected, so the highlight follows the
@@ -481,6 +487,7 @@ fn present(presentation: Presentation, cx: &mut App) {
             input,
             font: menu_font,
             work_area,
+            scale_factor,
             owner,
             select_first,
         } = pending
@@ -560,8 +567,9 @@ fn present(presentation: Presentation, cx: &mut App) {
         view.level = level;
         view.bounds = bounds;
         view.work_area = work_area;
+        view.scale_factor = scale_factor;
         view.open_child = None;
-        menu_window.show_flyout(bounds);
+        menu_window.show_flyout(bounds.to_device_pixels(scale_factor));
         cx.notify();
     });
     if let Err(error) = updated {
@@ -911,6 +919,8 @@ struct MenuView {
     /// showed it.
     bounds: Bounds<Pixels>,
     work_area: Bounds<Pixels>,
+    /// The scale factor `bounds` and `work_area` are expressed in, the owner's.
+    scale_factor: f32,
     /// The entry whose submenu is currently drawn beside this menu.
     open_child: Option<usize>,
 }
@@ -926,6 +936,7 @@ impl MenuView {
             level: 0,
             bounds: Bounds::default(),
             work_area: Bounds::default(),
+            scale_factor: 1.0,
             open_child: None,
         }
     }
@@ -964,6 +975,7 @@ impl MenuView {
             input: self.input,
             font,
             work_area: self.work_area,
+            scale_factor: self.scale_factor,
             owner,
             select_first,
         };
