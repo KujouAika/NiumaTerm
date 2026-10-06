@@ -196,7 +196,11 @@ impl A11y {
     /// such ancestor, screen readers fall back to announcing the whole window,
     /// which is logged (once per focus change) so the element can be given
     /// both an `.id(...)` and a `.role(...)`.
-    pub(crate) fn set_focus_without_node(&mut self, focus_id: FocusId, reason: &str) {
+    pub(crate) fn set_focus_without_node(
+        &mut self,
+        focus_id: FocusId,
+        reason: std::fmt::Arguments<'_>,
+    ) {
         let focus_ids = &self.focus_ids;
         if let Some(ancestor) = self
             .nodes
@@ -240,8 +244,10 @@ impl A11y {
     /// Report `node_id` as the currently-focused node, if it is present in the
     /// tree.
     ///
-    /// Must only be called once per frame.
-    pub(crate) fn set_focus(&mut self, node_id: NodeId) {
+    /// Must only be called once per frame. `element` names the focused element
+    /// in the log line emitted when it has no node, so the offending element
+    /// can be found from a release log.
+    pub(crate) fn set_focus(&mut self, node_id: NodeId, element: &dyn std::fmt::Display) {
         // A focused node must have been registered as focusable this frame.
         if !self.focus_ids.contains_key(&node_id) {
             if cfg!(debug_assertions) {
@@ -262,7 +268,10 @@ impl A11y {
             // The element registered a focus handle and an id, but never got a
             // node because it has no role.
             if let Some(focus_id) = self.focus_ids.get(&node_id).copied() {
-                self.set_focus_without_node(focus_id, "it has an id but no role");
+                self.set_focus_without_node(
+                    focus_id,
+                    format_args!("`{element}` has an id but no role"),
+                );
             }
         }
     }
@@ -845,7 +854,7 @@ mod tests {
         let node = NodeId(1);
         assert!(a11y.nodes.push(node, test_node()));
         // set_focusable was never called for `node`.
-        a11y.set_focus(node);
+        a11y.set_focus(node, &"test");
     }
 
     // The focused node cannot also be its own active descendant: panic in
@@ -857,7 +866,7 @@ mod tests {
         let node = NodeId(1);
         assert!(a11y.nodes.push(node, test_node()));
         a11y.set_focusable(node, FocusId::default());
-        a11y.set_focus(node);
+        a11y.set_focus(node, &"test");
         a11y.set_active_descendant(node);
     }
 
@@ -877,7 +886,7 @@ mod tests {
 
         assert!(a11y.nodes.push(container, test_node()));
         a11y.set_focusable(container, FocusId::default());
-        a11y.set_focus(container);
+        a11y.set_focus(container, &"test");
 
         assert!(a11y.nodes.push(first, test_node()));
         a11y.set_active_descendant(first);
@@ -901,7 +910,7 @@ mod tests {
 
         assert!(a11y.nodes.push(a, test_node()));
         a11y.set_focusable(a, FocusId::default());
-        a11y.set_focus(a);
+        a11y.set_focus(a, &"test");
         a11y.nodes.pop(); // a
 
         assert!(a11y.nodes.push(b, test_node()));
@@ -931,7 +940,7 @@ mod tests {
 
         // The surface has an id but no role, so it never pushed a node.
         a11y.set_focusable(surface, FocusId::default());
-        a11y.set_focus(surface);
+        a11y.set_focus(surface, &"test");
 
         a11y.nodes.pop(); // frame
         a11y.nodes.pop(); // outer
@@ -948,7 +957,7 @@ mod tests {
         let group = NodeId(1);
 
         assert!(a11y.nodes.push(group, test_node()));
-        a11y.set_focus_without_node(FocusId::default(), "it has no element id");
+        a11y.set_focus_without_node(FocusId::default(), format_args!("it has no element id"));
         a11y.nodes.pop(); // group
 
         let update = a11y.end_frame(Default::default());

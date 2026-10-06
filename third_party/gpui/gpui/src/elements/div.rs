@@ -2237,14 +2237,15 @@ impl Interactivity {
                     let node_id = global_id.accesskit_node_id();
                     window.a11y.set_focusable(node_id, focus_handle.id);
                     if focus_handle.is_focused(window) {
-                        window.a11y.set_focus(node_id);
+                        window.a11y.set_focus(node_id, global_id);
                     }
                 } else if focus_handle.is_focused(window) {
                     // Focusable, but with no element id it can't have an
                     // accessibility node of its own.
-                    window
-                        .a11y
-                        .set_focus_without_node(focus_handle.id, "it has no element id");
+                    window.a11y.set_focus_without_node(
+                        focus_handle.id,
+                        format_args!("it has no element id"),
+                    );
                 }
             }
         }
