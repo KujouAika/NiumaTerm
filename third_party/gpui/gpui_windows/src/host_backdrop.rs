@@ -25,8 +25,10 @@ use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 
 use anyhow::{Context as _, Result};
+use windows::System::Power::{EnergySaverStatus, PowerManager};
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{CompositionStretch, Compositor, ContainerVisual, SpriteVisual};
+use windows::UI::ViewManagement::UISettings;
 use windows::Win32::Foundation::{HWND, TRUE};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_HOSTBACKDROPBRUSH, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain1;
@@ -34,6 +36,7 @@ use windows::Win32::System::WinRT::Composition::{ICompositorDesktopInterop, ICom
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
 use windows::core::Interface;
 use windows_numerics::Vector2;
 
@@ -74,6 +77,24 @@ fn compositor() -> Result<Compositor> {
         let compositor = Compositor::new().context("creating the WinRT compositor")?;
         Ok((**cell.insert(ManuallyDrop::new(compositor))).clone())
     })
+}
+
+/// Whether DWM currently renders blur behind windows.
+///
+/// When it does not, the host backdrop brush renders solid black instead of a
+/// material, and a window that paints a translucent tint over it shows as a
+/// dark panel. DWM drops blur when transparency effects are turned off in the
+/// personalization settings, while energy saver is on, and in a remote desktop
+/// session. A query that fails reports blur as available, since that is the
+/// state on the configurations where these queries exist.
+pub(crate) fn system_blur_enabled() -> bool {
+    let transparency = UISettings::new()
+        .and_then(|settings| settings.AdvancedEffectsEnabled())
+        .unwrap_or(true);
+    let energy_saver =
+        PowerManager::EnergySaverStatus().is_ok_and(|status| status == EnergySaverStatus::On);
+    let remote = unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0;
+    transparency && !energy_saver && !remote
 }
 
 pub(crate) struct HostBackdropComposition {

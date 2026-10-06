@@ -64,6 +64,10 @@ pub struct WindowsWindowState {
     pub direct_manipulation: DirectManipulationHandler,
 
     pub renderer: RefCell<DirectXRenderer>,
+    /// The appearance the caller asked for. The renderer stores the one in
+    /// effect, which differs while the system cannot draw the requested
+    /// material, and this is what is applied again once it can.
+    requested_background_appearance: Cell<WindowBackgroundAppearance>,
     /// Set when the next `draw_window` call must be treated as a forced
     /// render. Used after a GPU device-lost recovery, where the next frame
     /// must both re-enable drawing (via `mark_drawable`) and bypass the GPUI
@@ -182,6 +186,7 @@ impl WindowsWindowState {
             last_reported_capslock: Cell::new(last_reported_capslock),
             hovered: Cell::new(hovered),
             renderer: RefCell::new(renderer),
+            requested_background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
             force_render_pending: Cell::new(false),
             click_state,
             current_cursor: Cell::new(current_cursor),
@@ -386,6 +391,36 @@ impl WindowsWindowInner {
 
     pub(crate) fn system_settings(&self) -> &WindowsSystemSettings {
         &self.system_settings
+    }
+
+    /// Apply the requested background appearance, or an opaque surface while
+    /// the system is not drawing blur. The host backdrop brush renders black
+    /// then, so the composed material would show as a dark panel under the
+    /// window's translucent tint.
+    fn sync_background_appearance(&self) -> Result<()> {
+        let requested = self.state.requested_background_appearance.get();
+        let effective = if requested == WindowBackgroundAppearance::CompositedBlur
+            && !(self.state.renderer.borrow().composited_blur_available() && system_blur_enabled())
+        {
+            WindowBackgroundAppearance::Opaque
+        } else {
+            requested
+        };
+        if self.state.renderer.borrow().background_appearance() == effective {
+            return Ok(());
+        }
+
+        // Keep the current backdrop active while outstanding surface updates
+        // finish and the replacement alpha pipeline is created.
+        unsafe { DwmFlush() }.log_err();
+        let applied = self
+            .state
+            .renderer
+            .borrow_mut()
+            .set_background_appearance(effective)
+            .context("Failed to switch window render pipeline")?;
+        apply_background_appearance(self.hwnd, applied);
+        Ok(())
     }
 }
 
@@ -948,21 +983,10 @@ impl PlatformWindow for WindowsWindow {
         &self,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
-        if self.background_appearance() == background_appearance {
-            return Ok(());
-        }
-
-        // Keep the current backdrop active while outstanding surface updates
-        // finish and the replacement alpha pipeline is created.
-        unsafe { DwmFlush() }.log_err();
-        let applied = self
-            .state
-            .renderer
-            .borrow_mut()
-            .set_background_appearance(background_appearance)
-            .context("Failed to switch window render pipeline")?;
-        apply_background_appearance(self.0.hwnd, applied);
-        Ok(())
+        self.state
+            .requested_background_appearance
+            .set(background_appearance);
+        self.0.sync_background_appearance()
     }
 
     fn minimize(&self) {
@@ -991,6 +1015,11 @@ impl PlatformWindow for WindowsWindow {
 
     fn show_flyout(&self, bounds: Bounds<DevicePixels>) {
         let hwnd = self.0.hwnd;
+        // A flyout window is built once and reused, so the system blur state
+        // read when it was created can be stale by now. Checked before the
+        // window is shown, so the frame its caller renders next already reads
+        // the appearance in effect.
+        self.0.sync_background_appearance().log_err();
 
         // Deferred like `resize`: `SetWindowPos` dispatches this window's
         // messages synchronously, and a caller inside an event handler still has

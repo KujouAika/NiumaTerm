@@ -477,6 +477,10 @@ impl DirectXRenderer {
         self.background_appearance
     }
 
+    pub(crate) fn composited_blur_available(&self) -> bool {
+        self.composited_blur_available
+    }
+
     /// Swap the composition when the appearance crosses between a DWM-drawn
     /// backdrop and one composed in the window's own tree. Both build a
     /// composition target for the same `HWND` and only one can own it, so the old
