@@ -173,6 +173,25 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         None
     }
 
+    // The wrapper replaces the element's id, so it must also report the
+    // wrapped element's role. Without it, a dialog or sheet that holds focus
+    // has no accessibility node and screen readers announce the whole window.
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        self.base.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.base.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder,
+    ) {
+        self.base.a11y_synthetic_children(prepaint, builder);
+    }
+
     fn request_layout(
         &mut self,
         global_id: Option<&gpui::GlobalElementId>,

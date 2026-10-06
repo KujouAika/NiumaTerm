@@ -651,6 +651,10 @@ where
         v_flex()
             .key_context("List")
             .id("list-state")
+            // The role is on the element that takes keyboard focus, so a
+            // screen reader announces the list when it is focused. A role on a
+            // non-focusable wrapper leaves the focused element without a node.
+            .role(Role::List)
             .track_focus(&self.focus_handle)
             .size_full()
             .relative()
@@ -772,7 +776,6 @@ where
 
         div()
             .id("list")
-            .role(Role::List)
             .size_full()
             .refine_style(&self.style)
             .child(self.state.clone())
