@@ -31,3 +31,9 @@ rustflags = ["-D", "warnings"]
 
 [alias]
 readability = "run --quiet --locked --manifest-path tools/readability/Cargo.toml --"
+
+[unstable]
+feature-unification = true
+
+[resolver]
+feature-unification = "workspace"
