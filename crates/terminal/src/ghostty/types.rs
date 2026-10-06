@@ -223,6 +223,10 @@ pub struct SnapshotCursor {
     /// viewport (render-state `CURSOR_VISIBLE` ∧ `CURSOR_VIEWPORT_HAS_VALUE`).
     pub visible: bool,
 
+    /// `true` when the cursor row is inside the viewport, whatever DECTCEM
+    /// says (render-state `CURSOR_VIEWPORT_HAS_VALUE`).
+    pub in_viewport: bool,
+
     /// DECSCUSR shape from the render-state `CURSOR_VISUAL_STYLE`.
     pub shape: CursorShape,
 }

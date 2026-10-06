@@ -260,6 +260,7 @@ impl RenderStateReader {
                 x: 0,
                 y: 0,
                 visible: false,
+                in_viewport: false,
                 shape,
             });
         }
@@ -287,6 +288,7 @@ impl RenderStateReader {
             x,
             y,
             visible,
+            in_viewport: true,
             shape,
         })
     }

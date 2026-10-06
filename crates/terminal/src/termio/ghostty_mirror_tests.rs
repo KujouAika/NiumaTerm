@@ -1494,7 +1494,7 @@ fn progress_cursor_suppression_keeps_layout_and_resets_on_capture() {
     buffer.suppress_progress_cursor();
 
     assert!(!buffer.cursor_visible());
-    assert_eq!(buffer.layout_cursor_row(), None);
+    assert_eq!(buffer.layout_cursor_row(), Some(2));
 
     engine.write_vt(b"\x1b[?25h\r\n\r\n\r\nPrompt>");
     engine.scroll_viewport_top();

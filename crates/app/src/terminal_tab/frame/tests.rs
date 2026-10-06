@@ -33,7 +33,7 @@ fn first_line(frame: &TerminalFrame) -> &str {
 }
 
 #[test]
-fn application_hidden_and_offscreen_cursors_do_not_extend_content() {
+fn hidden_cursor_extends_content_and_offscreen_cursor_does_not() {
     let mut engine = GhosttyTerminal::new(20, 3, 100).unwrap();
 
     engine.write_vt(b"output\x1b[3;1H\x1b[?25l");
@@ -41,8 +41,8 @@ fn application_hidden_and_offscreen_cursors_do_not_extend_content() {
     let frame = TerminalFrame::from_render_buffer(&engine.snapshot().unwrap());
 
     assert!(frame.cursor().is_none());
-    assert_eq!(frame.layout_cursor_row(), None);
-    assert_eq!(frame_content_rows(&frame), 1);
+    assert_eq!(frame.layout_cursor_row(), Some(2));
+    assert_eq!(frame_content_rows(&frame), 3);
 
     engine.write_vt(b"\x1b[2J\x1b[H\x1b[?25h\r\n\r\n\r\n\r\n\r\nPrompt>");
     engine.scroll_viewport_top();
@@ -52,6 +52,34 @@ fn application_hidden_and_offscreen_cursors_do_not_extend_content() {
     assert!(frame.cursor().is_none());
     assert_eq!(frame.layout_cursor_row(), None);
     assert_eq!(frame_content_rows(&frame), 0);
+}
+
+#[test]
+fn live_redraw_with_hidden_cursor_keeps_content_rows() {
+    let mut engine = GhosttyTerminal::new(40, 10, 100).unwrap();
+
+    engine.write_vt(b"Restore complete\r\n  p1 Slow (0.1s)\r\n  p2 Slow (0.1s)\r\n");
+
+    let content_rows = |engine: &mut GhosttyTerminal| {
+        frame_content_rows(&TerminalFrame::from_render_buffer(
+            &engine.snapshot().unwrap(),
+        ))
+    };
+
+    assert_eq!(content_rows(&mut engine), 4);
+
+    // ConPTY delivers the MSBuild terminal logger's cursor hide, redraw and
+    // cursor show as separate reads, so each one reaches the renderer as its
+    // own snapshot.
+    for chunk in [
+        &b"\x1b[?25l"[..],
+        b"\x1b[2F\x1b[K  p1 Slow (0.2s)\r\n\x1b[K  p2 Slow (0.2s)\r\n",
+        b"\x1b[?25h",
+    ] {
+        engine.write_vt(chunk);
+
+        assert_eq!(content_rows(&mut engine), 4, "after {chunk:?}");
+    }
 }
 
 #[test]

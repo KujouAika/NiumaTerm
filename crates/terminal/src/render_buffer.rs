@@ -65,6 +65,7 @@ pub struct RenderBuffer {
 
     cursor: Pos,
     cursor_visible: bool,
+    cursor_in_viewport: bool,
     progress_cursor_suppressed: bool,
 
     /// DECSCUSR shape + modes-based blink captured from the engine render-state.
@@ -128,6 +129,7 @@ impl RenderBuffer {
             row_versions: vec![0; rows],
             cursor: Pos::default(),
             cursor_visible: false,
+            cursor_in_viewport: false,
             progress_cursor_suppressed: false,
             cursor_shape: CursorShape::Block,
             colors: TermColors::default(),
@@ -207,11 +209,14 @@ impl RenderBuffer {
         self.cursor_visible && !self.progress_cursor_suppressed
     }
 
-    /// The engine-visible cursor row before host progress suppression. Keeping
-    /// this row in the layout prevents an erased progress line from temporarily
-    /// shrinking the live item and shifting every preceding line at the bottom.
+    /// The cursor row inside the viewport, shown or hidden. Keeping this row in
+    /// the layout prevents an erased progress line from temporarily shrinking
+    /// the live item and shifting every preceding line at the bottom. Live
+    /// redraws such as the MSBuild terminal logger hide the cursor (DECTCEM)
+    /// around each frame, so a row that counted only while shown would make
+    /// the live item shrink and grow on every frame.
     pub fn layout_cursor_row(&self) -> Option<usize> {
-        if !self.cursor_visible || self.cursor_shape == CursorShape::Hidden {
+        if !self.cursor_in_viewport || self.cursor_shape == CursorShape::Hidden {
             return None;
         }
 
@@ -374,6 +379,7 @@ impl RenderBuffer {
 
         self.cursor = Pos::new(Line(cy as i32), Column(cx));
         self.cursor_visible = cursor.visible;
+        self.cursor_in_viewport = cursor.in_viewport;
         self.progress_cursor_suppressed = false;
         self.cursor_shape = cursor.shape;
 
