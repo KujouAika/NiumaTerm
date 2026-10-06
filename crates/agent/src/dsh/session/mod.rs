@@ -695,18 +695,7 @@ impl Session {
         for event in &events {
             match event {
                 Event::TurnStarted => self.running = true,
-                Event::TurnCompleted { .. } => {
-                    self.running = false;
-
-                    self.controls.retire_interrupt();
-
-                    // A turn that ended cannot still be waiting on an answer.
-                    self.pending_approval = None;
-
-                    self.controls.retire_approval();
-
-                    resolved.extend(self.expire_questions());
-                }
+                Event::TurnCompleted { .. } => resolved.extend(self.on_turn_ended()),
                 Event::ApprovalResolved => {
                     self.pending_approval = None;
                 }
@@ -717,6 +706,21 @@ impl Session {
         events.extend(resolved);
 
         events
+    }
+
+    /// Clear what only a running turn can hold, returning the question cards
+    /// that expire with it.
+    fn on_turn_ended(&mut self) -> Vec<Event> {
+        self.running = false;
+
+        self.controls.retire_interrupt();
+
+        // A turn that ended cannot still be waiting on an answer.
+        self.pending_approval = None;
+
+        self.controls.retire_approval();
+
+        self.expire_questions()
     }
 
     fn on_approval_request(&mut self, request: ApprovalRequest) -> Vec<Event> {
@@ -1060,6 +1064,8 @@ impl Session {
         let mut events = Vec::new();
         let mut folded = false;
 
+        let was_running = self.running;
+
         self.tools = EventTracker::default();
         self.workflows = WorkflowTracker::default();
         self.running = false;
@@ -1112,6 +1118,13 @@ impl Session {
                 self.session_id.clone(),
                 Arc::clone(&self.deliver),
             );
+        } else if was_running {
+            // A reconnect page whose log already closed the turn means its
+            // end record and status edge were sent while the streams were
+            // down. Nothing else will close the turn the pane still shows,
+            // and the pane would keep offering a stop this session rejects.
+            events.push(Event::TurnCompleted { error: None });
+            events.extend(self.on_turn_ended());
         }
 
         events
