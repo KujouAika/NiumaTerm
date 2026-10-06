@@ -755,3 +755,73 @@ opt-level = 0
 [profile.dev.package."*"]
 opt-level = 2
 debug = 0
+
+# The GPUI and GPUI Kit forks are workspace members, so the `"*"` override above
+# does not match them and they would build with full debug info. Their type and
+# local records made up several GB of every dev build directory. Line tables
+# still name the function and line in a backtrace. Cargo has no wildcard for
+# workspace members, so each library crate is listed by name; proc-macro crates
+# are left out because build dependencies already build without debug info.
+[profile.dev.package.collections]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_apple]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_linux]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_macos]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_media]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_platform]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_shared_string]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_tokio]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_util]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_web]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_wgpu]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui_windows]
+debug = "line-tables-only"
+
+[profile.dev.package.refineable]
+debug = "line-tables-only"
+
+[profile.dev.package.scheduler]
+debug = "line-tables-only"
+
+[profile.dev.package.sum_tree]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui-kit-assets]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui-base]
+debug = "line-tables-only"
+
+[profile.dev.package.gpui-component]
+debug = "line-tables-only"
+
+# Test executables each link the whole application with full debug info, about
+# 600 MB of PDB per executable. Failures are read from assertion output and
+# backtraces, which line tables still name, so tests drop the type and local
+# records. Dependencies keep the `debug = 0` they inherit from the dev profile.
+[profile.test]
+debug = "line-tables-only"
