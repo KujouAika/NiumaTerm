@@ -94,7 +94,7 @@ EOF
 
 check_no_ai_slop_marker() {
     # Words that collide with real identifiers or terminal terms (text
-    # shaping, render surfaces, arithmetic carry, gates, bridges) stay out of
+    # shaping, render surfaces, arithmetic carry, bridges) stay out of
     # this list, because it matches whole words in code as well as prose.
     slop_markers='ponytail|seam|fact|parity|envelope|wire|contract'
     slop_markers="$slop_markers|rather than|which is what|says nothing"
@@ -105,7 +105,7 @@ check_no_ai_slop_marker() {
     slop_markers="$slop_markers|deliberately|intentionally|explicitly"
     slop_markers="$slop_markers|vocabulary|authoritative|plumbing|scaffolding"
     slop_markers="$slop_markers|load-bearing|knobs?|lockstep|footprint"
-    slop_markers="$slop_markers|belt-and-braces"
+    slop_markers="$slop_markers|belt-and-braces|gate|gating"
     added=$(git diff --cached --diff-filter=ACMR -U0 |
         awk -v generated="$generated_paths" '
             /^\+\+\+ b\// {

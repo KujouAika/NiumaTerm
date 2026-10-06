@@ -11,8 +11,8 @@ Repo-level guidance for AI coding agents working in this repository.
   lands/landed/landing, travels/travelled, surfaced/surfacing, lifted, hoisted,
   funnels, honest/honestly, worth, ordinary, actually, deliberately,
   intentionally, explicitly, vocabulary, authoritative, plumbing, scaffolding,
-  load-bearing, knob(s), lockstep, footprint, belt-and-braces. Do not put an em
-  dash in a Rust comment.
+  load-bearing, knob(s), lockstep, footprint, belt-and-braces, gate,
+  gating. Do not put an em dash in a Rust comment.
 - Do not describe data flow with personified or spatial verbs (a value "says",
   "tells", "sits", "lives", "settles" or "travels"). Name the operation
   instead: stores, returns, sends, reads, completes.
