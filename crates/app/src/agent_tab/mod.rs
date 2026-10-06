@@ -98,7 +98,7 @@ use nmt_agent::{AgentEvent, AgentEventKind, AgentRoute, AgentWorkspace};
 use nmt_config::profile::AgentProfile;
 use nmt_remote_core::rpc::EndReason;
 use rust_i18n::t;
-use tracing::info;
+use tracing::debug;
 
 use crate::agent_tab::commands::{
     PaletteCatalogEntry, PaletteDirection, SlashRoute, filter_palette_catalog,
@@ -2988,7 +2988,7 @@ impl AgentPane {
 
         self.close_orphaned_side_thread(cx);
 
-        info!(
+        debug!(
             "agent thread ready: profile=\"{}\", model={:?}, profile_model={:?}",
             session_profile.name,
             self.session.borrow().controls.settings.model,

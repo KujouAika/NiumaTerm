@@ -51,7 +51,7 @@ use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::direct;
 use crate::discovery::Advertiser;
@@ -521,7 +521,7 @@ impl HostService {
         // Who got a push, and who not, is otherwise invisible: a device that
         // never registered, or did not ask for this kind, is easy to mistake
         // for a failed delivery while trying pushes out.
-        info!(?kind, devices = targets.len(), "pushing to paired devices");
+        debug!(?kind, devices = targets.len(), "pushing to paired devices");
 
         for (device, registration) in targets {
             let sealed = match seal(&registration.key, &message) {
