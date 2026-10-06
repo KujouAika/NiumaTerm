@@ -62,12 +62,13 @@ fn closed_settings_release_local_edits_while_another_window_stays_open(cx: &mut 
                     cx,
                 );
 
-                let view = new_settings_view(state, editing, cx);
+                let view = new_settings_view(state.clone(), editing, cx);
 
                 cx.new(|_| {
                     SettingsHost(SettingsSurface {
                         open: Some(OpenSettings {
                             view,
+                            state,
                             _theme_watcher: None,
                             _pairing_renewal: Task::ready(()),
                         }),

@@ -80,6 +80,10 @@ const APP_VERSION: &str = env!("NIUMATERM_VERSION");
 const APP_INTERNAL_VERSION: &str = env!("NIUMATERM_INTERNAL_VERSION");
 const RELEASE_PAGE_URL: &str = "https://github.com/f32y/NiumaTerm/releases";
 
+/// Position of the About page in the list `settings_view` builds. Selection
+/// addresses pages by index, so this must follow that list's order.
+const ABOUT_PAGE_INDEX: usize = 6;
+
 /// Sidebar entry name and tab title of the settings pseudo workspace, in the
 /// active language. Looked up at creation time; the entry is never persisted,
 /// so a stale-language name cannot leak into local_state.
@@ -97,6 +101,7 @@ pub(super) struct SettingsSurface {
 
 struct OpenSettings {
     view: Entity<SettingsView>,
+    state: Entity<SettingsState>,
     _theme_watcher: Option<Task<()>>,
 
     /// Renews the pairing code while settings is on screen; closing settings
@@ -113,15 +118,31 @@ impl SettingsSurface {
         let editing = cx.new(|_| SettingsEditing::default());
 
         let theme_watcher = watch_themes(&editing, cx);
-        let view = new_settings_view(state, editing, cx);
+        let view = new_settings_view(state.clone(), editing, cx);
 
         let pairing_renewal = remote::renew_pairing_until_dropped(cx);
 
         self.open = Some(OpenSettings {
             view,
+            state,
             _theme_watcher: theme_watcher,
             _pairing_renewal: pairing_renewal,
         });
+    }
+
+    /// Switch the open settings view to the About page.
+    pub(super) fn select_about(&self, cx: &mut App) {
+        if let Some(open) = &self.open {
+            open.state.update(cx, |state, cx| {
+                state.select(
+                    SelectIndex {
+                        page_ix: ABOUT_PAGE_INDEX,
+                        group_ix: None,
+                    },
+                    cx,
+                );
+            });
+        }
     }
 
     pub(super) fn retire(&mut self) {

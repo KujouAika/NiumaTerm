@@ -11,6 +11,7 @@ use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPa
 use gpui_component::text::TextView;
 #[cfg(windows)]
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
+use nmt_platform::environment::data_dir;
 #[cfg(windows)]
 use nmt_updater::windows::{CheckError, Status};
 use rust_i18n::t;
@@ -40,6 +41,15 @@ pub(super) fn about_page() -> SettingPage {
                     .outline()
                     .label(t!("settings-about-release-page"))
                     .on_click(|_, _, cx: &mut App| cx.open_url(RELEASE_PAGE_URL))
+            }),
+        ))
+        .item(SettingItem::new(
+            t!("settings-about-data-folder"),
+            SettingField::render(|_, _, _| {
+                Button::new("open-data-folder")
+                    .outline()
+                    .label(t!("settings-about-open-data-folder"))
+                    .on_click(|_, _, cx: &mut App| cx.open_with_system(&data_dir()))
             }),
         ));
 

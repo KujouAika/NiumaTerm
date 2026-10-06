@@ -3705,6 +3705,13 @@ impl AppWindow {
         cx.notify();
     }
 
+    /// Show the settings entry, opening it if needed, on its About page.
+    pub(super) fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_show_settings(&ShowSettings, window, cx);
+
+        self.settings.select_about(cx);
+    }
+
     /// Drop the settings surface after its edits have been saved successfully.
     /// Reached from every path that removes the settings entry.
     pub(super) fn retire_settings_workspace(&mut self) {

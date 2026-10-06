@@ -365,15 +365,38 @@ impl IconNamed for SideBarIcon {
     }
 }
 
-/// The application menu: opening things, then the application-wide
-/// commands. Every entry here is reachable by keyboard as well, so the menu is
+/// The application menu: About and updates, then settings, then opening
+/// things. Every entry here is reachable by keyboard as well, so the menu is
 /// a place to find them, not the only way to reach them.
 fn app_menu(menu: ModernMenu, shell: &Entity<AppWindow>, _cx: &mut App) -> ModernMenu {
+    let about_shell = shell.clone();
     let window_shell = shell.clone();
     let workspace_shell = shell.clone();
     let settings_shell = shell.clone();
 
     let menu = menu
+        .item(t!("shell-menu-about"), move |window, cx| {
+            about_shell.update(cx, |this, cx| this.show_about(window, cx));
+        })
+        .icon(Icon::new(IconName::Info));
+
+    // Only a build that can replace itself offers to check.
+    #[cfg(windows)]
+    let menu = menu
+        .item(t!("shell-menu-check-updates"), |_, cx| check(cx))
+        .icon(Icon::new(IconName::ArrowDown));
+
+    menu.separator()
+        .item(t!("shell-workspace-settings-title"), move |window, cx| {
+            settings_shell.update(cx, |this, cx| {
+                this.on_show_settings(&ShowSettings, window, cx);
+            });
+        })
+        .icon(Icon::new(IconName::Settings))
+        .separator()
+        .item(t!("shell-menu-restart-harnesses"), request_restart)
+        .icon(Icon::new(IconName::Redo))
+        .separator()
         .item(t!("shell-menu-new-window"), move |window, cx| {
             window_shell.update(cx, |this, cx| {
                 this.on_new_window(&NewWindow, window, cx);
@@ -386,23 +409,6 @@ fn app_menu(menu: ModernMenu, shell: &Entity<AppWindow>, _cx: &mut App) -> Moder
             });
         })
         .icon(Icon::new(IconName::Folder))
-        .separator()
-        .item(t!("shell-workspace-settings-title"), move |window, cx| {
-            settings_shell.update(cx, |this, cx| {
-                this.on_show_settings(&ShowSettings, window, cx);
-            });
-        })
-        .icon(Icon::new(IconName::Settings))
-        .item(t!("shell-menu-restart-harnesses"), request_restart)
-        .icon(Icon::new(IconName::Redo));
-
-    // Only a build that can replace itself offers to check.
-    #[cfg(windows)]
-    let menu = menu
-        .item(t!("shell-menu-check-updates"), |_, cx| check(cx))
-        .icon(Icon::new(IconName::ArrowDown));
-
-    menu
 }
 
 /// Titlebar Side Chat icon, backed by the project's `assets/icons/
