@@ -1030,14 +1030,16 @@ impl AgentSession {
     /// remembered picks over the report and the launch profile's pins over
     /// both. The launch reseeds the controls, so nothing set here outlives
     /// the real report.
+    ///
+    /// A profile that has never launched has no report, but its pins and the
+    /// tab's picks still name a model and an effort, so they are seeded over
+    /// an empty report instead of leaving the pickers blank.
     pub(crate) fn show_reported_controls(&mut self, cx: &mut Context<Self>) {
-        let Some(reported) = cx
+        let reported = cx
             .try_global::<ReportedControlsByProfile>()
             .and_then(|all| all.profiles.get(&(self.kind, self.profile.name.clone())))
             .cloned()
-        else {
-            return;
-        };
+            .unwrap_or_default();
 
         let pins = launch_pins(self.kind, &self.profile);
 

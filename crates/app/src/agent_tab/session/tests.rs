@@ -1327,14 +1327,22 @@ mod failed_start_tests {
     fn open_pane(
         cx: &mut TestAppContext,
     ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
-        let profile = AgentProfile {
-            name: "Failed Start Test".into(),
-            kind: AgentKind::Codex,
-            // Every launch is superseded by one the test installs by hand.
-            executable: "missing-agent.exe".into(),
-            ..AgentProfile::default()
-        };
+        open_pane_on(
+            cx,
+            AgentProfile {
+                name: "Failed Start Test".into(),
+                kind: AgentKind::Codex,
+                // Every launch is superseded by one the test installs by hand.
+                executable: "missing-agent.exe".into(),
+                ..AgentProfile::default()
+            },
+        )
+    }
 
+    fn open_pane_on(
+        cx: &mut TestAppContext,
+        profile: AgentProfile,
+    ) -> (Entity<AgentPane>, WindowHandle<gpui_component::Root>) {
         let mut pane = None;
 
         let window = cx.update(|cx| {
@@ -1537,6 +1545,41 @@ mod failed_start_tests {
                 assert_eq!(
                     session.controls.settings.model.as_deref(),
                     Some("reported-model")
+                );
+                assert_eq!(session.controls.settings.effort.as_deref(), Some("high"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn deferred_tab_without_report_shows_profile_pins(cx: &mut TestAppContext) {
+        let (pane, window) = open_pane_on(
+            cx,
+            AgentProfile {
+                name: "Never Launched Test".into(),
+                kind: AgentKind::Codex,
+                executable: "missing-agent.exe".into(),
+                model: "pinned-model".into(),
+                effort: "high".into(),
+                ..AgentProfile::default()
+            },
+        );
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.session.borrow_mut().runtime_mut().begin_start();
+
+                pane.session.borrow_mut().controls.settings = ThreadSettings::default();
+
+                pane.defer_launch(cx);
+
+                let session = pane.session.borrow();
+
+                assert_eq!(
+                    session.controls.settings.model.as_deref(),
+                    Some("pinned-model")
                 );
                 assert_eq!(session.controls.settings.effort.as_deref(), Some("high"));
             });
